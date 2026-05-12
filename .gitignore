@@ -1,0 +1,28 @@
+# Python/Environment
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+ENV/
+.env
+
+# PyTorch
+*.pth
+*.pt
+*.bin
+
+# Hugging Face (Transformers/Datasets)
+.cache/huggingface/
+.hf/
+# Local model outputs/checkpoints
+checkpoint-*/
+runs/
+
+# Weights & Biases (wandb)
+wandb/
+.wandb
+
+# IDEs
+.vscode/
+.idea/
+

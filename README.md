@@ -12,5 +12,14 @@ This repository provides a public reproduction and open-source implementation of
 To run the training script, execute:
 
 ```bash
-python3 train.py
+python train.py
 ```
+
+For multi-GPU training with FSDP memory sharding, launch with one process per GPU:
+
+```bash
+python -m torch.distributed.run --standalone --nproc_per_node=4 train.py
+```
+
+`--batch-size` is per process/GPU. The script automatically enables FSDP when
+launched with `torch.distributed.run`.

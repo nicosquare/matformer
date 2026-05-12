@@ -6,10 +6,7 @@ import torch.nn as nn
 
 class ModifiedLlamaMLP(LlamaMLP):
     def __init__(self, config, scale_factors):
-        super().__init__(
-            hidden_size=config.hidden_size,
-            intermediate_size=config.intermediate_size,
-            hidden_act=config.hidden_act)
+        super().__init__(config)
         self.intermediate_size = config.intermediate_size
         self.scale_factors = scale_factors  # List of scale factors for 's', 'm', 'l', 'xl'
         self.current_subset_hd = None
@@ -35,7 +32,6 @@ class ModifiedLlamaMLP(LlamaMLP):
         up_proj = self.up_proj.weight[:self.current_subset_hd]
         down_proj = self.down_proj.weight[:, :self.current_subset_hd]
         down_proj = F.linear(self.act_fn(F.linear(x, gate_proj) * F.linear(x, up_proj)), down_proj)
-        self.current_subset_hd = None
 
         return down_proj
 
@@ -51,5 +47,6 @@ class ModifiedLlamaForCausalLM(LlamaForCausalLM):
 
     def configure_subnetwork(self, flag):
         """Configure the subnetwork for all layers based on the flag."""
-        for layer_idx in range(len(self.model.layers)):
-            self.model.layers[layer_idx].mlp.configure_subnetwork(flag)
+        for module in self.modules():
+            if isinstance(module, ModifiedLlamaMLP):
+                module.configure_subnetwork(flag)
