@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+import argparse
+import json
+from collections.abc import Callable, Iterable
+from pathlib import Path
 from typing import Any
+
+from utils.config import resolve_all_run_configs
+from utils.metrics import write_json_artifact
 
 
 BASELINE_MATCH_FIELDS = [
@@ -14,6 +21,113 @@ BASELINE_MATCH_FIELDS = [
     ("model.context_length", "context length"),
     ("model.vocab_size_assumption", "vocabulary assumption"),
 ]
+
+DEBUG_MATRIX_CONFIG = Path("configs/debug_matrix.yaml")
+DEFAULT_DEBUG_NESTED_RUN_ID = "debug-nested-001"
+DEFAULT_DEBUG_BASELINE_GRANULARITY = "s"
+
+RunCallable = Callable[[dict[str, Any]], dict[str, Any]]
+
+
+def run_debug_nested_with_one_baseline(
+    config_path: str | Path = DEBUG_MATRIX_CONFIG,
+    nested_run_id: str = DEFAULT_DEBUG_NESTED_RUN_ID,
+    baseline_granularity: str = DEFAULT_DEBUG_BASELINE_GRANULARITY,
+    overrides: Iterable[str] | None = None,
+    runner: RunCallable | None = None,
+) -> dict[str, Any]:
+    nested_config, standalone_config = resolve_debug_nested_baseline_configs(
+        config_path=config_path,
+        nested_run_id=nested_run_id,
+        baseline_granularity=baseline_granularity,
+        overrides=overrides,
+    )
+
+    if runner is None:
+        runner = run_training_config
+
+    nested_result = runner(nested_config)
+    standalone_result = runner(standalone_config)
+    baseline_match_record = build_baseline_match_record(
+        nested_config,
+        standalone_config,
+        baseline_granularity,
+    )
+    nested_summary_path = write_baseline_matches_to_summary(
+        nested_result["summary_path"],
+        [baseline_match_record],
+    )
+
+    return {
+        "nested_config": nested_config,
+        "standalone_config": standalone_config,
+        "nested_result": nested_result,
+        "standalone_result": standalone_result,
+        "baseline_match_records": [baseline_match_record],
+        "nested_summary_path": nested_summary_path,
+    }
+
+
+def resolve_debug_nested_baseline_configs(
+    config_path: str | Path = DEBUG_MATRIX_CONFIG,
+    nested_run_id: str = DEFAULT_DEBUG_NESTED_RUN_ID,
+    baseline_granularity: str = DEFAULT_DEBUG_BASELINE_GRANULARITY,
+    overrides: Iterable[str] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    configs = resolve_all_run_configs(config_path, overrides=overrides)
+    nested_config = find_run_config(configs, nested_run_id, model_family="nested")
+    standalone_config = find_standalone_baseline_config(
+        configs,
+        baseline_granularity,
+    )
+    return nested_config, standalone_config
+
+
+def find_run_config(
+    configs: list[dict[str, Any]],
+    run_id: str,
+    model_family: str | None = None,
+) -> dict[str, Any]:
+    for config in configs:
+        run = config["run"]
+        if run["run_id"] != run_id:
+            continue
+        if model_family is not None and run.get("model_family") != model_family:
+            continue
+        return config
+
+    family_note = f" with model_family={model_family}" if model_family else ""
+    raise ValueError(f"Could not find run_id={run_id}{family_note}")
+
+
+def find_standalone_baseline_config(
+    configs: list[dict[str, Any]],
+    granularity: str,
+) -> dict[str, Any]:
+    for config in configs:
+        run = config["run"]
+        if run.get("model_family") != "standalone":
+            continue
+        if run.get("granularity") == granularity:
+            return config
+
+    raise ValueError(f"Could not find standalone baseline for {granularity}")
+
+
+def run_training_config(config: dict[str, Any]) -> dict[str, Any]:
+    from training.run import run_training
+
+    return run_training(config)
+
+
+def write_baseline_matches_to_summary(
+    summary_path: str | Path,
+    baseline_match_records: list[dict[str, Any]],
+) -> Path:
+    summary_path = Path(summary_path)
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary = add_baseline_notes_to_summary(summary, baseline_match_records)
+    return write_json_artifact(summary_path, summary)
 
 
 def build_baseline_match_record(
@@ -117,3 +231,44 @@ def _non_embedding_count(counts: dict[str, int] | None):
     if counts is None:
         return None
     return counts.get("non_embedding_parameters")
+
+
+def parse_args(argv: list[str] | None = None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--config",
+        default=str(DEBUG_MATRIX_CONFIG),
+        help="Debug matrix config path.",
+    )
+    parser.add_argument(
+        "--nested-run-id",
+        default=DEFAULT_DEBUG_NESTED_RUN_ID,
+        help="Nested run id to pair with the standalone baseline.",
+    )
+    parser.add_argument(
+        "--granularity",
+        default=DEFAULT_DEBUG_BASELINE_GRANULARITY,
+        help="Standalone baseline granularity to run.",
+    )
+    parser.add_argument(
+        "--override",
+        action="append",
+        default=[],
+        help="Dotted config override, for example training.max_steps=1.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    result = run_debug_nested_with_one_baseline(
+        config_path=args.config,
+        nested_run_id=args.nested_run_id,
+        baseline_granularity=args.granularity,
+        overrides=args.override,
+    )
+    print(result["nested_summary_path"])
+
+
+if __name__ == "__main__":
+    main()
