@@ -35,3 +35,34 @@ python -m torch.distributed.run --standalone --nproc_per_node=4 train.py
 
 `--batch-size` is per process/GPU. The script automatically enables FSDP when
 launched with `torch.distributed.run`.
+
+## Config-Driven Experiment Outputs
+
+Spec Kit experiment configs write resolved configs, metrics, summaries, and
+checkpoints under `<output_root>/<run_id>/`. The default output root is
+`outputs/`, but larger runs should use a filesystem with enough space and
+inodes:
+
+```bash
+export OUTPUT_ROOT=/mnt/experiments/matformer
+python train.py \
+  --config configs/debug_matrix.yaml \
+  --run-id debug-nested-001 \
+  --output-root "$OUTPUT_ROOT"
+```
+
+The debug matrix runner also reads `OUTPUT_ROOT`:
+
+```bash
+OUTPUT_ROOT=/mnt/experiments/matformer bash scripts/run_debug_matrix.sh
+```
+
+Use `--output-dir` only for a one-off explicit run directory. For shared cache
+pressure, place Hugging Face caches outside the repository before launching
+jobs:
+
+```bash
+export HF_HOME=/mnt/experiments/hf-cache
+export HF_DATASETS_CACHE=/mnt/experiments/hf-cache/datasets
+export TRANSFORMERS_CACHE=/mnt/experiments/hf-cache/transformers
+```

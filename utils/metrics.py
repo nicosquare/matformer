@@ -75,6 +75,8 @@ RUN_SUMMARY_FIELDS = [
     "tokens_seen",
     "seed",
     "status",
+    "output_root",
+    "output_dir",
     "paper_aligned",
     "notes",
 ]
@@ -118,6 +120,8 @@ def build_run_summary(
         "tokens_seen": tokens_seen,
         "seed": run.get("seed"),
         "status": status,
+        "output_root": run["output_root"],
+        "output_dir": run["output_dir"],
         "paper_aligned": bool(model["paper_aligned"]),
         "notes": list(notes or []),
     }

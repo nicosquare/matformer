@@ -29,6 +29,11 @@ export HF_DATASETS_CACHE=/mnt/experiments/hf-cache/datasets
 export TRANSFORMERS_CACHE=/mnt/experiments/hf-cache/transformers
 ```
 
+`OUTPUT_ROOT` is the common runner path for matrix-style commands. Single-run
+commands can also pass `--output-root "$OUTPUT_ROOT"` directly. Use
+`--output-dir` only when one run needs an explicit directory that does not
+follow `<output_root>/<run_id>`.
+
 ## 2. Run Focused Smoke Checks
 
 ```bash
@@ -116,8 +121,10 @@ Expected result:
 Run consistency before speculative decoding:
 
 ```bash
-python -m evaluation.consistency --config configs/consistency.yaml
-python -m evaluation.speculative --config configs/speculative.yaml
+OUTPUT_ROOT=/mnt/experiments/matformer \
+  python -m evaluation.consistency --config configs/consistency.yaml
+OUTPUT_ROOT=/mnt/experiments/matformer \
+  python -m evaluation.speculative --config configs/speculative.yaml
 ```
 
 Expected result:
