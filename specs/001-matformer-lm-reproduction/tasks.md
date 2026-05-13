@@ -49,8 +49,8 @@ plumbing that every user story needs.
 - [X] T014 [P] Add non-embedding parameter counting checks in `tests/test_model_size.py`
 - [X] T015 Update canonical MatFormer granularity definitions and FFN prefix metadata in `modified_llama.py`
 - [X] T016 [P] Add FFN prefix ordering and tensor-shape checks in `tests/test_matformer_prefixes.py`
-- [ ] T017 Implement dataset loading and preprocessing helpers in `training/data.py`
-- [ ] T018 Implement shared validation loss and perplexity evaluation helpers in `evaluation/validation.py`
+- [X] T017 Implement dataset loading and preprocessing helpers in `training/data.py`
+- [X] T018 Implement shared validation loss and perplexity evaluation helpers in `evaluation/validation.py`
 - [ ] T019 Implement shared training loop with config-driven output artifacts in `training/run.py`
 - [ ] T020 Update `train.py` to accept `--config` and `--run-id` while preserving visible training flow
 - [ ] T021 Implement run summary and baseline mismatch helpers in `training/baselines.py`
