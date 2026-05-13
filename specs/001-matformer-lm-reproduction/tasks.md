@@ -43,8 +43,8 @@ plumbing that every user story needs.
 
 - [X] T009 Implement YAML loading, CLI override merging, and resolved config writing in `utils/config.py`
 - [X] T010 [P] Add config validation smoke checks in `tests/test_config.py`
-- [ ] T011 Implement CSV/JSON artifact writers for config, metrics, summaries, and failed-run summaries in `utils/metrics.py`
-- [ ] T012 [P] Add artifact writer smoke checks in `tests/test_artifacts.py`
+- [X] T011 Implement CSV/JSON artifact writers for config, metrics, summaries, and failed-run summaries in `utils/metrics.py`
+- [X] T012 [P] Add artifact writer smoke checks in `tests/test_artifacts.py`
 - [ ] T013 Implement non-embedding parameter counting in `utils/model_size.py`
 - [ ] T014 [P] Add non-embedding parameter counting checks in `tests/test_model_size.py`
 - [ ] T015 Update canonical MatFormer granularity definitions and FFN prefix metadata in `modified_llama.py`
