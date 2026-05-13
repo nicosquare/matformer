@@ -1,4 +1,49 @@
+import os
+import subprocess
+from pathlib import Path
+
 from utils.config import resolve_all_run_configs, resolve_run_config, validate_run_config
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _capture_debug_matrix_invocation(tmp_path, extra_args, env_updates=None):
+    recorder = tmp_path / "python-recorder.sh"
+    argv_path = tmp_path / "argv.txt"
+    recorder.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$@\" > \"$ARGV_FILE\"\n",
+        encoding="utf-8",
+    )
+    recorder.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYTHON_BIN": str(recorder),
+            "ARGV_FILE": str(argv_path),
+        }
+    )
+    if env_updates:
+        env.update(env_updates)
+
+    subprocess.run(
+        ["bash", "scripts/run_debug_matrix.sh", *extra_args],
+        cwd=REPO_ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return argv_path.read_text(encoding="utf-8").splitlines()
+
+
+def _has_arg_pair(args, flag, value):
+    return any(
+        args[index] == flag and args[index + 1] == value
+        for index in range(len(args) - 1)
+    )
 
 
 def test_debug_nested_run_resolves_phase3_p1_contract(tmp_path):
@@ -37,3 +82,42 @@ def test_debug_matrix_exposes_nested_run_and_one_phase3_baseline():
     assert standalone_s["run"]["model_family"] == "standalone"
     assert standalone_s["run"]["granularity"] == "s"
     assert standalone_s["model"]["granularities"] == ["s"]
+
+
+def test_debug_matrix_runner_propagates_output_root_env(tmp_path):
+    output_root = tmp_path / "external-output"
+
+    args = _capture_debug_matrix_invocation(
+        tmp_path,
+        ["--override", "training.max_steps=1"],
+        env_updates={"OUTPUT_ROOT": str(output_root)},
+    )
+
+    assert args[:2] == ["-m", "training.baselines"]
+    assert _has_arg_pair(args, "--config", "configs/debug_matrix.yaml")
+    assert _has_arg_pair(args, "--nested-run-id", "debug-nested-001")
+    assert _has_arg_pair(args, "--granularity", "s")
+    assert _has_arg_pair(args, "--output-root", str(output_root))
+    assert _has_arg_pair(args, "--override", "training.max_steps=1")
+
+
+def test_debug_matrix_runner_forwards_output_arguments(tmp_path):
+    output_root = tmp_path / "cli-output"
+    explicit_output_dir = tmp_path / "explicit-output" / "debug-nested-001"
+
+    args = _capture_debug_matrix_invocation(
+        tmp_path,
+        [
+            "--output-root",
+            str(output_root),
+            "--output-dir",
+            str(explicit_output_dir),
+            "--override",
+            "training.max_steps=1",
+        ],
+    )
+
+    assert args[:2] == ["-m", "training.baselines"]
+    assert _has_arg_pair(args, "--output-root", str(output_root))
+    assert _has_arg_pair(args, "--output-dir", str(explicit_output_dir))
+    assert _has_arg_pair(args, "--override", "training.max_steps=1")

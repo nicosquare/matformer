@@ -109,8 +109,8 @@ repository `outputs/` directory.
 - [X] T075 [P] Update `run.output_root`, derived `run.output_dir`, explicit output-dir override, and external cache expectations in `specs/001-matformer-lm-reproduction/contracts/experiment-config.md`
 - [X] T076 [P] Update `OUTPUT_ROOT`, output-root argument behavior, and `<output_root>/<run_id>` artifact layout in `specs/001-matformer-lm-reproduction/contracts/cli.md` and `specs/001-matformer-lm-reproduction/contracts/run-artifacts.md`
 - [X] T077 [P] Add output root and external cache fields or notes to `specs/001-matformer-lm-reproduction/data-model.md` and `specs/001-matformer-lm-reproduction/quickstart.md`
-- [ ] T078 [P] Add output root config resolution checks for matrix runs, single-run configs, explicit output-dir overrides, and unwritable roots in `tests/test_config.py`
-- [ ] T079 [P] Add runner smoke checks for `OUTPUT_ROOT` propagation and argument forwarding in `tests/test_debug_matrix.py`
+- [X] T078 [P] Add output root config resolution checks for matrix runs, single-run configs, explicit output-dir overrides, and unwritable roots in `tests/test_config.py`
+- [X] T079 [P] Add runner smoke checks for `OUTPUT_ROOT` propagation and argument forwarding in `tests/test_debug_matrix.py`
 - [ ] T080 Implement configurable output-root resolution, default `outputs/`, explicit `run.output_dir` escape hatch, and early writable-root validation in `utils/config.py`
 - [ ] T081 Implement `OUTPUT_ROOT`, `--output-root`, and `--output-dir` support in `train.py`, `training/baselines.py`, and `scripts/run_debug_matrix.sh`
 - [ ] T082 Replace hardcoded output directories with output-root-compatible config values in `configs/78m_reduced_pilot.yaml`, `configs/consistency.yaml`, and `configs/speculative.yaml`

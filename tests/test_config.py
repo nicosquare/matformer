@@ -1,5 +1,6 @@
 import copy
 import json
+import textwrap
 
 import pytest
 
@@ -10,6 +11,64 @@ from utils.config import (
     validate_run_config,
     write_resolved_config,
 )
+
+
+def _write_single_run_config(tmp_path):
+    config_path = tmp_path / "single_run.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            run:
+              run_id: single-output-root-001
+              phase_id: debug_matrix
+              model_family: nested
+              model_size_label: debug
+              completion_label: debug
+              seed: 42
+
+            model:
+              base_model_name: debug-llama
+              paper_aligned: false
+              num_layers: 2
+              num_attention_heads: 4
+              hidden_size: 128
+              intermediate_size: 512
+              context_length: 64
+              vocab_size_assumption: 32000
+              granularities: [s, m, l, xl]
+
+            training:
+              token_budget: 8192
+              max_steps: 1
+              batch_size_per_process: 1
+              learning_rate: 0.0003
+              warmup_steps: 0
+              eval_interval: 0
+
+            dataset:
+              dataset_name: roneneldan/TinyStories
+              dataset_split: train
+              dataset_phase: debug
+              sample_limit: 2
+              preprocessing_notes: debug_output_root_resolution
+
+            outputs:
+              save_config: true
+              save_metrics_csv: true
+              save_run_summary_json: true
+              save_checkpoints: false
+              make_plots: false
+
+            evaluation:
+              validation: true
+              downstream_suite: []
+              consistency: false
+              speculative: false
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    return config_path
 
 
 def test_resolve_debug_matrix_expands_nested_and_standalone_runs():
@@ -93,3 +152,74 @@ def test_standalone_requires_one_granularity():
 
     with pytest.raises(ConfigError, match="exactly one"):
         validate_run_config(invalid)
+
+
+def test_matrix_output_root_override_derives_each_run_directory(tmp_path):
+    output_root = tmp_path / "matrix-output"
+
+    resolved_runs = resolve_all_run_configs(
+        "configs/debug_matrix.yaml",
+        overrides=[f"run.output_root={output_root}"],
+    )
+
+    assert output_root.is_dir()
+    for resolved in resolved_runs:
+        run = resolved["run"]
+        assert run["output_root"] == str(output_root)
+        assert run["output_dir"] == str(output_root / run["run_id"])
+
+
+def test_single_run_defaults_to_outputs_root(tmp_path):
+    config_path = _write_single_run_config(tmp_path)
+
+    resolved = resolve_run_config(config_path)
+
+    assert resolved["run"]["output_root"] == "outputs"
+    assert resolved["run"]["output_dir"] == "outputs/single-output-root-001"
+
+
+def test_single_run_output_root_override_derives_output_dir(tmp_path):
+    config_path = _write_single_run_config(tmp_path)
+    output_root = tmp_path / "single-output"
+
+    resolved = resolve_run_config(
+        config_path,
+        overrides=[f"run.output_root={output_root}"],
+    )
+
+    assert output_root.is_dir()
+    assert resolved["run"]["output_root"] == str(output_root)
+    assert resolved["run"]["output_dir"] == str(
+        output_root / "single-output-root-001"
+    )
+
+
+def test_explicit_output_dir_override_wins_over_output_root(tmp_path):
+    output_root = tmp_path / "matrix-output"
+    explicit_output_dir = tmp_path / "explicit-output" / "debug-nested-001"
+
+    resolved = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        overrides=[f"run.output_root={output_root}"],
+        output_dir=explicit_output_dir,
+    )
+
+    assert resolved["run"]["output_root"] == str(output_root)
+    assert resolved["run"]["output_dir"] == str(explicit_output_dir)
+
+
+def test_unwritable_output_root_fails_before_training(tmp_path):
+    output_root = tmp_path / "blocked-output"
+    output_root.mkdir()
+    output_root.chmod(0o555)
+
+    try:
+        with pytest.raises(ConfigError, match="writ|permission|output root"):
+            resolve_run_config(
+                "configs/debug_matrix.yaml",
+                run_id="debug-nested-001",
+                overrides=[f"run.output_root={output_root}"],
+            )
+    finally:
+        output_root.chmod(0o755)
