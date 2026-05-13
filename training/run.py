@@ -17,7 +17,7 @@ from evaluation.validation import (
     perplexity_from_loss,
     validation_results_to_metric_rows,
 )
-from modified_llama import ModifiedLlamaForCausalLM
+from modified_llama import ModifiedLlamaForCausalLM, get_ffn_prefix_metadata
 from training.data import (
     build_language_model_dataloader,
     load_and_tokenize_dataset,
@@ -28,6 +28,7 @@ from utils.metrics import (
     build_run_summary,
     write_config_artifact,
     write_failed_run_summary,
+    write_json_artifact,
     write_metrics_csv,
     write_run_summary,
 )
@@ -101,18 +102,33 @@ def run_training(
             scheduler,
             device,
         )
+        extraction_metadata_path = write_extraction_metadata_if_nested(
+            config,
+            model,
+            output_dir,
+        )
         metrics_path = write_metrics_csv(output_dir, metrics_rows)
 
-        tokens_seen = max(row["tokens_seen"] for row in metrics_rows)
+        tokens_seen = max(
+            row["tokens_seen"]
+            for row in metrics_rows
+            if row["split"] == "train"
+        )
+        extra_summary_fields = {
+            "metrics_path": str(metrics_path),
+            "steps_completed": training["max_steps"],
+            "granularities": config["model"]["granularities"],
+        }
+        if extraction_metadata_path is not None:
+            extra_summary_fields["extraction_metadata_path"] = str(
+                extraction_metadata_path
+            )
+
         summary = build_run_summary(
             config,
             tokens_seen=tokens_seen,
             notes=["completed config-driven training loop"],
-            extra_fields={
-                "metrics_path": str(metrics_path),
-                "steps_completed": training["max_steps"],
-                "granularities": config["model"]["granularities"],
-            },
+            extra_fields=extra_summary_fields,
         )
         summary_path = write_run_summary(output_dir, summary)
 
@@ -270,7 +286,120 @@ def train_for_steps(
             if step >= max_steps:
                 break
 
+    append_final_validation_if_needed(
+        metrics_rows,
+        config,
+        model,
+        eval_dataloader,
+        granularities=granularities,
+        device=device,
+        step=step,
+        tokens_seen=tokens_seen,
+        start_time=start_time,
+    )
+
     return metrics_rows
+
+
+def append_final_validation_if_needed(
+    metrics_rows: list[dict[str, Any]],
+    config: dict[str, Any],
+    model,
+    eval_dataloader,
+    granularities: list[str],
+    device: torch.device,
+    step: int,
+    tokens_seen: int,
+    start_time: float,
+) -> None:
+    if not config.get("evaluation", {}).get("validation", False):
+        return
+    has_final_validation = any(
+        row["split"] == "validation" and row["step"] == step
+        for row in metrics_rows
+    )
+    if has_final_validation:
+        return
+
+    elapsed = time.time() - start_time
+    validation_results = evaluate_validation_per_granularity(
+        model,
+        eval_dataloader,
+        granularities=granularities,
+        device=device,
+    )
+    metrics_rows.extend(
+        validation_results_to_metric_rows(
+            validation_results,
+            config,
+            step=step,
+            wall_clock_seconds=elapsed,
+            tokens_per_second=tokens_seen / elapsed if elapsed > 0 else None,
+            peak_memory_bytes=current_peak_memory_bytes(device),
+        )
+    )
+
+
+def write_extraction_metadata_if_nested(
+    config: dict[str, Any],
+    model,
+    output_dir: Path,
+) -> Path | None:
+    if config["run"]["model_family"] != "nested":
+        return None
+
+    metadata = build_extraction_metadata(config, model)
+    return write_json_artifact(output_dir / "extraction_metadata.json", metadata)
+
+
+def build_extraction_metadata(config: dict[str, Any], model) -> dict[str, Any]:
+    run = config["run"]
+    model_config = config["model"]
+    configured_granularities = model_config["granularities"]
+    prefix_metadata = prefix_metadata_by_granularity(model, model_config)
+
+    return {
+        "run_id": run["run_id"],
+        "phase_id": run["phase_id"],
+        "model_family": run["model_family"],
+        "model_size_label": run["model_size_label"],
+        "granularities": [
+            build_granularity_extraction_metadata(
+                granularity,
+                configured_granularities,
+                prefix_metadata[granularity],
+            )
+            for granularity in configured_granularities
+        ],
+    }
+
+
+def prefix_metadata_by_granularity(
+    model,
+    model_config: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    target = model.module if hasattr(model, "module") else model
+    metadata = getattr(target, "ffn_prefix_metadata", None)
+    if metadata is None:
+        metadata = get_ffn_prefix_metadata(model_config["intermediate_size"])
+
+    return {entry["name"]: dict(entry) for entry in metadata}
+
+
+def build_granularity_extraction_metadata(
+    granularity: str,
+    configured_granularities: list[str],
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    granularity_index = configured_granularities.index(granularity)
+    return {
+        "granularity": granularity,
+        "display_name": metadata["display_name"],
+        "ffn_ratio": metadata["ffn_ratio"],
+        "full_intermediate_fraction": metadata["full_intermediate_fraction"],
+        "prefix_width": metadata["prefix_width"],
+        "strict_prefix_of": configured_granularities[granularity_index + 1 :],
+    }
 
 
 def build_training_metric_row(
