@@ -73,9 +73,9 @@ least one baseline comparison artifact.
 
 ### Verification for User Story 1
 
-- [ ] T023 [P] [US1] Add debug nested config resolution test in `tests/test_debug_matrix.py`
-- [ ] T024 [P] [US1] Add tiny nested training smoke test with mocked or tiny data in `tests/test_training_smoke.py`
-- [ ] T025 [P] [US1] Add extraction metadata artifact check in `tests/test_artifacts.py`
+- [X] T023 [P] [US1] Add debug nested config resolution test in `tests/test_debug_matrix.py`
+- [X] T024 [P] [US1] Add tiny nested training smoke test with mocked or tiny data in `tests/test_training_smoke.py`
+- [X] T025 [P] [US1] Add extraction metadata artifact check in `tests/test_artifacts.py`
 
 ### Implementation for User Story 1
 

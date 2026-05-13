@@ -1,7 +1,10 @@
 import csv
 import json
+from types import SimpleNamespace
 
 import pytest
+import torch
+from datasets import Dataset
 
 from utils.config import resolve_run_config
 from utils.metrics import (
@@ -15,6 +18,51 @@ from utils.metrics import (
     write_scaling_results_csv,
     write_task_results_csv,
 )
+from training.run import run_training
+
+
+class TinyExtractionModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.tensor(0.5))
+        self.current_granularity = None
+        self.ffn_prefix_metadata = [
+            {
+                "name": "s",
+                "display_name": "S",
+                "ffn_ratio": 0.5,
+                "full_intermediate_fraction": 0.125,
+                "prefix_width": 8,
+            },
+            {
+                "name": "m",
+                "display_name": "M",
+                "ffn_ratio": 1.0,
+                "full_intermediate_fraction": 0.25,
+                "prefix_width": 16,
+            },
+            {
+                "name": "l",
+                "display_name": "L",
+                "ffn_ratio": 2.0,
+                "full_intermediate_fraction": 0.5,
+                "prefix_width": 32,
+            },
+            {
+                "name": "xl",
+                "display_name": "XL",
+                "ffn_ratio": 4.0,
+                "full_intermediate_fraction": 1.0,
+                "prefix_width": 64,
+            },
+        ]
+
+    def configure_subnetwork(self, granularity):
+        self.current_granularity = granularity
+
+    def forward(self, input_ids, attention_mask=None, labels=None):
+        loss = self.weight.pow(2) + input_ids.float().mean() * 0.0
+        return SimpleNamespace(loss=loss)
 
 
 def test_write_config_metrics_and_run_summary(tmp_path):
@@ -197,3 +245,46 @@ def test_metric_writer_rejects_missing_required_fields(tmp_path):
                 "tokens_per_second": 85.3,
             },
         )
+
+
+def test_nested_run_writes_extraction_metadata_artifact(tmp_path):
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "training.max_steps=1",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.warmup_steps=0",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+
+    run_training(
+        config,
+        model=TinyExtractionModel(),
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    metadata_path = output_dir / "extraction_metadata.json"
+    assert metadata_path.exists()
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["run_id"] == "debug-nested-001"
+    assert metadata["model_family"] == "nested"
+
+    granularities = metadata["granularities"]
+    assert [entry["granularity"] for entry in granularities] == ["s", "m", "l", "xl"]
+    assert [entry["display_name"] for entry in granularities] == ["S", "M", "L", "XL"]
+    assert [entry["prefix_width"] for entry in granularities] == [8, 16, 32, 64]
+    assert granularities[0]["strict_prefix_of"] == ["m", "l", "xl"]
+    assert granularities[-1]["strict_prefix_of"] == []
