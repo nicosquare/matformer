@@ -5,9 +5,9 @@
 #SBATCH --gpus=1
 #SBATCH --mem=64G
 #SBATCH --time=04:00:00
-#SBATCH -p long
-#SBATCH --output=logs/matformer_debug_%j.out
-#SBATCH --error=logs/matformer_debug_%j.err
+#SBATCH -p cscc-gpu-p
+#SBATCH --output=./logs/matformer_debug_%j.out
+#SBATCH --error=./logs/matformer_debug_%j.err
 
 set -euo pipefail
 
@@ -19,6 +19,7 @@ Usage:
   sbatch scripts/slurm_debug_matrix.sh --output-root /mnt/experiments/matformer [options] [-- runner args]
 
 Options:
+  --repo-root PATH            Repository root; defaults to the sbatch submit directory.
   --output-root PATH          Root for run artifacts; forwarded as OUTPUT_ROOT.
   --baseline-granularity G    Standalone baseline granularity: s, m, l, or xl.
   --nested-run-id RUN_ID      Nested run id from configs/debug_matrix.yaml.
@@ -34,11 +35,20 @@ Resource requests can be overridden at submission time, for example:
 USAGE
 }
 
+REPO_ROOT_ARG=""
 OUTPUT_ROOT_ARG=""
 FORWARDED_ARGS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --repo-root)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --repo-root" >&2
+        exit 2
+      fi
+      REPO_ROOT_ARG="$2"
+      shift 2
+      ;;
     --output-root)
       if [[ $# -lt 2 ]]; then
         echo "Missing value for --output-root" >&2
@@ -95,13 +105,26 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT_DIR"
-
 if [[ "${ALLOW_LOCAL_SLURM_WRAPPER:-0}" != "1" ]] \
   && [[ -z "${SLURM_SUBMIT_DIR:-}" || -z "${SLURM_JOB_NAME:-}" ]]; then
   echo "This launcher is intended for sbatch, not direct execution on the current node." >&2
   echo "Use: sbatch scripts/slurm_debug_matrix.sh --output-root /mnt/experiments/matformer" >&2
+  exit 2
+fi
+
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -n "$REPO_ROOT_ARG" ]]; then
+  ROOT_DIR="$REPO_ROOT_ARG"
+elif [[ -n "${SLURM_SUBMIT_DIR:-}" ]]; then
+  ROOT_DIR="$SLURM_SUBMIT_DIR"
+else
+  ROOT_DIR="$SCRIPT_ROOT"
+fi
+
+cd "$ROOT_DIR"
+if [[ ! -f scripts/run_debug_matrix.sh ]]; then
+  echo "Could not find scripts/run_debug_matrix.sh under repo root: $ROOT_DIR" >&2
+  echo "Submit from the repository root or pass --repo-root /path/to/matformer." >&2
   exit 2
 fi
 
