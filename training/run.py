@@ -212,36 +212,42 @@ def train_for_steps(
     while step < max_steps:
         for batch in train_dataloader:
             step += 1
-            granularity = select_training_granularity(granularities, step)
             batch = move_batch_to_device(batch, device)
             batch_tokens = count_batch_tokens(batch)
             tokens_seen += batch_tokens
 
-            configure_model_granularity(model, granularity)
-            outputs = model(
-                input_ids=batch["input_ids"],
-                attention_mask=batch.get("attention_mask"),
-                labels=batch["labels"],
-            )
-            loss = outputs.loss
-
             optimizer.zero_grad(set_to_none=True)
-            loss.backward()
+
+            granularity_losses = []
+            for granularity in granularities:
+                configure_model_granularity(model, granularity)
+                outputs = model(
+                    input_ids=batch["input_ids"],
+                    attention_mask=batch.get("attention_mask"),
+                    labels=batch["labels"],
+                )
+                granularity_losses.append((granularity, outputs.loss))
+
+            combined_loss = torch.stack(
+                [loss for _, loss in granularity_losses]
+            ).mean()
+            combined_loss.backward()
             optimizer.step()
             scheduler.step()
 
             elapsed = time.time() - start_time
-            metrics_rows.append(
-                build_training_metric_row(
-                    config,
-                    step=step,
-                    granularity=granularity,
-                    loss=float(loss.detach().cpu().item()),
-                    tokens_seen=tokens_seen,
-                    wall_clock_seconds=elapsed,
-                    peak_memory_bytes=current_peak_memory_bytes(device),
+            for granularity, loss in granularity_losses:
+                metrics_rows.append(
+                    build_training_metric_row(
+                        config,
+                        step=step,
+                        granularity=granularity,
+                        loss=float(loss.detach().cpu().item()),
+                        tokens_seen=tokens_seen,
+                        wall_clock_seconds=elapsed,
+                        peak_memory_bytes=current_peak_memory_bytes(device),
+                    )
                 )
-            )
 
             if eval_interval > 0 and step % eval_interval == 0:
                 validation_results = evaluate_validation_per_granularity(

@@ -79,7 +79,7 @@ least one baseline comparison artifact.
 
 ### Implementation for User Story 1
 
-- [ ] T026 [US1] Implement all-granularity MatFormer loss accumulation in `training/run.py`
+- [X] T026 [US1] Implement all-granularity MatFormer loss accumulation in `training/run.py`
 - [ ] T027 [US1] Implement nested granularity evaluation and extraction metadata writing in `training/run.py`
 - [ ] T028 [US1] Add debug nested run values to `configs/debug_matrix.yaml`
 - [ ] T029 [US1] Implement one matched standalone debug baseline path in `training/baselines.py`

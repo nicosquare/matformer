@@ -73,7 +73,16 @@ def test_configured_training_writes_metrics_config_and_summary(tmp_path):
         metric_rows = list(csv.DictReader(metrics_file))
     assert {row["split"] for row in metric_rows} == {"train", "validation"}
     train_rows = [row for row in metric_rows if row["split"] == "train"]
-    assert [row["granularity"] for row in train_rows] == ["s", "m"]
+    assert [row["granularity"] for row in train_rows] == [
+        "s",
+        "m",
+        "l",
+        "xl",
+        "s",
+        "m",
+        "l",
+        "xl",
+    ]
 
     summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
     assert summary["status"] == "completed"
