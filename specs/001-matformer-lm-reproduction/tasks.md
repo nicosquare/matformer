@@ -51,10 +51,10 @@ plumbing that every user story needs.
 - [X] T016 [P] Add FFN prefix ordering and tensor-shape checks in `tests/test_matformer_prefixes.py`
 - [X] T017 Implement dataset loading and preprocessing helpers in `training/data.py`
 - [X] T018 Implement shared validation loss and perplexity evaluation helpers in `evaluation/validation.py`
-- [ ] T019 Implement shared training loop with config-driven output artifacts in `training/run.py`
-- [ ] T020 Update `train.py` to accept `--config` and `--run-id` while preserving visible training flow
-- [ ] T021 Implement run summary and baseline mismatch helpers in `training/baselines.py`
-- [ ] T022 Implement CSV-driven plot generation for loss, perplexity, and consistency in `scripts/make_figures.py`
+- [X] T019 Implement shared training loop with config-driven output artifacts in `training/run.py`
+- [X] T020 Update `train.py` to accept `--config` and `--run-id` while preserving visible training flow
+- [X] T021 Implement run summary and baseline mismatch helpers in `training/baselines.py`
+- [X] T022 Implement CSV-driven plot generation for loss, perplexity, and consistency in `scripts/make_figures.py`
 
 **Checkpoint**: Configs resolve, MatFormer prefixes are testable, one run can
 write config/metrics/summary artifacts, and plots read structured CSV inputs.

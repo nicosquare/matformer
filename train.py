@@ -25,8 +25,16 @@ from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 FLAGS = ['s', 'm', 'l', 'xl']
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser()
+    parser.add_argument("--config", help="YAML experiment config for the Spec Kit flow.")
+    parser.add_argument("--run-id", help="Run id to select from a matrix config.")
+    parser.add_argument(
+        "--override",
+        action="append",
+        default=[],
+        help="Dotted config override, for example training.max_steps=10.",
+    )
     parser.add_argument("--model-name", default="NousResearch/Llama-3.2-1B")
     parser.add_argument("--dataset-name", default="vilm/RedPajama-v2-small")
     parser.add_argument("--dataset-split", default="train")
@@ -48,7 +56,7 @@ def parse_args():
         default=True,
         help="Checkpoint Llama decoder layers when running under torchrun/FSDP.",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def setup_distributed():
@@ -233,6 +241,16 @@ def evaluate_model(model, eval_dataloader, flags, device, distributed):
 
 def main():
     args = parse_args()
+    if args.config:
+        from training.run import run_from_config_path
+
+        run_from_config_path(
+            args.config,
+            run_id=args.run_id,
+            overrides=args.override,
+        )
+        return
+
     distributed, rank, _, world_size, device = setup_distributed()
     set_random_seed(args.seed)
 
