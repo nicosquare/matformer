@@ -23,14 +23,14 @@ independently testable research increment.
 **Purpose**: Create the shallow research layout, configuration stubs, and
 dependency documentation needed by all later phases.
 
-- [ ] T001 Create shallow project directories `configs/`, `training/`, `evaluation/`, `utils/`, `scripts/`, `tests/`, and `outputs/`
-- [ ] T002 Add package marker files `training/__init__.py`, `evaluation/__init__.py`, and `utils/__init__.py`
-- [ ] T003 [P] Create dependency specification in `requirements.txt` for torch, transformers, datasets, pyyaml, pandas, matplotlib, pytest, and lm-eval
-- [ ] T004 [P] Create debug matrix config skeleton in `configs/debug_matrix.yaml`
-- [ ] T005 [P] Create 78M reduced-token pilot config skeleton in `configs/78m_reduced_pilot.yaml`
-- [ ] T006 [P] Create consistency evaluation config skeleton in `configs/consistency.yaml`
-- [ ] T007 [P] Create speculative evaluation config skeleton in `configs/speculative.yaml`
-- [ ] T008 [P] Update environment setup notes in `README.md`
+- [X] T001 Create shallow project directories `configs/`, `training/`, `evaluation/`, `utils/`, `scripts/`, `tests/`, and `outputs/`
+- [X] T002 Add package marker files `training/__init__.py`, `evaluation/__init__.py`, and `utils/__init__.py`
+- [X] T003 [P] Create dependency specification in `requirements.txt` for torch, transformers, datasets, pyyaml, pandas, matplotlib, pytest, and lm-eval
+- [X] T004 [P] Create debug matrix config skeleton in `configs/debug_matrix.yaml`
+- [X] T005 [P] Create 78M reduced-token pilot config skeleton in `configs/78m_reduced_pilot.yaml`
+- [X] T006 [P] Create consistency evaluation config skeleton in `configs/consistency.yaml`
+- [X] T007 [P] Create speculative evaluation config skeleton in `configs/speculative.yaml`
+- [X] T008 [P] Update environment setup notes in `README.md`
 
 ---
 

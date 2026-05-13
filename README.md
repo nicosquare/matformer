@@ -7,6 +7,18 @@ This repository provides a public reproduction and open-source implementation of
 - Open-source release for community use and further research.
 - Reproducibility: Includes key components to replicate the experiments.
 
+## Environment Setup
+
+This repository uses a lightweight Python research stack. Install the baseline
+dependencies with:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+GPU-enabled PyTorch builds may require a platform-specific install command from
+the PyTorch project before installing the remaining packages.
+
 ## Running LM Pre-training Jobs
 
 To run the training script, execute:

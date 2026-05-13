@@ -1,0 +1,29 @@
+# Speculative decoding alignment evaluation skeleton.
+run:
+  phase_id: speculative
+  output_dir: outputs/speculative-001
+
+prompt_set:
+  name: debug-prompts
+  path: null
+  sample_count: 64
+
+pairs:
+  nested:
+    draft_run_id: debug-nested-001
+    draft_granularity: s
+    verifier_run_id: debug-nested-001
+    verifier_granularity: xl
+  standalone:
+    draft_run_id: debug-standalone-s-001
+    verifier_run_id: debug-standalone-xl-001
+
+metrics:
+  - acceptance_rate
+  - rollback_frequency
+  - throughput
+  - latency
+
+outputs:
+  task_results_csv: outputs/speculative-001/task_results.csv
+  run_summary_json: outputs/speculative-001/run_summary.json

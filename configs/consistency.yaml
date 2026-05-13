@@ -1,0 +1,28 @@
+# Consistency and mix-and-match evaluation skeleton.
+run:
+  phase_id: consistency
+  output_dir: outputs/consistency-001
+
+inputs:
+  nested_run_id: debug-nested-001
+  standalone_run_ids:
+    s: debug-standalone-s-001
+    m: debug-standalone-m-001
+    l: debug-standalone-l-001
+    xl: debug-standalone-xl-001
+
+consistency:
+  pairs:
+    - small_granularity: s
+      large_granularity: xl
+  metrics:
+    - token_level_agreement
+  sample_count: 128
+
+mix_and_match:
+  patterns:
+    - name: alternating_small_large
+      layer_granularities: [xl, s, xl, s]
+
+outputs:
+  consistency_results_csv: outputs/consistency-001/consistency_results.csv

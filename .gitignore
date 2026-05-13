@@ -5,6 +5,9 @@ __pycache__/
 venv/
 ENV/
 .env
+.env*
+dist/
+*.egg-info/
 
 # PyTorch
 *.pth
@@ -17,6 +20,8 @@ ENV/
 # Local model outputs/checkpoints
 checkpoint-*/
 runs/
+outputs/*
+!outputs/.gitkeep
 
 # Weights & Biases (wandb)
 wandb/
@@ -26,3 +31,8 @@ wandb/
 .vscode/
 .idea/
 
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp

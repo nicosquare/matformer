@@ -1,0 +1,52 @@
+# First paper-aligned scaling point using a reduced training-token budget.
+# A 78M run is paper-budget-complete only at 10B training tokens.
+run:
+  run_id: 78m-reduced-pilot-001
+  phase_id: 78m_pilot
+  model_family: nested
+  model_size_label: 78m
+  completion_label: reduced-token-pilot
+  seed: 42
+  output_dir: outputs/78m-reduced-pilot-001
+
+model:
+  base_model_name: 78m-paper-aligned
+  paper_aligned: true
+  num_layers: 16
+  num_attention_heads: 16
+  hidden_size: 256
+  intermediate_size: 1024
+  context_length: 1024
+  vocab_size_assumption: 256000
+  granularities: [s, m, l, xl]
+
+training:
+  token_budget: 100000000
+  paper_token_budget: 10000000000
+  max_steps: 10000
+  batch_size_per_process: 8
+  learning_rate: 0.0001
+  warmup_steps: 200
+  eval_interval: 500
+  mixed_precision: bf16
+  activation_checkpointing: true
+
+dataset:
+  dataset_name: fineweb-subset
+  dataset_split: train
+  dataset_phase: medium
+  sample_limit: null
+  preprocessing_notes: truncate_or_pad_to_context_length
+
+outputs:
+  save_config: true
+  save_metrics_csv: true
+  save_run_summary_json: true
+  save_checkpoints: true
+  make_plots: true
+
+evaluation:
+  validation: true
+  downstream_suite: []
+  consistency: false
+  speculative: false
