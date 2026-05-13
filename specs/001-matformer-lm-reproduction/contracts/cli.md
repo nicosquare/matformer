@@ -31,6 +31,22 @@ Required behavior:
   directories under `<output_root>/<run_id>/`.
 - Write comparison artifacts and plots derived from CSV files.
 
+## Queue Debug Matrix On Slurm
+
+```bash
+sbatch scripts/slurm_debug_matrix.sh --output-root /mnt/experiments/matformer
+```
+
+Required behavior:
+- Request one GPU when submitted with `sbatch`.
+- Refuse direct local execution outside a Slurm allocation.
+- Use the `elasticnn` conda environment by default unless `PYTHON_BIN` or
+  `--python-bin` is provided.
+- Accept `--output-root`, `--baseline-granularity`, `--nested-run-id`, and
+  `--config`.
+- Forward remaining runner arguments, including `--override`, to
+  `scripts/run_debug_matrix.sh`.
+
 ## Run 78M Reduced-Token Pilot
 
 ```bash

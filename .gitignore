@@ -22,6 +22,8 @@ checkpoint-*/
 runs/
 outputs/*
 !outputs/.gitkeep
+logs/*
+!logs/.gitkeep
 
 # Weights & Biases (wandb)
 wandb/

@@ -121,3 +121,94 @@ def test_debug_matrix_runner_forwards_output_arguments(tmp_path):
     assert _has_arg_pair(args, "--output-root", str(output_root))
     assert _has_arg_pair(args, "--output-dir", str(explicit_output_dir))
     assert _has_arg_pair(args, "--override", "training.max_steps=1")
+
+
+def test_slurm_debug_matrix_wrapper_forwards_to_runner(tmp_path):
+    recorder = tmp_path / "python-recorder.sh"
+    argv_path = tmp_path / "argv.txt"
+    output_root = tmp_path / "slurm-output"
+
+    recorder.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$@\" > \"$ARGV_FILE\"\n",
+        encoding="utf-8",
+    )
+    recorder.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "ALLOW_LOCAL_SLURM_WRAPPER": "1",
+            "PYTHON_BIN": str(recorder),
+            "ARGV_FILE": str(argv_path),
+        }
+    )
+
+    subprocess.run(
+        [
+            "bash",
+            "scripts/slurm_debug_matrix.sh",
+            "--output-root",
+            str(output_root),
+            "--baseline-granularity",
+            "m",
+            "--nested-run-id",
+            "debug-nested-001",
+            "--override",
+            "training.max_steps=1",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    args = argv_path.read_text(encoding="utf-8").splitlines()
+    assert args[:2] == ["-m", "training.baselines"]
+    assert _has_arg_pair(args, "--config", "configs/debug_matrix.yaml")
+    assert _has_arg_pair(args, "--nested-run-id", "debug-nested-001")
+    assert _has_arg_pair(args, "--granularity", "m")
+    assert _has_arg_pair(args, "--output-root", str(output_root))
+    assert _has_arg_pair(args, "--override", "training.max_steps=1")
+
+
+def test_slurm_debug_matrix_wrapper_rejects_direct_execution(tmp_path):
+    recorder = tmp_path / "python-recorder.sh"
+    argv_path = tmp_path / "argv.txt"
+
+    recorder.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$@\" > \"$ARGV_FILE\"\n",
+        encoding="utf-8",
+    )
+    recorder.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYTHON_BIN": str(recorder),
+            "ARGV_FILE": str(argv_path),
+            "SLURM_JOB_ID": "123",
+        }
+    )
+    env.pop("ALLOW_LOCAL_SLURM_WRAPPER", None)
+    env.pop("SLURM_SUBMIT_DIR", None)
+    env.pop("SLURM_JOB_NAME", None)
+
+    result = subprocess.run(
+        [
+            "bash",
+            "scripts/slurm_debug_matrix.sh",
+            "--output-root",
+            str(tmp_path / "slurm-output"),
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "intended for sbatch" in result.stderr
+    assert not argv_path.exists()

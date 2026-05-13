@@ -57,6 +57,20 @@ The debug matrix runner also reads `OUTPUT_ROOT`:
 OUTPUT_ROOT=/mnt/experiments/matformer bash scripts/run_debug_matrix.sh
 ```
 
+For GPU clusters, submit the same Phase 3 validation through Slurm from the
+repository root:
+
+```bash
+sbatch scripts/slurm_debug_matrix.sh \
+  --output-root /mnt/experiments/matformer \
+  --baseline-granularity s
+```
+
+The Slurm launcher uses the `elasticnn` conda environment by default through
+`$HOME/.conda/envs/elasticnn/bin/python`. Pass `--python-bin` or set
+`PYTHON_BIN` if the environment lives elsewhere. Submit it with `sbatch`; it
+refuses direct `bash` execution outside a Slurm allocation.
+
 Use `--output-dir` only for a one-off explicit run directory. For shared cache
 pressure, place Hugging Face caches outside the repository before launching
 jobs:

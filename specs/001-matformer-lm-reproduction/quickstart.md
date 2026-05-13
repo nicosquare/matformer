@@ -70,6 +70,23 @@ PYTHON_BIN=/home/nicolas.avila/.conda/envs/elasticnn/bin/python \
   bash scripts/run_debug_matrix.sh --override training.max_steps=1
 ```
 
+On a Slurm GPU partition, queue the same validation instead of running it on
+the login node:
+
+```bash
+sbatch scripts/slurm_debug_matrix.sh \
+  --output-root /mnt/experiments/matformer \
+  --baseline-granularity s \
+  --override training.max_steps=1
+```
+
+The Slurm launcher defaults to the `elasticnn` conda environment's Python at
+`$HOME/.conda/envs/elasticnn/bin/python`, requests one GPU, and forwards extra
+arguments to `scripts/run_debug_matrix.sh`. Submit it with `sbatch`; direct
+`bash scripts/slurm_debug_matrix.sh ...` execution is rejected outside a Slurm
+allocation. Override scheduler resources at submission time when needed, for
+example `sbatch --time=01:00:00 --mem=32G ...`.
+
 Equivalent config override form:
 
 ```bash
