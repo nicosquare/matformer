@@ -45,10 +45,10 @@ plumbing that every user story needs.
 - [X] T010 [P] Add config validation smoke checks in `tests/test_config.py`
 - [X] T011 Implement CSV/JSON artifact writers for config, metrics, summaries, and failed-run summaries in `utils/metrics.py`
 - [X] T012 [P] Add artifact writer smoke checks in `tests/test_artifacts.py`
-- [ ] T013 Implement non-embedding parameter counting in `utils/model_size.py`
-- [ ] T014 [P] Add non-embedding parameter counting checks in `tests/test_model_size.py`
-- [ ] T015 Update canonical MatFormer granularity definitions and FFN prefix metadata in `modified_llama.py`
-- [ ] T016 [P] Add FFN prefix ordering and tensor-shape checks in `tests/test_matformer_prefixes.py`
+- [X] T013 Implement non-embedding parameter counting in `utils/model_size.py`
+- [X] T014 [P] Add non-embedding parameter counting checks in `tests/test_model_size.py`
+- [X] T015 Update canonical MatFormer granularity definitions and FFN prefix metadata in `modified_llama.py`
+- [X] T016 [P] Add FFN prefix ordering and tensor-shape checks in `tests/test_matformer_prefixes.py`
 - [ ] T017 Implement dataset loading and preprocessing helpers in `training/data.py`
 - [ ] T018 Implement shared validation loss and perplexity evaluation helpers in `evaluation/validation.py`
 - [ ] T019 Implement shared training loop with config-driven output artifacts in `training/run.py`
