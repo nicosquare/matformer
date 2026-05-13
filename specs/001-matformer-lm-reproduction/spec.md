@@ -26,6 +26,10 @@ preliminary plan."
   context length 1024, and the 256k vocabulary assumption.
 - Q: How should 78M training-token completion be labeled? -> A: Distinguish
   78M reduced-token pilot runs from 78M/10B paper-budget complete runs.
+- Q: How should restricted repository storage be handled? -> A: All experiment
+  outputs must support a configurable output root outside the repository,
+  defaulting to `outputs/`, with runner support through `OUTPUT_ROOT` or
+  command arguments.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -60,6 +64,10 @@ least one matched standalone baseline comparison.
 4. **Given** the first milestone is complete, **When** the researcher reviews
    baseline coverage, **Then** the debug-size experiment includes S, M, L, and
    XL nested and standalone comparisons.
+5. **Given** the repository filesystem has restricted space or inode capacity,
+   **When** the researcher sets an external output root, **Then** all run
+   artifacts for the proof-of-concept and matched baseline are written under
+   that configured root.
 
 ---
 
@@ -195,6 +203,12 @@ rollback frequency, throughput, and latency.
   non-embedding parameter counts when reproducing Figure 2-style results.
 - A run can complete training but fail to export metrics, summaries, or plots;
   such a run is incomplete for reproduction reporting.
+- The repository filesystem may have restricted space or inode capacity; run
+  artifacts must be redirected to a configured output root before training
+  creates large files.
+- A configured output root may be missing or unwritable; runners must create a
+  missing root when possible and fail before training starts when it cannot be
+  written.
 - Downstream tasks may be unavailable or too expensive in early phases; the
   minimal evaluation suite must be sufficient to show representative trends.
 - Speculative decoding may produce inconclusive alignment differences; the
@@ -272,6 +286,15 @@ rollback frequency, throughput, and latency.
   resource-dependent phases.
 - **FR-028**: Reports MUST distinguish 78M reduced-token pilot runs from 78M/10B
   paper-budget complete runs.
+- **FR-029**: Experiment workflows MUST support a configurable output root for
+  all generated run artifacts, defaulting to `outputs/` when the researcher does
+  not provide one.
+- **FR-030**: Matrix and single-run workflows MUST resolve run artifacts under
+  `<output_root>/<run_id>` unless an explicit per-run output directory is
+  intentionally provided.
+- **FR-031**: Researcher-facing runner commands MUST allow the output root to be
+  set through configuration, command arguments, or an `OUTPUT_ROOT` environment
+  variable so artifacts can be written outside the repository filesystem.
 
 ### Research & Experiment Requirements *(include for experiment-facing changes)*
 
@@ -295,6 +318,9 @@ rollback frequency, throughput, and latency.
   detail to compare nested training overhead against standalone baselines.
 - **EX-010**: Every comparison report MUST link each plotted point or aggregate
   metric back to the run configuration and metrics artifact that produced it.
+- **EX-011**: Generated experiment artifacts, checkpoints, plots, and summaries
+  MUST be written under the configured output root rather than requiring space
+  or inodes on the repository filesystem.
 
 ### Key Entities *(include if feature involves data)*
 
@@ -354,6 +380,10 @@ rollback frequency, throughput, and latency.
 - **SC-011**: Every final phase report states the completed reproduction phase,
   dataset coverage, model-size coverage, and whether the evidence supports,
   weakens, or is inconclusive for each central paper claim.
+- **SC-012**: A run launched with a custom output root writes `config.json`,
+  metrics, summaries, checkpoints when enabled, and generated plots under that
+  root with no required run artifact written under the repository `outputs/`
+  directory.
 
 ## Assumptions
 
@@ -380,3 +410,6 @@ rollback frequency, throughput, and latency.
 - A standard public language-model evaluation runner can be selected during
   planning to improve comparability, but the specification does not require a
   particular tool.
+- The default output root is `outputs/`, but researchers may redirect outputs
+  to a larger filesystem for runs that would exceed repository filesystem space
+  or inode limits.
