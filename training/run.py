@@ -25,12 +25,15 @@ from training.data import (
 )
 from utils.config import resolve_run_config
 from utils.metrics import (
+    build_parameter_counts_by_granularity,
     build_run_summary,
+    build_scaling_result_rows,
     write_config_artifact,
     write_failed_run_summary,
     write_json_artifact,
     write_metrics_csv,
     write_run_summary,
+    write_scaling_results_csv,
 )
 
 
@@ -108,6 +111,16 @@ def run_training(
             output_dir,
         )
         metrics_path = write_metrics_csv(output_dir, metrics_rows)
+        parameter_counts_by_granularity = build_parameter_counts_by_granularity(
+            model,
+            config["model"]["granularities"],
+        )
+        scaling_rows = build_scaling_result_rows(
+            config,
+            metrics_rows,
+            parameter_counts_by_granularity,
+        )
+        scaling_path = write_scaling_results_csv(output_dir, scaling_rows)
 
         tokens_seen = max(
             row["tokens_seen"]
@@ -116,8 +129,10 @@ def run_training(
         )
         extra_summary_fields = {
             "metrics_path": str(metrics_path),
+            "scaling_results_path": str(scaling_path),
             "steps_completed": training["max_steps"],
             "granularities": config["model"]["granularities"],
+            "parameter_counts_by_granularity": parameter_counts_by_granularity,
         }
         if extraction_metadata_path is not None:
             extra_summary_fields["extraction_metadata_path"] = str(
@@ -135,8 +150,11 @@ def run_training(
         return {
             "config": config,
             "metrics_path": metrics_path,
+            "scaling_path": scaling_path,
             "summary_path": summary_path,
             "metrics_rows": metrics_rows,
+            "scaling_rows": scaling_rows,
+            "parameter_counts_by_granularity": parameter_counts_by_granularity,
         }
     except Exception as error:
         write_failed_run_summary(config, str(error), output_dir=output_dir)

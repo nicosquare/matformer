@@ -69,6 +69,7 @@ def test_configured_training_writes_metrics_config_and_summary(tmp_path):
 
     assert (output_dir / "config.json").exists()
     assert result["metrics_path"] == output_dir / "metrics.csv"
+    assert result["scaling_path"] == output_dir / "scaling_results.csv"
     assert result["summary_path"] == output_dir / "run_summary.json"
 
     with (output_dir / "metrics.csv").open("r", encoding="utf-8", newline="") as metrics_file:
@@ -86,10 +87,21 @@ def test_configured_training_writes_metrics_config_and_summary(tmp_path):
         "xl",
     ]
 
+    with (output_dir / "scaling_results.csv").open(
+        "r",
+        encoding="utf-8",
+        newline="",
+    ) as scaling_file:
+        scaling_rows = list(csv.DictReader(scaling_file))
+    assert [row["granularity"] for row in scaling_rows] == ["s", "m", "l", "xl"]
+    assert scaling_rows[0]["comparison_id"] == "debug-nested-001__s"
+    assert scaling_rows[0]["non_embedding_parameters"] == "1"
+
     summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
     assert summary["status"] == "completed"
     assert summary["steps_completed"] == 2
     assert summary["tokens_seen"] > 0
+    assert summary["scaling_results_path"] == str(output_dir / "scaling_results.csv")
 
 
 def test_baseline_match_records_mismatches_in_summary(tmp_path):
@@ -133,7 +145,14 @@ def test_debug_nested_with_one_baseline_path_updates_summary(tmp_path):
         output_dir = config["run"]["output_dir"]
         summary = build_run_summary(config, tokens_seen=1)
         summary_path = write_run_summary(output_dir, summary)
-        return {"summary_path": summary_path}
+        is_nested = config["run"]["model_family"] == "nested"
+        non_embedding_parameters = 100 if is_nested else 95
+        return {
+            "summary_path": summary_path,
+            "parameter_counts_by_granularity": {
+                "s": {"non_embedding_parameters": non_embedding_parameters}
+            },
+        }
 
     result = run_debug_nested_with_one_baseline(
         overrides=[f"run.output_root={output_root}"],
@@ -151,6 +170,8 @@ def test_debug_nested_with_one_baseline_path_updates_summary(tmp_path):
         summary["baseline_matches"][0]["standalone_run_id"]
         == "debug-standalone-s-001"
     )
+    assert summary["baseline_matches"][0]["non_embedding_parameters_nested"] == 100
+    assert summary["baseline_matches"][0]["non_embedding_parameters_standalone"] == 95
     assert summary["baseline_mismatch_notes"] == []
 
 

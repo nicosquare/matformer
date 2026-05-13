@@ -52,6 +52,14 @@ def run_debug_nested_with_one_baseline(
         nested_config,
         standalone_config,
         baseline_granularity,
+        nested_counts=_result_counts_for_granularity(
+            nested_result,
+            baseline_granularity,
+        ),
+        standalone_counts=_result_counts_for_granularity(
+            standalone_result,
+            baseline_granularity,
+        ),
     )
     nested_summary_path = write_baseline_matches_to_summary(
         nested_result["summary_path"],
@@ -231,6 +239,14 @@ def _non_embedding_count(counts: dict[str, int] | None):
     if counts is None:
         return None
     return counts.get("non_embedding_parameters")
+
+
+def _result_counts_for_granularity(
+    result: dict[str, Any],
+    granularity: str,
+) -> dict[str, int] | None:
+    counts_by_granularity = result.get("parameter_counts_by_granularity", {})
+    return counts_by_granularity.get(granularity)
 
 
 def parse_args(argv: list[str] | None = None):

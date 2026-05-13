@@ -209,6 +209,109 @@ def write_consistency_results_csv(
     )
 
 
+def build_parameter_counts_by_granularity(
+    model: Any,
+    granularities: Iterable[str],
+    trainable_only: bool = False,
+) -> dict[str, dict[str, int]]:
+    from utils.model_size import model_parameter_counts
+
+    return {
+        granularity: model_parameter_counts(
+            model,
+            trainable_only=trainable_only,
+            granularity=granularity,
+        )
+        for granularity in granularities
+    }
+
+
+def build_scaling_result_rows(
+    config: Mapping[str, Any],
+    metrics_rows: Iterable[Mapping[str, Any]],
+    parameter_counts_by_granularity: Mapping[str, Mapping[str, int]],
+    comparison_id_prefix: str | None = None,
+) -> list[dict[str, Any]]:
+    run = config["run"]
+    model = config["model"]
+    metrics_rows = list(metrics_rows)
+    latest_rows = latest_metric_rows_by_granularity(metrics_rows, split="validation")
+    if not latest_rows:
+        latest_rows = latest_metric_rows_by_granularity(metrics_rows, split="train")
+
+    rows = []
+    for granularity in model["granularities"]:
+        metric_row = latest_rows.get(granularity)
+        if metric_row is None:
+            raise ArtifactError(
+                "scaling_results.csv missing metric row for "
+                f"granularity={granularity}"
+            )
+
+        parameter_counts = parameter_counts_by_granularity.get(granularity)
+        if parameter_counts is None:
+            raise ArtifactError(
+                "scaling_results.csv missing parameter counts for "
+                f"granularity={granularity}"
+            )
+        _require_fields(
+            parameter_counts,
+            [
+                "total_parameters",
+                "embedding_parameters",
+                "lm_head_parameters",
+                "non_embedding_parameters",
+            ],
+            "scaling_results.csv",
+        )
+
+        comparison_id = f"{comparison_id_prefix or run['run_id']}__{granularity}"
+        rows.append(
+            {
+                "comparison_id": comparison_id,
+                "run_id": run["run_id"],
+                "model_family": run["model_family"],
+                "model_size_label": run["model_size_label"],
+                "completion_label": run["completion_label"],
+                "granularity": granularity,
+                "total_parameters": parameter_counts["total_parameters"],
+                "embedding_parameters": parameter_counts["embedding_parameters"],
+                "lm_head_parameters": parameter_counts["lm_head_parameters"],
+                "non_embedding_parameters": parameter_counts[
+                    "non_embedding_parameters"
+                ],
+                "loss": metric_row["loss"],
+                "perplexity": metric_row["perplexity"],
+                "average_downstream_accuracy": None,
+            }
+        )
+
+    return rows
+
+
+def latest_metric_rows_by_granularity(
+    metrics_rows: Iterable[Mapping[str, Any]],
+    split: str,
+) -> dict[str, Mapping[str, Any]]:
+    latest_rows: dict[str, tuple[int, int, Mapping[str, Any]]] = {}
+    for row_index, row in enumerate(metrics_rows):
+        if row.get("split") != split:
+            continue
+        granularity = row.get("granularity")
+        if granularity is None:
+            continue
+
+        row_key = (_int_value(row.get("step")), row_index)
+        current = latest_rows.get(str(granularity))
+        if current is None or row_key > current[:2]:
+            latest_rows[str(granularity)] = (*row_key, row)
+
+    return {
+        granularity: row_with_key[2]
+        for granularity, row_with_key in latest_rows.items()
+    }
+
+
 def write_json_artifact(path: str | Path, payload: Mapping[str, Any]) -> Path:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -260,3 +363,9 @@ def _require_fields(
     missing_fields = [field_name for field_name in required_fields if field_name not in row]
     if missing_fields:
         raise ArtifactError(f"{artifact_name} missing fields: {missing_fields}")
+
+
+def _int_value(value: Any) -> int:
+    if value in (None, ""):
+        return -1
+    return int(value)

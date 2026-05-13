@@ -84,8 +84,8 @@ least one baseline comparison artifact.
 - [X] T028 [US1] Add debug nested run values to `configs/debug_matrix.yaml`
 - [X] T029 [US1] Implement one matched standalone debug baseline path in `training/baselines.py`
 - [X] T030 [US1] Add nested-plus-one-baseline execution to `scripts/run_debug_matrix.sh`
-- [ ] T031 [US1] Generate debug metrics and scaling summary rows from nested and one baseline outputs in `utils/metrics.py`
-- [ ] T032 [US1] Document the P1 debug validation command in `specs/001-matformer-lm-reproduction/quickstart.md`
+- [X] T031 [US1] Generate debug metrics and scaling summary rows from nested and one baseline outputs in `utils/metrics.py`
+- [X] T032 [US1] Document the P1 debug validation command in `specs/001-matformer-lm-reproduction/quickstart.md`
 
 **Checkpoint**: User Story 1 is independently complete when
 `scripts/run_debug_matrix.sh` can produce one nested debug run, one matched

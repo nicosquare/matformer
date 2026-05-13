@@ -10,6 +10,7 @@ from utils.config import resolve_run_config
 from utils.metrics import (
     ArtifactError,
     build_run_summary,
+    build_scaling_result_rows,
     write_config_artifact,
     write_consistency_results_csv,
     write_failed_run_summary,
@@ -196,6 +197,64 @@ def test_write_all_csv_artifact_types(tmp_path):
         with artifact_path.open("r", encoding="utf-8", newline="") as artifact_file:
             rows = list(csv.DictReader(artifact_file))
         assert len(rows) == 1
+
+
+def test_build_scaling_rows_uses_latest_validation_metrics():
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+    )
+    metrics_rows = [
+        {
+            "run_id": "debug-nested-001",
+            "step": 1,
+            "split": "validation",
+            "model_family": "nested",
+            "model_size_label": "debug",
+            "granularity": "s",
+            "loss": 2.5,
+            "perplexity": 12.18,
+            "tokens_seen": 32,
+            "wall_clock_seconds": 1.0,
+            "tokens_per_second": 32.0,
+            "peak_memory_bytes": 0,
+        },
+        {
+            "run_id": "debug-nested-001",
+            "step": 2,
+            "split": "validation",
+            "model_family": "nested",
+            "model_size_label": "debug",
+            "granularity": "s",
+            "loss": 2.0,
+            "perplexity": 7.39,
+            "tokens_seen": 64,
+            "wall_clock_seconds": 2.0,
+            "tokens_per_second": 32.0,
+            "peak_memory_bytes": 0,
+        },
+    ]
+    for granularity in ["m", "l", "xl"]:
+        row = dict(metrics_rows[-1])
+        row["granularity"] = granularity
+        metrics_rows.append(row)
+
+    parameter_counts = {
+        granularity: {
+            "total_parameters": index * 1000,
+            "embedding_parameters": 100,
+            "lm_head_parameters": 100,
+            "non_embedding_parameters": index * 1000 - 200,
+        }
+        for index, granularity in enumerate(["s", "m", "l", "xl"], start=1)
+    }
+
+    rows = build_scaling_result_rows(config, metrics_rows, parameter_counts)
+
+    assert [row["granularity"] for row in rows] == ["s", "m", "l", "xl"]
+    assert rows[0]["comparison_id"] == "debug-nested-001__s"
+    assert rows[0]["loss"] == 2.0
+    assert rows[0]["non_embedding_parameters"] == 800
 
 
 def test_append_metrics_keeps_one_header(tmp_path):
