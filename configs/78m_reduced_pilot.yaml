@@ -7,7 +7,7 @@ run:
   model_size_label: 78m
   completion_label: reduced-token-pilot
   seed: 42
-  output_dir: outputs/78m-reduced-pilot-001
+  output_root: outputs
 
 model:
   base_model_name: 78m-paper-aligned

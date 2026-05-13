@@ -113,7 +113,7 @@ repository `outputs/` directory.
 - [X] T079 [P] Add runner smoke checks for `OUTPUT_ROOT` propagation and argument forwarding in `tests/test_debug_matrix.py`
 - [X] T080 Implement configurable output-root resolution, default `outputs/`, explicit `run.output_dir` escape hatch, and early writable-root validation in `utils/config.py`
 - [X] T081 Implement `OUTPUT_ROOT`, `--output-root`, and `--output-dir` support in `train.py`, `training/baselines.py`, and `scripts/run_debug_matrix.sh`
-- [ ] T082 Replace hardcoded output directories with output-root-compatible config values in `configs/78m_reduced_pilot.yaml`, `configs/consistency.yaml`, and `configs/speculative.yaml`
+- [X] T082 Replace hardcoded output directories with output-root-compatible config values in `configs/78m_reduced_pilot.yaml`, `configs/consistency.yaml`, and `configs/speculative.yaml`
 - [ ] T083 Document external output and Hugging Face cache environment variables in `README.md` and `specs/001-matformer-lm-reproduction/quickstart.md`
 - [ ] T084 Add external-output artifact smoke coverage proving required run artifacts stay under the configured root in `tests/test_training_smoke.py`
 

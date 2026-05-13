@@ -1,7 +1,8 @@
 # Speculative decoding alignment evaluation skeleton.
 run:
+  run_id: speculative-001
   phase_id: speculative
-  output_dir: outputs/speculative-001
+  output_root: outputs
 
 prompt_set:
   name: debug-prompts
@@ -25,5 +26,5 @@ metrics:
   - latency
 
 outputs:
-  task_results_csv: outputs/speculative-001/task_results.csv
-  run_summary_json: outputs/speculative-001/run_summary.json
+  task_results_csv: task_results.csv
+  run_summary_json: run_summary.json

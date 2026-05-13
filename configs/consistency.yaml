@@ -1,7 +1,8 @@
 # Consistency and mix-and-match evaluation skeleton.
 run:
+  run_id: consistency-001
   phase_id: consistency
-  output_dir: outputs/consistency-001
+  output_root: outputs
 
 inputs:
   nested_run_id: debug-nested-001
@@ -25,4 +26,4 @@ mix_and_match:
       layer_granularities: [xl, s, xl, s]
 
 outputs:
-  consistency_results_csv: outputs/consistency-001/consistency_results.csv
+  consistency_results_csv: consistency_results.csv
