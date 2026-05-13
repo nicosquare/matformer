@@ -154,6 +154,40 @@ def test_standalone_requires_one_granularity():
         validate_run_config(invalid)
 
 
+def test_debug_matrix_resolves_all_standalone_granularities():
+    expected = {
+        "debug-standalone-s-001": "s",
+        "debug-standalone-m-001": "m",
+        "debug-standalone-l-001": "l",
+        "debug-standalone-xl-001": "xl",
+    }
+
+    resolved_runs = resolve_all_run_configs("configs/debug_matrix.yaml")
+    by_run_id = {config["run"]["run_id"]: config for config in resolved_runs}
+
+    assert set(expected).issubset(by_run_id)
+    for run_id, granularity in expected.items():
+        resolved = by_run_id[run_id]
+        assert resolved["run"]["model_family"] == "standalone"
+        assert resolved["run"]["granularity"] == granularity
+        assert resolved["model"]["granularities"] == [granularity]
+        assert resolved["run"]["output_dir"] == f"outputs/{run_id}"
+        validate_run_config(resolved)
+
+
+def test_debug_standalone_granularity_must_match_model_granularities():
+    resolved = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-standalone-m-001",
+    )
+
+    invalid = copy.deepcopy(resolved)
+    invalid["model"]["granularities"] = ["s"]
+
+    with pytest.raises(ConfigError, match="exactly one matching granularity"):
+        validate_run_config(invalid)
+
+
 def test_matrix_output_root_override_derives_each_run_directory(tmp_path):
     output_root = tmp_path / "matrix-output"
 
@@ -223,3 +257,27 @@ def test_unwritable_output_root_fails_before_training(tmp_path):
             )
     finally:
         output_root.chmod(0o755)
+
+
+def test_78m_reduced_pilot_config_preserves_paper_alignment():
+    resolved = resolve_run_config("configs/78m_reduced_pilot.yaml")
+
+    assert resolved["run"]["model_size_label"] == "78m"
+    assert resolved["run"]["completion_label"] == "reduced-token-pilot"
+    assert resolved["model"]["paper_aligned"] is True
+    assert resolved["model"]["num_layers"] == 16
+    assert resolved["model"]["num_attention_heads"] == 16
+    assert resolved["model"]["context_length"] == 1024
+    assert resolved["model"]["vocab_size_assumption"] == 256000
+    assert resolved["training"]["token_budget"] < 10_000_000_000
+    validate_run_config(resolved)
+
+
+def test_78m_reduced_budget_rejects_paper_budget_complete_label():
+    resolved = resolve_run_config("configs/78m_reduced_pilot.yaml")
+
+    mislabeled = copy.deepcopy(resolved)
+    mislabeled["run"]["completion_label"] = "paper-budget-complete"
+
+    with pytest.raises(ConfigError, match="reduced-token-pilot"):
+        validate_run_config(mislabeled)

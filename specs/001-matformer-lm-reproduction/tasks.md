@@ -134,9 +134,9 @@ completion correctly.
 
 ### Verification for User Story 2
 
-- [ ] T033 [P] [US2] Add standalone granularity config validation checks in `tests/test_config.py`
-- [ ] T034 [P] [US2] Add baseline matching validation checks in `tests/test_baseline_matching.py`
-- [ ] T035 [P] [US2] Add 78M completion label checks in `tests/test_config.py`
+- [X] T033 [P] [US2] Add standalone granularity config validation checks in `tests/test_config.py`
+- [X] T034 [P] [US2] Add baseline matching validation checks in `tests/test_baseline_matching.py`
+- [X] T035 [P] [US2] Add 78M completion label checks in `tests/test_config.py`
 
 ### Implementation for User Story 2
 
