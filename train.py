@@ -30,6 +30,14 @@ def parse_args(argv=None):
     parser.add_argument("--config", help="YAML experiment config for the Spec Kit flow.")
     parser.add_argument("--run-id", help="Run id to select from a matrix config.")
     parser.add_argument(
+        "--output-root",
+        help="Root directory for config-driven run artifacts.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        help="Explicit output directory for one config-driven run.",
+    )
+    parser.add_argument(
         "--override",
         action="append",
         default=[],
@@ -244,10 +252,16 @@ def main():
     if args.config:
         from training.run import run_from_config_path
 
+        overrides = list(args.override)
+        output_root = args.output_root or os.environ.get("OUTPUT_ROOT")
+        if output_root:
+            overrides.append(f"run.output_root={output_root}")
+
         run_from_config_path(
             args.config,
             run_id=args.run_id,
-            overrides=args.override,
+            overrides=overrides,
+            output_dir=args.output_dir,
         )
         return
 

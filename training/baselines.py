@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
-from utils.config import resolve_all_run_configs
+from utils.config import resolve_all_run_configs, resolve_run_config
 from utils.metrics import write_json_artifact
 
 
@@ -34,6 +35,8 @@ def run_debug_nested_with_one_baseline(
     nested_run_id: str = DEFAULT_DEBUG_NESTED_RUN_ID,
     baseline_granularity: str = DEFAULT_DEBUG_BASELINE_GRANULARITY,
     overrides: Iterable[str] | None = None,
+    output_root: str | Path | None = None,
+    output_dir: str | Path | None = None,
     runner: RunCallable | None = None,
 ) -> dict[str, Any]:
     nested_config, standalone_config = resolve_debug_nested_baseline_configs(
@@ -41,6 +44,8 @@ def run_debug_nested_with_one_baseline(
         nested_run_id=nested_run_id,
         baseline_granularity=baseline_granularity,
         overrides=overrides,
+        output_root=output_root,
+        output_dir=output_dir,
     )
 
     if runner is None:
@@ -81,14 +86,35 @@ def resolve_debug_nested_baseline_configs(
     nested_run_id: str = DEFAULT_DEBUG_NESTED_RUN_ID,
     baseline_granularity: str = DEFAULT_DEBUG_BASELINE_GRANULARITY,
     overrides: Iterable[str] | None = None,
+    output_root: str | Path | None = None,
+    output_dir: str | Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    configs = resolve_all_run_configs(config_path, overrides=overrides)
-    nested_config = find_run_config(configs, nested_run_id, model_family="nested")
+    resolved_overrides = output_overrides(overrides, output_root)
+    configs = resolve_all_run_configs(config_path, overrides=resolved_overrides)
+    if output_dir is None:
+        nested_config = find_run_config(configs, nested_run_id, model_family="nested")
+    else:
+        nested_config = resolve_run_config(
+            config_path,
+            run_id=nested_run_id,
+            overrides=resolved_overrides,
+            output_dir=output_dir,
+        )
     standalone_config = find_standalone_baseline_config(
         configs,
         baseline_granularity,
     )
     return nested_config, standalone_config
+
+
+def output_overrides(
+    overrides: Iterable[str] | None,
+    output_root: str | Path | None,
+) -> list[str]:
+    resolved_overrides = list(overrides or [])
+    if output_root is not None:
+        resolved_overrides.append(f"run.output_root={output_root}")
+    return resolved_overrides
 
 
 def find_run_config(
@@ -267,6 +293,14 @@ def parse_args(argv: list[str] | None = None):
         help="Standalone baseline granularity to run.",
     )
     parser.add_argument(
+        "--output-root",
+        help="Root directory for all debug matrix run artifacts.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        help="Explicit output directory for the selected nested run.",
+    )
+    parser.add_argument(
         "--override",
         action="append",
         default=[],
@@ -282,6 +316,8 @@ def main(argv: list[str] | None = None) -> None:
         nested_run_id=args.nested_run_id,
         baseline_granularity=args.granularity,
         overrides=args.override,
+        output_root=args.output_root or os.environ.get("OUTPUT_ROOT"),
+        output_dir=args.output_dir,
     )
     print(result["nested_summary_path"])
 
