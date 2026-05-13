@@ -18,6 +18,17 @@ Install or activate an environment with:
 - pytest for focused smoke checks
 - EleutherAI LM Evaluation Harness before downstream evaluation
 
+For machines with restricted repository or home filesystem space, place run
+artifacts and Hugging Face caches on a larger filesystem before launching
+experiments:
+
+```bash
+export OUTPUT_ROOT=/mnt/experiments/matformer
+export HF_HOME=/mnt/experiments/hf-cache
+export HF_DATASETS_CACHE=/mnt/experiments/hf-cache/datasets
+export TRANSFORMERS_CACHE=/mnt/experiments/hf-cache/transformers
+```
+
 ## 2. Run Focused Smoke Checks
 
 ```bash
@@ -27,7 +38,7 @@ pytest tests/test_config.py tests/test_matformer_prefixes.py tests/test_artifact
 Expected result:
 - Configs resolve to explicit experiment concepts.
 - S/M/L/XL prefixes are valid and ordered.
-- Metrics/config artifacts can be written to `outputs/<run_id>/`.
+- Metrics/config artifacts can be written to `<output_root>/<run_id>/`.
 
 ## 3. Run P1 Debug Validation
 
@@ -41,7 +52,8 @@ Expected result:
   baseline is `s`; set `BASELINE_GRANULARITY=m`, `l`, or `xl` to run a
   different single baseline.
 - `metrics.csv`, `scaling_results.csv`, and `run_summary.json` are written for
-  the nested run and the matched standalone baseline under `outputs/`.
+  the nested run and the matched standalone baseline under the configured
+  output root.
 - The nested `run_summary.json` records the baseline match and any mismatch
   notes.
 
@@ -49,7 +61,15 @@ Useful local override example:
 
 ```bash
 PYTHON_BIN=/home/nicolas.avila/.conda/envs/elasticnn/bin/python \
+  OUTPUT_ROOT=/mnt/experiments/matformer \
   bash scripts/run_debug_matrix.sh --override training.max_steps=1
+```
+
+Equivalent config override form:
+
+```bash
+bash scripts/run_debug_matrix.sh \
+  --override run.output_root=/mnt/experiments/matformer
 ```
 
 The full S/M/L/XL standalone debug matrix is a Phase 4 extension.
@@ -57,7 +77,7 @@ The full S/M/L/XL standalone debug matrix is a Phase 4 extension.
 ## 4. Inspect Debug Outputs
 
 ```bash
-python scripts/make_figures.py --input outputs --output outputs/figures
+python scripts/make_figures.py --input "$OUTPUT_ROOT" --output "$OUTPUT_ROOT/figures"
 ```
 
 Check:
@@ -68,7 +88,7 @@ Check:
 ## 5. Run 78M Reduced-Token Pilot
 
 ```bash
-bash scripts/run_78m_pilot.sh
+OUTPUT_ROOT=/mnt/experiments/matformer bash scripts/run_78m_pilot.sh
 ```
 
 Expected result:

@@ -101,13 +101,18 @@ Represents one train/eval execution.
 - `granularity`: Required for standalone; optional or list-valued for nested.
 - `seed`: Optional integer.
 - `config_path`: Saved resolved config path.
+- `output_root`: Root directory for generated run artifacts; defaults to
+  `outputs` and may point outside the repository filesystem.
 - `output_dir`: Run artifact directory.
+- `explicit_output_dir`: Optional Boolean indicating that `output_dir` was
+  provided directly rather than derived from `output_root` and `run_id`.
 - `checkpoint_path`: Optional checkpoint path.
 - `status`: `planned`, `running`, `completed`, `failed`, or `superseded`.
 
 **Relationships**
 - Belongs to one `ReproductionPhase`.
 - Uses one `DatasetPlan`.
+- Uses one `StorageEnvironment`.
 - Produces many `MetricsArtifact` records.
 - May participate in one or more `BaselineMatch` records.
 
@@ -115,6 +120,30 @@ Represents one train/eval execution.
 - `planned -> running -> completed`
 - `planned -> running -> failed`
 - `completed -> superseded` when a corrected run replaces it.
+
+**Validation Rules**
+- When `explicit_output_dir` is false or absent, `output_dir` is
+  `<output_root>/<run_id>`.
+- The resolved output root must be writable before training starts.
+- A custom output root must keep required artifacts out of repository
+  `outputs/` unless the researcher explicitly chooses that location.
+
+## StorageEnvironment
+
+Captures filesystem and cache placement for an experiment run.
+
+**Fields**
+- `output_root`: Root directory for generated run artifacts.
+- `output_dir`: Resolved directory for a single run.
+- `hf_home`: Optional Hugging Face home/cache root from `HF_HOME`.
+- `hf_datasets_cache`: Optional dataset cache from `HF_DATASETS_CACHE`.
+- `transformers_cache`: Optional model cache from `TRANSFORMERS_CACHE`.
+
+**Validation Rules**
+- Missing output roots are created when possible.
+- Unwritable output roots fail before training or evaluation starts.
+- External caches are documented as environment variables and are not embedded
+  in run comparison semantics.
 
 ## BaselineMatch
 
@@ -167,6 +196,8 @@ Structured metrics written by runs and evaluations.
 
 **Validation Rules**
 - Required metrics must be written to CSV or JSON, not only terminal logs.
+- Artifact paths for a run must be rooted under that run's resolved
+  `output_dir` unless the researcher explicitly overrides a figure/report path.
 - Plotting scripts read these artifacts as their source of truth.
 
 ## FigureArtifact
@@ -181,3 +212,5 @@ Plots or reports generated from structured metrics.
 
 **Validation Rules**
 - Every figure must be reproducible from listed source artifacts.
+- Figure paths should live under the configured output root unless explicitly
+  overridden.

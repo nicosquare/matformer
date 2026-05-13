@@ -1,11 +1,13 @@
 # Contract: Run Artifacts
 
-Each completed run writes artifacts under `outputs/<run_id>/`.
+Each completed run writes artifacts under `<output_root>/<run_id>/`.
+`output_root` defaults to repository-local `outputs/`, but may point outside
+the repository filesystem.
 
 ## Directory Layout
 
 ```text
-outputs/<run_id>/
+<output_root>/<run_id>/
 ├── config.json
 ├── run_summary.json
 ├── metrics.csv
@@ -22,6 +24,11 @@ outputs/<run_id>/
 
 Only artifacts relevant to the run phase are required. For example, a pure
 validation run may omit `task_results.csv` and `consistency_results.csv`.
+
+No required run artifact may be written under repository `outputs/` when the
+researcher configures a different output root. Generated figure directories
+should also live under the configured root unless the researcher explicitly
+chooses another path.
 
 ## `metrics.csv`
 
@@ -72,6 +79,8 @@ Required fields:
   "tokens_seen": 1000000,
   "seed": 42,
   "status": "completed",
+  "output_root": "/mnt/experiments/matformer",
+  "output_dir": "/mnt/experiments/matformer/debug-nested-001",
   "paper_aligned": false,
   "notes": []
 }
@@ -80,6 +89,8 @@ Required fields:
 ## Validation Rules
 
 - Required scalar metrics must appear in CSV or JSON artifacts, not only logs.
+- `config.json`, CSV metrics, summaries, checkpoints, and generated plots must
+  be rooted under the configured output root unless explicitly overridden.
 - Plot files must list their source CSV files in `run_summary.json` or a report.
 - Any baseline mismatch must be recorded in `run_summary.json`.
 - A failed run may omit metrics, but must write a `run_summary.json` with

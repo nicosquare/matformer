@@ -24,8 +24,11 @@ for Llama model/config/tokenizer primitives, Hugging Face Datasets for public
 text datasets, pandas or Python CSV/JSON for summaries, matplotlib for plots,
 and EleutherAI LM Evaluation Harness for downstream tasks once downstream
 evaluation begins.  
-**Storage**: Local filesystem outputs under `outputs/<run_id>/`, plus optional
-checkpoint directories for model extraction/resume/inspection.  
+**Storage**: Configurable filesystem outputs under `<output_root>/<run_id>/`,
+defaulting to `outputs/<run_id>/`, plus optional checkpoint directories for
+model extraction/resume/inspection. Runners must allow the output root to live
+outside the repository filesystem for machines with restricted local space or
+inode quotas.
 **Testing**: Focused smoke checks and lightweight pytest-style tests for
 configuration parsing, FFN prefix slicing, non-embedding parameter counting,
 artifact writing, and small debug runs. Quickstart commands provide manual
@@ -45,15 +48,15 @@ SlimPajama, and C4 candidates for larger phases. Exact paper data is
 proprietary and out of scope.  
 **Configuration Inputs**: Simple YAML files plus CLI overrides for phase,
 model family, granularity, model size label, architecture scale, dataset,
-token budget, seed, run id, output directory, checkpoint policy, and evaluation
-suite.  
+token budget, seed, run id, output root, optional explicit output directory,
+checkpoint policy, and evaluation suite.
 **Experiment Outputs**: `config.json`, `metrics.csv`, `task_results.csv`,
 `scaling_results.csv`, `consistency_results.csv`, `run_summary.json`, plots,
 and checkpoints when needed.  
 **Reproducibility Notes**: Save resolved config for every run, log seeds when
-set, record dataset identity/preprocessing assumptions, label reduced-token
-pilots separately from paper-budget complete runs, and link every plot point
-back to run artifacts.  
+set, record dataset identity/preprocessing assumptions, record the resolved
+output root and output directory, label reduced-token pilots separately from
+paper-budget complete runs, and link every plot point back to run artifacts.
 **Performance Goals**: Debug matrix completes quickly enough for iteration;
 78M path records tokens/sec, wall-clock time, estimated compute when available,
 and peak memory. The reproduction prioritizes trend fidelity over exact
@@ -61,7 +64,9 @@ numbers.
 **Constraints**: Current default Python environment lacks ML dependencies;
 proprietary training data is unavailable; compute may not cover full 78M/10B or
 larger budgets; paper-aligned runs must preserve 16 layers, 16 heads, context
-1024, and 256k vocabulary assumption unless labeled non-paper-aligned.  
+1024, and 256k vocabulary assumption unless labeled non-paper-aligned.
+Repository-local storage may have restricted space or inode capacity, so run
+artifacts and optional caches must be redirectable before larger phases begin.
 **Scale/Scope**: Required first implementation scope is debug-size nested plus
 S/M/L/XL standalone matrix. Next scope is 78M paper-aligned architecture with
 reduced-token pilot support and explicit 78M/10B completion label.
@@ -135,7 +140,7 @@ scripts/
 ├── run_debug_matrix.sh
 ├── run_78m_pilot.sh
 └── make_figures.py
-outputs/
+<output_root>/
 └── <run_id>/
 tests/
 ├── test_config.py
@@ -148,6 +153,23 @@ tests/
 path readable from `train.py` or `training/run.py`, and only split repeated,
 stable concerns into small files. Do not introduce registries, factories, or
 deep package hierarchies.
+
+## Output Storage and Cache Policy
+
+`run.output_root` is the preferred storage control. It defaults to `outputs/`
+and each run resolves `run.output_dir` to `<output_root>/<run_id>`. A direct
+`run.output_dir` value remains an explicit escape hatch for one-off runs, but
+matrix runners should prefer output-root derivation so all runs in a matrix can
+move together.
+
+Researcher-facing commands must accept output-root control through config,
+CLI arguments, and `OUTPUT_ROOT`. Runners should create a missing output root
+when possible and fail before training if the resolved root is not writable.
+
+External dependency caches are separate from run artifacts. Documentation and
+runner guidance should tell researchers to move Hugging Face caches with
+`HF_HOME`, `HF_DATASETS_CACHE`, and `TRANSFORMERS_CACHE` when repository or
+home filesystems have limited space or inodes.
 
 ## Complexity Tracking
 

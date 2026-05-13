@@ -105,10 +105,10 @@ confirm nested and standalone run artifacts are created under
 `<output_root>/<run_id>/`, while no required run artifact is written under the
 repository `outputs/` directory.
 
-- [ ] T074 Update storage, configuration, and cache constraints in `specs/001-matformer-lm-reproduction/plan.md`
-- [ ] T075 [P] Update `run.output_root`, derived `run.output_dir`, explicit output-dir override, and external cache expectations in `specs/001-matformer-lm-reproduction/contracts/experiment-config.md`
-- [ ] T076 [P] Update `OUTPUT_ROOT`, output-root argument behavior, and `<output_root>/<run_id>` artifact layout in `specs/001-matformer-lm-reproduction/contracts/cli.md` and `specs/001-matformer-lm-reproduction/contracts/run-artifacts.md`
-- [ ] T077 [P] Add output root and external cache fields or notes to `specs/001-matformer-lm-reproduction/data-model.md` and `specs/001-matformer-lm-reproduction/quickstart.md`
+- [X] T074 Update storage, configuration, and cache constraints in `specs/001-matformer-lm-reproduction/plan.md`
+- [X] T075 [P] Update `run.output_root`, derived `run.output_dir`, explicit output-dir override, and external cache expectations in `specs/001-matformer-lm-reproduction/contracts/experiment-config.md`
+- [X] T076 [P] Update `OUTPUT_ROOT`, output-root argument behavior, and `<output_root>/<run_id>` artifact layout in `specs/001-matformer-lm-reproduction/contracts/cli.md` and `specs/001-matformer-lm-reproduction/contracts/run-artifacts.md`
+- [X] T077 [P] Add output root and external cache fields or notes to `specs/001-matformer-lm-reproduction/data-model.md` and `specs/001-matformer-lm-reproduction/quickstart.md`
 - [ ] T078 [P] Add output root config resolution checks for matrix runs, single-run configs, explicit output-dir overrides, and unwritable roots in `tests/test_config.py`
 - [ ] T079 [P] Add runner smoke checks for `OUTPUT_ROOT` propagation and argument forwarding in `tests/test_debug_matrix.py`
 - [ ] T080 Implement configurable output-root resolution, default `outputs/`, explicit `run.output_dir` escape hatch, and early writable-root validation in `utils/config.py`
