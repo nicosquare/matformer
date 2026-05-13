@@ -94,6 +94,34 @@ standalone baseline comparison, `metrics.csv`, `scaling_results.csv`, and
 
 ---
 
+## Phase 3.5: Output Storage Configuration (Cross-Cutting Blocker)
+
+**Purpose**: Update the design artifacts and shared run plumbing so every
+future phase can write experiment outputs outside the repository filesystem and
+use external cache locations when local space or inodes are constrained.
+
+**Independent Test**: Run a debug matrix command with a custom output root and
+confirm nested and standalone run artifacts are created under
+`<output_root>/<run_id>/`, while no required run artifact is written under the
+repository `outputs/` directory.
+
+- [ ] T074 Update storage, configuration, and cache constraints in `specs/001-matformer-lm-reproduction/plan.md`
+- [ ] T075 [P] Update `run.output_root`, derived `run.output_dir`, explicit output-dir override, and external cache expectations in `specs/001-matformer-lm-reproduction/contracts/experiment-config.md`
+- [ ] T076 [P] Update `OUTPUT_ROOT`, output-root argument behavior, and `<output_root>/<run_id>` artifact layout in `specs/001-matformer-lm-reproduction/contracts/cli.md` and `specs/001-matformer-lm-reproduction/contracts/run-artifacts.md`
+- [ ] T077 [P] Add output root and external cache fields or notes to `specs/001-matformer-lm-reproduction/data-model.md` and `specs/001-matformer-lm-reproduction/quickstart.md`
+- [ ] T078 [P] Add output root config resolution checks for matrix runs, single-run configs, explicit output-dir overrides, and unwritable roots in `tests/test_config.py`
+- [ ] T079 [P] Add runner smoke checks for `OUTPUT_ROOT` propagation and argument forwarding in `tests/test_debug_matrix.py`
+- [ ] T080 Implement configurable output-root resolution, default `outputs/`, explicit `run.output_dir` escape hatch, and early writable-root validation in `utils/config.py`
+- [ ] T081 Implement `OUTPUT_ROOT`, `--output-root`, and `--output-dir` support in `train.py`, `training/baselines.py`, and `scripts/run_debug_matrix.sh`
+- [ ] T082 Replace hardcoded output directories with output-root-compatible config values in `configs/78m_reduced_pilot.yaml`, `configs/consistency.yaml`, and `configs/speculative.yaml`
+- [ ] T083 Document external output and Hugging Face cache environment variables in `README.md` and `specs/001-matformer-lm-reproduction/quickstart.md`
+- [ ] T084 Add external-output artifact smoke coverage proving required run artifacts stay under the configured root in `tests/test_training_smoke.py`
+
+**Checkpoint**: Phase 4 may start only after runner commands and configs can
+redirect outputs and caches away from the repository filesystem.
+
+---
+
 ## Phase 4: User Story 2 - Compare Against Standalone Baselines (Priority: P2)
 
 **Goal**: Complete matched S/M/L/XL standalone baseline coverage for the
@@ -233,7 +261,8 @@ all completed stories.
 - **Setup (Phase 1)**: No dependencies.
 - **Foundational (Phase 2)**: Depends on Setup; blocks all user stories.
 - **US1 (Phase 3)**: Depends on Foundational.
-- **US2 (Phase 4)**: Depends on US1 for shared nested run and at least one baseline path.
+- **Output Storage (Phase 3.5)**: Depends on US1; blocks US2 and all larger runs.
+- **US2 (Phase 4)**: Depends on US1 and Output Storage for shared nested run, at least one baseline path, and external output control.
 - **US3 (Phase 5)**: Depends on US2 for matched baseline matrix and 78M pilot labeling.
 - **US4 (Phase 6)**: Depends on US2 for extracted nested and standalone comparisons.
 - **US5 (Phase 7)**: Depends on US4 for alignment artifacts and model-pair conventions.
@@ -242,6 +271,7 @@ all completed stories.
 ### User Story Dependencies
 
 - **US1**: MVP; validates nested training and one baseline comparison.
+- **Output Storage**: Cross-cutting blocker that preserves repository disk and inode capacity before larger Phase 4+ runs.
 - **US2**: Extends US1 to full debug S/M/L/XL standalone matrix and 78M pilot labeling.
 - **US3**: Adds scaling and downstream trend reporting after baseline matrix exists.
 - **US4**: Adds consistency and mix-and-match evaluation after matched runs exist.
@@ -261,6 +291,8 @@ all completed stories.
 - Setup config skeletons T003-T008 can run in parallel.
 - Foundational tests T010, T012, T014, and T016 can run in parallel after their target APIs are sketched.
 - US1 verification tasks T023-T025 can run in parallel.
+- Output storage contract updates T075-T077 can run in parallel after T074 is understood.
+- Output storage tests T078-T079 can run in parallel before T080-T081 implementation.
 - US2 verification tasks T033-T035 can run in parallel.
 - US3 verification tasks T044-T045 can run in parallel.
 - US4 verification tasks T052-T053 can run in parallel.
@@ -315,19 +347,22 @@ Task: "T061 Add prompt-set pairing checks in tests/test_speculative.py"
 1. Complete Phase 1 setup.
 2. Complete Phase 2 foundational config, metrics, model-size, data, and training plumbing.
 3. Complete Phase 3 User Story 1.
-4. Stop and validate: run debug nested training plus one matched baseline comparison.
+4. Complete Phase 3.5 output storage configuration before any larger run.
+5. Stop and validate: run debug nested training plus one matched baseline comparison with a custom output root.
 
 ### Incremental Delivery
 
 1. US1 validates the visible nested training flow and first comparison.
-2. US2 completes the debug-size S/M/L/XL baseline matrix and 78M pilot label path.
-3. US3 adds scaling/downstream reporting from structured artifacts.
-4. US4 adds consistency and elastic behavior analysis.
-5. US5 adds speculative decoding alignment.
+2. Output Storage makes every later runner safe for filesystems with restricted space or inodes.
+3. US2 completes the debug-size S/M/L/XL baseline matrix and 78M pilot label path.
+4. US3 adds scaling/downstream reporting from structured artifacts.
+5. US4 adds consistency and elastic behavior analysis.
+6. US5 adds speculative decoding alignment.
 
 ### Validation Gates
 
 - Before US1 completion: `metrics.csv`, `scaling_results.csv`, and `run_summary.json` exist for nested and one baseline run.
+- Before US2 start: custom output root runs place required artifacts under `<output_root>/<run_id>/` and avoid repository `outputs/`.
 - Before US2 completion: S/M/L/XL debug standalone baselines exist and 78M reduced-token pilot labels are correct.
 - Before US3 completion: plots derive from CSV files only.
 - Before US4 completion: consistency metrics distinguish nested and standalone sources.
