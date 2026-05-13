@@ -41,8 +41,8 @@ plumbing that every user story needs.
 
 **CRITICAL**: No user story work can begin until this phase is complete.
 
-- [ ] T009 Implement YAML loading, CLI override merging, and resolved config writing in `utils/config.py`
-- [ ] T010 [P] Add config validation smoke checks in `tests/test_config.py`
+- [X] T009 Implement YAML loading, CLI override merging, and resolved config writing in `utils/config.py`
+- [X] T010 [P] Add config validation smoke checks in `tests/test_config.py`
 - [ ] T011 Implement CSV/JSON artifact writers for config, metrics, summaries, and failed-run summaries in `utils/metrics.py`
 - [ ] T012 [P] Add artifact writer smoke checks in `tests/test_artifacts.py`
 - [ ] T013 Implement non-embedding parameter counting in `utils/model_size.py`
