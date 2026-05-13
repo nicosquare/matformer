@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -91,7 +92,7 @@ def resolve_run_config(
     if output_dir is not None:
         resolved["run"]["output_dir"] = str(output_dir)
 
-    _ensure_output_dir(resolved)
+    _resolve_output_paths(resolved)
     validate_run_config(resolved)
     return resolved
 
@@ -104,7 +105,7 @@ def resolve_all_run_configs(
 
     if "matrix" not in config:
         resolved = _compose_single_run(config)
-        _ensure_output_dir(resolved)
+        _resolve_output_paths(resolved)
         validate_run_config(resolved)
         return [resolved]
 
@@ -117,7 +118,7 @@ def resolve_all_run_configs(
     resolved_runs = []
     for run_entry in runs:
         resolved = _compose_matrix_run(config, run_entry)
-        _ensure_output_dir(resolved)
+        _resolve_output_paths(resolved)
         validate_run_config(resolved)
         resolved_runs.append(resolved)
 
@@ -160,6 +161,7 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "model_family",
             "model_size_label",
             "completion_label",
+            "output_root",
             "output_dir",
         ],
     )
@@ -299,11 +301,44 @@ def _apply_run_granularities(config: dict[str, Any]) -> None:
         model["granularities"] = list(run["granularities"])
 
 
-def _ensure_output_dir(config: dict[str, Any]) -> None:
+def _resolve_output_paths(config: dict[str, Any]) -> None:
     run = config.setdefault("run", {})
-    if "output_dir" not in run and "run_id" in run:
-        output_root = run.get("output_root", "outputs")
-        run["output_dir"] = str(Path(str(output_root)) / str(run["run_id"]))
+    if "run_id" not in run:
+        return
+
+    explicit_output_dir = "output_dir" in run
+    output_dir = Path(str(run["output_dir"])) if explicit_output_dir else None
+
+    if "output_root" in run:
+        output_root = Path(str(run["output_root"]))
+    elif output_dir is not None:
+        output_root = output_dir.parent
+    else:
+        output_root = Path("outputs")
+
+    run["output_root"] = str(output_root)
+    if output_dir is None:
+        output_dir = output_root / str(run["run_id"])
+    run["output_dir"] = str(output_dir)
+    run["explicit_output_dir"] = explicit_output_dir
+
+    _ensure_writable_directory(output_root, "output root")
+    if explicit_output_dir:
+        _ensure_writable_directory(output_dir.parent, "output directory parent")
+
+
+def _ensure_writable_directory(path: Path, label: str) -> None:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise ConfigError(f"Cannot create {label} {path}: {error}") from error
+
+    if not path.is_dir():
+        raise ConfigError(f"Resolved {label} is not a directory: {path}")
+
+    mode_allows_write = bool(path.stat().st_mode & 0o222)
+    if not mode_allows_write or not os.access(path, os.W_OK):
+        raise ConfigError(f"Resolved {label} is not writable: {path}")
 
 
 def _set_dotted_value(config: dict[str, Any], key: str, value: Any) -> None:
