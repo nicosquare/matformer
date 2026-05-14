@@ -140,11 +140,11 @@ completion correctly.
 
 ### Implementation for User Story 2
 
-- [ ] T036 [US2] Implement standalone fixed-width model configuration path in `training/baselines.py`
-- [ ] T037 [US2] Add standalone S, M, L, and XL entries to `configs/debug_matrix.yaml`
-- [ ] T038 [US2] Extend `scripts/run_debug_matrix.sh` to run nested plus S/M/L/XL standalone debug matrix
-- [ ] T039 [US2] Implement baseline match records with mismatch notes in `training/baselines.py`
-- [ ] T040 [US2] Emit matched baseline rows with non-embedding parameters in `utils/metrics.py`
+- [X] T036 [US2] Implement standalone fixed-width model configuration path in `training/baselines.py`
+- [X] T037 [US2] Add standalone S, M, L, and XL entries to `configs/debug_matrix.yaml`
+- [X] T038 [US2] Extend `scripts/run_debug_matrix.sh` to run nested plus S/M/L/XL standalone debug matrix
+- [X] T039 [US2] Implement baseline match records with mismatch notes in `training/baselines.py`
+- [X] T040 [US2] Emit matched baseline rows with non-embedding parameters in `utils/metrics.py`
 - [ ] T041 [US2] Add paper-aligned 78M reduced-token pilot values to `configs/78m_reduced_pilot.yaml`
 - [ ] T042 [US2] Implement `scripts/run_78m_pilot.sh` with reduced-token pilot labeling
 - [ ] T043 [US2] Update 78M pilot instructions in `specs/001-matformer-lm-reproduction/quickstart.md`

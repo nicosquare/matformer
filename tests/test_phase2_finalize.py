@@ -11,6 +11,7 @@ from training.baselines import (
     add_baseline_notes_to_summary,
     build_baseline_match_record,
     compare_baseline_configs,
+    run_debug_nested_with_baselines,
     run_debug_nested_with_one_baseline,
 )
 from training.run import run_training
@@ -172,6 +173,66 @@ def test_debug_nested_with_one_baseline_path_updates_summary(tmp_path):
     )
     assert summary["baseline_matches"][0]["non_embedding_parameters_nested"] == 100
     assert summary["baseline_matches"][0]["non_embedding_parameters_standalone"] == 95
+    assert summary["baseline_mismatch_notes"] == []
+
+
+def test_debug_nested_with_all_baselines_updates_summary(tmp_path):
+    output_root = tmp_path / "outputs"
+    called_run_ids = []
+
+    def fake_runner(config):
+        called_run_ids.append(config["run"]["run_id"])
+        output_dir = config["run"]["output_dir"]
+        summary = build_run_summary(config, tokens_seen=1)
+        summary_path = write_run_summary(output_dir, summary)
+        granularity = config["model"]["granularities"][0]
+        if config["run"]["model_family"] == "nested":
+            parameter_counts = {
+                granularity: {"non_embedding_parameters": index * 100}
+                for index, granularity in enumerate(["s", "m", "l", "xl"], start=1)
+            }
+        else:
+            parameter_counts = {
+                granularity: {"non_embedding_parameters": 95}
+            }
+        return {
+            "summary_path": summary_path,
+            "parameter_counts_by_granularity": parameter_counts,
+        }
+
+    result = run_debug_nested_with_baselines(
+        overrides=[f"run.output_root={output_root}"],
+        runner=fake_runner,
+    )
+
+    assert called_run_ids == [
+        "debug-nested-001",
+        "debug-standalone-s-001",
+        "debug-standalone-m-001",
+        "debug-standalone-l-001",
+        "debug-standalone-xl-001",
+    ]
+    assert [
+        config["run"]["granularity"]
+        for config in result["standalone_configs"]
+    ] == ["s", "m", "l", "xl"]
+
+    summary = json.loads(
+        result["nested_summary_path"].read_text(encoding="utf-8")
+    )
+    assert [
+        record["standalone_run_id"]
+        for record in summary["baseline_matches"]
+    ] == [
+        "debug-standalone-s-001",
+        "debug-standalone-m-001",
+        "debug-standalone-l-001",
+        "debug-standalone-xl-001",
+    ]
+    assert [
+        record["non_embedding_parameters_nested"]
+        for record in summary["baseline_matches"]
+    ] == [100, 200, 300, 400]
     assert summary["baseline_mismatch_notes"] == []
 
 

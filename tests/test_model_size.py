@@ -1,7 +1,9 @@
 import torch.nn as nn
-from transformers import LlamaConfig
+from transformers import LlamaConfig, LlamaForCausalLM
 
 from modified_llama import ModifiedLlamaForCausalLM
+from training.run import build_model
+from utils.config import resolve_run_config
 from utils.model_size import (
     count_embedding_parameters,
     count_lm_head_parameters,
@@ -76,3 +78,17 @@ def test_matformer_active_prefix_counts_are_granularity_specific():
     assert s_counts["embedding_parameters"] == full_counts["embedding_parameters"]
     assert s_counts["lm_head_parameters"] == full_counts["lm_head_parameters"]
     assert s_counts["non_embedding_parameters"] < xl_counts["non_embedding_parameters"]
+
+
+def test_standalone_model_builds_fixed_width_llama_baseline():
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-standalone-s-001",
+    )
+
+    model = build_model(config)
+
+    assert isinstance(model, LlamaForCausalLM)
+    assert not isinstance(model, ModifiedLlamaForCausalLM)
+    assert model.config.intermediate_size == 64
+    assert not hasattr(model, "configure_subnetwork")

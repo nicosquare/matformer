@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from transformers import AutoTokenizer, LlamaConfig, get_scheduler
+from transformers import AutoTokenizer, LlamaConfig, LlamaForCausalLM, get_scheduler
 
 from evaluation.validation import (
     configure_model_granularity,
@@ -163,6 +163,8 @@ def run_training(
 
 def build_model(config: dict[str, Any]):
     llama_config = build_llama_config(config)
+    if config["run"]["model_family"] == "standalone":
+        return LlamaForCausalLM(llama_config)
     return ModifiedLlamaForCausalLM(llama_config)
 
 

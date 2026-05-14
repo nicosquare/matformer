@@ -33,7 +33,9 @@ def configure_model_granularity(model, granularity: str | None) -> None:
         return
 
     target = model.module if hasattr(model, "module") else model
-    target.configure_subnetwork(granularity)
+    configure_subnetwork = getattr(target, "configure_subnetwork", None)
+    if configure_subnetwork is not None:
+        configure_subnetwork(granularity)
 
 
 def evaluate_validation_loss(

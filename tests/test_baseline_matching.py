@@ -5,6 +5,7 @@ from training.baselines import (
     build_baseline_match_record,
 )
 from utils.config import resolve_run_config
+from utils.metrics import build_baseline_match_row
 
 
 def _debug_nested_config():
@@ -109,3 +110,18 @@ def test_baseline_summary_collects_prefixed_mismatch_notes():
         "debug-nested-001__debug-standalone-m-001__m: "
         "dataset phase mismatch: nested=debug, standalone=medium",
     ]
+
+
+def test_baseline_match_row_includes_non_embedding_parameter_counts():
+    row = build_baseline_match_row(
+        _debug_nested_config(),
+        _debug_standalone_config("xl"),
+        "xl",
+        nested_counts={"non_embedding_parameters": 400},
+        standalone_counts={"non_embedding_parameters": 395},
+    )
+
+    assert row["match_id"] == "debug-nested-001__debug-standalone-xl-001__xl"
+    assert row["non_embedding_parameters_nested"] == 400
+    assert row["non_embedding_parameters_standalone"] == 395
+    assert row["match_notes"] == []

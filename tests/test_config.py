@@ -156,21 +156,23 @@ def test_standalone_requires_one_granularity():
 
 def test_debug_matrix_resolves_all_standalone_granularities():
     expected = {
-        "debug-standalone-s-001": "s",
-        "debug-standalone-m-001": "m",
-        "debug-standalone-l-001": "l",
-        "debug-standalone-xl-001": "xl",
+        "debug-standalone-s-001": ("s", 64),
+        "debug-standalone-m-001": ("m", 128),
+        "debug-standalone-l-001": ("l", 256),
+        "debug-standalone-xl-001": ("xl", 512),
     }
 
     resolved_runs = resolve_all_run_configs("configs/debug_matrix.yaml")
     by_run_id = {config["run"]["run_id"]: config for config in resolved_runs}
 
     assert set(expected).issubset(by_run_id)
-    for run_id, granularity in expected.items():
+    for run_id, (granularity, intermediate_size) in expected.items():
         resolved = by_run_id[run_id]
         assert resolved["run"]["model_family"] == "standalone"
         assert resolved["run"]["granularity"] == granularity
         assert resolved["model"]["granularities"] == [granularity]
+        assert resolved["model"]["intermediate_size"] == intermediate_size
+        assert resolved["model"]["matformer_source_intermediate_size"] == 512
         assert resolved["run"]["output_dir"] == f"outputs/{run_id}"
         validate_run_config(resolved)
 

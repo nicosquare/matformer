@@ -46,6 +46,10 @@ def _has_arg_pair(args, flag, value):
     )
 
 
+def _has_arg(args, flag):
+    return flag in args
+
+
 def test_debug_nested_run_resolves_phase3_p1_contract(tmp_path):
     output_dir = tmp_path / "debug-nested-001"
 
@@ -96,8 +100,20 @@ def test_debug_matrix_runner_propagates_output_root_env(tmp_path):
     assert args[:2] == ["-m", "training.baselines"]
     assert _has_arg_pair(args, "--config", "configs/debug_matrix.yaml")
     assert _has_arg_pair(args, "--nested-run-id", "debug-nested-001")
-    assert _has_arg_pair(args, "--granularity", "s")
+    assert not _has_arg(args, "--granularity")
     assert _has_arg_pair(args, "--output-root", str(output_root))
+    assert _has_arg_pair(args, "--override", "training.max_steps=1")
+
+
+def test_debug_matrix_runner_can_select_baseline_granularities(tmp_path):
+    args = _capture_debug_matrix_invocation(
+        tmp_path,
+        ["--override", "training.max_steps=1"],
+        env_updates={"BASELINE_GRANULARITIES": "m,xl"},
+    )
+
+    assert _has_arg_pair(args, "--granularity", "m")
+    assert _has_arg_pair(args, "--granularity", "xl")
     assert _has_arg_pair(args, "--override", "training.max_steps=1")
 
 

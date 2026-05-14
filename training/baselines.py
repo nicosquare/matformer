@@ -10,7 +10,11 @@ from pathlib import Path
 from typing import Any
 
 from utils.config import resolve_all_run_configs, resolve_run_config
-from utils.metrics import write_json_artifact
+from utils.metrics import (
+    baseline_match_id as metrics_baseline_match_id,
+    build_baseline_match_row,
+    write_json_artifact,
+)
 
 
 BASELINE_MATCH_FIELDS = [
@@ -26,6 +30,7 @@ BASELINE_MATCH_FIELDS = [
 DEBUG_MATRIX_CONFIG = Path("configs/debug_matrix.yaml")
 DEFAULT_DEBUG_NESTED_RUN_ID = "debug-nested-001"
 DEFAULT_DEBUG_BASELINE_GRANULARITY = "s"
+DEFAULT_DEBUG_BASELINE_GRANULARITIES = ("s", "m", "l", "xl")
 
 RunCallable = Callable[[dict[str, Any]], dict[str, Any]]
 
@@ -39,10 +44,39 @@ def run_debug_nested_with_one_baseline(
     output_dir: str | Path | None = None,
     runner: RunCallable | None = None,
 ) -> dict[str, Any]:
-    nested_config, standalone_config = resolve_debug_nested_baseline_configs(
+    result = run_debug_nested_with_baselines(
         config_path=config_path,
         nested_run_id=nested_run_id,
-        baseline_granularity=baseline_granularity,
+        baseline_granularities=[baseline_granularity],
+        overrides=overrides,
+        output_root=output_root,
+        output_dir=output_dir,
+        runner=runner,
+    )
+
+    return {
+        **result,
+        "standalone_config": result["standalone_configs"][0],
+        "standalone_result": result["standalone_results"][0],
+    }
+
+
+def run_debug_nested_with_baselines(
+    config_path: str | Path = DEBUG_MATRIX_CONFIG,
+    nested_run_id: str = DEFAULT_DEBUG_NESTED_RUN_ID,
+    baseline_granularities: Iterable[str] | None = None,
+    overrides: Iterable[str] | None = None,
+    output_root: str | Path | None = None,
+    output_dir: str | Path | None = None,
+    runner: RunCallable | None = None,
+) -> dict[str, Any]:
+    baseline_granularities = normalize_baseline_granularities(
+        baseline_granularities,
+    )
+    nested_config, standalone_configs = resolve_debug_nested_baseline_matrix_configs(
+        config_path=config_path,
+        nested_run_id=nested_run_id,
+        baseline_granularities=baseline_granularities,
         overrides=overrides,
         output_root=output_root,
         output_dir=output_dir,
@@ -52,31 +86,39 @@ def run_debug_nested_with_one_baseline(
         runner = run_training_config
 
     nested_result = runner(nested_config)
-    standalone_result = runner(standalone_config)
-    baseline_match_record = build_baseline_match_record(
-        nested_config,
-        standalone_config,
-        baseline_granularity,
-        nested_counts=_result_counts_for_granularity(
-            nested_result,
-            baseline_granularity,
-        ),
-        standalone_counts=_result_counts_for_granularity(
-            standalone_result,
-            baseline_granularity,
-        ),
-    )
+    standalone_results = []
+    baseline_match_records = []
+    for standalone_config in standalone_configs:
+        granularity = standalone_config["run"]["granularity"]
+        standalone_result = runner(standalone_config)
+        standalone_results.append(standalone_result)
+        baseline_match_records.append(
+            build_baseline_match_record(
+                nested_config,
+                standalone_config,
+                granularity,
+                nested_counts=_result_counts_for_granularity(
+                    nested_result,
+                    granularity,
+                ),
+                standalone_counts=_result_counts_for_granularity(
+                    standalone_result,
+                    granularity,
+                ),
+            )
+        )
+
     nested_summary_path = write_baseline_matches_to_summary(
         nested_result["summary_path"],
-        [baseline_match_record],
+        baseline_match_records,
     )
 
     return {
         "nested_config": nested_config,
-        "standalone_config": standalone_config,
+        "standalone_configs": standalone_configs,
         "nested_result": nested_result,
-        "standalone_result": standalone_result,
-        "baseline_match_records": [baseline_match_record],
+        "standalone_results": standalone_results,
+        "baseline_match_records": baseline_match_records,
         "nested_summary_path": nested_summary_path,
     }
 
@@ -89,6 +131,28 @@ def resolve_debug_nested_baseline_configs(
     output_root: str | Path | None = None,
     output_dir: str | Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    nested_config, standalone_configs = resolve_debug_nested_baseline_matrix_configs(
+        config_path=config_path,
+        nested_run_id=nested_run_id,
+        baseline_granularities=[baseline_granularity],
+        overrides=overrides,
+        output_root=output_root,
+        output_dir=output_dir,
+    )
+    return nested_config, standalone_configs[0]
+
+
+def resolve_debug_nested_baseline_matrix_configs(
+    config_path: str | Path = DEBUG_MATRIX_CONFIG,
+    nested_run_id: str = DEFAULT_DEBUG_NESTED_RUN_ID,
+    baseline_granularities: Iterable[str] | None = None,
+    overrides: Iterable[str] | None = None,
+    output_root: str | Path | None = None,
+    output_dir: str | Path | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    baseline_granularities = normalize_baseline_granularities(
+        baseline_granularities,
+    )
     resolved_overrides = output_overrides(overrides, output_root)
     configs = resolve_all_run_configs(config_path, overrides=resolved_overrides)
     if output_dir is None:
@@ -100,11 +164,26 @@ def resolve_debug_nested_baseline_configs(
             overrides=resolved_overrides,
             output_dir=output_dir,
         )
-    standalone_config = find_standalone_baseline_config(
-        configs,
-        baseline_granularity,
-    )
-    return nested_config, standalone_config
+    standalone_configs = [
+        find_standalone_baseline_config(configs, granularity)
+        for granularity in baseline_granularities
+    ]
+    return nested_config, standalone_configs
+
+
+def normalize_baseline_granularities(
+    baseline_granularities: Iterable[str] | None,
+) -> list[str]:
+    if baseline_granularities is None:
+        return list(DEFAULT_DEBUG_BASELINE_GRANULARITIES)
+
+    normalized = []
+    for raw_granularity in baseline_granularities:
+        for granularity in str(raw_granularity).replace(",", " ").split():
+            if granularity:
+                normalized.append(granularity)
+
+    return normalized or list(DEFAULT_DEBUG_BASELINE_GRANULARITIES)
 
 
 def output_overrides(
@@ -176,22 +255,14 @@ def build_baseline_match_record(
         standalone_config,
         granularity,
     )
-    nested_run = nested_config["run"]
-    standalone_run = standalone_config["run"]
-
-    return {
-        "match_id": baseline_match_id(
-            nested_run["run_id"],
-            standalone_run["run_id"],
-            granularity,
-        ),
-        "nested_run_id": nested_run["run_id"],
-        "standalone_run_id": standalone_run["run_id"],
-        "granularity": granularity,
-        "non_embedding_parameters_nested": _non_embedding_count(nested_counts),
-        "non_embedding_parameters_standalone": _non_embedding_count(standalone_counts),
-        "match_notes": mismatch_notes,
-    }
+    return build_baseline_match_row(
+        nested_config,
+        standalone_config,
+        granularity,
+        nested_counts=nested_counts,
+        standalone_counts=standalone_counts,
+        match_notes=mismatch_notes,
+    )
 
 
 def compare_baseline_configs(
@@ -251,7 +322,7 @@ def baseline_match_id(
     standalone_run_id: str,
     granularity: str,
 ) -> str:
-    return f"{nested_run_id}__{standalone_run_id}__{granularity}"
+    return metrics_baseline_match_id(nested_run_id, standalone_run_id, granularity)
 
 
 def _get_dotted(config: dict[str, Any], dotted_path: str):
@@ -259,12 +330,6 @@ def _get_dotted(config: dict[str, Any], dotted_path: str):
     for part in dotted_path.split("."):
         value = value.get(part) if isinstance(value, dict) else None
     return value
-
-
-def _non_embedding_count(counts: dict[str, int] | None):
-    if counts is None:
-        return None
-    return counts.get("non_embedding_parameters")
 
 
 def _result_counts_for_granularity(
@@ -289,8 +354,12 @@ def parse_args(argv: list[str] | None = None):
     )
     parser.add_argument(
         "--granularity",
-        default=DEFAULT_DEBUG_BASELINE_GRANULARITY,
-        help="Standalone baseline granularity to run.",
+        action="append",
+        dest="granularities",
+        help=(
+            "Standalone baseline granularity to run. Repeat or use comma-separated "
+            "values. Defaults to s,m,l,xl."
+        ),
     )
     parser.add_argument(
         "--output-root",
@@ -311,10 +380,10 @@ def parse_args(argv: list[str] | None = None):
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    result = run_debug_nested_with_one_baseline(
+    result = run_debug_nested_with_baselines(
         config_path=args.config,
         nested_run_id=args.nested_run_id,
-        baseline_granularity=args.granularity,
+        baseline_granularities=args.granularities,
         overrides=args.override,
         output_root=args.output_root or os.environ.get("OUTPUT_ROOT"),
         output_dir=args.output_dir,

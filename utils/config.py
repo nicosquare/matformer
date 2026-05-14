@@ -14,6 +14,12 @@ import yaml
 VALID_GRANULARITIES = {"s", "m", "l", "xl"}
 VALID_MODEL_FAMILIES = {"nested", "standalone"}
 VALID_COMPLETION_LABELS = {"debug", "reduced-token-pilot", "paper-budget-complete"}
+GRANULARITY_INTERMEDIATE_FRACTIONS = {
+    "s": (1, 8),
+    "m": (1, 4),
+    "l": (1, 2),
+    "xl": (1, 1),
+}
 
 PAPER_78M_TOKEN_BUDGET = 10_000_000_000
 PAPER_ALIGNED_ARCHITECTURE = {
@@ -296,9 +302,31 @@ def _apply_run_granularities(config: dict[str, Any]) -> None:
     model = config.setdefault("model", {})
 
     if run.get("model_family") == "standalone" and "granularity" in run:
+        _apply_standalone_fixed_width(model, run["granularity"])
         model["granularities"] = [run["granularity"]]
     elif "granularities" in run:
         model["granularities"] = list(run["granularities"])
+
+
+def _apply_standalone_fixed_width(model: dict[str, Any], granularity: str) -> None:
+    if "intermediate_size" not in model:
+        return
+
+    source_intermediate_size = int(
+        model.get("matformer_source_intermediate_size", model["intermediate_size"])
+    )
+    if granularity not in GRANULARITY_INTERMEDIATE_FRACTIONS:
+        raise ConfigError(f"Unknown granularity for standalone run: {granularity}")
+    numerator, denominator = GRANULARITY_INTERMEDIATE_FRACTIONS[granularity]
+    intermediate_size = source_intermediate_size * numerator // denominator
+    if intermediate_size <= 0:
+        raise ConfigError(
+            f"Granularity {granularity} produced empty standalone FFN width for "
+            f"intermediate_size={source_intermediate_size}"
+        )
+
+    model["matformer_source_intermediate_size"] = source_intermediate_size
+    model["intermediate_size"] = intermediate_size
 
 
 def _resolve_output_paths(config: dict[str, Any]) -> None:

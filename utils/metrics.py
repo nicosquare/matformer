@@ -81,6 +81,16 @@ RUN_SUMMARY_FIELDS = [
     "notes",
 ]
 
+BASELINE_MATCH_FIELDS = [
+    "match_id",
+    "nested_run_id",
+    "standalone_run_id",
+    "granularity",
+    "non_embedding_parameters_nested",
+    "non_embedding_parameters_standalone",
+    "match_notes",
+]
+
 
 class ArtifactError(ValueError):
     """Raised when an artifact would miss required analysis fields."""
@@ -293,6 +303,43 @@ def build_scaling_result_rows(
     return rows
 
 
+def build_baseline_match_row(
+    nested_config: Mapping[str, Any],
+    standalone_config: Mapping[str, Any],
+    granularity: str,
+    nested_counts: Mapping[str, int] | None = None,
+    standalone_counts: Mapping[str, int] | None = None,
+    match_notes: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    nested_run = nested_config["run"]
+    standalone_run = standalone_config["run"]
+    row = {
+        "match_id": baseline_match_id(
+            nested_run["run_id"],
+            standalone_run["run_id"],
+            granularity,
+        ),
+        "nested_run_id": nested_run["run_id"],
+        "standalone_run_id": standalone_run["run_id"],
+        "granularity": granularity,
+        "non_embedding_parameters_nested": _non_embedding_count(nested_counts),
+        "non_embedding_parameters_standalone": _non_embedding_count(
+            standalone_counts
+        ),
+        "match_notes": list(match_notes or []),
+    }
+    _require_fields(row, BASELINE_MATCH_FIELDS, "baseline match row")
+    return row
+
+
+def baseline_match_id(
+    nested_run_id: str,
+    standalone_run_id: str,
+    granularity: str,
+) -> str:
+    return f"{nested_run_id}__{standalone_run_id}__{granularity}"
+
+
 def latest_metric_rows_by_granularity(
     metrics_rows: Iterable[Mapping[str, Any]],
     split: str,
@@ -357,6 +404,12 @@ def _normalize_rows(
     if isinstance(rows, Mapping):
         return [rows]
     return list(rows)
+
+
+def _non_embedding_count(counts: Mapping[str, int] | None):
+    if counts is None:
+        return None
+    return counts.get("non_embedding_parameters")
 
 
 def _require_fields(
