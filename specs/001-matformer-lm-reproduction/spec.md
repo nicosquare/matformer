@@ -31,6 +31,13 @@ preliminary plan."
   defaulting to `outputs/`, with runner support through `OUTPUT_ROOT` or
   command arguments.
 
+### Session 2026-05-14
+
+- Q: How should budgeted training length be derived? -> A: `training.token_budget`
+  is authoritative; derive planned steps from batch size, context length, and
+  effective distributed `WORLD_SIZE`, defaulting to 1 and never inferred from
+  available GPU count alone.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Validate Nested MatFormer Training (Priority: P1)
@@ -194,6 +201,9 @@ rollback frequency, throughput, and latency.
   paper-aligned runs must preserve the stated architecture assumptions.
 - 78M runs with fewer than 10B training tokens must be labeled as reduced-token
   pilots, not paper-budget complete runs.
+- Available GPU count can differ from the effective data-parallel world size;
+  budget-derived step counts must use the active distributed `WORLD_SIZE` when
+  distributed training is launched, otherwise 1.
 - A standalone baseline can be accidentally mismatched by dataset, token
   budget, tokenizer assumption, or FFN width; comparison artifacts must expose
   those run attributes.
@@ -254,6 +264,15 @@ rollback frequency, throughput, and latency.
   resources allow.
 - **FR-014**: The first paper-aligned scaling point MUST be the 78M model-size
   target with its training-token budget and completion label tracked explicitly.
+  For budgeted training runs, `training.token_budget` MUST be the source of
+  truth for planned training length. The runner MUST derive the planned step
+  count from `training.token_budget`, `training.batch_size_per_process`,
+  `model.context_length`, and the effective data-parallel world size. The
+  effective world size MUST be the active distributed `WORLD_SIZE` when
+  distributed training is launched, otherwise 1; it MUST NOT be inferred from
+  available GPU count alone. Resolved configs and run summaries MUST record
+  `expected_tokens_per_step`, `derived_max_steps`, `token_budget`,
+  `tokens_seen`, `effective_world_size`, and `stop_reason`.
 - **FR-015**: Debug-size runs MAY reduce architecture scale for speed while
   preserving matched nested-versus-standalone comparisons.
 - **FR-016**: Paper-aligned runs MUST preserve 16 layers, 16 attention heads,
@@ -333,7 +352,8 @@ rollback frequency, throughput, and latency.
   and the corresponding nested prefix.
 - **Training Run**: A single execution with a model family, granularity or
   granularity set, dataset phase, token budget, configuration, metrics, and
-  optional checkpoint.
+  optional checkpoint. Budgeted runs also record expected tokens per step,
+  derived max steps, effective world size, tokens seen, and stop reason.
 - **Baseline Match**: The pairing between an extracted nested submodel and an
   independently trained standalone model of comparable non-embedding parameter
   count.
@@ -367,7 +387,9 @@ rollback frequency, throughput, and latency.
   baselines once P2 is complete.
 - **SC-006**: The first paper-aligned scaling point records the 78M model-size
   target, the actual training-token budget used, and whether the run is a
-  reduced-token pilot or a 78M/10B paper-budget complete run.
+  reduced-token pilot or a 78M/10B paper-budget complete run. The resolved
+  config or run summary also records derived max steps, expected tokens per
+  step, effective world size, actual tokens seen, and stop reason.
 - **SC-007**: Any report labeled paper-aligned uses the stated architecture
   assumptions or explicitly marks deviations as non-paper-aligned.
 - **SC-008**: Medium-scale reporting includes per-task and average downstream

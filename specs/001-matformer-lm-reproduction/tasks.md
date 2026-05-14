@@ -155,6 +155,40 @@ pilot output labels are correct.
 
 ---
 
+## Phase 4.5: Token-Budget-Derived Training Length (US2 Hardening)
+
+**Purpose**: Make `training.token_budget` authoritative for budgeted training
+runs by deriving planned training length from batch size, context length, and
+effective distributed world size instead of relying on manually chosen
+`max_steps` values.
+
+**Independent Test**: Resolve the 78M pilot config and confirm it records
+`expected_tokens_per_step`, `derived_max_steps`, `effective_world_size`,
+`token_budget`, and output labels consistently; run a small mocked or tiny-data
+training smoke test and confirm the summary reports `tokens_seen` and a
+deterministic `stop_reason`.
+
+### Verification for Token-Budget-Derived Training Length
+
+- [ ] T085 [P] [US2] Add derived training length config checks for default world size and `WORLD_SIZE` handling in `tests/test_config.py`
+- [ ] T086 [P] [US2] Add run summary schema checks for `expected_tokens_per_step`, `derived_max_steps`, `effective_world_size`, and `stop_reason` in `tests/test_artifacts.py`
+- [ ] T087 [P] [US2] Add token-budget stop behavior smoke coverage with mocked or tiny data in `tests/test_training_smoke.py`
+
+### Implementation for Token-Budget-Derived Training Length
+
+- [ ] T088 [P] [US2] Update derived training length fields and validation rules in `specs/001-matformer-lm-reproduction/data-model.md` and `specs/001-matformer-lm-reproduction/contracts/experiment-config.md`
+- [ ] T089 [P] [US2] Update run artifact expectations for budget-derived fields in `specs/001-matformer-lm-reproduction/contracts/run-artifacts.md`
+- [ ] T090 [US2] Implement effective world size and derived max-step resolution in `utils/config.py`
+- [ ] T091 [US2] Update budgeted training loop stopping and `stop_reason` calculation in `training/run.py`
+- [ ] T092 [US2] Emit token-budget-derived summary fields through `utils/metrics.py`
+- [ ] T093 [US2] Update 78M pilot config and quickstart guidance for token-budget-derived step counts in `configs/78m_reduced_pilot.yaml` and `specs/001-matformer-lm-reproduction/quickstart.md`
+
+**Checkpoint**: Budgeted runs are ready for 78M pilot execution only when the
+resolved config and run summary expose derived training length, effective world
+size, actual tokens seen, and stop reason.
+
+---
+
 ## Phase 5: User Story 3 - Reproduce Scaling and Downstream Trends (Priority: P3)
 
 **Goal**: Generate scaling reports and minimal downstream evaluation results
@@ -263,7 +297,8 @@ all completed stories.
 - **US1 (Phase 3)**: Depends on Foundational.
 - **Output Storage (Phase 3.5)**: Depends on US1; blocks US2 and all larger runs.
 - **US2 (Phase 4)**: Depends on US1 and Output Storage for shared nested run, at least one baseline path, and external output control.
-- **US3 (Phase 5)**: Depends on US2 for matched baseline matrix and 78M pilot labeling.
+- **Token Budget Hardening (Phase 4.5)**: Depends on US2 and blocks real budgeted 78M pilot execution.
+- **US3 (Phase 5)**: Depends on US2 and Token Budget Hardening for matched baseline matrix, 78M pilot labeling, and budget-derived run lengths.
 - **US4 (Phase 6)**: Depends on US2 for extracted nested and standalone comparisons.
 - **US5 (Phase 7)**: Depends on US4 for alignment artifacts and model-pair conventions.
 - **Polish (Phase 8)**: Depends on completed target stories.
@@ -273,6 +308,7 @@ all completed stories.
 - **US1**: MVP; validates nested training and one baseline comparison.
 - **Output Storage**: Cross-cutting blocker that preserves repository disk and inode capacity before larger Phase 4+ runs.
 - **US2**: Extends US1 to full debug S/M/L/XL standalone matrix and 78M pilot labeling.
+- **Token Budget Hardening**: Clarifies US2 budgeted-run semantics before real 78M or larger scaling runs.
 - **US3**: Adds scaling and downstream trend reporting after baseline matrix exists.
 - **US4**: Adds consistency and mix-and-match evaluation after matched runs exist.
 - **US5**: Adds speculative decoding after model-pair comparison conventions exist.
@@ -294,6 +330,7 @@ all completed stories.
 - Output storage contract updates T075-T077 can run in parallel after T074 is understood.
 - Output storage tests T078-T079 can run in parallel before T080-T081 implementation.
 - US2 verification tasks T033-T035 can run in parallel.
+- Token budget documentation tasks T088-T089 can run in parallel with verification tasks T085-T087.
 - US3 verification tasks T044-T045 can run in parallel.
 - US4 verification tasks T052-T053 can run in parallel.
 - US5 verification tasks T060-T061 can run in parallel.
@@ -315,6 +352,14 @@ Task: "T025 Add extraction metadata artifact check in tests/test_artifacts.py"
 Task: "T033 Add standalone granularity config validation checks in tests/test_config.py"
 Task: "T034 Add baseline matching validation checks in tests/test_baseline_matching.py"
 Task: "T035 Add 78M completion label checks in tests/test_config.py"
+```
+
+## Parallel Example: Token-Budget-Derived Training Length
+
+```bash
+Task: "T085 Add derived training length config checks for default world size and WORLD_SIZE handling in tests/test_config.py"
+Task: "T086 Add run summary schema checks for expected_tokens_per_step, derived_max_steps, effective_world_size, and stop_reason in tests/test_artifacts.py"
+Task: "T087 Add token-budget stop behavior smoke coverage with mocked or tiny data in tests/test_training_smoke.py"
 ```
 
 ## Parallel Example: User Story 3
@@ -355,15 +400,17 @@ Task: "T061 Add prompt-set pairing checks in tests/test_speculative.py"
 1. US1 validates the visible nested training flow and first comparison.
 2. Output Storage makes every later runner safe for filesystems with restricted space or inodes.
 3. US2 completes the debug-size S/M/L/XL baseline matrix and 78M pilot label path.
-4. US3 adds scaling/downstream reporting from structured artifacts.
-5. US4 adds consistency and elastic behavior analysis.
-6. US5 adds speculative decoding alignment.
+4. Token Budget Hardening makes `training.token_budget` authoritative before real 78M or larger budgeted runs.
+5. US3 adds scaling/downstream reporting from structured artifacts.
+6. US4 adds consistency and elastic behavior analysis.
+7. US5 adds speculative decoding alignment.
 
 ### Validation Gates
 
 - Before US1 completion: `metrics.csv`, `scaling_results.csv`, and `run_summary.json` exist for nested and one baseline run.
 - Before US2 start: custom output root runs place required artifacts under `<output_root>/<run_id>/` and avoid repository `outputs/`.
 - Before US2 completion: S/M/L/XL debug standalone baselines exist and 78M reduced-token pilot labels are correct.
+- Before budgeted 78M execution: resolved configs and summaries expose derived max steps, expected tokens per step, effective world size, tokens seen, and stop reason.
 - Before US3 completion: plots derive from CSV files only.
 - Before US4 completion: consistency metrics distinguish nested and standalone sources.
 - Before US5 completion: speculative metrics include acceptance, rollback, throughput, and latency.
