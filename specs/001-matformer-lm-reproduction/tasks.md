@@ -145,9 +145,9 @@ completion correctly.
 - [X] T038 [US2] Extend `scripts/run_debug_matrix.sh` to run nested plus S/M/L/XL standalone debug matrix
 - [X] T039 [US2] Implement baseline match records with mismatch notes in `training/baselines.py`
 - [X] T040 [US2] Emit matched baseline rows with non-embedding parameters in `utils/metrics.py`
-- [ ] T041 [US2] Add paper-aligned 78M reduced-token pilot values to `configs/78m_reduced_pilot.yaml`
-- [ ] T042 [US2] Implement `scripts/run_78m_pilot.sh` with reduced-token pilot labeling
-- [ ] T043 [US2] Update 78M pilot instructions in `specs/001-matformer-lm-reproduction/quickstart.md`
+- [X] T041 [US2] Add paper-aligned 78M reduced-token pilot values to `configs/78m_reduced_pilot.yaml`
+- [X] T042 [US2] Implement `scripts/run_78m_pilot.sh` with reduced-token pilot labeling
+- [X] T043 [US2] Update 78M pilot instructions in `specs/001-matformer-lm-reproduction/quickstart.md`
 
 **Checkpoint**: User Story 2 is independently complete when debug-size
 S/M/L/XL nested and standalone comparisons are present and 78M reduced-token

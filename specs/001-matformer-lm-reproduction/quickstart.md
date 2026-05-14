@@ -53,11 +53,10 @@ bash scripts/run_debug_matrix.sh
 
 Expected result:
 - One debug-size nested run evaluates S, M, L, and XL.
-- One matched debug-size standalone baseline is produced. The default Phase 3
-  baseline is `s`; set `BASELINE_GRANULARITY=m`, `l`, or `xl` to run a
-  different single baseline.
+- Matched debug-size standalone baselines are produced for S, M, L, and XL by
+  default.
 - `metrics.csv`, `scaling_results.csv`, and `run_summary.json` are written for
-  the nested run and the matched standalone baseline under the configured
+  the nested run and matched standalone baselines under the configured
   output root.
 - The nested `run_summary.json` records the baseline match and any mismatch
   notes.
@@ -76,7 +75,6 @@ the login node:
 ```bash
 sbatch scripts/slurm_debug_matrix.sh \
   --output-root /mnt/experiments/matformer \
-  --baseline-granularity s \
   --override training.max_steps=1
 ```
 
@@ -87,14 +85,22 @@ arguments to `scripts/run_debug_matrix.sh`. Submit it with `sbatch`; direct
 allocation. Override scheduler resources at submission time when needed, for
 example `sbatch --time=01:00:00 --mem=32G ...`.
 
+To queue only part of the standalone debug matrix during scheduler debugging,
+pass an explicit baseline set:
+
+```bash
+sbatch scripts/slurm_debug_matrix.sh \
+  --output-root /mnt/experiments/matformer \
+  --baseline-granularities "s m" \
+  --override training.max_steps=1
+```
+
 Equivalent config override form:
 
 ```bash
 bash scripts/run_debug_matrix.sh \
   --override run.output_root=/mnt/experiments/matformer
 ```
-
-The full S/M/L/XL standalone debug matrix is a Phase 4 extension.
 
 ## 4. Inspect Debug Outputs
 
@@ -110,13 +116,29 @@ Check:
 ## 5. Run 78M Reduced-Token Pilot
 
 ```bash
-OUTPUT_ROOT=/mnt/experiments/matformer bash scripts/run_78m_pilot.sh
+PYTHON_BIN=/home/nicolas.avila/.conda/envs/elasticnn/bin/python \
+  OUTPUT_ROOT=/mnt/experiments/matformer \
+  bash scripts/run_78m_pilot.sh
 ```
 
 Expected result:
 - Architecture constants are paper-aligned.
 - The run is labeled `reduced-token-pilot` unless it uses the 10B token budget.
 - Outputs record actual tokens seen and target token budget.
+
+Queue this on a GPU node rather than the login node. For a short scheduler and
+artifact-path check, keep the 78M config but override the step count:
+
+```bash
+PYTHON_BIN=/home/nicolas.avila/.conda/envs/elasticnn/bin/python \
+  OUTPUT_ROOT=/mnt/experiments/matformer \
+  bash scripts/run_78m_pilot.sh --override training.max_steps=1
+```
+
+The default run id is `78m-reduced-pilot-001`, so artifacts resolve under
+`<OUTPUT_ROOT>/78m-reduced-pilot-001/`. Use `--output-root` for an explicit
+root, `--output-dir` for a one-off directory, and
+`--run-id 78m-reduced-pilot-001` when validating the runner contract manually.
 
 ## 6. Add Downstream Evaluation
 
