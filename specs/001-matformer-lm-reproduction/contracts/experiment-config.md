@@ -4,7 +4,13 @@ The reproduction uses simple YAML input configs. Each run saves a resolved
 `config.json` with the same fields under `<output_root>/<run_id>/`, defaulting
 to `outputs/<run_id>/`.
 
-## Required Top-Level Fields
+## Author-Written Source YAML
+
+Source YAML files contain hand-authored experiment inputs only. Researchers
+must not manually set `training.effective_world_size`,
+`training.expected_tokens_per_step`, `training.derived_max_steps`, or the
+resolved effective `training.max_steps`; those fields are produced during
+config resolution and saved in `config.json`.
 
 ```yaml
 run:
@@ -15,7 +21,6 @@ run:
   completion_label: debug
   seed: 42
   output_root: outputs
-  output_dir: outputs/debug-nested-001
 
 model:
   base_model_name: debug-llama
@@ -30,8 +35,8 @@ model:
 
 training:
   token_budget: 1000000
-  max_steps: 1000
   batch_size_per_process: 8
+  max_steps_cap: null
   learning_rate: 0.0001
   warmup_steps: 50
   eval_interval: 100
@@ -59,9 +64,48 @@ evaluation:
   speculative: false
 ```
 
+`training.max_steps_cap` is optional. It is only a visible safety cap for
+budgeted runs; omitting it means the resolver uses the token-budget-derived
+step count.
+
+## Resolved `config.json`
+
+Resolved configs contain the source inputs plus defaults and derived fields.
+Each run saves the resolved `config.json` under `<output_root>/<run_id>/`.
+Budget-derived fields appear here, not in source YAML:
+
+```yaml
+run:
+  run_id: debug-nested-001
+  phase_id: debug_matrix
+  model_family: nested
+  model_size_label: debug
+  completion_label: debug
+  seed: 42
+  output_root: outputs
+  output_dir: outputs/debug-nested-001
+  explicit_output_dir: false
+
+training:
+  token_budget: 1000000
+  batch_size_per_process: 8
+  effective_world_size: 1
+  expected_tokens_per_step: 2048
+  derived_max_steps: 489
+  max_steps: 489
+  max_steps_cap: null
+```
+
 `run.output_dir` is derived as `<run.output_root>/<run.run_id>` unless an
 explicit per-run output directory is provided. The derived value is saved in
 the resolved `config.json`.
+
+`training.token_budget` is the source of truth for budgeted run length. The
+resolver writes `training.effective_world_size`,
+`training.expected_tokens_per_step`, `training.derived_max_steps`, and the
+effective `training.max_steps` into `config.json`. `training.max_steps` is the
+step count used by the training loop, derived from token budget unless an
+explicit safety cap is modeled with `training.max_steps_cap`.
 
 ## Granularity Values
 
@@ -107,4 +151,18 @@ The corresponding display labels are `S`, `M`, `L`, `XL`.
   `completion_label=reduced-token-pilot`.
 - `model_size_label=78m` and `training.token_budget = 10000000000` requires
   `completion_label=paper-budget-complete`.
+- `training.token_budget`, `training.batch_size_per_process`, and
+  `model.context_length` must be positive integers for budgeted runs.
+- `training.effective_world_size` must resolve from the active distributed
+  `WORLD_SIZE` when distributed training is launched, otherwise 1. It must not
+  be inferred from visible or allocated GPU count.
+- `training.expected_tokens_per_step` must equal the product of
+  `training.batch_size_per_process`, `model.context_length`, and
+  `training.effective_world_size`.
+- `training.derived_max_steps` must equal
+  `ceil(training.token_budget / training.expected_tokens_per_step)`.
+- `training.max_steps` in the resolved config must be the effective planned
+  step count for the run. For budgeted runs it is derived from
+  `training.token_budget`; any early safety cap must be explicit and visible in
+  the resolved training section.
 - Every run must write a resolved `config.json`.

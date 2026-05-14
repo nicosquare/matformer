@@ -76,7 +76,11 @@ Required fields:
   "dataset_name": "tiny-stories",
   "dataset_split": "train",
   "token_budget": 1000000,
+  "expected_tokens_per_step": 2048,
+  "derived_max_steps": 489,
+  "effective_world_size": 1,
   "tokens_seen": 1000000,
+  "stop_reason": "token_budget_reached",
   "seed": 42,
   "status": "completed",
   "output_root": "/mnt/experiments/matformer",
@@ -86,6 +90,10 @@ Required fields:
 }
 ```
 
+`expected_tokens_per_step`, `derived_max_steps`, and `effective_world_size` are
+copied from the resolved `config.json`. `tokens_seen` and `stop_reason` are
+runtime outcomes written by the training loop.
+
 ## Validation Rules
 
 - Required scalar metrics must appear in CSV or JSON artifacts, not only logs.
@@ -93,5 +101,13 @@ Required fields:
   be rooted under the configured output root unless explicitly overridden.
 - Plot files must list their source CSV files in `run_summary.json` or a report.
 - Any baseline mismatch must be recorded in `run_summary.json`.
+- `expected_tokens_per_step`, `derived_max_steps`, and `effective_world_size`
+  must match the resolved `config.json` for the run.
+- `tokens_seen` must report actual non-padding training tokens observed by the
+  loop, which may meet or slightly exceed `token_budget` because stopping occurs
+  at batch boundaries.
+- `stop_reason` must make budget completion explicit. Allowed values are
+  `not_started`, `token_budget_reached`,
+  `max_steps_reached_before_token_budget`, and `failed`.
 - A failed run may omit metrics, but must write a `run_summary.json` with
   `status=failed` and a short failure note when possible.

@@ -81,7 +81,6 @@ Captures dataset identity and preprocessing assumptions.
 - `dataset_split`: Split name.
 - `dataset_phase`: `debug`, `medium`, or `large`.
 - `sample_limit`: Optional example count.
-- `token_budget`: Planned training-token budget.
 - `preprocessing_notes`: Tokenization/truncation/shuffling assumptions.
 
 **Validation Rules**
@@ -106,6 +105,20 @@ Represents one train/eval execution.
 - `output_dir`: Run artifact directory.
 - `explicit_output_dir`: Optional Boolean indicating that `output_dir` was
   provided directly rather than derived from `output_root` and `run_id`.
+- `token_budget`: Authoritative planned training-token budget for budgeted
+  runs.
+- `batch_size_per_process`: Number of examples processed by each data-parallel
+  process per training step.
+- `effective_world_size`: Active data-parallel process count used for budget
+  planning; defaults to 1 unless distributed training sets `WORLD_SIZE`.
+- `expected_tokens_per_step`: Planned tokens per optimizer step, derived from
+  batch size, context length, and effective world size.
+- `derived_max_steps`: Planned step count derived from the token budget.
+- `max_steps`: Resolved effective step count used by the training loop. For
+  budgeted runs this is derived from `token_budget`, not manually chosen.
+- `tokens_seen`: Actual non-padding training tokens observed by the run.
+- `stop_reason`: Reason training stopped, such as `not_started`,
+  `token_budget_reached`, `max_steps_reached_before_token_budget`, or `failed`.
 - `checkpoint_path`: Optional checkpoint path.
 - `status`: `planned`, `running`, `completed`, `failed`, or `superseded`.
 
@@ -127,6 +140,15 @@ Represents one train/eval execution.
 - The resolved output root must be writable before training starts.
 - A custom output root must keep required artifacts out of repository
   `outputs/` unless the researcher explicitly chooses that location.
+- `effective_world_size` must come from the active distributed `WORLD_SIZE`
+  when distributed training is launched, otherwise 1. It must not be inferred
+  from the number of visible or allocated GPUs.
+- `expected_tokens_per_step` must equal
+  `batch_size_per_process * context_length * effective_world_size`.
+- `derived_max_steps` must equal
+  `ceil(token_budget / expected_tokens_per_step)`.
+- Resolved configs and run summaries must expose the derived budget fields so
+  reduced-token pilots cannot be confused with paper-budget-complete runs.
 
 ## StorageEnvironment
 

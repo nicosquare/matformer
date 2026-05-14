@@ -176,8 +176,8 @@ deterministic `stop_reason`.
 
 ### Implementation for Token-Budget-Derived Training Length
 
-- [ ] T088 [P] [US2] Update derived training length fields and validation rules in `specs/001-matformer-lm-reproduction/data-model.md` and `specs/001-matformer-lm-reproduction/contracts/experiment-config.md`
-- [ ] T089 [P] [US2] Update run artifact expectations for budget-derived fields in `specs/001-matformer-lm-reproduction/contracts/run-artifacts.md`
+- [X] T088 [P] [US2] Update derived training length fields and validation rules in `specs/001-matformer-lm-reproduction/data-model.md` and `specs/001-matformer-lm-reproduction/contracts/experiment-config.md`
+- [X] T089 [P] [US2] Update run artifact expectations for budget-derived fields in `specs/001-matformer-lm-reproduction/contracts/run-artifacts.md`
 - [ ] T090 [US2] Implement effective world size and derived max-step resolution in `utils/config.py`
 - [ ] T091 [US2] Update budgeted training loop stopping and `stop_reason` calculation in `training/run.py`
 - [ ] T092 [US2] Emit token-budget-derived summary fields through `utils/metrics.py`
