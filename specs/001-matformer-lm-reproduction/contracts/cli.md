@@ -59,6 +59,21 @@ Required behavior:
 - Write model-size and token-budget labels into summaries.
 - Accept the same output-root controls as the debug matrix runner.
 
+## Queue 78M Reduced-Token Pilot On Slurm
+
+```bash
+sbatch scripts/slurm_78m_pilot.sh --output-root /mnt/experiments/matformer
+```
+
+Required behavior:
+- Request one GPU when submitted with `sbatch`.
+- Refuse direct local execution outside a Slurm allocation.
+- Use the `elasticnn` conda environment by default unless `PYTHON_BIN` or
+  `--python-bin` is provided.
+- Accept `--output-root`, `--run-id`, and `--config`.
+- Forward remaining runner arguments, including `--override`, to
+  `scripts/run_78m_pilot.sh`.
+
 ## Generate Figures
 
 ```bash

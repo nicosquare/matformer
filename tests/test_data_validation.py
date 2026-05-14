@@ -13,6 +13,7 @@ from training.data import (
     DataError,
     build_language_model_dataloader,
     collate_language_model_batch,
+    load_text_dataset,
     prepare_text_dataset,
     split_train_eval_dataset,
     tokenize_text_dataset,
@@ -96,6 +97,33 @@ def test_prepare_text_dataset_requires_text_column():
 
     with pytest.raises(DataError, match="text column"):
         prepare_text_dataset(dataset, text_column="text")
+
+
+def test_load_text_dataset_passes_dataset_config_name(monkeypatch):
+    calls = {}
+
+    def fake_load_dataset(path, name=None, split=None):
+        calls["path"] = path
+        calls["name"] = name
+        calls["split"] = split
+        return Dataset.from_dict({"text": ["a", "bb", "ccc"]})
+
+    monkeypatch.setattr("training.data.load_dataset", fake_load_dataset)
+
+    dataset = load_text_dataset(
+        "HuggingFaceFW/fineweb",
+        "train",
+        dataset_config_name="sample-10BT",
+        sample_limit=2,
+        shuffle=False,
+    )
+
+    assert calls == {
+        "path": "HuggingFaceFW/fineweb",
+        "name": "sample-10BT",
+        "split": "train",
+    }
+    assert len(dataset) == 2
 
 
 def test_validation_loss_perplexity_and_metric_rows():

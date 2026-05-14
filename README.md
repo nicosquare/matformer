@@ -71,6 +71,21 @@ The Slurm launcher uses the `elasticnn` conda environment by default through
 `PYTHON_BIN` if the environment lives elsewhere. Submit it with `sbatch`; it
 refuses direct `bash` execution outside a Slurm allocation.
 
+The 78M reduced-token pilot has the same Slurm wrapper pattern:
+
+```bash
+sbatch scripts/slurm_78m_pilot.sh \
+  --output-root /mnt/experiments/matformer
+```
+
+For a short scheduler smoke check, cap the derived token-budget step count:
+
+```bash
+sbatch --time=01:00:00 scripts/slurm_78m_pilot.sh \
+  --output-root /mnt/experiments/matformer \
+  --override training.max_steps_cap=1
+```
+
 Use `--output-dir` only for a one-off explicit run directory. For shared cache
 pressure, place Hugging Face caches outside the repository before launching
 jobs:

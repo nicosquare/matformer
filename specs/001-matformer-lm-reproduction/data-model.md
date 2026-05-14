@@ -78,6 +78,8 @@ Captures dataset identity and preprocessing assumptions.
 
 **Fields**
 - `dataset_name`: Public dataset identifier.
+- `dataset_config_name`: Optional public dataset configuration name, such as
+  `sample-10BT` for FineWeb.
 - `dataset_split`: Split name.
 - `dataset_phase`: `debug`, `medium`, or `large`.
 - `sample_limit`: Optional example count.

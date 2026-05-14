@@ -128,6 +128,8 @@ PYTHON_BIN=/home/nicolas.avila/.conda/envs/elasticnn/bin/python \
 
 Expected result:
 - Architecture constants are paper-aligned.
+- The dataset resolves to `HuggingFaceFW/fineweb` with the `sample-10BT`
+  configuration.
 - The run is labeled `reduced-token-pilot` unless it uses the 10B token budget.
 - The resolved config records `effective_world_size`,
   `expected_tokens_per_step`, `derived_max_steps`, and the effective
@@ -138,14 +140,23 @@ Queue this on a GPU node rather than the login node. For a short scheduler and
 artifact-path check, keep the 78M config but cap the derived step count:
 
 ```bash
-PYTHON_BIN=/home/nicolas.avila/.conda/envs/elasticnn/bin/python \
-  OUTPUT_ROOT=/mnt/experiments/matformer \
-  bash scripts/run_78m_pilot.sh --override training.max_steps_cap=1
+sbatch --time=01:00:00 --mem=64G scripts/slurm_78m_pilot.sh \
+  --output-root /mnt/experiments/matformer \
+  --override training.max_steps_cap=1
+```
+
+For the full reduced-token pilot, omit the cap and use the Slurm script's
+default resource request unless the cluster queue requires overrides:
+
+```bash
+sbatch scripts/slurm_78m_pilot.sh \
+  --output-root /mnt/experiments/matformer
 ```
 
 The default run id is `78m-reduced-pilot-001`, so artifacts resolve under
 `<OUTPUT_ROOT>/78m-reduced-pilot-001/`. Use `--output-root` for an explicit
-root, `--output-dir` for a one-off directory, and
+root, pass `--override training.max_steps_cap=...` only for intentionally
+short runs, and use
 `--run-id 78m-reduced-pilot-001` when validating the runner contract manually.
 
 ## 6. Add Downstream Evaluation

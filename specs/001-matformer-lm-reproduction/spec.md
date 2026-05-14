@@ -37,6 +37,16 @@ preliminary plan."
   is authoritative; derive planned steps from batch size, context length, and
   effective distributed `WORLD_SIZE`, defaulting to 1 and never inferred from
   available GPU count alone.
+- Q: What multi-GPU scope should the 78M pilot support before Phase 5? -> A:
+  Single-node multi-GPU execution now; multi-node execution is explicitly out
+  of scope for this phase.
+- Q: What distributed strategy should the config-driven 78M pilot use? -> A:
+  Fully Sharded Data Parallel (FSDP).
+- Q: What heartbeat logging outputs are required for long Slurm jobs? -> A:
+  Both human-readable stdout lines and durable JSONL event artifacts.
+- Q: What should trigger heartbeat emission? -> A: Both step interval and
+  elapsed-time interval, whichever comes first, with time-based heartbeats for
+  non-step pipeline stages.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -107,6 +117,43 @@ assumptions, and training-token budget except for FFN width.
 4. **Given** an unmatched baseline configuration, **When** the researcher
    reviews the comparison, **Then** the mismatch is visible in the recorded
    configuration or run summary.
+
+---
+
+### Cross-Cutting Phase 4.6 - Distributed Pilot Execution and Runtime Observability
+
+As a researcher, I want the 78M reduced-token pilot to run as a single-node
+multi-GPU Slurm job with traceable runtime progress so I can complete the
+pilot on available GPU resources and diagnose long-running jobs without
+depending on terminal-only output.
+
+**Why this phase**: The 78M pilot blocks later scaling and downstream work, and
+the available GPU memory or throughput may be insufficient unless the
+config-driven path can use multiple GPUs. Slurm jobs also need observable
+heartbeats during dataset loading, preprocessing, model initialization,
+training, validation, and artifact writing.
+
+**Independent Test**: Submit a short single-node multi-GPU Slurm smoke job for
+the 78M pilot with a capped step count and confirm the run launches one process
+per GPU, records the effective world size, writes shared artifacts only once,
+and emits both stdout heartbeat lines and JSONL heartbeat events.
+
+**Acceptance Scenarios**:
+
+1. **Given** a single-node Slurm allocation with multiple GPUs, **When** the
+   researcher submits the 78M pilot, **Then** the wrapper launches one process
+   per GPU and the config-driven training path uses FSDP.
+2. **Given** a distributed 78M pilot run, **When** artifacts are written,
+   **Then** shared artifacts such as resolved config, metrics, summaries, and
+   heartbeat JSONL are written only by rank 0.
+3. **Given** a long-running Slurm job, **When** the job is loading assets,
+   preprocessing data, initializing or wrapping the model, training, validating,
+   checkpointing, or writing artifacts, **Then** stage start/completion events
+   and applicable heartbeat events are visible in scheduler logs and durable
+   JSONL artifacts.
+4. **Given** an interactive local run, **When** progress bars are enabled,
+   **Then** tqdm-style output may be used for user-facing loops; Slurm jobs
+   default to clean heartbeat lines instead of progress bars.
 
 ---
 
@@ -204,6 +251,14 @@ rollback frequency, throughput, and latency.
 - Available GPU count can differ from the effective data-parallel world size;
   budget-derived step counts must use the active distributed `WORLD_SIZE` when
   distributed training is launched, otherwise 1.
+- Multi-GPU pilot execution is limited to single-node Slurm jobs in Phase 4.6;
+  multi-node execution is explicitly out of scope until a later phase.
+- A distributed rank can fail before shared artifacts are complete; the run
+  must leave enough heartbeat and failure context to identify the last completed
+  stage and effective rank/world-size state.
+- Tqdm-style progress output can make scheduler logs unreadable; Slurm runs
+  must default to heartbeat lines while local interactive runs may opt into
+  progress bars.
 - A standalone baseline can be accidentally mismatched by dataset, token
   budget, tokenizer assumption, or FFN width; comparison artifacts must expose
   those run attributes.
@@ -314,6 +369,30 @@ rollback frequency, throughput, and latency.
 - **FR-031**: Researcher-facing runner commands MUST allow the output root to be
   set through configuration, command arguments, or an `OUTPUT_ROOT` environment
   variable so artifacts can be written outside the repository filesystem.
+- **FR-032**: The config-driven 78M pilot MUST support single-node multi-GPU
+  Slurm execution before Phase 5; multi-node execution is out of scope for this
+  phase.
+- **FR-033**: Distributed config-driven pilot execution MUST launch one process
+  per GPU, initialize torch distributed state, set each process to its local
+  CUDA device, and use FSDP for the local MatFormer/Llama model.
+- **FR-034**: Distributed config-driven training MUST use distributed-aware data
+  sampling and MUST ensure shared artifacts are written only by rank 0.
+- **FR-035**: Resolved configs and run summaries for distributed runs MUST
+  expose the active rank/world-size context needed to interpret
+  token-budget-derived step counts and runtime outcomes.
+- **FR-036**: Long-running pipeline stages MUST emit structured runtime events
+  for stage start, stage completion, and heartbeat progress during tokenizer
+  loading, dataset loading, dataset preprocessing, dataloader creation, model
+  initialization, FSDP wrapping, training, validation, checkpointing, and
+  artifact writing when those stages occur.
+- **FR-037**: Heartbeat logging MUST write both human-readable stdout lines and
+  durable JSONL event artifacts.
+- **FR-038**: Heartbeat emission MUST be configurable by both elapsed-time
+  interval and training-step interval, with emission occurring when either
+  threshold is reached.
+- **FR-039**: Slurm jobs MUST default to heartbeat lines rather than tqdm-style
+  progress bars, while local interactive runs MAY enable tqdm-style progress
+  output through configuration.
 
 ### Research & Experiment Requirements *(include for experiment-facing changes)*
 
@@ -340,6 +419,15 @@ rollback frequency, throughput, and latency.
 - **EX-011**: Generated experiment artifacts, checkpoints, plots, and summaries
   MUST be written under the configured output root rather than requiring space
   or inodes on the repository filesystem.
+- **EX-012**: Runtime heartbeat events MUST include stage, rank, world size,
+  elapsed time, and, when meaningful, step, derived max steps, tokens seen,
+  token budget, latest loss, tokens per second, peak GPU memory, and ETA.
+- **EX-013**: Heartbeat JSONL artifacts MUST be written under the configured
+  output root and be sufficient for postmortem analysis without requiring
+  terminal logs.
+- **EX-014**: Default heartbeat cadence SHOULD be 10 training steps or 60
+  seconds for training, whichever comes first, and 60 seconds for non-step
+  preprocessing-style stages.
 
 ### Key Entities *(include if feature involves data)*
 
@@ -364,6 +452,11 @@ rollback frequency, throughput, and latency.
   statistics.
 - **Figure Artifact**: A plot or report generated from structured metrics,
   especially Figure 2-style scaling and comparison outputs.
+- **Distributed Execution Context**: The active rank, local rank, world size,
+  device assignment, and distributed strategy for a config-driven run.
+- **Heartbeat Event**: A structured runtime event written to stdout and JSONL
+  that records pipeline stage progress, timing, rank/world-size context, and
+  available training or memory measurements.
 
 ## Success Criteria *(mandatory)*
 
@@ -406,12 +499,19 @@ rollback frequency, throughput, and latency.
   metrics, summaries, checkpoints when enabled, and generated plots under that
   root with no required run artifact written under the repository `outputs/`
   directory.
+- **SC-013**: Before Phase 5 begins, a short single-node multi-GPU Slurm smoke
+  run of the 78M pilot completes with FSDP enabled, records the effective world
+  size, and writes shared artifacts only once.
+- **SC-014**: A long-running Slurm pilot emits heartbeat stdout lines and a
+  heartbeat JSONL artifact that identify the active stage, rank/world size,
+  elapsed time, and available training progress without requiring tqdm output.
 
 ## Assumptions
 
 - The planned execution order is P1 debug-size nested validation with S, M, L,
   and XL matched standalone baseline comparisons, P2 first paper-aligned 78M
-  scaling point, P3 scaling and downstream trends, P4 consistency and
+  scaling point, Phase 4.6 distributed pilot execution and runtime
+  observability, P3 scaling and downstream trends, P4 consistency and
   mix-and-match evaluation, then P5 speculative decoding.
 - TinyStories and Tiny Shakespeare are appropriate small-scale validation
   datasets for early debugging and extraction checks.

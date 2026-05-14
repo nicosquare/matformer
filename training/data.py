@@ -16,12 +16,16 @@ class DataError(ValueError):
 def load_text_dataset(
     dataset_name: str,
     dataset_split: str,
+    dataset_config_name: str | None = None,
     sample_limit: int | None = None,
     seed: int | None = None,
     text_column: str = "text",
     shuffle: bool = True,
 ):
-    dataset = load_dataset(dataset_name, split=dataset_split)
+    if dataset_config_name:
+        dataset = load_dataset(dataset_name, dataset_config_name, split=dataset_split)
+    else:
+        dataset = load_dataset(dataset_name, split=dataset_split)
     return prepare_text_dataset(
         dataset,
         sample_limit=sample_limit,
@@ -99,6 +103,7 @@ def load_and_tokenize_dataset(
     dataset = load_text_dataset(
         dataset_config["dataset_name"],
         dataset_config["dataset_split"],
+        dataset_config_name=dataset_config.get("dataset_config_name"),
         sample_limit=dataset_config.get("sample_limit"),
         seed=run.get("seed"),
         text_column=text_column,

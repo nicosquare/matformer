@@ -11,6 +11,7 @@ run:
 
 model:
   base_model_name: 78m-paper-aligned
+  tokenizer_name: hf-internal-testing/llama-tokenizer
   paper_aligned: true
   num_layers: 16
   num_attention_heads: 16
@@ -32,7 +33,8 @@ training:
   activation_checkpointing: true
 
 dataset:
-  dataset_name: fineweb-subset
+  dataset_name: HuggingFaceFW/fineweb
+  dataset_config_name: sample-10BT
   dataset_split: train
   dataset_phase: medium
   sample_limit: null

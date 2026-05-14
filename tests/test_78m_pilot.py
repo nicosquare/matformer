@@ -65,6 +65,10 @@ def test_78m_reduced_pilot_resolves_paper_aligned_config(tmp_path):
     assert config["model"]["num_attention_heads"] == 16
     assert config["model"]["context_length"] == 1024
     assert config["model"]["vocab_size_assumption"] == 256000
+    assert config["model"]["tokenizer_name"] == "hf-internal-testing/llama-tokenizer"
+    assert config["model"]["tokenizer_name"] != config["model"]["base_model_name"]
+    assert config["dataset"]["dataset_name"] == "HuggingFaceFW/fineweb"
+    assert config["dataset"]["dataset_config_name"] == "sample-10BT"
     assert config["training"]["token_budget"] < config["training"]["paper_token_budget"]
     assert config["training"]["paper_token_budget"] == 10_000_000_000
 
@@ -76,7 +80,7 @@ def test_78m_pilot_runner_propagates_output_root_env(tmp_path):
 
     args = _capture_78m_pilot_invocation(
         tmp_path,
-        ["--override", "training.max_steps=1"],
+        ["--override", "training.max_steps_cap=1"],
         env_updates={"OUTPUT_ROOT": str(output_root)},
     )
 
@@ -84,7 +88,7 @@ def test_78m_pilot_runner_propagates_output_root_env(tmp_path):
     assert _has_arg_pair(args, "--config", "configs/78m_reduced_pilot.yaml")
     assert _has_arg_pair(args, "--run-id", "78m-reduced-pilot-001")
     assert _has_arg_pair(args, "--output-root", str(output_root))
-    assert _has_arg_pair(args, "--override", "training.max_steps=1")
+    assert _has_arg_pair(args, "--override", "training.max_steps_cap=1")
 
 
 def test_78m_pilot_runner_forwards_explicit_arguments(tmp_path):
@@ -103,7 +107,7 @@ def test_78m_pilot_runner_forwards_explicit_arguments(tmp_path):
             "--output-dir",
             str(output_dir),
             "--override",
-            "training.max_steps=1",
+            "training.max_steps_cap=1",
         ],
         env_updates={"OUTPUT_ROOT": str(tmp_path / "ignored-env-output")},
     )
@@ -113,4 +117,92 @@ def test_78m_pilot_runner_forwards_explicit_arguments(tmp_path):
     assert _has_arg_pair(args, "--output-root", str(output_root))
     assert args.count("--output-root") == 1
     assert _has_arg_pair(args, "--output-dir", str(output_dir))
-    assert _has_arg_pair(args, "--override", "training.max_steps=1")
+    assert _has_arg_pair(args, "--override", "training.max_steps_cap=1")
+
+
+def test_slurm_78m_pilot_wrapper_forwards_to_runner(tmp_path):
+    recorder = tmp_path / "python-recorder.sh"
+    argv_path = tmp_path / "argv.txt"
+    output_root = tmp_path / "slurm-output"
+
+    recorder.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$@\" > \"$ARGV_FILE\"\n",
+        encoding="utf-8",
+    )
+    recorder.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "ALLOW_LOCAL_SLURM_WRAPPER": "1",
+            "PYTHON_BIN": str(recorder),
+            "ARGV_FILE": str(argv_path),
+        }
+    )
+
+    subprocess.run(
+        [
+            "bash",
+            "scripts/slurm_78m_pilot.sh",
+            "--output-root",
+            str(output_root),
+            "--run-id",
+            "78m-reduced-pilot-001",
+            "--override",
+            "training.max_steps_cap=1",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    args = argv_path.read_text(encoding="utf-8").splitlines()
+    assert args[0] == "train.py"
+    assert _has_arg_pair(args, "--config", "configs/78m_reduced_pilot.yaml")
+    assert _has_arg_pair(args, "--run-id", "78m-reduced-pilot-001")
+    assert _has_arg_pair(args, "--output-root", str(output_root))
+    assert _has_arg_pair(args, "--override", "training.max_steps_cap=1")
+
+
+def test_slurm_78m_pilot_wrapper_rejects_direct_execution(tmp_path):
+    recorder = tmp_path / "python-recorder.sh"
+    argv_path = tmp_path / "argv.txt"
+
+    recorder.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$@\" > \"$ARGV_FILE\"\n",
+        encoding="utf-8",
+    )
+    recorder.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYTHON_BIN": str(recorder),
+            "ARGV_FILE": str(argv_path),
+            "SLURM_JOB_ID": "123",
+        }
+    )
+    env.pop("ALLOW_LOCAL_SLURM_WRAPPER", None)
+    env.pop("SLURM_SUBMIT_DIR", None)
+    env.pop("SLURM_JOB_NAME", None)
+
+    result = subprocess.run(
+        [
+            "bash",
+            "scripts/slurm_78m_pilot.sh",
+            "--output-root",
+            str(tmp_path / "slurm-output"),
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "intended for sbatch" in result.stderr
+    assert not argv_path.exists()
