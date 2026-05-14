@@ -189,6 +189,43 @@ size, actual tokens seen, and stop reason.
 
 ---
 
+## Phase 4.6: Distributed Pilot Execution and Runtime Observability (US2 Hardening)
+
+**Purpose**: Prepare the 78M reduced-token pilot for single-node multi-GPU
+Slurm execution through the config-driven training path and add durable runtime
+observability for long-running jobs.
+
+**Independent Test**: Submit or dry-run a short single-node multi-GPU 78M pilot
+job and confirm the Slurm wrapper launches one process per GPU, the resolved
+config records the active distributed world size and budget-derived step count,
+shared artifacts are written only by rank 0, and heartbeat stdout plus JSONL
+events identify the current stage and progress.
+
+### Verification for Distributed Pilot Execution and Runtime Observability
+
+- [ ] T094 [P] [US2] Add single-node multi-GPU Slurm launcher command checks in `tests/test_78m_pilot.py`
+- [ ] T095 [P] [US2] Add config-driven distributed/FSDP training smoke checks in `tests/test_training_smoke.py`
+- [ ] T096 [P] [US2] Add rank-0-only shared artifact write checks in `tests/test_artifacts.py`
+- [ ] T097 [P] [US2] Add heartbeat JSONL schema, stdout line, and cadence checks in `tests/test_heartbeats.py`
+
+### Implementation for Distributed Pilot Execution and Runtime Observability
+
+- [ ] T098 [P] [US2] Update single-node multi-GPU Slurm and heartbeat artifact expectations in `specs/001-matformer-lm-reproduction/contracts/cli.md` and `specs/001-matformer-lm-reproduction/contracts/run-artifacts.md`
+- [ ] T099 [P] [US2] Implement heartbeat JSONL and stdout event helpers in `utils/heartbeats.py`
+- [ ] T100 [P] [US2] Implement distributed runtime helpers for rank, local rank, world size, rank-0 checks, and barriers in `training/distributed.py`
+- [ ] T101 [US2] Wire config-driven distributed device selection, dataloading, and FSDP model wrapping in `training/run.py`
+- [ ] T102 [US2] Integrate effective `WORLD_SIZE` budget resolution with distributed launch metadata in `utils/config.py` and `training/run.py`
+- [ ] T103 [US2] Gate resolved config, metrics, summary, checkpoint, and heartbeat shared writes to rank 0 in `training/run.py` and `utils/metrics.py`
+- [ ] T104 [US2] Update `scripts/slurm_78m_pilot.sh` for single-node multi-GPU resource requests and one config-driven process per GPU
+- [ ] T105 [US2] Instrument tokenizer loading, dataset loading/preprocessing, model initialization, FSDP wrapping, training, validation, checkpointing, and artifact-writing stages in `training/run.py`
+- [ ] T106 [US2] Document distributed 78M pilot queueing and heartbeat inspection in `specs/001-matformer-lm-reproduction/quickstart.md` and `README.md`
+
+**Checkpoint**: Phase 4.6 is complete when the 78M pilot has a single-node
+multi-GPU Slurm path, config-driven FSDP execution, rank-safe artifact writes,
+and heartbeat observability suitable for scheduler logs.
+
+---
+
 ## Phase 5: User Story 3 - Reproduce Scaling and Downstream Trends (Priority: P3)
 
 **Goal**: Generate scaling reports and minimal downstream evaluation results
@@ -298,7 +335,8 @@ all completed stories.
 - **Output Storage (Phase 3.5)**: Depends on US1; blocks US2 and all larger runs.
 - **US2 (Phase 4)**: Depends on US1 and Output Storage for shared nested run, at least one baseline path, and external output control.
 - **Token Budget Hardening (Phase 4.5)**: Depends on US2 and blocks real budgeted 78M pilot execution.
-- **US3 (Phase 5)**: Depends on US2 and Token Budget Hardening for matched baseline matrix, 78M pilot labeling, and budget-derived run lengths.
+- **Distributed Pilot Observability (Phase 4.6)**: Depends on Token Budget Hardening and blocks real single-node multi-GPU 78M pilot execution.
+- **US3 (Phase 5)**: Depends on US2, Token Budget Hardening, and Distributed Pilot Observability for matched baseline matrix, 78M pilot labeling, budget-derived run lengths, and pilot execution artifacts.
 - **US4 (Phase 6)**: Depends on US2 for extracted nested and standalone comparisons.
 - **US5 (Phase 7)**: Depends on US4 for alignment artifacts and model-pair conventions.
 - **Polish (Phase 8)**: Depends on completed target stories.
@@ -309,6 +347,7 @@ all completed stories.
 - **Output Storage**: Cross-cutting blocker that preserves repository disk and inode capacity before larger Phase 4+ runs.
 - **US2**: Extends US1 to full debug S/M/L/XL standalone matrix and 78M pilot labeling.
 - **Token Budget Hardening**: Clarifies US2 budgeted-run semantics before real 78M or larger scaling runs.
+- **Distributed Pilot Observability**: Hardens US2 execution for single-node multi-GPU Slurm pilot runs and long-running runtime inspection.
 - **US3**: Adds scaling and downstream trend reporting after baseline matrix exists.
 - **US4**: Adds consistency and mix-and-match evaluation after matched runs exist.
 - **US5**: Adds speculative decoding after model-pair comparison conventions exist.
@@ -331,6 +370,8 @@ all completed stories.
 - Output storage tests T078-T079 can run in parallel before T080-T081 implementation.
 - US2 verification tasks T033-T035 can run in parallel.
 - Token budget documentation tasks T088-T089 can run in parallel with verification tasks T085-T087.
+- Distributed pilot verification tasks T094-T097 can run in parallel.
+- Distributed pilot helper tasks T099-T100 can run in parallel after T098 clarifies contracts.
 - US3 verification tasks T044-T045 can run in parallel.
 - US4 verification tasks T052-T053 can run in parallel.
 - US5 verification tasks T060-T061 can run in parallel.
@@ -360,6 +401,15 @@ Task: "T035 Add 78M completion label checks in tests/test_config.py"
 Task: "T085 Add derived training length config checks for default world size and WORLD_SIZE handling in tests/test_config.py"
 Task: "T086 Add run summary schema checks for expected_tokens_per_step, derived_max_steps, effective_world_size, and stop_reason in tests/test_artifacts.py"
 Task: "T087 Add token-budget stop behavior smoke coverage with mocked or tiny data in tests/test_training_smoke.py"
+```
+
+## Parallel Example: Distributed Pilot Execution and Runtime Observability
+
+```bash
+Task: "T094 Add single-node multi-GPU Slurm launcher command checks in tests/test_78m_pilot.py"
+Task: "T095 Add config-driven distributed/FSDP training smoke checks in tests/test_training_smoke.py"
+Task: "T096 Add rank-0-only shared artifact write checks in tests/test_artifacts.py"
+Task: "T097 Add heartbeat JSONL schema, stdout line, and cadence checks in tests/test_heartbeats.py"
 ```
 
 ## Parallel Example: User Story 3
@@ -401,9 +451,10 @@ Task: "T061 Add prompt-set pairing checks in tests/test_speculative.py"
 2. Output Storage makes every later runner safe for filesystems with restricted space or inodes.
 3. US2 completes the debug-size S/M/L/XL baseline matrix and 78M pilot label path.
 4. Token Budget Hardening makes `training.token_budget` authoritative before real 78M or larger budgeted runs.
-5. US3 adds scaling/downstream reporting from structured artifacts.
-6. US4 adds consistency and elastic behavior analysis.
-7. US5 adds speculative decoding alignment.
+5. Distributed Pilot Observability prepares the 78M pilot for single-node multi-GPU Slurm execution with rank-safe artifacts and heartbeat logs.
+6. US3 adds scaling/downstream reporting from structured artifacts.
+7. US4 adds consistency and elastic behavior analysis.
+8. US5 adds speculative decoding alignment.
 
 ### Validation Gates
 
@@ -411,6 +462,7 @@ Task: "T061 Add prompt-set pairing checks in tests/test_speculative.py"
 - Before US2 start: custom output root runs place required artifacts under `<output_root>/<run_id>/` and avoid repository `outputs/`.
 - Before US2 completion: S/M/L/XL debug standalone baselines exist and 78M reduced-token pilot labels are correct.
 - Before budgeted 78M execution: resolved configs and summaries expose derived max steps, expected tokens per step, effective world size, tokens seen, and stop reason.
+- Before distributed 78M pilot execution: Slurm launcher checks, config-driven FSDP smoke coverage, rank-0-only artifact writes, and heartbeat JSONL/stdout checks pass.
 - Before US3 completion: plots derive from CSV files only.
 - Before US4 completion: consistency metrics distinguish nested and standalone sources.
 - Before US5 completion: speculative metrics include acceptance, rollback, throughput, and latency.
