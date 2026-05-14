@@ -121,3 +121,62 @@ def test_external_output_root_keeps_required_artifacts_outside_repo_outputs(tmp_
     summary = json.loads((run_dir / "run_summary.json").read_text(encoding="utf-8"))
     assert summary["output_root"] == str(output_root)
     assert summary["output_dir"] == str(run_dir)
+
+
+def test_budgeted_training_stops_at_token_budget_before_manual_step_cap(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.delenv("WORLD_SIZE", raising=False)
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "training.token_budget=4",
+            "training.max_steps=10",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.warmup_steps=0",
+            "evaluation.validation=false",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]],
+            "attention_mask": [[1, 1, 1, 1], [1, 1, 1, 1], [1, 1, 1, 1]],
+        }
+    )
+
+    result = run_training(
+        config,
+        model=TinyNestedTrainingModel(),
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    for field_name in [
+        "stop_reason",
+        "expected_tokens_per_step",
+        "derived_max_steps",
+        "effective_world_size",
+    ]:
+        assert field_name in summary
+    assert summary["stop_reason"] == "token_budget_reached"
+    assert summary["token_budget"] == 4
+    assert summary["tokens_seen"] == 4
+    assert summary["expected_tokens_per_step"] == 64
+    assert summary["derived_max_steps"] == 1
+    assert summary["effective_world_size"] == 1
+    assert summary["steps_completed"] == 1
+
+    with result["metrics_path"].open("r", encoding="utf-8", newline="") as metrics_file:
+        train_steps = {
+            row["step"]
+            for row in csv.DictReader(metrics_file)
+            if row["split"] == "train"
+        }
+    assert train_steps == {"1"}

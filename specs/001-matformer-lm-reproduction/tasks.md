@@ -170,9 +170,9 @@ deterministic `stop_reason`.
 
 ### Verification for Token-Budget-Derived Training Length
 
-- [ ] T085 [P] [US2] Add derived training length config checks for default world size and `WORLD_SIZE` handling in `tests/test_config.py`
-- [ ] T086 [P] [US2] Add run summary schema checks for `expected_tokens_per_step`, `derived_max_steps`, `effective_world_size`, and `stop_reason` in `tests/test_artifacts.py`
-- [ ] T087 [P] [US2] Add token-budget stop behavior smoke coverage with mocked or tiny data in `tests/test_training_smoke.py`
+- [X] T085 [P] [US2] Add derived training length config checks for default world size and `WORLD_SIZE` handling in `tests/test_config.py`
+- [X] T086 [P] [US2] Add run summary schema checks for `expected_tokens_per_step`, `derived_max_steps`, `effective_world_size`, and `stop_reason` in `tests/test_artifacts.py`
+- [X] T087 [P] [US2] Add token-budget stop behavior smoke coverage with mocked or tiny data in `tests/test_training_smoke.py`
 
 ### Implementation for Token-Budget-Derived Training Length
 

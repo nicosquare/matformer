@@ -145,6 +145,54 @@ def test_write_failed_run_summary_records_failure_note(tmp_path):
     assert saved_summary["notes"] == ["CUDA out of memory during debug smoke"]
 
 
+def test_run_summary_includes_budget_derived_fields(tmp_path):
+    output_dir = tmp_path / "78m-reduced-pilot-001"
+    config = resolve_run_config(
+        "configs/78m_reduced_pilot.yaml",
+        output_dir=output_dir,
+    )
+
+    summary = build_run_summary(config, tokens_seen=128, notes=["budget smoke"])
+
+    for field_name in [
+        "expected_tokens_per_step",
+        "derived_max_steps",
+        "effective_world_size",
+        "stop_reason",
+    ]:
+        assert field_name in summary
+    assert summary["expected_tokens_per_step"] == config["training"][
+        "expected_tokens_per_step"
+    ]
+    assert summary["derived_max_steps"] == config["training"]["derived_max_steps"]
+    assert summary["effective_world_size"] == config["training"][
+        "effective_world_size"
+    ]
+    assert summary["stop_reason"] == "not_started"
+
+
+def test_run_summary_schema_requires_budget_derived_fields(tmp_path):
+    output_dir = tmp_path / "78m-reduced-pilot-001"
+    config = resolve_run_config(
+        "configs/78m_reduced_pilot.yaml",
+        output_dir=output_dir,
+    )
+    summary = build_run_summary(
+        config,
+        tokens_seen=128,
+        extra_fields={
+            "expected_tokens_per_step": 8192,
+            "derived_max_steps": 12208,
+            "effective_world_size": 1,
+            "stop_reason": "token_budget_reached",
+        },
+    )
+    summary.pop("stop_reason")
+
+    with pytest.raises(ArtifactError, match="stop_reason"):
+        write_run_summary(output_dir, summary)
+
+
 def test_write_all_csv_artifact_types(tmp_path):
     output_dir = tmp_path / "debug-nested-001"
 

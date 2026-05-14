@@ -1,5 +1,6 @@
 import copy
 import json
+import math
 import textwrap
 
 import pytest
@@ -283,3 +284,63 @@ def test_78m_reduced_budget_rejects_paper_budget_complete_label():
 
     with pytest.raises(ConfigError, match="reduced-token-pilot"):
         validate_run_config(mislabeled)
+
+
+def test_78m_pilot_derives_training_length_with_default_world_size(tmp_path, monkeypatch):
+    monkeypatch.delenv("WORLD_SIZE", raising=False)
+    output_root = tmp_path / "pilot-output"
+
+    resolved = resolve_run_config(
+        "configs/78m_reduced_pilot.yaml",
+        overrides=[f"run.output_root={output_root}"],
+    )
+
+    training = resolved["training"]
+    expected_tokens_per_step = (
+        training["batch_size_per_process"]
+        * resolved["model"]["context_length"]
+    )
+    expected_steps = math.ceil(training["token_budget"] / expected_tokens_per_step)
+
+    for field_name in [
+        "effective_world_size",
+        "expected_tokens_per_step",
+        "derived_max_steps",
+    ]:
+        assert field_name in training
+    assert training["effective_world_size"] == 1
+    assert training["expected_tokens_per_step"] == expected_tokens_per_step
+    assert training["derived_max_steps"] == expected_steps
+    assert training["max_steps"] == expected_steps
+
+
+def test_78m_pilot_derives_training_length_from_distributed_world_size(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("WORLD_SIZE", "4")
+    output_root = tmp_path / "pilot-output"
+
+    resolved = resolve_run_config(
+        "configs/78m_reduced_pilot.yaml",
+        overrides=[f"run.output_root={output_root}"],
+    )
+
+    training = resolved["training"]
+    expected_tokens_per_step = (
+        training["batch_size_per_process"]
+        * resolved["model"]["context_length"]
+        * 4
+    )
+    expected_steps = math.ceil(training["token_budget"] / expected_tokens_per_step)
+
+    for field_name in [
+        "effective_world_size",
+        "expected_tokens_per_step",
+        "derived_max_steps",
+    ]:
+        assert field_name in training
+    assert training["effective_world_size"] == 4
+    assert training["expected_tokens_per_step"] == expected_tokens_per_step
+    assert training["derived_max_steps"] == expected_steps
+    assert training["max_steps"] == expected_steps
