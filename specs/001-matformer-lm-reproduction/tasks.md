@@ -178,10 +178,10 @@ deterministic `stop_reason`.
 
 - [X] T088 [P] [US2] Update derived training length fields and validation rules in `specs/001-matformer-lm-reproduction/data-model.md` and `specs/001-matformer-lm-reproduction/contracts/experiment-config.md`
 - [X] T089 [P] [US2] Update run artifact expectations for budget-derived fields in `specs/001-matformer-lm-reproduction/contracts/run-artifacts.md`
-- [ ] T090 [US2] Implement effective world size and derived max-step resolution in `utils/config.py`
-- [ ] T091 [US2] Update budgeted training loop stopping and `stop_reason` calculation in `training/run.py`
-- [ ] T092 [US2] Emit token-budget-derived summary fields through `utils/metrics.py`
-- [ ] T093 [US2] Update 78M pilot config and quickstart guidance for token-budget-derived step counts in `configs/78m_reduced_pilot.yaml` and `specs/001-matformer-lm-reproduction/quickstart.md`
+- [X] T090 [US2] Implement effective world size and derived max-step resolution in `utils/config.py`
+- [X] T091 [US2] Update budgeted training loop stopping and `stop_reason` calculation in `training/run.py`
+- [X] T092 [US2] Emit token-budget-derived summary fields through `utils/metrics.py`
+- [X] T093 [US2] Update 78M pilot config and quickstart guidance for token-budget-derived step counts in `configs/78m_reduced_pilot.yaml` and `specs/001-matformer-lm-reproduction/quickstart.md`
 
 **Checkpoint**: Budgeted runs are ready for 78M pilot execution only when the
 resolved config and run summary expose derived training length, effective world

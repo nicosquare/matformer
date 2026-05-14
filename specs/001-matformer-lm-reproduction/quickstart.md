@@ -66,7 +66,7 @@ Useful local override example:
 ```bash
 PYTHON_BIN=/home/nicolas.avila/.conda/envs/elasticnn/bin/python \
   OUTPUT_ROOT=/mnt/experiments/matformer \
-  bash scripts/run_debug_matrix.sh --override training.max_steps=1
+  bash scripts/run_debug_matrix.sh --override training.max_steps_cap=1
 ```
 
 On a Slurm GPU partition, queue the same validation instead of running it on
@@ -75,7 +75,7 @@ the login node:
 ```bash
 sbatch scripts/slurm_debug_matrix.sh \
   --output-root /mnt/experiments/matformer \
-  --override training.max_steps=1
+  --override training.max_steps_cap=1
 ```
 
 The Slurm launcher defaults to the `elasticnn` conda environment's Python at
@@ -85,6 +85,11 @@ arguments to `scripts/run_debug_matrix.sh`. Submit it with `sbatch`; direct
 allocation. Override scheduler resources at submission time when needed, for
 example `sbatch --time=01:00:00 --mem=32G ...`.
 
+Training length is derived from `training.token_budget`,
+`training.batch_size_per_process`, model context length, and the active
+distributed `WORLD_SIZE`. Use `training.max_steps_cap` only for short smoke
+checks that intentionally stop before the derived token-budget length.
+
 To queue only part of the standalone debug matrix during scheduler debugging,
 pass an explicit baseline set:
 
@@ -92,7 +97,7 @@ pass an explicit baseline set:
 sbatch scripts/slurm_debug_matrix.sh \
   --output-root /mnt/experiments/matformer \
   --baseline-granularities "s m" \
-  --override training.max_steps=1
+  --override training.max_steps_cap=1
 ```
 
 Equivalent config override form:
@@ -124,15 +129,18 @@ PYTHON_BIN=/home/nicolas.avila/.conda/envs/elasticnn/bin/python \
 Expected result:
 - Architecture constants are paper-aligned.
 - The run is labeled `reduced-token-pilot` unless it uses the 10B token budget.
-- Outputs record actual tokens seen and target token budget.
+- The resolved config records `effective_world_size`,
+  `expected_tokens_per_step`, `derived_max_steps`, and the effective
+  `max_steps`.
+- Outputs record actual tokens seen, target token budget, and `stop_reason`.
 
 Queue this on a GPU node rather than the login node. For a short scheduler and
-artifact-path check, keep the 78M config but override the step count:
+artifact-path check, keep the 78M config but cap the derived step count:
 
 ```bash
 PYTHON_BIN=/home/nicolas.avila/.conda/envs/elasticnn/bin/python \
   OUTPUT_ROOT=/mnt/experiments/matformer \
-  bash scripts/run_78m_pilot.sh --override training.max_steps=1
+  bash scripts/run_78m_pilot.sh --override training.max_steps_cap=1
 ```
 
 The default run id is `78m-reduced-pilot-001`, so artifacts resolve under

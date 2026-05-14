@@ -72,7 +72,11 @@ RUN_SUMMARY_FIELDS = [
     "dataset_name",
     "dataset_split",
     "token_budget",
+    "expected_tokens_per_step",
+    "derived_max_steps",
+    "effective_world_size",
     "tokens_seen",
+    "stop_reason",
     "seed",
     "status",
     "output_root",
@@ -117,6 +121,7 @@ def build_run_summary(
 
     if tokens_seen is None:
         tokens_seen = training.get("tokens_seen", training["token_budget"])
+    stop_reason = "failed" if status == "failed" else "not_started"
 
     summary = {
         "run_id": run["run_id"],
@@ -127,7 +132,11 @@ def build_run_summary(
         "dataset_name": dataset["dataset_name"],
         "dataset_split": dataset["dataset_split"],
         "token_budget": training["token_budget"],
+        "expected_tokens_per_step": training["expected_tokens_per_step"],
+        "derived_max_steps": training["derived_max_steps"],
+        "effective_world_size": training["effective_world_size"],
         "tokens_seen": tokens_seen,
+        "stop_reason": stop_reason,
         "seed": run.get("seed"),
         "status": status,
         "output_root": run["output_root"],

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -99,6 +100,7 @@ def resolve_run_config(
         resolved["run"]["output_dir"] = str(output_dir)
 
     _resolve_output_paths(resolved)
+    _resolve_training_length(resolved)
     validate_run_config(resolved)
     return resolved
 
@@ -112,6 +114,7 @@ def resolve_all_run_configs(
     if "matrix" not in config:
         resolved = _compose_single_run(config)
         _resolve_output_paths(resolved)
+        _resolve_training_length(resolved)
         validate_run_config(resolved)
         return [resolved]
 
@@ -125,6 +128,7 @@ def resolve_all_run_configs(
     for run_entry in runs:
         resolved = _compose_matrix_run(config, run_entry)
         _resolve_output_paths(resolved)
+        _resolve_training_length(resolved)
         validate_run_config(resolved)
         resolved_runs.append(resolved)
 
@@ -186,7 +190,17 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "granularities",
         ],
     )
-    _require_fields(training, "training", ["token_budget"])
+    _require_fields(
+        training,
+        "training",
+        [
+            "token_budget",
+            "effective_world_size",
+            "expected_tokens_per_step",
+            "derived_max_steps",
+            "max_steps",
+        ],
+    )
     _require_fields(
         dataset,
         "dataset",
@@ -249,6 +263,8 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
                 f"78m token_budget={token_budget} requires "
                 f"completion_label={expected_label}"
             )
+
+    _validate_derived_training_length(training, model)
 
 
 def _compose_single_run(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -353,6 +369,105 @@ def _resolve_output_paths(config: dict[str, Any]) -> None:
     _ensure_writable_directory(output_root, "output root")
     if explicit_output_dir:
         _ensure_writable_directory(output_dir.parent, "output directory parent")
+
+
+def _resolve_training_length(config: dict[str, Any]) -> None:
+    training = config.get("training")
+    model = config.get("model")
+    if not isinstance(training, dict) or not isinstance(model, Mapping):
+        return
+    if "token_budget" not in training:
+        return
+
+    token_budget = _positive_int(training["token_budget"], "training.token_budget")
+    batch_size_per_process = _positive_int(
+        training.get("batch_size_per_process"),
+        "training.batch_size_per_process",
+    )
+    context_length = _positive_int(model.get("context_length"), "model.context_length")
+    effective_world_size = _resolve_effective_world_size()
+    expected_tokens_per_step = (
+        batch_size_per_process * context_length * effective_world_size
+    )
+    derived_max_steps = math.ceil(token_budget / expected_tokens_per_step)
+
+    max_steps_cap = training.get("max_steps_cap")
+    if max_steps_cap is None:
+        max_steps_cap = training.get("max_steps")
+    if max_steps_cap is not None:
+        max_steps_cap = _positive_int(max_steps_cap, "training.max_steps_cap")
+
+    training["token_budget"] = token_budget
+    training["batch_size_per_process"] = batch_size_per_process
+    training["effective_world_size"] = effective_world_size
+    training["expected_tokens_per_step"] = expected_tokens_per_step
+    training["derived_max_steps"] = derived_max_steps
+    training["max_steps_cap"] = max_steps_cap
+    training["max_steps"] = (
+        min(derived_max_steps, max_steps_cap)
+        if max_steps_cap is not None
+        else derived_max_steps
+    )
+
+
+def _resolve_effective_world_size() -> int:
+    raw_world_size = os.environ.get("WORLD_SIZE")
+    if raw_world_size in (None, ""):
+        return 1
+    return _positive_int(raw_world_size, "WORLD_SIZE")
+
+
+def _validate_derived_training_length(
+    training: Mapping[str, Any],
+    model: Mapping[str, Any],
+) -> None:
+    token_budget = _positive_int(training["token_budget"], "training.token_budget")
+    batch_size_per_process = _positive_int(
+        training["batch_size_per_process"],
+        "training.batch_size_per_process",
+    )
+    context_length = _positive_int(model["context_length"], "model.context_length")
+    effective_world_size = _positive_int(
+        training["effective_world_size"],
+        "training.effective_world_size",
+    )
+    expected_tokens_per_step = (
+        batch_size_per_process * context_length * effective_world_size
+    )
+    if training["expected_tokens_per_step"] != expected_tokens_per_step:
+        raise ConfigError(
+            "training.expected_tokens_per_step must equal "
+            "batch_size_per_process * context_length * effective_world_size"
+        )
+
+    derived_max_steps = math.ceil(token_budget / expected_tokens_per_step)
+    if training["derived_max_steps"] != derived_max_steps:
+        raise ConfigError(
+            "training.derived_max_steps must equal "
+            "ceil(token_budget / expected_tokens_per_step)"
+        )
+
+    max_steps = _positive_int(training["max_steps"], "training.max_steps")
+    max_steps_cap = training.get("max_steps_cap")
+    if max_steps_cap is not None:
+        max_steps_cap = _positive_int(max_steps_cap, "training.max_steps_cap")
+        expected_max_steps = min(derived_max_steps, max_steps_cap)
+    else:
+        expected_max_steps = derived_max_steps
+    if max_steps != expected_max_steps:
+        raise ConfigError("training.max_steps must match the resolved budget step count")
+
+
+def _positive_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise ConfigError(f"{field_name} must be a positive integer")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as error:
+        raise ConfigError(f"{field_name} must be a positive integer") from error
+    if parsed <= 0:
+        raise ConfigError(f"{field_name} must be a positive integer")
+    return parsed
 
 
 def _ensure_writable_directory(path: Path, label: str) -> None:

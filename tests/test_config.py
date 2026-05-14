@@ -132,14 +132,20 @@ def test_78m_completion_label_validation():
     resolved = resolve_run_config("configs/78m_reduced_pilot.yaml")
     validate_run_config(resolved)
 
-    mislabeled = copy.deepcopy(resolved)
-    mislabeled["training"]["token_budget"] = 10_000_000_000
+    paper_budget = resolve_run_config(
+        "configs/78m_reduced_pilot.yaml",
+        overrides=[
+            "training.token_budget=10000000000",
+            "run.completion_label=paper-budget-complete",
+        ],
+    )
+    mislabeled = copy.deepcopy(paper_budget)
+    mislabeled["run"]["completion_label"] = "reduced-token-pilot"
 
     with pytest.raises(ConfigError, match="paper-budget-complete"):
         validate_run_config(mislabeled)
 
-    mislabeled["run"]["completion_label"] = "paper-budget-complete"
-    validate_run_config(mislabeled)
+    validate_run_config(paper_budget)
 
 
 def test_standalone_requires_one_granularity():

@@ -122,15 +122,13 @@ def run_training(
         )
         scaling_path = write_scaling_results_csv(output_dir, scaling_rows)
 
-        tokens_seen = max(
-            row["tokens_seen"]
-            for row in metrics_rows
-            if row["split"] == "train"
-        )
+        training_outcome = summarize_training_outcome(config, metrics_rows)
+        tokens_seen = training_outcome["tokens_seen"]
         extra_summary_fields = {
             "metrics_path": str(metrics_path),
             "scaling_results_path": str(scaling_path),
-            "steps_completed": training["max_steps"],
+            "steps_completed": training_outcome["steps_completed"],
+            "stop_reason": training_outcome["stop_reason"],
             "granularities": config["model"]["granularities"],
             "parameter_counts_by_granularity": parameter_counts_by_granularity,
         }
@@ -236,6 +234,7 @@ def train_for_steps(
 ) -> list[dict[str, Any]]:
     training = config["training"]
     granularities = config["model"]["granularities"]
+    token_budget = training["token_budget"]
     max_steps = training["max_steps"]
     eval_interval = training.get("eval_interval", 0)
 
@@ -245,8 +244,13 @@ def train_for_steps(
     step = 0
 
     model.train()
-    while step < max_steps:
+    while step < max_steps and tokens_seen < token_budget:
+        made_progress = False
         for batch in train_dataloader:
+            if step >= max_steps or tokens_seen >= token_budget:
+                break
+
+            made_progress = True
             step += 1
             batch = move_batch_to_device(batch, device)
             batch_tokens = count_batch_tokens(batch)
@@ -303,8 +307,10 @@ def train_for_steps(
                     )
                 )
 
-            if step >= max_steps:
+            if step >= max_steps or tokens_seen >= token_budget:
                 break
+        if not made_progress:
+            break
 
     append_final_validation_if_needed(
         metrics_rows,
@@ -319,6 +325,44 @@ def train_for_steps(
     )
 
     return metrics_rows
+
+
+def summarize_training_outcome(
+    config: dict[str, Any],
+    metrics_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    training_rows = [row for row in metrics_rows if row["split"] == "train"]
+    if not training_rows:
+        return {
+            "steps_completed": 0,
+            "tokens_seen": 0,
+            "stop_reason": "not_started",
+        }
+
+    steps_completed = max(int(row["step"]) for row in training_rows)
+    tokens_seen = max(int(row["tokens_seen"]) for row in training_rows)
+    return {
+        "steps_completed": steps_completed,
+        "tokens_seen": tokens_seen,
+        "stop_reason": stop_reason_for_training(
+            config,
+            tokens_seen=tokens_seen,
+            steps_completed=steps_completed,
+        ),
+    }
+
+
+def stop_reason_for_training(
+    config: dict[str, Any],
+    tokens_seen: int,
+    steps_completed: int,
+) -> str:
+    training = config["training"]
+    if steps_completed == 0:
+        return "not_started"
+    if tokens_seen >= training["token_budget"]:
+        return "token_budget_reached"
+    return "max_steps_reached_before_token_budget"
 
 
 def append_final_validation_if_needed(
