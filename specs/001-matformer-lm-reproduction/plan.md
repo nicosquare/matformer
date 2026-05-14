@@ -35,7 +35,8 @@ artifact writing, and small debug runs. Quickstart commands provide manual
 end-to-end validation.  
 **Target Platform**: Linux workstation or server with CPU support for tiny
 smoke tests and CUDA GPUs for meaningful training; FSDP remains available for
-multi-GPU runs through `torch.distributed.run`.  
+multi-GPU runs through `torch.distributed.run`. Phase 4.6 narrows the first
+distributed pilot target to single-node Slurm jobs.
 **Project Type**: Research training pipeline, model variant reproduction,
 baseline comparison workflow, and evaluation/reporting toolchain.  
 **Experiment Scope**: MatFormer nested FFN training, standalone FFN-width
@@ -52,11 +53,12 @@ token budget, seed, run id, output root, optional explicit output directory,
 checkpoint policy, and evaluation suite.
 **Experiment Outputs**: `config.json`, `metrics.csv`, `task_results.csv`,
 `scaling_results.csv`, `consistency_results.csv`, `run_summary.json`, plots,
-and checkpoints when needed.  
+heartbeats, and checkpoints when needed.
 **Reproducibility Notes**: Save resolved config for every run, log seeds when
 set, record dataset identity/preprocessing assumptions, record the resolved
 output root and output directory, label reduced-token pilots separately from
 paper-budget complete runs, and link every plot point back to run artifacts.
+Budget-derived training length must be saved in resolved configs and summaries.
 **Performance Goals**: Debug matrix completes quickly enough for iteration;
 78M path records tokens/sec, wall-clock time, estimated compute when available,
 and peak memory. The reproduction prioritizes trend fidelity over exact
@@ -67,9 +69,12 @@ larger budgets; paper-aligned runs must preserve 16 layers, 16 heads, context
 1024, and 256k vocabulary assumption unless labeled non-paper-aligned.
 Repository-local storage may have restricted space or inode capacity, so run
 artifacts and optional caches must be redirectable before larger phases begin.
+Distributed pilot work is limited to single-node Slurm execution before any
+multi-node scaling path is planned.
 **Scale/Scope**: Required first implementation scope is debug-size nested plus
 S/M/L/XL standalone matrix. Next scope is 78M paper-aligned architecture with
-reduced-token pilot support and explicit 78M/10B completion label.
+reduced-token pilot support, explicit 78M/10B completion label, derived budget
+length, and single-node distributed pilot observability.
 
 ## Constitution Check
 
@@ -84,15 +89,17 @@ reduced-token pilot support and explicit 78M/10B completion label.
   and model utilities with explicit tensor-shape checks.
 - **Minimal abstraction and validation**: PASS. Validation focuses on silent
   research failures: FFN prefix shape mistakes, mismatched baselines, missing
-  artifacts, and mislabeled token budgets.
+  artifacts, mislabeled token budgets, duplicate distributed artifact writes,
+  and missing long-running-job observability.
 - **Transparent configuration and reproducibility**: PASS. Each run writes a
-  resolved config, seed, dataset assumptions, run summary, and completion
-  labels.
+  resolved config, seed, dataset assumptions, run summary, completion labels,
+  and budget-derived training length.
 - **Useful outputs and logging**: PASS. The plan requires CSV/JSON summaries,
-  plot inputs, readable console logging, and no metrics stored only in terminal
-  output.
-- **Shallow organization**: PASS. New directories are one level deep and match
-  the constitution's research-code layout.
+  plot inputs, readable console logging, heartbeat artifacts for long-running
+  Slurm jobs, and no metrics stored only in terminal output.
+- **Shallow organization**: PASS. New files use existing shallow directories
+  such as `training/`, `utils/`, and `scripts/`; no framework layer is needed
+  for distributed pilot orchestration.
 
 **Post-design re-check**: PASS. The Phase 1 artifacts preserve the same shallow
 structure and do not introduce unjustified abstraction.
@@ -170,6 +177,65 @@ External dependency caches are separate from run artifacts. Documentation and
 runner guidance should tell researchers to move Hugging Face caches with
 `HF_HOME`, `HF_DATASETS_CACHE`, and `TRANSFORMERS_CACHE` when repository or
 home filesystems have limited space or inodes.
+
+## Phase 4.5 Budget-Derived Training Length
+
+Budgeted runs treat `training.token_budget` as the source of truth. Source YAML
+contains hand-authored inputs such as token budget, per-process batch size, and
+optional safety caps. Resolved `config.json` records derived fields:
+`effective_world_size`, `expected_tokens_per_step`, `derived_max_steps`, and
+the effective `max_steps` used by training.
+
+`effective_world_size` must come from the active distributed `WORLD_SIZE` when
+distributed training is launched, otherwise 1. It must not be inferred from the
+number of visible or allocated GPUs. Run summaries copy the resolved planning
+fields and add runtime outcomes including `tokens_seen` and `stop_reason`.
+
+This phase blocks real 78M pilot execution because reduced-token pilot labels
+are only trustworthy when the planned and observed token budgets are explicit.
+
+## Phase 4.6 Distributed Pilot Execution and Runtime Observability
+
+Phase 4.6 is a cross-cutting planning addendum discovered after the initial
+Phase 4 work. It prepares the 78M reduced-token pilot for single-node
+multi-GPU Slurm execution and durable progress reporting before downstream or
+larger scaling work begins.
+
+The first distributed target is deliberately narrow:
+
+- Use a Slurm launcher for the 78M pilot that requests one node with multiple
+  GPUs and launches one process per GPU.
+- Use the config-driven training path with PyTorch distributed/FSDP rather than
+  the older CLI-only training path.
+- Resolve budget-derived training length from the effective distributed
+  `WORLD_SIZE` exposed to the training process.
+- Restrict shared artifact writes to rank 0 for resolved configs, metrics,
+  summaries, checkpoints, and heartbeat JSONL.
+- Keep local interactive runs readable; progress bars may be used locally, but
+  Slurm defaults to clean heartbeat lines and durable JSONL events.
+
+Runtime observability is required because the 78M pilot can spend meaningful
+time in dataset loading, preprocessing, model initialization, FSDP wrapping,
+training, validation, checkpointing, and artifact writing. The implementation
+should emit stage start/completion events to stdout and a run-local JSONL
+heartbeat artifact. Heartbeats are not a replacement for metrics; they are an
+operational trace for diagnosing long-running scheduler jobs.
+
+Follow-up task generation for Phase 4.6 should cover:
+
+- Slurm wrapper updates for single-node multi-GPU 78M pilot submission.
+- Distributed config-driven model wrapping and dataloader behavior.
+- Rank-aware artifact writing and summary finalization.
+- Heartbeat JSONL schema, writer, and stage instrumentation.
+- Focused tests for rank-0-only writes, effective world-size propagation, and
+  heartbeat artifacts.
+- Quickstart documentation for queueing the distributed pilot and inspecting
+  progress.
+
+This phase should remain shallow and visible. Avoid introducing callback
+systems, training frameworks, or logging stacks; small helpers are acceptable
+only where they prevent duplicate rank-aware write logic or make heartbeats
+consistent across stages.
 
 ## Complexity Tracking
 
