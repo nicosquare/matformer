@@ -53,6 +53,12 @@ def _read_slurm_dmodel256_script():
     )
 
 
+def _read_runner_dmodel256_script():
+    return (REPO_ROOT / "scripts" / "run_dmodel256_pilot.sh").read_text(
+        encoding="utf-8"
+    )
+
+
 def _sbatch_option_value(script_text, option):
     for line in script_text.splitlines():
         stripped = line.strip()
@@ -153,6 +159,62 @@ def test_dmodel256_pilot_runner_forwards_explicit_arguments(tmp_path):
     assert _has_arg_pair(args, "--override", "training.max_steps_cap=1")
 
 
+def test_dmodel256_pilot_runner_declares_default_comparison_scope():
+    script_text = _read_runner_dmodel256_script()
+
+    assert "nested-random" in script_text
+    assert "nested-all" in script_text
+    assert "standalone" in script_text
+    assert "omitted" in script_text or "omit" in script_text
+
+
+def test_dmodel256_pilot_runner_nested_all_mode_sets_sampling_overrides(tmp_path):
+    args = _capture_dmodel256_pilot_comparison_invocation(
+        tmp_path,
+        [
+            "--mode",
+            "nested-all",
+            "--run-id",
+            "dmodel256-nested-all-001",
+            "--override",
+            "training.max_steps_cap=1",
+        ],
+    )
+
+    assert "--mode" not in args
+    assert _has_arg_pair(args, "--override", "run.run_id=dmodel256-nested-all-001")
+    assert _has_arg_pair(args, "--override", "run.model_family=nested")
+    assert _has_arg_pair(args, "--override", "run.sampling_mode=nested-all")
+    assert _has_arg_pair(args, "--override", "training.granularity_sampling=all")
+    assert _has_arg_pair(args, "--override", "training.max_steps_cap=1")
+
+
+def test_dmodel256_pilot_runner_standalone_mode_sets_granularity_overrides(tmp_path):
+    args = _capture_dmodel256_pilot_comparison_invocation(
+        tmp_path,
+        [
+            "--mode",
+            "standalone",
+            "--granularity",
+            "m",
+            "--run-id",
+            "dmodel256-standalone-m-001",
+            "--override",
+            "training.max_steps_cap=1",
+        ],
+    )
+
+    assert "--mode" not in args
+    assert "--granularity" not in args
+    assert _has_arg_pair(args, "--override", "run.run_id=dmodel256-standalone-m-001")
+    assert _has_arg_pair(args, "--override", "run.model_family=standalone")
+    assert _has_arg_pair(args, "--override", "run.sampling_mode=standalone")
+    assert _has_arg_pair(args, "--override", "run.granularity=m")
+    assert _has_arg_pair(args, "--override", "model.granularities=[m]")
+    assert _has_arg_pair(args, "--override", "training.granularity_sampling=all")
+    assert _has_arg_pair(args, "--override", "training.max_steps_cap=1")
+
+
 def test_slurm_dmodel256_pilot_comparison_requests_single_node_multi_gpu_resources():
     script_text = _read_slurm_dmodel256_script()
 
@@ -233,6 +295,54 @@ def test_slurm_dmodel256_pilot_comparison_wrapper_forwards_to_runner(tmp_path):
     assert "--run-id" not in args
     assert _has_arg_pair(args, "--override", "run.run_id=dmodel256-pilot-comparison-001")
     assert _has_arg_pair(args, "--output-root", str(output_root))
+    assert _has_arg_pair(args, "--override", "training.max_steps_cap=1")
+
+
+def test_slurm_dmodel256_pilot_wrapper_forwards_mode_selection_to_runner(tmp_path):
+    recorder = tmp_path / "python-recorder.sh"
+    argv_path = tmp_path / "argv.txt"
+
+    recorder.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$@\" > \"$ARGV_FILE\"\n",
+        encoding="utf-8",
+    )
+    recorder.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "ALLOW_LOCAL_SLURM_WRAPPER": "1",
+            "PYTHON_BIN": str(recorder),
+            "ARGV_FILE": str(argv_path),
+        }
+    )
+
+    subprocess.run(
+        [
+            "bash",
+            "scripts/slurm_dmodel256_pilot.sh",
+            "--output-root",
+            str(tmp_path / "slurm-output"),
+            "--mode",
+            "nested-all",
+            "--run-id",
+            "dmodel256-nested-all-001",
+            "--override",
+            "training.max_steps_cap=1",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    args = argv_path.read_text(encoding="utf-8").splitlines()
+    assert "--mode" not in args
+    assert _has_arg_pair(args, "--override", "run.run_id=dmodel256-nested-all-001")
+    assert _has_arg_pair(args, "--override", "run.sampling_mode=nested-all")
+    assert _has_arg_pair(args, "--override", "training.granularity_sampling=all")
     assert _has_arg_pair(args, "--override", "training.max_steps_cap=1")
 
 

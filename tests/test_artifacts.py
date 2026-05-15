@@ -193,6 +193,124 @@ def test_run_summary_schema_requires_budget_derived_fields(tmp_path):
         write_run_summary(output_dir, summary)
 
 
+def _checkpoint_summary_builder():
+    import utils.metrics as metrics
+
+    builder = getattr(metrics, "build_checkpoint_summary_fields", None)
+    assert (
+        builder is not None
+    ), "utils.metrics.build_checkpoint_summary_fields is required"
+    return builder
+
+
+def test_best_eval_checkpoint_summary_selects_lowest_validation_loss(tmp_path):
+    output_dir = tmp_path / "dmodel256-pilot-comparison-001"
+    config = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        output_dir=output_dir,
+    )
+    metrics_rows = [
+        {
+            "run_id": "dmodel256-pilot-comparison-001",
+            "step": 100,
+            "split": "validation",
+            "granularity": "xl",
+            "loss": 2.0,
+            "perplexity": 7.39,
+        },
+        {
+            "run_id": "dmodel256-pilot-comparison-001",
+            "step": 200,
+            "split": "validation",
+            "granularity": "xl",
+            "loss": 1.5,
+            "perplexity": 4.48,
+        },
+        {
+            "run_id": "dmodel256-pilot-comparison-001",
+            "step": 300,
+            "split": "validation",
+            "granularity": "xl",
+            "loss": 1.8,
+            "perplexity": 6.05,
+        },
+    ]
+
+    fields = _checkpoint_summary_builder()(
+        config,
+        metrics_rows,
+        validation_enabled=True,
+        save_checkpoints=True,
+    )
+
+    assert fields["checkpoint_status"] == "best_eval"
+    assert fields["checkpoint_metric"] == "validation_loss"
+    assert fields["checkpoint_metric_value"] == 1.5
+    assert fields["checkpoint_selection_step"] == 200
+    assert fields["best_checkpoint_path"] == str(
+        output_dir / "checkpoints" / "best_eval_step_200.pt"
+    )
+    assert fields["final_checkpoint_path"] is None
+
+    summary = build_run_summary(config, tokens_seen=1024, extra_fields=fields)
+    for field_name in [
+        "checkpoint_status",
+        "best_checkpoint_path",
+        "final_checkpoint_path",
+        "checkpoint_metric",
+    ]:
+        assert field_name in summary
+
+
+def test_final_checkpoint_summary_when_validation_is_disabled(tmp_path):
+    output_dir = tmp_path / "dmodel256-pilot-comparison-001"
+    config = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        output_dir=output_dir,
+        overrides=["evaluation.validation=false"],
+    )
+
+    fields = _checkpoint_summary_builder()(
+        config,
+        metrics_rows=[],
+        validation_enabled=False,
+        save_checkpoints=True,
+    )
+
+    assert fields["checkpoint_status"] == "final"
+    assert fields["best_checkpoint_path"] is None
+    assert fields["final_checkpoint_path"] == str(
+        output_dir / "checkpoints" / "final.pt"
+    )
+    assert fields["checkpoint_metric"] is None
+    assert fields["checkpoint_unavailable_reason"] is None
+
+
+def test_no_checkpoint_summary_when_checkpoint_writes_are_disabled(tmp_path):
+    output_dir = tmp_path / "dmodel256-pilot-comparison-001"
+    config = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        output_dir=output_dir,
+        overrides=[
+            "evaluation.validation=false",
+            "outputs.save_checkpoints=false",
+        ],
+    )
+
+    fields = _checkpoint_summary_builder()(
+        config,
+        metrics_rows=[],
+        validation_enabled=False,
+        save_checkpoints=False,
+    )
+
+    assert fields["checkpoint_status"] == "none"
+    assert fields["best_checkpoint_path"] is None
+    assert fields["final_checkpoint_path"] is None
+    assert fields["checkpoint_metric"] is None
+    assert "disabled" in fields["checkpoint_unavailable_reason"]
+
+
 def test_rank_zero_only_shared_artifact_helper_writes_on_rank_zero(tmp_path):
     from training.distributed import DistributedContext, rank_zero_only
 

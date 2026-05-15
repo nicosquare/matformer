@@ -141,6 +141,9 @@ def test_write_resolved_config(tmp_path):
 
     saved = json.loads(config_path.read_text(encoding="utf-8"))
     assert saved["run"]["run_id"] == "dmodel256-pilot-comparison-001"
+    assert saved["run"]["model_shape_label"] == "dmodel256"
+    assert saved["run"]["table_reference_label"] == "matlm_78m"
+    assert saved["run"]["sampling_mode"] == "nested-random"
     assert saved["run"]["completion_label"] == "reduced-token-pilot"
     assert config_path == output_dir / "config.json"
 
@@ -153,13 +156,13 @@ def test_dmodel256_completion_label_validation():
         "configs/dmodel256_pilot_comparison.yaml",
         overrides=[
             "training.token_budget=10000000000",
-            "run.completion_label=paper-budget-complete",
+            "run.completion_label=matlm-10b-budget-reference",
         ],
     )
     mislabeled = copy.deepcopy(paper_budget)
     mislabeled["run"]["completion_label"] = "reduced-token-pilot"
 
-    with pytest.raises(ConfigError, match="paper-budget-complete"):
+    with pytest.raises(ConfigError, match="matlm-10b-budget-reference"):
         validate_run_config(mislabeled)
 
     validate_run_config(paper_budget)
@@ -285,29 +288,73 @@ def test_unwritable_output_root_fails_before_training(tmp_path):
         output_root.chmod(0o755)
 
 
-def test_dmodel256_pilot_config_preserves_current_shape_assumptions():
+def test_dmodel256_pilot_config_preserves_clarified_terms_and_shape_fields():
     resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
 
-    assert resolved["run"]["model_size_label"] == "78m"
-    assert resolved["run"]["completion_label"] == "reduced-token-pilot"
-    assert resolved["model"]["paper_aligned"] is True
-    assert resolved["model"]["num_layers"] == 16
-    assert resolved["model"]["num_attention_heads"] == 16
-    assert resolved["model"]["context_length"] == 1024
-    assert resolved["model"]["vocab_size_assumption"] == 256000
+    run = resolved["run"]
+    model = resolved["model"]
+
+    assert run["model_shape_label"] == "dmodel256"
+    assert run["table_reference_label"] == "matlm_78m"
+    assert run["sampling_mode"] == "nested-random"
+    assert run["completion_label"] == "reduced-token-pilot"
+    assert "model_size_label" not in run
+
+    assert model["paper_alignment_claim"] is False
+    assert "paper_aligned" not in model
+    assert model["d_model"] == 256
+    assert model["num_layers"] == 16
+    assert model["num_attention_heads"] == 16
+    assert model["context_length"] == 1024
+    assert model["vocab_size_assumption"] == 256000
+    assert model["granularity_prefixes"] == {
+        "s": 0.125,
+        "m": 0.25,
+        "l": 0.5,
+        "xl": 1.0,
+    }
+    assert any("SwiGLU" in note for note in model["mismatch_notes"])
+    assert any("LM-head" in note for note in model["mismatch_notes"])
+
     assert resolved["training"]["token_budget"] < 10_000_000_000
     assert resolved["training"]["granularity_sampling"] == "random"
     validate_run_config(resolved)
 
 
-def test_dmodel256_reduced_budget_rejects_paper_budget_complete_label():
+def test_dmodel256_reduced_budget_rejects_table_budget_reference_label():
     resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
 
     mislabeled = copy.deepcopy(resolved)
-    mislabeled["run"]["completion_label"] = "paper-budget-complete"
+    mislabeled["run"]["completion_label"] = "matlm-10b-budget-reference"
 
     with pytest.raises(ConfigError, match="reduced-token-pilot"):
         validate_run_config(mislabeled)
+
+
+def test_dmodel256_sampling_mode_must_match_granularity_sampling():
+    random_sampling = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
+    assert random_sampling["run"]["sampling_mode"] == "nested-random"
+    assert random_sampling["training"]["granularity_sampling"] == "random"
+
+    nested_all = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        overrides=[
+            "run.run_id=dmodel256-pilot-nested-all-001",
+            "run.sampling_mode=nested-all",
+            "training.granularity_sampling=all",
+        ],
+    )
+    assert nested_all["run"]["sampling_mode"] == "nested-all"
+    assert nested_all["training"]["granularity_sampling"] == "all"
+
+    with pytest.raises(ConfigError, match="sampling_mode"):
+        resolve_run_config(
+            "configs/dmodel256_pilot_comparison.yaml",
+            overrides=[
+                "run.sampling_mode=nested-all",
+                "training.granularity_sampling=random",
+            ],
+        )
 
 
 def test_dmodel256_pilot_derives_training_length_with_default_world_size(tmp_path, monkeypatch):

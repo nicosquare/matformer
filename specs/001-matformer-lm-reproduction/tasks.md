@@ -240,11 +240,11 @@ status/path, and mismatch notes.
 
 ### Verification for Pilot Terminology, Parameter Reporting, Checkpointing, and Comparison Scope
 
-- [ ] T107 [P] [US2] Add d_model=256 pilot terminology, `model_shape_label`, `table_reference_label`, and explicit shape-field config checks in `tests/test_config.py`
-- [ ] T108 [P] [US2] Add disaggregated parameter count, LM-head counting convention, and unavailable-component reason checks in `tests/test_model_size.py`
-- [ ] T109 [P] [US2] Add best-eval selection across multiple validation points plus final and no-checkpoint run summary checks in `tests/test_artifacts.py`
-- [ ] T110 [P] [US2] Add `nested-random`, `nested-all`, standalone, and omitted-standalone pilot comparison row checks with `run_status=omitted`, `omit_reason`, `model_family=standalone`, `granularity`, `sampling_mode=standalone`, token budget, effective world size when known, unavailable checkpoint path/status, and mismatch notes in `tests/test_pilot_comparison.py`
-- [ ] T111 [P] [US2] Add d_model=256 runner and Slurm wrapper checks in `tests/test_dmodel256_pilot.py`
+- [X] T107 [P] [US2] Add d_model=256 pilot terminology, `model_shape_label`, `table_reference_label`, and explicit shape-field config checks in `tests/test_config.py`
+- [X] T108 [P] [US2] Add disaggregated parameter count, LM-head counting convention, and unavailable-component reason checks in `tests/test_model_size.py`
+- [X] T109 [P] [US2] Add best-eval selection across multiple validation points plus final and no-checkpoint run summary checks in `tests/test_artifacts.py`
+- [X] T110 [P] [US2] Add `nested-random`, `nested-all`, standalone, and omitted-standalone pilot comparison row checks with `run_status=omitted`, `omit_reason`, `model_family=standalone`, `granularity`, `sampling_mode=standalone`, token budget, effective world size when known, unavailable checkpoint path/status, and mismatch notes in `tests/test_pilot_comparison.py`
+- [X] T111 [P] [US2] Add d_model=256 runner and Slurm wrapper checks in `tests/test_dmodel256_pilot.py`
 
 ### Implementation for Pilot Terminology, Parameter Reporting, Checkpointing, and Comparison Scope
 
