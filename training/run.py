@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from torch.utils.data.distributed import DistributedSampler
 from transformers import AutoTokenizer, LlamaConfig, LlamaForCausalLM, get_scheduler
 
 from evaluation.validation import (
@@ -23,7 +24,13 @@ from training.data import (
     load_and_tokenize_dataset,
     split_train_eval_dataset,
 )
-from utils.config import resolve_run_config
+from training.distributed import (
+    barrier,
+    prepare_distributed_context,
+    should_write_shared_artifact,
+    wrap_model_for_distributed,
+)
+from utils.config import resolve_run_config, resolve_training_length_for_world_size
 from utils.metrics import (
     build_parameter_counts_by_granularity,
     build_run_summary,
@@ -63,17 +70,18 @@ def run_training(
     training = config["training"]
     output_dir = Path(run["output_dir"])
 
-    write_config_artifact(config)
+    distributed_context = prepare_distributed_context(config, device=device)
+    sync_config_with_distributed_context(config, distributed_context)
+    write_config_artifact(config, distributed_context=distributed_context)
     set_random_seed(run.get("seed"))
 
-    if device is None:
-        device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-    device = torch.device(device)
+    device = torch.device(distributed_context.device)
 
     try:
         if model is None:
             model = build_model(config)
         model = model.to(device)
+        model = wrap_model_for_distributed(model, distributed_context)
 
         if tokenized_dataset is None:
             if tokenizer is None:
@@ -84,7 +92,12 @@ def run_training(
                 num_proc=training.get("preprocess_num_proc", 1),
             )
 
-        train_dataloader, eval_dataloader = build_dataloaders(config, tokenized_dataset, device)
+        train_dataloader, eval_dataloader = build_dataloaders(
+            config,
+            tokenized_dataset,
+            device,
+            distributed_context=distributed_context,
+        )
         optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=training["learning_rate"],
@@ -105,33 +118,52 @@ def run_training(
             scheduler,
             device,
         )
-        extraction_metadata_path = write_extraction_metadata_if_nested(
-            config,
-            model,
-            output_dir,
-        )
-        metrics_path = write_metrics_csv(output_dir, metrics_rows)
-        parameter_counts_by_granularity = build_parameter_counts_by_granularity(
-            model,
-            config["model"]["granularities"],
-        )
-        scaling_rows = build_scaling_result_rows(
-            config,
-            metrics_rows,
-            parameter_counts_by_granularity,
-        )
-        scaling_path = write_scaling_results_csv(output_dir, scaling_rows)
+        extraction_metadata_path = None
+        metrics_path = None
+        scaling_path = None
+        scaling_rows = []
+        parameter_counts_by_granularity = {}
+
+        if should_write_shared_artifact(distributed_context):
+            extraction_metadata_path = write_extraction_metadata_if_nested(
+                config,
+                model,
+                output_dir,
+                distributed_context=distributed_context,
+            )
+            metrics_path = write_metrics_csv(
+                output_dir,
+                metrics_rows,
+                distributed_context=distributed_context,
+            )
+            parameter_counts_by_granularity = build_parameter_counts_by_granularity(
+                model,
+                config["model"]["granularities"],
+            )
+            scaling_rows = build_scaling_result_rows(
+                config,
+                metrics_rows,
+                parameter_counts_by_granularity,
+            )
+            scaling_path = write_scaling_results_csv(
+                output_dir,
+                scaling_rows,
+                distributed_context=distributed_context,
+            )
 
         training_outcome = summarize_training_outcome(config, metrics_rows)
         tokens_seen = training_outcome["tokens_seen"]
         extra_summary_fields = {
-            "metrics_path": str(metrics_path),
-            "scaling_results_path": str(scaling_path),
             "steps_completed": training_outcome["steps_completed"],
             "stop_reason": training_outcome["stop_reason"],
             "granularities": config["model"]["granularities"],
             "parameter_counts_by_granularity": parameter_counts_by_granularity,
+            **distributed_summary_fields(distributed_context),
         }
+        if metrics_path is not None:
+            extra_summary_fields["metrics_path"] = str(metrics_path)
+        if scaling_path is not None:
+            extra_summary_fields["scaling_results_path"] = str(scaling_path)
         if extraction_metadata_path is not None:
             extra_summary_fields["extraction_metadata_path"] = str(
                 extraction_metadata_path
@@ -143,7 +175,12 @@ def run_training(
             notes=["completed config-driven training loop"],
             extra_fields=extra_summary_fields,
         )
-        summary_path = write_run_summary(output_dir, summary)
+        summary_path = write_run_summary(
+            output_dir,
+            summary,
+            distributed_context=distributed_context,
+        )
+        barrier(distributed_context)
 
         return {
             "config": config,
@@ -155,7 +192,12 @@ def run_training(
             "parameter_counts_by_granularity": parameter_counts_by_granularity,
         }
     except Exception as error:
-        write_failed_run_summary(config, str(error), output_dir=output_dir)
+        write_failed_run_summary(
+            config,
+            str(error),
+            output_dir=output_dir,
+            distributed_context=distributed_context,
+        )
         raise
 
 
@@ -192,7 +234,39 @@ def load_tokenizer(config: dict[str, Any]):
     return tokenizer
 
 
-def build_dataloaders(config: dict[str, Any], tokenized_dataset, device: torch.device):
+def sync_config_with_distributed_context(config: dict[str, Any], context) -> None:
+    resolve_training_length_for_world_size(
+        config,
+        effective_world_size=context.world_size,
+        world_size_source="distributed_context" if context.enabled else "single_process",
+    )
+    distributed_config = config["training"].setdefault("distributed", {})
+    distributed_config.update(
+        {
+            "enabled": bool(context.enabled),
+            "strategy": context.strategy,
+            "rank": context.rank,
+            "local_rank": context.local_rank,
+            "world_size": context.world_size,
+        }
+    )
+
+
+def distributed_summary_fields(context) -> dict[str, Any]:
+    return {
+        "distributed_strategy": context.strategy,
+        "distributed_rank": context.rank,
+        "distributed_local_rank": context.local_rank,
+        "distributed_world_size": context.world_size,
+    }
+
+
+def build_dataloaders(
+    config: dict[str, Any],
+    tokenized_dataset,
+    device: torch.device,
+    distributed_context=None,
+):
     training = config["training"]
     batch_size = training["batch_size_per_process"]
     eval_batches = training.get("eval_batches", 1)
@@ -206,10 +280,23 @@ def build_dataloaders(config: dict[str, Any], tokenized_dataset, device: torch.d
         train_dataset = eval_dataset
 
     pin_memory = device.type == "cuda"
+    train_sampler = build_distributed_sampler(
+        train_dataset,
+        distributed_context,
+        shuffle=True,
+        seed=config["run"].get("seed"),
+    )
+    eval_sampler = build_distributed_sampler(
+        eval_dataset,
+        distributed_context,
+        shuffle=False,
+        seed=config["run"].get("seed"),
+    )
     train_dataloader = build_language_model_dataloader(
         train_dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=train_sampler is None,
+        sampler=train_sampler,
         num_workers=training.get("dataloader_num_workers", 0),
         pin_memory=pin_memory,
     )
@@ -217,10 +304,29 @@ def build_dataloaders(config: dict[str, Any], tokenized_dataset, device: torch.d
         eval_dataset,
         batch_size=batch_size,
         shuffle=False,
+        sampler=eval_sampler,
         num_workers=training.get("dataloader_num_workers", 0),
         pin_memory=pin_memory,
     )
     return train_dataloader, eval_dataloader
+
+
+def build_distributed_sampler(
+    dataset,
+    distributed_context,
+    shuffle: bool,
+    seed: int | None,
+):
+    if distributed_context is None or not distributed_context.enabled:
+        return None
+
+    return DistributedSampler(
+        dataset,
+        num_replicas=distributed_context.world_size,
+        rank=distributed_context.rank,
+        shuffle=shuffle,
+        seed=0 if seed is None else int(seed),
+    )
 
 
 def train_for_steps(
@@ -242,9 +348,12 @@ def train_for_steps(
     tokens_seen = 0
     start_time = time.time()
     step = 0
+    epoch = 0
 
     model.train()
     while step < max_steps and tokens_seen < token_budget:
+        set_dataloader_epoch(train_dataloader, epoch)
+        epoch += 1
         made_progress = False
         for batch in train_dataloader:
             if step >= max_steps or tokens_seen >= token_budget:
@@ -325,6 +434,12 @@ def train_for_steps(
     )
 
     return metrics_rows
+
+
+def set_dataloader_epoch(dataloader, epoch: int) -> None:
+    sampler = getattr(dataloader, "sampler", None)
+    if hasattr(sampler, "set_epoch"):
+        sampler.set_epoch(epoch)
 
 
 def summarize_training_outcome(
@@ -408,12 +523,17 @@ def write_extraction_metadata_if_nested(
     config: dict[str, Any],
     model,
     output_dir: Path,
+    distributed_context=None,
 ) -> Path | None:
     if config["run"]["model_family"] != "nested":
         return None
 
     metadata = build_extraction_metadata(config, model)
-    return write_json_artifact(output_dir / "extraction_metadata.json", metadata)
+    return write_json_artifact(
+        output_dir / "extraction_metadata.json",
+        metadata,
+        distributed_context=distributed_context,
+    )
 
 
 def build_extraction_metadata(config: dict[str, Any], model) -> dict[str, Any]:

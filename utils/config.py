@@ -372,6 +372,14 @@ def _resolve_output_paths(config: dict[str, Any]) -> None:
 
 
 def _resolve_training_length(config: dict[str, Any]) -> None:
+    resolve_training_length_for_world_size(config)
+
+
+def resolve_training_length_for_world_size(
+    config: dict[str, Any],
+    effective_world_size: int | None = None,
+    world_size_source: str | None = None,
+) -> None:
     training = config.get("training")
     model = config.get("model")
     if not isinstance(training, dict) or not isinstance(model, Mapping):
@@ -385,14 +393,31 @@ def _resolve_training_length(config: dict[str, Any]) -> None:
         "training.batch_size_per_process",
     )
     context_length = _positive_int(model.get("context_length"), "model.context_length")
-    effective_world_size = _resolve_effective_world_size()
+    if effective_world_size is None:
+        effective_world_size = _resolve_effective_world_size()
+        if world_size_source is None:
+            has_world_size = os.environ.get("WORLD_SIZE") not in (None, "")
+            world_size_source = (
+                "WORLD_SIZE"
+                if has_world_size
+                else "single_process"
+            )
+    else:
+        effective_world_size = _positive_int(
+            effective_world_size,
+            "training.effective_world_size",
+        )
+        if world_size_source is None:
+            world_size_source = "distributed_context"
+
     expected_tokens_per_step = (
         batch_size_per_process * context_length * effective_world_size
     )
     derived_max_steps = math.ceil(token_budget / expected_tokens_per_step)
 
+    has_existing_derived_fields = "derived_max_steps" in training
     max_steps_cap = training.get("max_steps_cap")
-    if max_steps_cap is None:
+    if max_steps_cap is None and not has_existing_derived_fields:
         max_steps_cap = training.get("max_steps")
     if max_steps_cap is not None:
         max_steps_cap = _positive_int(max_steps_cap, "training.max_steps_cap")
@@ -400,6 +425,7 @@ def _resolve_training_length(config: dict[str, Any]) -> None:
     training["token_budget"] = token_budget
     training["batch_size_per_process"] = batch_size_per_process
     training["effective_world_size"] = effective_world_size
+    training["effective_world_size_source"] = world_size_source
     training["expected_tokens_per_step"] = expected_tokens_per_step
     training["derived_max_steps"] = derived_max_steps
     training["max_steps_cap"] = max_steps_cap

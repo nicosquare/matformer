@@ -103,7 +103,10 @@ class ArtifactError(ValueError):
 def write_config_artifact(
     config: Mapping[str, Any],
     output_dir: str | Path | None = None,
-) -> Path:
+    distributed_context: Any | None = None,
+) -> Path | None:
+    if not _should_write_shared_artifact(distributed_context):
+        return None
     return write_resolved_config(config, output_dir=output_dir)
 
 
@@ -156,7 +159,10 @@ def write_run_summary(
     output_dir: str | Path,
     summary: Mapping[str, Any],
     filename: str = "run_summary.json",
-) -> Path:
+    distributed_context: Any | None = None,
+) -> Path | None:
+    if not _should_write_shared_artifact(distributed_context):
+        return None
     _require_fields(summary, RUN_SUMMARY_FIELDS, filename)
     return write_json_artifact(Path(output_dir) / filename, summary)
 
@@ -167,7 +173,10 @@ def write_failed_run_summary(
     output_dir: str | Path | None = None,
     tokens_seen: int = 0,
     notes: Iterable[str] | None = None,
-) -> Path:
+    distributed_context: Any | None = None,
+) -> Path | None:
+    if not _should_write_shared_artifact(distributed_context):
+        return None
     failure_notes = [error_message]
     failure_notes.extend(notes or [])
     summary = build_run_summary(
@@ -184,12 +193,14 @@ def write_metrics_csv(
     output_dir: str | Path,
     rows: Mapping[str, Any] | Iterable[Mapping[str, Any]],
     append: bool = False,
-) -> Path:
+    distributed_context: Any | None = None,
+) -> Path | None:
     return write_csv_artifact(
         Path(output_dir) / "metrics.csv",
         rows,
         METRICS_COLUMNS,
         append=append,
+        distributed_context=distributed_context,
     )
 
 
@@ -197,12 +208,14 @@ def write_task_results_csv(
     output_dir: str | Path,
     rows: Mapping[str, Any] | Iterable[Mapping[str, Any]],
     append: bool = False,
-) -> Path:
+    distributed_context: Any | None = None,
+) -> Path | None:
     return write_csv_artifact(
         Path(output_dir) / "task_results.csv",
         rows,
         TASK_RESULTS_COLUMNS,
         append=append,
+        distributed_context=distributed_context,
     )
 
 
@@ -210,12 +223,14 @@ def write_scaling_results_csv(
     output_dir: str | Path,
     rows: Mapping[str, Any] | Iterable[Mapping[str, Any]],
     append: bool = False,
-) -> Path:
+    distributed_context: Any | None = None,
+) -> Path | None:
     return write_csv_artifact(
         Path(output_dir) / "scaling_results.csv",
         rows,
         SCALING_RESULTS_COLUMNS,
         append=append,
+        distributed_context=distributed_context,
     )
 
 
@@ -223,12 +238,14 @@ def write_consistency_results_csv(
     output_dir: str | Path,
     rows: Mapping[str, Any] | Iterable[Mapping[str, Any]],
     append: bool = False,
-) -> Path:
+    distributed_context: Any | None = None,
+) -> Path | None:
     return write_csv_artifact(
         Path(output_dir) / "consistency_results.csv",
         rows,
         CONSISTENCY_RESULTS_COLUMNS,
         append=append,
+        distributed_context=distributed_context,
     )
 
 
@@ -372,7 +389,13 @@ def latest_metric_rows_by_granularity(
     }
 
 
-def write_json_artifact(path: str | Path, payload: Mapping[str, Any]) -> Path:
+def write_json_artifact(
+    path: str | Path,
+    payload: Mapping[str, Any],
+    distributed_context: Any | None = None,
+) -> Path | None:
+    if not _should_write_shared_artifact(distributed_context):
+        return None
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as output_file:
@@ -386,7 +409,10 @@ def write_csv_artifact(
     rows: Mapping[str, Any] | Iterable[Mapping[str, Any]],
     columns: list[str],
     append: bool = False,
-) -> Path:
+    distributed_context: Any | None = None,
+) -> Path | None:
+    if not _should_write_shared_artifact(distributed_context):
+        return None
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -435,3 +461,12 @@ def _int_value(value: Any) -> int:
     if value in (None, ""):
         return -1
     return int(value)
+
+
+def _should_write_shared_artifact(distributed_context: Any | None) -> bool:
+    if distributed_context is None:
+        return True
+
+    from training.distributed import should_write_shared_artifact
+
+    return should_write_shared_artifact(distributed_context)
