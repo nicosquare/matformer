@@ -26,6 +26,7 @@ training:
   eval_batches: 1
   mixed_precision: none
   activation_checkpointing: false
+  granularity_sampling: all
   preprocess_num_proc: 1
   dataloader_num_workers: 0
 

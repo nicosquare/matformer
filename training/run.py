@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import random
 import time
 from pathlib import Path
@@ -31,6 +32,7 @@ from training.distributed import (
     wrap_model_for_distributed,
 )
 from utils.config import resolve_run_config, resolve_training_length_for_world_size
+from utils.heartbeats import HeartbeatCadence, HeartbeatWriter
 from utils.metrics import (
     build_parameter_counts_by_granularity,
     build_run_summary,
@@ -72,32 +74,41 @@ def run_training(
 
     distributed_context = prepare_distributed_context(config, device=device)
     sync_config_with_distributed_context(config, distributed_context)
-    write_config_artifact(config, distributed_context=distributed_context)
+    heartbeat_writer = build_heartbeat_writer(config, distributed_context)
+
+    with heartbeat_stage(heartbeat_writer, "artifact_writing"):
+        write_config_artifact(config, distributed_context=distributed_context)
     set_random_seed(run.get("seed"))
 
     device = torch.device(distributed_context.device)
 
     try:
-        if model is None:
-            model = build_model(config)
-        model = model.to(device)
-        model = wrap_model_for_distributed(model, distributed_context)
+        with heartbeat_stage(heartbeat_writer, "model_initialization"):
+            if model is None:
+                model = build_model(config)
+            model = model.to(device)
+
+        with heartbeat_stage(heartbeat_writer, "fsdp_wrapping"):
+            model = wrap_model_for_distributed(model, distributed_context)
 
         if tokenized_dataset is None:
             if tokenizer is None:
-                tokenizer = load_tokenizer(config)
-            tokenized_dataset = load_and_tokenize_dataset(
-                config,
-                tokenizer,
-                num_proc=training.get("preprocess_num_proc", 1),
-            )
+                with heartbeat_stage(heartbeat_writer, "tokenizer_loading"):
+                    tokenizer = load_tokenizer(config)
+            with heartbeat_stage(heartbeat_writer, "dataset_loading_preprocessing"):
+                tokenized_dataset = load_and_tokenize_dataset(
+                    config,
+                    tokenizer,
+                    num_proc=training.get("preprocess_num_proc", 1),
+                )
 
-        train_dataloader, eval_dataloader = build_dataloaders(
-            config,
-            tokenized_dataset,
-            device,
-            distributed_context=distributed_context,
-        )
+        with heartbeat_stage(heartbeat_writer, "dataloader_creation"):
+            train_dataloader, eval_dataloader = build_dataloaders(
+                config,
+                tokenized_dataset,
+                device,
+                distributed_context=distributed_context,
+            )
         optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=training["learning_rate"],
@@ -117,6 +128,7 @@ def run_training(
             optimizer,
             scheduler,
             device,
+            heartbeat_writer=heartbeat_writer,
         )
         extraction_metadata_path = None
         metrics_path = None
@@ -125,31 +137,33 @@ def run_training(
         parameter_counts_by_granularity = {}
 
         if should_write_shared_artifact(distributed_context):
-            extraction_metadata_path = write_extraction_metadata_if_nested(
-                config,
-                model,
-                output_dir,
-                distributed_context=distributed_context,
-            )
-            metrics_path = write_metrics_csv(
-                output_dir,
-                metrics_rows,
-                distributed_context=distributed_context,
-            )
-            parameter_counts_by_granularity = build_parameter_counts_by_granularity(
-                model,
-                config["model"]["granularities"],
-            )
-            scaling_rows = build_scaling_result_rows(
-                config,
-                metrics_rows,
-                parameter_counts_by_granularity,
-            )
-            scaling_path = write_scaling_results_csv(
-                output_dir,
-                scaling_rows,
-                distributed_context=distributed_context,
-            )
+            emit_checkpointing_placeholder_if_needed(config, heartbeat_writer)
+            with heartbeat_stage(heartbeat_writer, "artifact_writing"):
+                extraction_metadata_path = write_extraction_metadata_if_nested(
+                    config,
+                    model,
+                    output_dir,
+                    distributed_context=distributed_context,
+                )
+                metrics_path = write_metrics_csv(
+                    output_dir,
+                    metrics_rows,
+                    distributed_context=distributed_context,
+                )
+                parameter_counts_by_granularity = build_parameter_counts_by_granularity(
+                    model,
+                    config["model"]["granularities"],
+                )
+                scaling_rows = build_scaling_result_rows(
+                    config,
+                    metrics_rows,
+                    parameter_counts_by_granularity,
+                )
+                scaling_path = write_scaling_results_csv(
+                    output_dir,
+                    scaling_rows,
+                    distributed_context=distributed_context,
+                )
 
         training_outcome = summarize_training_outcome(config, metrics_rows)
         tokens_seen = training_outcome["tokens_seen"]
@@ -157,6 +171,7 @@ def run_training(
             "steps_completed": training_outcome["steps_completed"],
             "stop_reason": training_outcome["stop_reason"],
             "granularities": config["model"]["granularities"],
+            "granularity_sampling": training.get("granularity_sampling", "all"),
             "parameter_counts_by_granularity": parameter_counts_by_granularity,
             **distributed_summary_fields(distributed_context),
         }
@@ -175,11 +190,12 @@ def run_training(
             notes=["completed config-driven training loop"],
             extra_fields=extra_summary_fields,
         )
-        summary_path = write_run_summary(
-            output_dir,
-            summary,
-            distributed_context=distributed_context,
-        )
+        with heartbeat_stage(heartbeat_writer, "artifact_writing"):
+            summary_path = write_run_summary(
+                output_dir,
+                summary,
+                distributed_context=distributed_context,
+            )
         barrier(distributed_context)
 
         return {
@@ -192,12 +208,13 @@ def run_training(
             "parameter_counts_by_granularity": parameter_counts_by_granularity,
         }
     except Exception as error:
-        write_failed_run_summary(
-            config,
-            str(error),
-            output_dir=output_dir,
-            distributed_context=distributed_context,
-        )
+        with heartbeat_stage(heartbeat_writer, "artifact_writing"):
+            write_failed_run_summary(
+                config,
+                str(error),
+                output_dir=output_dir,
+                distributed_context=distributed_context,
+            )
         raise
 
 
@@ -259,6 +276,131 @@ def distributed_summary_fields(context) -> dict[str, Any]:
         "distributed_local_rank": context.local_rank,
         "distributed_world_size": context.world_size,
     }
+
+
+class NoopHeartbeatWriter:
+    path = None
+
+    def stage_start(self, stage: str, **fields: Any):
+        return None
+
+    def stage_complete(self, stage: str, **fields: Any):
+        return None
+
+    def heartbeat(self, stage: str, **fields: Any):
+        return None
+
+
+def build_heartbeat_writer(config: dict[str, Any], distributed_context):
+    training = config["training"]
+    heartbeat_enabled = training.get("heartbeat_enabled", True)
+    if not heartbeat_enabled or not should_write_shared_artifact(distributed_context):
+        return NoopHeartbeatWriter()
+
+    run = config["run"]
+    return HeartbeatWriter(
+        output_dir=run["output_dir"],
+        run_id=run["run_id"],
+        rank=distributed_context.rank,
+        world_size=distributed_context.world_size,
+    )
+
+
+@contextmanager
+def heartbeat_stage(heartbeat_writer, stage: str, **fields: Any):
+    heartbeat_writer.stage_start(stage, **fields)
+    try:
+        yield
+    finally:
+        heartbeat_writer.stage_complete(stage, **fields)
+
+
+def heartbeat_training_fields(
+    config: dict[str, Any],
+    step: int | None = None,
+    tokens_seen: int | None = None,
+    latest_loss: float | None = None,
+    tokens_per_second: float | None = None,
+    peak_gpu_memory_bytes: int | None = None,
+    eta_seconds: float | None = None,
+) -> dict[str, Any]:
+    training = config["training"]
+    return {
+        "step": step,
+        "derived_max_steps": training.get("derived_max_steps"),
+        "tokens_seen": tokens_seen,
+        "token_budget": training.get("token_budget"),
+        "latest_loss": latest_loss,
+        "tokens_per_second": tokens_per_second,
+        "peak_gpu_memory_bytes": peak_gpu_memory_bytes,
+        "eta_seconds": eta_seconds,
+    }
+
+
+def build_heartbeat_cadence(config: dict[str, Any]) -> HeartbeatCadence:
+    training = config["training"]
+    return HeartbeatCadence(
+        step_interval=training.get("heartbeat_step_interval", 10),
+        time_interval_seconds=training.get("heartbeat_time_interval_seconds", 60.0),
+    )
+
+
+def maybe_emit_training_heartbeat(
+    heartbeat_writer,
+    heartbeat_cadence: HeartbeatCadence,
+    config: dict[str, Any],
+    step: int,
+    tokens_seen: int,
+    latest_loss: float,
+    tokens_per_second: float | None,
+    peak_gpu_memory_bytes: int,
+) -> None:
+    now = time.time()
+    if not heartbeat_cadence.should_emit(step=step, now=now):
+        return
+
+    heartbeat_writer.heartbeat(
+        "training",
+        **heartbeat_training_fields(
+            config,
+            step=step,
+            tokens_seen=tokens_seen,
+            latest_loss=latest_loss,
+            tokens_per_second=tokens_per_second,
+            peak_gpu_memory_bytes=peak_gpu_memory_bytes,
+            eta_seconds=estimate_eta_seconds(
+                config,
+                tokens_seen=tokens_seen,
+                tokens_per_second=tokens_per_second,
+            ),
+        ),
+    )
+    heartbeat_cadence.mark_emitted(step=step, now=now)
+
+
+def estimate_eta_seconds(
+    config: dict[str, Any],
+    tokens_seen: int,
+    tokens_per_second: float | None,
+) -> float | None:
+    if tokens_per_second is None or tokens_per_second <= 0:
+        return None
+    remaining_tokens = max(config["training"]["token_budget"] - tokens_seen, 0)
+    return remaining_tokens / tokens_per_second
+
+
+def emit_checkpointing_placeholder_if_needed(
+    config: dict[str, Any],
+    heartbeat_writer,
+) -> None:
+    if not config.get("outputs", {}).get("save_checkpoints", False):
+        return
+    with heartbeat_stage(
+        heartbeat_writer,
+        "checkpointing",
+        extra_fields={"status": "not_implemented_for_config_driven_loop"},
+    ):
+        return
 
 
 def build_dataloaders(
@@ -337,6 +479,7 @@ def train_for_steps(
     optimizer,
     scheduler,
     device: torch.device,
+    heartbeat_writer=None,
 ) -> list[dict[str, Any]]:
     training = config["training"]
     granularities = config["model"]["granularities"]
@@ -349,77 +492,108 @@ def train_for_steps(
     start_time = time.time()
     step = 0
     epoch = 0
+    heartbeat_writer = heartbeat_writer or NoopHeartbeatWriter()
+    heartbeat_cadence = build_heartbeat_cadence(config)
 
     model.train()
-    while step < max_steps and tokens_seen < token_budget:
-        set_dataloader_epoch(train_dataloader, epoch)
-        epoch += 1
-        made_progress = False
-        for batch in train_dataloader:
-            if step >= max_steps or tokens_seen >= token_budget:
-                break
+    with heartbeat_stage(heartbeat_writer, "training"):
+        while step < max_steps and tokens_seen < token_budget:
+            set_dataloader_epoch(train_dataloader, epoch)
+            epoch += 1
+            made_progress = False
+            for batch in train_dataloader:
+                if step >= max_steps or tokens_seen >= token_budget:
+                    break
 
-            made_progress = True
-            step += 1
-            batch = move_batch_to_device(batch, device)
-            batch_tokens = count_batch_tokens(batch)
-            tokens_seen += batch_tokens
+                made_progress = True
+                step += 1
+                batch = move_batch_to_device(batch, device)
+                batch_tokens = count_batch_tokens(batch)
+                tokens_seen += batch_tokens
 
-            optimizer.zero_grad(set_to_none=True)
+                optimizer.zero_grad(set_to_none=True)
 
-            granularity_losses = []
-            for granularity in granularities:
-                configure_model_granularity(model, granularity)
-                outputs = model(
-                    input_ids=batch["input_ids"],
-                    attention_mask=batch.get("attention_mask"),
-                    labels=batch["labels"],
+                selected_granularities = select_training_granularities(
+                    config,
+                    granularities,
+                    device,
                 )
-                granularity_losses.append((granularity, outputs.loss))
-
-            combined_loss = torch.stack(
-                [loss for _, loss in granularity_losses]
-            ).mean()
-            combined_loss.backward()
-            optimizer.step()
-            scheduler.step()
-
-            elapsed = time.time() - start_time
-            for granularity, loss in granularity_losses:
-                metrics_rows.append(
-                    build_training_metric_row(
-                        config,
-                        step=step,
-                        granularity=granularity,
-                        loss=float(loss.detach().cpu().item()),
-                        tokens_seen=tokens_seen,
-                        wall_clock_seconds=elapsed,
-                        peak_memory_bytes=current_peak_memory_bytes(device),
+                granularity_losses = []
+                for granularity in selected_granularities:
+                    configure_model_granularity(model, granularity)
+                    outputs = model(
+                        input_ids=batch["input_ids"],
+                        attention_mask=batch.get("attention_mask"),
+                        labels=batch["labels"],
                     )
+                    granularity_losses.append((granularity, outputs.loss))
+
+                combined_loss = torch.stack(
+                    [loss for _, loss in granularity_losses]
+                ).mean()
+                combined_loss.backward()
+                optimizer.step()
+                scheduler.step()
+
+                elapsed = time.time() - start_time
+                peak_memory_bytes = current_peak_memory_bytes(device)
+                latest_loss = float(combined_loss.detach().cpu().item())
+                tokens_per_second = tokens_seen / elapsed if elapsed > 0 else None
+                maybe_emit_training_heartbeat(
+                    heartbeat_writer,
+                    heartbeat_cadence,
+                    config,
+                    step=step,
+                    tokens_seen=tokens_seen,
+                    latest_loss=latest_loss,
+                    tokens_per_second=tokens_per_second,
+                    peak_gpu_memory_bytes=peak_memory_bytes,
                 )
 
-            if eval_interval > 0 and step % eval_interval == 0:
-                validation_results = evaluate_validation_per_granularity(
-                    model,
-                    eval_dataloader,
-                    granularities=granularities,
-                    device=device,
-                )
-                metrics_rows.extend(
-                    validation_results_to_metric_rows(
-                        validation_results,
-                        config,
-                        step=step,
-                        wall_clock_seconds=elapsed,
-                        tokens_per_second=tokens_seen / elapsed if elapsed > 0 else None,
-                        peak_memory_bytes=current_peak_memory_bytes(device),
+                for granularity, loss in granularity_losses:
+                    metrics_rows.append(
+                        build_training_metric_row(
+                            config,
+                            step=step,
+                            granularity=granularity,
+                            loss=float(loss.detach().cpu().item()),
+                            tokens_seen=tokens_seen,
+                            wall_clock_seconds=elapsed,
+                            peak_memory_bytes=peak_memory_bytes,
+                        )
                     )
-                )
 
-            if step >= max_steps or tokens_seen >= token_budget:
+                if eval_interval > 0 and step % eval_interval == 0:
+                    with heartbeat_stage(
+                        heartbeat_writer,
+                        "validation",
+                        **heartbeat_training_fields(
+                            config,
+                            step=step,
+                            tokens_seen=tokens_seen,
+                        ),
+                    ):
+                        validation_results = evaluate_validation_per_granularity(
+                            model,
+                            eval_dataloader,
+                            granularities=granularities,
+                            device=device,
+                        )
+                    metrics_rows.extend(
+                        validation_results_to_metric_rows(
+                            validation_results,
+                            config,
+                            step=step,
+                            wall_clock_seconds=elapsed,
+                            tokens_per_second=tokens_per_second,
+                            peak_memory_bytes=peak_memory_bytes,
+                        )
+                    )
+
+                if step >= max_steps or tokens_seen >= token_budget:
+                    break
+            if not made_progress:
                 break
-        if not made_progress:
-            break
 
     append_final_validation_if_needed(
         metrics_rows,
@@ -431,9 +605,44 @@ def train_for_steps(
         step=step,
         tokens_seen=tokens_seen,
         start_time=start_time,
+        heartbeat_writer=heartbeat_writer,
     )
 
     return metrics_rows
+
+
+def select_training_granularities(
+    config: dict[str, Any],
+    granularities: list[str],
+    device: torch.device,
+) -> list[str]:
+    sampling_mode = config["training"].get("granularity_sampling", "all")
+    if sampling_mode == "all":
+        return list(granularities)
+    if sampling_mode == "random":
+        selected_index = select_random_granularity_index(
+            granularity_count=len(granularities),
+            device=device,
+        )
+        return [granularities[selected_index]]
+    raise ValueError(f"Unknown granularity sampling mode: {sampling_mode}")
+
+
+def select_random_granularity_index(
+    granularity_count: int,
+    device: torch.device,
+) -> int:
+    if granularity_count <= 0:
+        raise ValueError("granularity_count must be positive")
+
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        selected_index = torch.empty((), dtype=torch.long, device=device)
+        if torch.distributed.get_rank() == 0:
+            selected_index.fill_(random.randrange(granularity_count))
+        torch.distributed.broadcast(selected_index, src=0)
+        return int(selected_index.item())
+
+    return random.randrange(granularity_count)
 
 
 def set_dataloader_epoch(dataloader, epoch: int) -> None:
@@ -490,6 +699,7 @@ def append_final_validation_if_needed(
     step: int,
     tokens_seen: int,
     start_time: float,
+    heartbeat_writer=None,
 ) -> None:
     if not config.get("evaluation", {}).get("validation", False):
         return
@@ -501,12 +711,22 @@ def append_final_validation_if_needed(
         return
 
     elapsed = time.time() - start_time
-    validation_results = evaluate_validation_per_granularity(
-        model,
-        eval_dataloader,
-        granularities=granularities,
-        device=device,
-    )
+    heartbeat_writer = heartbeat_writer or NoopHeartbeatWriter()
+    with heartbeat_stage(
+        heartbeat_writer,
+        "validation",
+        **heartbeat_training_fields(
+            config,
+            step=step,
+            tokens_seen=tokens_seen,
+        ),
+    ):
+        validation_results = evaluate_validation_per_granularity(
+            model,
+            eval_dataloader,
+            granularities=granularities,
+            device=device,
+        )
     metrics_rows.extend(
         validation_results_to_metric_rows(
             validation_results,

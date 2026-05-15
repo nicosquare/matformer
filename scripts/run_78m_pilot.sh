@@ -7,7 +7,13 @@ cd "$ROOT_DIR"
 
 PYTHON_BIN="${PYTHON_BIN:-${PYTHON:-python}}"
 CONFIG_PATH="${CONFIG_PATH:-configs/78m_reduced_pilot.yaml}"
-RUN_ID="${RUN_ID:-78m-reduced-pilot-001}"
+DEFAULT_RUN_ID="78m-reduced-pilot-001"
+if [[ -n "${RUN_ID:-}" ]]; then
+  RUN_ID_EXPLICIT=true
+else
+  RUN_ID="$DEFAULT_RUN_ID"
+  RUN_ID_EXPLICIT=false
+fi
 OUTPUT_ARGS=()
 HAS_OUTPUT_ROOT_ARG=false
 
@@ -27,6 +33,7 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       RUN_ID="$2"
+      RUN_ID_EXPLICIT=true
       shift 2
       ;;
     --output-root)
@@ -64,7 +71,10 @@ if [[ -n "${OUTPUT_ROOT:-}" ]]; then
   printf 'Output root: %s\n' "$OUTPUT_ROOT"
 fi
 
+if [[ "$RUN_ID_EXPLICIT" == "true" ]]; then
+  OUTPUT_ARGS+=(--override "run.run_id=$RUN_ID")
+fi
+
 exec "$PYTHON_BIN" train.py \
   --config "$CONFIG_PATH" \
-  --run-id "$RUN_ID" \
   "${OUTPUT_ARGS[@]}"

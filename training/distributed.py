@@ -45,19 +45,22 @@ def prepare_distributed_context(
     env_world_size = env_int("WORLD_SIZE", 1)
     requested = bool(distributed_config.get("enabled", False)) or env_world_size > 1
     strategy = distributed_config.get("strategy") or ("fsdp" if requested else "none")
-
-    if requested and env_world_size > 1:
-        backend = backend or ("nccl" if torch.cuda.is_available() else "gloo")
-        if initialize_process_group and not distributed_is_initialized():
-            torch.distributed.init_process_group(backend=backend)
-
-    rank = get_rank(default=env_int("RANK", 0))
     local_rank = get_local_rank(default=env_int("LOCAL_RANK", 0))
-    world_size = get_world_size(default=env_world_size)
     resolved_device = resolve_device(device=device, local_rank=local_rank)
 
     if resolved_device.type == "cuda":
         torch.cuda.set_device(resolved_device)
+
+    if requested and env_world_size > 1:
+        backend = backend or ("nccl" if resolved_device.type == "cuda" else "gloo")
+        if initialize_process_group and not distributed_is_initialized():
+            init_kwargs = {"backend": backend}
+            if backend == "nccl" and resolved_device.type == "cuda":
+                init_kwargs["device_id"] = resolved_device
+            torch.distributed.init_process_group(**init_kwargs)
+
+    rank = get_rank(default=env_int("RANK", 0))
+    world_size = get_world_size(default=env_world_size)
 
     return DistributedContext(
         enabled=requested and world_size > 1,

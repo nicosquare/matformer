@@ -42,6 +42,7 @@ training:
   eval_interval: 100
   mixed_precision: bf16
   activation_checkpointing: true
+  granularity_sampling: all
 
 dataset:
   dataset_name: tiny-stories
@@ -94,6 +95,7 @@ training:
   derived_max_steps: 489
   max_steps: 489
   max_steps_cap: null
+  granularity_sampling: all
 ```
 
 `run.output_dir` is derived as `<run.output_root>/<run.run_id>` unless an
@@ -106,6 +108,12 @@ resolver writes `training.effective_world_size`,
 effective `training.max_steps` into `config.json`. `training.max_steps` is the
 step count used by the training loop, derived from token budget unless an
 explicit safety cap is modeled with `training.max_steps_cap`.
+
+`training.granularity_sampling` controls how nested MatFormer subnetworks are
+trained. `random` samples one configured granularity per batch, matching the
+original `train.py` behavior. `all` evaluates all configured granularities on
+the same batch and averages their losses; this is useful for debug and ablation
+runs but is not the original pilot training rule.
 
 ## Granularity Values
 

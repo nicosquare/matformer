@@ -15,6 +15,7 @@ import yaml
 VALID_GRANULARITIES = {"s", "m", "l", "xl"}
 VALID_MODEL_FAMILIES = {"nested", "standalone"}
 VALID_COMPLETION_LABELS = {"debug", "reduced-token-pilot", "paper-budget-complete"}
+VALID_GRANULARITY_SAMPLING = {"all", "random"}
 GRANULARITY_INTERMEDIATE_FRACTIONS = {
     "s": (1, 8),
     "m": (1, 4),
@@ -243,6 +244,13 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
                 "standalone runs must resolve to exactly one matching granularity"
             )
 
+    granularity_sampling = training.get("granularity_sampling", "all")
+    if granularity_sampling not in VALID_GRANULARITY_SAMPLING:
+        raise ConfigError(
+            "training.granularity_sampling must be one of "
+            f"{sorted(VALID_GRANULARITY_SAMPLING)}"
+        )
+
     if model.get("paper_aligned"):
         for field_name, expected_value in PAPER_ALIGNED_ARCHITECTURE.items():
             if model.get(field_name) != expected_value:
@@ -429,6 +437,7 @@ def resolve_training_length_for_world_size(
     training["expected_tokens_per_step"] = expected_tokens_per_step
     training["derived_max_steps"] = derived_max_steps
     training["max_steps_cap"] = max_steps_cap
+    training["granularity_sampling"] = training.get("granularity_sampling", "all")
     training["max_steps"] = (
         min(derived_max_steps, max_steps_cap)
         if max_steps_cap is not None

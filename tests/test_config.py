@@ -87,6 +87,7 @@ def test_resolve_debug_matrix_expands_nested_and_standalone_runs():
     nested = resolved_runs[0]
     assert nested["run"]["output_dir"] == "outputs/debug-nested-001"
     assert nested["model"]["granularities"] == ["s", "m", "l", "xl"]
+    assert nested["training"]["granularity_sampling"] == "all"
 
     standalone_s = resolved_runs[1]
     assert standalone_s["run"]["model_family"] == "standalone"
@@ -111,6 +112,22 @@ def test_cli_overrides_are_parsed_and_applied():
     assert resolved["training"]["max_steps"] == 7
     assert resolved["run"]["seed"] == 123
     assert resolved["outputs"]["save_checkpoints"] is False
+
+
+def test_granularity_sampling_mode_validation():
+    random_sampling = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        overrides=["training.granularity_sampling=random"],
+    )
+    assert random_sampling["training"]["granularity_sampling"] == "random"
+
+    with pytest.raises(ConfigError, match="granularity_sampling"):
+        resolve_run_config(
+            "configs/debug_matrix.yaml",
+            run_id="debug-nested-001",
+            overrides=["training.granularity_sampling=cyclic"],
+        )
 
 
 def test_write_resolved_config(tmp_path):
@@ -279,6 +296,7 @@ def test_78m_reduced_pilot_config_preserves_paper_alignment():
     assert resolved["model"]["context_length"] == 1024
     assert resolved["model"]["vocab_size_assumption"] == 256000
     assert resolved["training"]["token_budget"] < 10_000_000_000
+    assert resolved["training"]["granularity_sampling"] == "random"
     validate_run_config(resolved)
 
 

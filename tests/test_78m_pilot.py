@@ -117,14 +117,15 @@ def test_78m_pilot_runner_propagates_output_root_env(tmp_path):
 
     assert args[0] == "train.py"
     assert _has_arg_pair(args, "--config", "configs/78m_reduced_pilot.yaml")
-    assert _has_arg_pair(args, "--run-id", "78m-reduced-pilot-001")
+    assert "--run-id" not in args
     assert _has_arg_pair(args, "--output-root", str(output_root))
     assert _has_arg_pair(args, "--override", "training.max_steps_cap=1")
 
 
 def test_78m_pilot_runner_forwards_explicit_arguments(tmp_path):
     output_root = tmp_path / "pilot-output"
-    output_dir = tmp_path / "explicit-output" / "78m-reduced-pilot-001"
+    run_id = "78m-bs1-gpu2-smoke"
+    output_dir = tmp_path / "explicit-output" / run_id
 
     args = _capture_78m_pilot_invocation(
         tmp_path,
@@ -132,7 +133,7 @@ def test_78m_pilot_runner_forwards_explicit_arguments(tmp_path):
             "--config",
             "configs/78m_reduced_pilot.yaml",
             "--run-id",
-            "78m-reduced-pilot-001",
+            run_id,
             "--output-root",
             str(output_root),
             "--output-dir",
@@ -144,7 +145,8 @@ def test_78m_pilot_runner_forwards_explicit_arguments(tmp_path):
     )
 
     assert _has_arg_pair(args, "--config", "configs/78m_reduced_pilot.yaml")
-    assert _has_arg_pair(args, "--run-id", "78m-reduced-pilot-001")
+    assert "--run-id" not in args
+    assert _has_arg_pair(args, "--override", f"run.run_id={run_id}")
     assert _has_arg_pair(args, "--output-root", str(output_root))
     assert args.count("--output-root") == 1
     assert _has_arg_pair(args, "--output-dir", str(output_dir))
@@ -161,10 +163,13 @@ def test_slurm_78m_pilot_requests_single_node_multi_gpu_resources():
     gpu_count = _resource_count(
         _sbatch_option_value(script_text, "--gpus-per-node")
         or _sbatch_option_value(script_text, "--gpus")
+        or _sbatch_option_value(script_text, "--gres")
     )
 
     assert node_count == "1"
     assert gpu_count is not None and gpu_count > 1
+    assert _sbatch_option_value(script_text, "-p") == "cscc-gpu-p"
+    assert _sbatch_option_value(script_text, "--qos") == "cscc-gpu-qos"
 
 
 def test_slurm_78m_pilot_launches_one_training_process_per_gpu():
@@ -177,6 +182,7 @@ def test_slurm_78m_pilot_launches_one_training_process_per_gpu():
         for variable_name in [
             "SLURM_GPUS_ON_NODE",
             "SLURM_GPUS_PER_NODE",
+            "SLURM_JOB_GPUS",
             "GPUS_PER_NODE",
         ]
     )
@@ -224,7 +230,8 @@ def test_slurm_78m_pilot_wrapper_forwards_to_runner(tmp_path):
     args = argv_path.read_text(encoding="utf-8").splitlines()
     assert args[0] == "train.py"
     assert _has_arg_pair(args, "--config", "configs/78m_reduced_pilot.yaml")
-    assert _has_arg_pair(args, "--run-id", "78m-reduced-pilot-001")
+    assert "--run-id" not in args
+    assert _has_arg_pair(args, "--override", "run.run_id=78m-reduced-pilot-001")
     assert _has_arg_pair(args, "--output-root", str(output_root))
     assert _has_arg_pair(args, "--override", "training.max_steps_cap=1")
 

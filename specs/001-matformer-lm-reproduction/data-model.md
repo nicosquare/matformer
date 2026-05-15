@@ -118,6 +118,10 @@ Represents one train/eval execution.
 - `derived_max_steps`: Planned step count derived from the token budget.
 - `max_steps`: Resolved effective step count used by the training loop. For
   budgeted runs this is derived from `token_budget`, not manually chosen.
+- `granularity_sampling`: Nested-training policy. `random` samples one
+  configured granularity per batch to match the original `train.py` behavior;
+  `all` evaluates all configured granularities on each batch and averages their
+  losses for debug or ablation runs.
 - `tokens_seen`: Actual non-padding training tokens observed by the run.
 - `stop_reason`: Reason training stopped, such as `not_started`,
   `token_budget_reached`, `max_steps_reached_before_token_budget`, or `failed`.

@@ -134,6 +134,8 @@ Expected result:
 - The resolved config records `effective_world_size`,
   `expected_tokens_per_step`, `derived_max_steps`, and the effective
   `max_steps`.
+- The 78M pilot uses `training.granularity_sampling=random`, matching the
+  original `train.py` behavior of training one sampled granularity per batch.
 - Outputs record actual tokens seen, target token budget, and `stop_reason`.
 
 Queue this on a GPU node rather than the login node. For a short scheduler and
@@ -158,6 +160,75 @@ The default run id is `78m-reduced-pilot-001`, so artifacts resolve under
 root, pass `--override training.max_steps_cap=...` only for intentionally
 short runs, and use
 `--run-id 78m-reduced-pilot-001` when validating the runner contract manually.
+
+The Slurm launcher requests one node and multiple GPUs by default. It starts
+one config-driven training process per allocated GPU with
+`python -m torch.distributed.run`, then the training process derives
+`effective_world_size` from the active distributed `WORLD_SIZE`. Do not set
+`training.effective_world_size`, `training.expected_tokens_per_step`, or
+`training.derived_max_steps` in source YAML. Those fields are written to the
+resolved `config.json`.
+
+On clusters where the assigned GPUs are exposed through
+`CUDA_VISIBLE_DEVICES`, keep the Slurm GPU request and the number of visible
+devices aligned. To queue fewer GPUs than the script default, override the
+resource request at submission time:
+
+```bash
+sbatch --gres=gpu:2 --time=04:00:00 scripts/slurm_78m_pilot.sh \
+  --output-root /mnt/experiments/matformer \
+  --override training.max_steps_cap=10
+```
+
+Submit the launcher with `sbatch`; do not run it directly on a login node.
+The script defaults to the `elasticnn` conda environment at
+`$HOME/.conda/envs/elasticnn/bin/python`. Pass `--python-bin` only when using a
+different environment.
+
+Slurm stdout and stderr default to `logs/matformer_78m_<jobid>.out` and
+`logs/matformer_78m_<jobid>.err` under the repository root. If that directory
+is not writable on your cluster, create a writable scheduler-log directory and
+override the Slurm paths before the script name:
+
+```bash
+mkdir -p /mnt/experiments/matformer/slurm
+sbatch \
+  --output=/mnt/experiments/matformer/slurm/78m_%j.out \
+  --error=/mnt/experiments/matformer/slurm/78m_%j.err \
+  scripts/slurm_78m_pilot.sh \
+  --output-root /mnt/experiments/matformer \
+  --override training.max_steps_cap=1
+```
+
+While the job is queued or running, use Slurm and the scheduler logs for coarse
+status:
+
+```bash
+squeue -j <jobid>
+tail -f /mnt/experiments/matformer/slurm/78m_<jobid>.out
+```
+
+Rank 0 also writes durable heartbeat events to:
+
+```text
+/mnt/experiments/matformer/78m-reduced-pilot-001/heartbeats.jsonl
+```
+
+Inspect that file to see stage starts, stage completions, and training
+progress:
+
+```bash
+tail -n 20 /mnt/experiments/matformer/78m-reduced-pilot-001/heartbeats.jsonl
+```
+
+Expected heartbeat stages include `artifact_writing`, `model_initialization`,
+`fsdp_wrapping`, `tokenizer_loading`, `dataset_loading_preprocessing`,
+`dataloader_creation`, `training`, `validation`, and `checkpointing` when those
+stages occur. Training heartbeats include `step`, `derived_max_steps`,
+`tokens_seen`, `token_budget`, `latest_loss`, `tokens_per_second`,
+`peak_gpu_memory_bytes`, and `eta_seconds`. Nonzero ranks may emit process
+diagnostics to stdout or stderr, but shared artifacts and `heartbeats.jsonl`
+are rank-0-only.
 
 ## 6. Add Downstream Evaluation
 

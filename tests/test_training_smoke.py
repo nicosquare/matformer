@@ -70,6 +70,53 @@ def test_tiny_nested_training_accumulates_all_granularities_per_batch(tmp_path):
     assert [row["granularity"] for row in train_rows] == ["s", "m", "l", "xl"]
 
 
+def test_tiny_nested_training_can_sample_one_random_granularity_per_batch(
+    tmp_path,
+    monkeypatch,
+):
+    import training.run as training_run
+
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "training.max_steps=1",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.warmup_steps=0",
+            "training.granularity_sampling=random",
+            "evaluation.validation=false",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+    model = TinyNestedTrainingModel()
+    monkeypatch.setattr(training_run.random, "randrange", lambda count: 2)
+
+    result = run_training(
+        config,
+        model=model,
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    assert model.train_forward_granularities == ["l"]
+    with result["metrics_path"].open("r", encoding="utf-8", newline="") as metrics_file:
+        train_rows = [
+            row
+            for row in csv.DictReader(metrics_file)
+            if row["split"] == "train" and row["step"] == "1"
+        ]
+    assert [row["granularity"] for row in train_rows] == ["l"]
+
+
 def test_external_output_root_keeps_required_artifacts_outside_repo_outputs(tmp_path):
     output_root = tmp_path / "external-output-root"
     config = resolve_run_config(

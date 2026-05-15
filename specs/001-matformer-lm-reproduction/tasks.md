@@ -216,9 +216,9 @@ events identify the current stage and progress.
 - [X] T101 [US2] Wire config-driven distributed device selection, dataloading, and FSDP model wrapping in `training/run.py`
 - [X] T102 [US2] Integrate effective `WORLD_SIZE` budget resolution with distributed launch metadata in `utils/config.py` and `training/run.py`
 - [X] T103 [US2] Gate resolved config, metrics, summary, checkpoint, and heartbeat shared writes to rank 0 in `training/run.py` and `utils/metrics.py`
-- [ ] T104 [US2] Update `scripts/slurm_78m_pilot.sh` for single-node multi-GPU resource requests and one config-driven process per GPU
-- [ ] T105 [US2] Instrument tokenizer loading, dataset loading/preprocessing, model initialization, FSDP wrapping, training, validation, checkpointing, and artifact-writing stages in `training/run.py`
-- [ ] T106 [US2] Document distributed 78M pilot queueing and heartbeat inspection in `specs/001-matformer-lm-reproduction/quickstart.md` and `README.md`
+- [X] T104 [US2] Update `scripts/slurm_78m_pilot.sh` for single-node multi-GPU resource requests and one config-driven process per GPU
+- [X] T105 [US2] Instrument tokenizer loading, dataset loading/preprocessing, model initialization, FSDP wrapping, training, validation, checkpointing, and artifact-writing stages in `training/run.py`
+- [X] T106 [US2] Document distributed 78M pilot queueing and heartbeat inspection in `specs/001-matformer-lm-reproduction/quickstart.md` and `README.md`
 
 **Checkpoint**: Phase 4.6 is complete when the 78M pilot has a single-node
 multi-GPU Slurm path, config-driven FSDP execution, rank-safe artifact writes,

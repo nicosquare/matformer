@@ -274,13 +274,28 @@ def build_scaling_result_rows(
 ) -> list[dict[str, Any]]:
     run = config["run"]
     model = config["model"]
+    training = config.get("training", {})
     metrics_rows = list(metrics_rows)
-    latest_rows = latest_metric_rows_by_granularity(metrics_rows, split="validation")
+    validation_rows = latest_metric_rows_by_granularity(
+        metrics_rows,
+        split="validation",
+    )
+    latest_rows = validation_rows
     if not latest_rows:
         latest_rows = latest_metric_rows_by_granularity(metrics_rows, split="train")
 
+    allow_partial_training_rows = (
+        not validation_rows
+        and training.get("granularity_sampling") == "random"
+    )
+    granularities = list(model["granularities"])
+    if allow_partial_training_rows:
+        granularities = [
+            granularity for granularity in granularities if granularity in latest_rows
+        ]
+
     rows = []
-    for granularity in model["granularities"]:
+    for granularity in granularities:
         metric_row = latest_rows.get(granularity)
         if metric_row is None:
             raise ArtifactError(
