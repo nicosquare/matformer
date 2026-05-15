@@ -196,7 +196,7 @@ def test_dmodel256_pilot_runner_nested_all_mode_sets_sampling_overrides(tmp_path
     assert _has_arg_pair(args, "--override", "run.run_id=dmodel256-nested-all-001")
     assert _has_arg_pair(args, "--override", "run.model_family=nested")
     assert _has_arg_pair(args, "--override", "run.sampling_mode=nested-all")
-    assert _has_arg_pair(args, "--override", "training.granularity_sampling=all")
+    assert not _has_arg_pair(args, "--override", "training.granularity_sampling=all")
     assert _has_arg_pair(args, "--override", "training.max_steps_cap=1")
 
 
@@ -221,8 +221,8 @@ def test_dmodel256_pilot_runner_standalone_mode_sets_granularity_overrides(tmp_p
     assert _has_arg_pair(args, "--override", "run.model_family=standalone")
     assert _has_arg_pair(args, "--override", "run.sampling_mode=standalone")
     assert _has_arg_pair(args, "--override", "run.granularity=m")
-    assert _has_arg_pair(args, "--override", "model.granularities=[m]")
-    assert _has_arg_pair(args, "--override", "training.granularity_sampling=all")
+    assert not _has_arg_pair(args, "--override", "model.granularities=[m]")
+    assert not _has_arg_pair(args, "--override", "training.granularity_sampling=all")
     assert _has_arg_pair(args, "--override", "training.max_steps_cap=1")
 
 
@@ -353,8 +353,109 @@ def test_slurm_dmodel256_pilot_wrapper_forwards_mode_selection_to_runner(tmp_pat
     assert "--mode" not in args
     assert _has_arg_pair(args, "--override", "run.run_id=dmodel256-nested-all-001")
     assert _has_arg_pair(args, "--override", "run.sampling_mode=nested-all")
-    assert _has_arg_pair(args, "--override", "training.granularity_sampling=all")
+    assert not _has_arg_pair(args, "--override", "training.granularity_sampling=all")
     assert _has_arg_pair(args, "--override", "training.max_steps_cap=1")
+
+
+def test_slurm_dmodel256_pilot_multi_gpu_translates_mode_to_train_overrides(tmp_path):
+    recorder = tmp_path / "python-recorder.sh"
+    argv_path = tmp_path / "argv.txt"
+
+    recorder.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$@\" > \"$ARGV_FILE\"\n",
+        encoding="utf-8",
+    )
+    recorder.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "ALLOW_LOCAL_SLURM_WRAPPER": "1",
+            "GPUS_PER_NODE": "4",
+            "PYTHON_BIN": str(recorder),
+            "ARGV_FILE": str(argv_path),
+        }
+    )
+
+    subprocess.run(
+        [
+            "bash",
+            "scripts/slurm_dmodel256_pilot.sh",
+            "--output-root",
+            str(tmp_path / "slurm-output"),
+            "--mode",
+            "standalone",
+            "--granularity",
+            "m",
+            "--override",
+            "training.max_steps_cap=1",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    args = argv_path.read_text(encoding="utf-8").splitlines()
+    assert "-m" in args
+    assert "torch.distributed.run" in args
+    assert _has_arg_pair(args, "--nproc_per_node", "4")
+    assert "--mode" not in args
+    assert "--granularity" not in args
+    assert _has_arg_pair(args, "--override", "run.run_id=dmodel256-standalone-m-001")
+    assert _has_arg_pair(args, "--override", "run.model_family=standalone")
+    assert _has_arg_pair(args, "--override", "run.sampling_mode=standalone")
+    assert _has_arg_pair(args, "--override", "run.granularity=m")
+    assert not _has_arg_pair(args, "--override", "model.granularities=[m]")
+    assert not _has_arg_pair(args, "--override", "training.granularity_sampling=all")
+    assert _has_arg_pair(args, "--override", "training.max_steps_cap=1")
+
+
+def test_slurm_dmodel256_pilot_prefers_visible_cuda_device_count(tmp_path):
+    recorder = tmp_path / "python-recorder.sh"
+    argv_path = tmp_path / "argv.txt"
+
+    recorder.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$@\" > \"$ARGV_FILE\"\n",
+        encoding="utf-8",
+    )
+    recorder.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "ALLOW_LOCAL_SLURM_WRAPPER": "1",
+            "CUDA_VISIBLE_DEVICES": "0,1,2",
+            "SLURM_GPUS_ON_NODE": "4",
+            "PYTHON_BIN": str(recorder),
+            "ARGV_FILE": str(argv_path),
+        }
+    )
+
+    subprocess.run(
+        [
+            "bash",
+            "scripts/slurm_dmodel256_pilot.sh",
+            "--output-root",
+            str(tmp_path / "slurm-output"),
+            "--mode",
+            "nested-random",
+            "--override",
+            "training.max_steps_cap=1",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    args = argv_path.read_text(encoding="utf-8").splitlines()
+    assert _has_arg_pair(args, "--nproc_per_node", "3")
+    assert _has_arg_pair(args, "--override", "run.sampling_mode=nested-random")
 
 
 def test_slurm_dmodel256_pilot_comparison_wrapper_rejects_direct_execution(tmp_path):

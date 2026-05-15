@@ -26,9 +26,11 @@ from training.data import (
     split_train_eval_dataset,
 )
 from training.distributed import (
-    barrier,
+    broadcast_object,
+    destroy_distributed_process_group,
     prepare_distributed_context,
     should_write_shared_artifact,
+    sum_int,
     wrap_model_for_distributed,
 )
 from utils.config import (
@@ -148,13 +150,15 @@ def run_training(
             metrics_rows,
         )
 
+        checkpoint_summary_fields = write_checkpoint_if_needed(
+            config,
+            model,
+            metrics_rows,
+            heartbeat_writer,
+            distributed_context=distributed_context,
+        )
+
         if should_write_shared_artifact(distributed_context):
-            checkpoint_summary_fields = write_checkpoint_if_needed(
-                config,
-                model,
-                metrics_rows,
-                heartbeat_writer,
-            )
             with heartbeat_stage(heartbeat_writer, "artifact_writing"):
                 extraction_metadata_path = write_extraction_metadata_if_nested(
                     config,
@@ -189,6 +193,7 @@ def run_training(
         extra_summary_fields = {
             "steps_completed": training_outcome["steps_completed"],
             "stop_reason": training_outcome["stop_reason"],
+            "content_tokens_seen": training_outcome["content_tokens_seen"],
             "granularities": config["model"]["granularities"],
             "granularity_sampling": training.get("granularity_sampling", "all"),
             "parameter_counts_by_granularity": parameter_counts_by_granularity,
@@ -216,7 +221,6 @@ def run_training(
                 summary,
                 distributed_context=distributed_context,
             )
-        barrier(distributed_context)
 
         return {
             "config": config,
@@ -228,14 +232,23 @@ def run_training(
             "parameter_counts_by_granularity": parameter_counts_by_granularity,
         }
     except Exception as error:
-        with heartbeat_stage(heartbeat_writer, "artifact_writing"):
-            write_failed_run_summary(
-                config,
-                str(error),
-                output_dir=output_dir,
-                distributed_context=distributed_context,
+        try:
+            with heartbeat_stage(heartbeat_writer, "artifact_writing"):
+                write_failed_run_summary(
+                    config,
+                    str(error),
+                    output_dir=output_dir,
+                    distributed_context=distributed_context,
+                )
+        except Exception as summary_error:
+            print(
+                "Failed to write failure summary: "
+                f"{summary_error}. Original error: {error}",
+                flush=True,
             )
         raise
+    finally:
+        destroy_distributed_process_group(distributed_context)
 
 
 def build_model(config: dict[str, Any]):
@@ -339,6 +352,7 @@ def heartbeat_training_fields(
     config: dict[str, Any],
     step: int | None = None,
     tokens_seen: int | None = None,
+    content_tokens_seen: int | None = None,
     latest_loss: float | None = None,
     tokens_per_second: float | None = None,
     peak_gpu_memory_bytes: int | None = None,
@@ -349,6 +363,7 @@ def heartbeat_training_fields(
         "step": step,
         "derived_max_steps": training.get("derived_max_steps"),
         "tokens_seen": tokens_seen,
+        "content_tokens_seen": content_tokens_seen,
         "token_budget": training.get("token_budget"),
         "latest_loss": latest_loss,
         "tokens_per_second": tokens_per_second,
@@ -371,6 +386,7 @@ def maybe_emit_training_heartbeat(
     config: dict[str, Any],
     step: int,
     tokens_seen: int,
+    content_tokens_seen: int,
     latest_loss: float,
     tokens_per_second: float | None,
     peak_gpu_memory_bytes: int,
@@ -385,6 +401,7 @@ def maybe_emit_training_heartbeat(
             config,
             step=step,
             tokens_seen=tokens_seen,
+            content_tokens_seen=content_tokens_seen,
             latest_loss=latest_loss,
             tokens_per_second=tokens_per_second,
             peak_gpu_memory_bytes=peak_gpu_memory_bytes,
@@ -414,25 +431,50 @@ def write_checkpoint_if_needed(
     model,
     metrics_rows: list[dict[str, Any]],
     heartbeat_writer,
+    distributed_context=None,
 ) -> dict[str, Any]:
-    checkpoint_fields = build_checkpoint_summary_fields(config, metrics_rows)
-    checkpoint_path = checkpoint_fields.get("best_checkpoint_path")
-    if checkpoint_path is None:
-        checkpoint_path = checkpoint_fields.get("final_checkpoint_path")
+    if should_write_shared_artifact(distributed_context):
+        checkpoint_fields = build_checkpoint_summary_fields(config, metrics_rows)
+        checkpoint_path = checkpoint_fields.get("best_checkpoint_path")
+        if checkpoint_path is None:
+            checkpoint_path = checkpoint_fields.get("final_checkpoint_path")
 
-    if checkpoint_path is None:
+        should_save = False
+        if checkpoint_path is not None:
+            output_path = Path(str(checkpoint_path))
+            should_save = not output_path.exists()
+
+        payload = {
+            "checkpoint_fields": checkpoint_fields,
+            "checkpoint_path": checkpoint_path,
+            "should_save": should_save,
+        }
+    else:
+        payload = None
+
+    payload = broadcast_object(payload, distributed_context)
+    if payload is None:
+        return build_checkpoint_summary_fields(config, metrics_rows)
+
+    checkpoint_fields = payload["checkpoint_fields"]
+    checkpoint_path = payload["checkpoint_path"]
+    if checkpoint_path is None or not payload["should_save"]:
         return checkpoint_fields
 
     output_path = Path(str(checkpoint_path))
-    if output_path.exists():
-        return checkpoint_fields
 
     with heartbeat_stage(
         heartbeat_writer,
         "checkpointing",
         checkpoint_status=checkpoint_fields["checkpoint_status"],
     ):
-        save_model_checkpoint(config, model, output_path, checkpoint_fields)
+        save_model_checkpoint(
+            config,
+            model,
+            output_path,
+            checkpoint_fields,
+            distributed_context=distributed_context,
+        )
 
     return checkpoint_fields
 
@@ -450,16 +492,54 @@ def maybe_write_best_eval_checkpoint(
         return
     if not config.get("evaluation", {}).get("validation", False):
         return
-    if not should_write_shared_artifact(distributed_context):
+
+    if should_write_shared_artifact(distributed_context):
+        payload = build_best_eval_checkpoint_payload(
+            config,
+            validation_results,
+            step,
+            checkpoint_state,
+        )
+    else:
+        payload = None
+
+    payload = broadcast_object(payload, distributed_context)
+    if payload is None or not payload["should_save"]:
         return
 
+    checkpoint_fields = payload["checkpoint_fields"]
+    checkpoint_path = Path(str(checkpoint_fields["best_checkpoint_path"]))
+
+    with heartbeat_stage(
+        heartbeat_writer,
+        "checkpointing",
+        checkpoint_status=checkpoint_fields["checkpoint_status"],
+    ):
+        save_model_checkpoint(
+            config,
+            model,
+            checkpoint_path,
+            checkpoint_fields,
+            distributed_context=distributed_context,
+        )
+
+    checkpoint_state.clear()
+    checkpoint_state.update(checkpoint_fields)
+
+
+def build_best_eval_checkpoint_payload(
+    config: dict[str, Any],
+    validation_results: list[dict[str, Any]],
+    step: int,
+    checkpoint_state: dict[str, Any],
+) -> dict[str, Any]:
     metric_name, metric_value = best_validation_metric_value(validation_results)
     if metric_name is None or metric_value is None:
-        return
+        return {"should_save": False, "checkpoint_fields": None}
 
     previous_metric_value = checkpoint_state.get("checkpoint_metric_value")
     if previous_metric_value is not None and metric_value >= previous_metric_value:
-        return
+        return {"should_save": False, "checkpoint_fields": None}
 
     metric_field = "loss" if metric_name == "validation_loss" else "perplexity"
     best_result = min(
@@ -482,17 +562,7 @@ def maybe_write_best_eval_checkpoint(
         validation_enabled=True,
         save_checkpoints=True,
     )
-    checkpoint_path = Path(str(checkpoint_fields["best_checkpoint_path"]))
-
-    with heartbeat_stage(
-        heartbeat_writer,
-        "checkpointing",
-        checkpoint_status=checkpoint_fields["checkpoint_status"],
-    ):
-        save_model_checkpoint(config, model, checkpoint_path, checkpoint_fields)
-
-    checkpoint_state.clear()
-    checkpoint_state.update(checkpoint_fields)
+    return {"should_save": True, "checkpoint_fields": checkpoint_fields}
 
 
 def save_model_checkpoint(
@@ -500,7 +570,12 @@ def save_model_checkpoint(
     model,
     output_path: Path,
     checkpoint_fields: dict[str, Any],
+    distributed_context=None,
 ) -> None:
+    model_state_dict = checkpoint_state_dict(model, distributed_context)
+    if not should_write_shared_artifact(distributed_context):
+        return
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
@@ -513,10 +588,31 @@ def save_model_checkpoint(
             "checkpoint_selection_step": checkpoint_fields[
                 "checkpoint_selection_step"
             ],
-            "model_state_dict": model.state_dict(),
+            "model_state_dict": model_state_dict,
         },
         output_path,
     )
+
+
+def checkpoint_state_dict(model, distributed_context=None) -> dict[str, Any]:
+    if (
+        distributed_context is None
+        or not distributed_context.enabled
+        or distributed_context.strategy != "fsdp"
+    ):
+        return model.state_dict()
+
+    from torch.distributed.checkpoint.state_dict import (
+        StateDictOptions,
+        get_state_dict,
+    )
+
+    model_state_dict, _ = get_state_dict(
+        model,
+        [],
+        options=StateDictOptions(full_state_dict=True, cpu_offload=True),
+    )
+    return model_state_dict
 
 
 def best_validation_metric_value(
@@ -629,6 +725,7 @@ def train_for_steps(
 
     metrics_rows = []
     tokens_seen = 0
+    content_tokens_seen = 0
     start_time = time.time()
     step = 0
     epoch = 0
@@ -649,8 +746,12 @@ def train_for_steps(
                 made_progress = True
                 step += 1
                 batch = move_batch_to_device(batch, device)
-                batch_tokens = count_batch_tokens(batch)
-                tokens_seen += batch_tokens
+                content_tokens_seen += global_content_tokens_for_batch(
+                    batch,
+                    device=device,
+                    distributed_context=distributed_context,
+                )
+                tokens_seen = budget_tokens_seen_for_step(config, step)
 
                 optimizer.zero_grad(set_to_none=True)
 
@@ -686,6 +787,7 @@ def train_for_steps(
                     config,
                     step=step,
                     tokens_seen=tokens_seen,
+                    content_tokens_seen=content_tokens_seen,
                     latest_loss=latest_loss,
                     tokens_per_second=tokens_per_second,
                     peak_gpu_memory_bytes=peak_memory_bytes,
@@ -699,6 +801,7 @@ def train_for_steps(
                             granularity=granularity,
                             loss=float(loss.detach().cpu().item()),
                             tokens_seen=tokens_seen,
+                            content_tokens_seen=content_tokens_seen,
                             wall_clock_seconds=elapsed,
                             peak_memory_bytes=peak_memory_bytes,
                         )
@@ -712,6 +815,7 @@ def train_for_steps(
                             config,
                             step=step,
                             tokens_seen=tokens_seen,
+                            content_tokens_seen=content_tokens_seen,
                         ),
                     ):
                         validation_results = evaluate_validation_per_granularity(
@@ -719,6 +823,10 @@ def train_for_steps(
                             eval_dataloader,
                             granularities=granularities,
                             device=device,
+                            distributed=(
+                                distributed_context is not None
+                                and distributed_context.enabled
+                            ),
                         )
                     maybe_write_best_eval_checkpoint(
                         config,
@@ -737,6 +845,8 @@ def train_for_steps(
                             wall_clock_seconds=elapsed,
                             tokens_per_second=tokens_per_second,
                             peak_memory_bytes=peak_memory_bytes,
+                            tokens_seen=tokens_seen,
+                            content_tokens_seen=content_tokens_seen,
                         )
                     )
 
@@ -754,6 +864,7 @@ def train_for_steps(
         device=device,
         step=step,
         tokens_seen=tokens_seen,
+        content_tokens_seen=content_tokens_seen,
         start_time=start_time,
         heartbeat_writer=heartbeat_writer,
         distributed_context=distributed_context,
@@ -812,14 +923,20 @@ def summarize_training_outcome(
         return {
             "steps_completed": 0,
             "tokens_seen": 0,
+            "content_tokens_seen": 0,
             "stop_reason": "not_started",
         }
 
     steps_completed = max(int(row["step"]) for row in training_rows)
     tokens_seen = max(int(row["tokens_seen"]) for row in training_rows)
+    content_tokens_seen = max(
+        int(row.get("content_tokens_seen", row["tokens_seen"]))
+        for row in training_rows
+    )
     return {
         "steps_completed": steps_completed,
         "tokens_seen": tokens_seen,
+        "content_tokens_seen": content_tokens_seen,
         "stop_reason": stop_reason_for_training(
             config,
             tokens_seen=tokens_seen,
@@ -850,6 +967,7 @@ def append_final_validation_if_needed(
     device: torch.device,
     step: int,
     tokens_seen: int,
+    content_tokens_seen: int,
     start_time: float,
     heartbeat_writer=None,
     distributed_context=None,
@@ -873,6 +991,7 @@ def append_final_validation_if_needed(
             config,
             step=step,
             tokens_seen=tokens_seen,
+            content_tokens_seen=content_tokens_seen,
         ),
     ):
         validation_results = evaluate_validation_per_granularity(
@@ -880,6 +999,9 @@ def append_final_validation_if_needed(
             eval_dataloader,
             granularities=granularities,
             device=device,
+            distributed=(
+                distributed_context is not None and distributed_context.enabled
+            ),
         )
     maybe_write_best_eval_checkpoint(
         config,
@@ -898,6 +1020,8 @@ def append_final_validation_if_needed(
             wall_clock_seconds=elapsed,
             tokens_per_second=tokens_seen / elapsed if elapsed > 0 else None,
             peak_memory_bytes=current_peak_memory_bytes(device),
+            tokens_seen=tokens_seen,
+            content_tokens_seen=content_tokens_seen,
         )
     )
 
@@ -977,6 +1101,7 @@ def build_training_metric_row(
     granularity: str,
     loss: float,
     tokens_seen: int,
+    content_tokens_seen: int,
     wall_clock_seconds: float,
     peak_memory_bytes: int,
 ) -> dict[str, Any]:
@@ -995,6 +1120,7 @@ def build_training_metric_row(
         "loss": loss,
         "perplexity": perplexity_from_loss(loss),
         "tokens_seen": tokens_seen,
+        "content_tokens_seen": content_tokens_seen,
         "wall_clock_seconds": wall_clock_seconds,
         "tokens_per_second": tokens_per_second,
         "peak_memory_bytes": peak_memory_bytes,
@@ -1005,10 +1131,31 @@ def select_training_granularity(granularities: list[str], step: int) -> str:
     return granularities[(step - 1) % len(granularities)]
 
 
-def count_batch_tokens(batch: dict[str, torch.Tensor]) -> int:
+def budget_tokens_seen_for_step(config: dict[str, Any], step: int) -> int:
+    planned_tokens = step * int(config["training"]["expected_tokens_per_step"])
+    return min(planned_tokens, int(config["training"]["token_budget"]))
+
+
+def global_content_tokens_for_batch(
+    batch: dict[str, torch.Tensor],
+    device: torch.device,
+    distributed_context=None,
+) -> int:
+    return sum_int(
+        count_content_tokens(batch),
+        device=device,
+        context=distributed_context,
+    )
+
+
+def count_content_tokens(batch: dict[str, torch.Tensor]) -> int:
     if "attention_mask" in batch and batch["attention_mask"] is not None:
         return int(batch["attention_mask"].sum().item())
     return int((batch["labels"] != -100).sum().item())
+
+
+def count_batch_tokens(batch: dict[str, torch.Tensor]) -> int:
+    return count_content_tokens(batch)
 
 
 def current_peak_memory_bytes(device: torch.device) -> int:

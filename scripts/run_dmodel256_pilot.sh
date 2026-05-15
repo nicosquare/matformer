@@ -167,14 +167,12 @@ mode_overrides() {
     nested-random)
       printf '%s\n' \
         "run.model_family=nested" \
-        "run.sampling_mode=nested-random" \
-        "training.granularity_sampling=random"
+        "run.sampling_mode=nested-random"
       ;;
     nested-all)
       printf '%s\n' \
         "run.model_family=nested" \
-        "run.sampling_mode=nested-all" \
-        "training.granularity_sampling=all"
+        "run.sampling_mode=nested-all"
       ;;
     standalone)
       if [[ "$granularity" != "s" && "$granularity" != "m" \
@@ -185,9 +183,7 @@ mode_overrides() {
       printf '%s\n' \
         "run.model_family=standalone" \
         "run.sampling_mode=standalone" \
-        "run.granularity=$granularity" \
-        "model.granularities=[$granularity]" \
-        "training.granularity_sampling=all"
+        "run.granularity=$granularity"
       ;;
     *)
       echo "Unknown mode: $mode" >&2

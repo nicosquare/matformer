@@ -23,6 +23,7 @@ METRICS_COLUMNS = [
     "loss",
     "perplexity",
     "tokens_seen",
+    "content_tokens_seen",
     "wall_clock_seconds",
     "tokens_per_second",
     "peak_memory_bytes",
@@ -101,6 +102,7 @@ RUN_SUMMARY_FIELDS = [
     "derived_max_steps",
     "effective_world_size",
     "tokens_seen",
+    "content_tokens_seen",
     "stop_reason",
     "seed",
     "status",
@@ -165,6 +167,7 @@ def write_config_artifact(
 def build_run_summary(
     config: Mapping[str, Any],
     tokens_seen: int | None = None,
+    content_tokens_seen: int | None = None,
     status: str = "completed",
     notes: Iterable[str] | None = None,
     extra_fields: Mapping[str, Any] | None = None,
@@ -176,6 +179,8 @@ def build_run_summary(
 
     if tokens_seen is None:
         tokens_seen = training.get("tokens_seen", training["token_budget"])
+    if content_tokens_seen is None:
+        content_tokens_seen = training.get("content_tokens_seen", tokens_seen)
     stop_reason = "failed" if status == "failed" else "not_started"
 
     summary = {
@@ -194,6 +199,7 @@ def build_run_summary(
         "derived_max_steps": training["derived_max_steps"],
         "effective_world_size": training["effective_world_size"],
         "tokens_seen": tokens_seen,
+        "content_tokens_seen": content_tokens_seen,
         "stop_reason": stop_reason,
         "seed": run.get("seed"),
         "status": status,
@@ -254,6 +260,7 @@ def write_failed_run_summary(
     error_message: str,
     output_dir: str | Path | None = None,
     tokens_seen: int = 0,
+    content_tokens_seen: int = 0,
     notes: Iterable[str] | None = None,
     distributed_context: Any | None = None,
 ) -> Path | None:
@@ -264,6 +271,7 @@ def write_failed_run_summary(
     summary = build_run_summary(
         config,
         tokens_seen=tokens_seen,
+        content_tokens_seen=content_tokens_seen,
         status="failed",
         notes=failure_notes,
     )
@@ -780,6 +788,7 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "vocab_size_assumption": None,
         "token_budget": None,
         "effective_world_size": None,
+        "content_tokens_seen": normalized_row.get("tokens_seen"),
         "ffn_parameters": None,
         "attention_parameters": None,
         "other_non_embedding_parameters": None,

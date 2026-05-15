@@ -131,9 +131,10 @@ configs.
 
 The runner translates `--mode nested-random`, `--mode nested-all`, and
 `--mode standalone --granularity <s|m|l|xl>` into explicit config overrides for
-model family, sampling mode, granularity, and granularity sampling. Use the
-mode flags rather than manually overriding `training.granularity_sampling` for
-the pilot comparison.
+model family, sampling mode, and selected standalone granularity. The resolver
+derives internal `training.granularity_sampling` and standalone
+`model.granularities` from those public fields, so use the mode flags rather
+than manually overriding training/model internals for the pilot comparison.
 
 To request a different single-node GPU count, override the Slurm resource
 request at submission time:
@@ -168,7 +169,8 @@ tail -n 20 /mnt/experiments/matformer/dmodel256-pilot-comparison-001/heartbeats.
 
 `heartbeats.jsonl` is written by rank 0 under the run output directory and
 records stage start/completion events plus training progress such as step,
-token budget, loss, throughput, peak GPU memory, and ETA.
+token budget, global budget-token progress, global non-padding token progress,
+loss, throughput, peak GPU memory, and ETA.
 
 Use `--output-dir` only for a one-off explicit run directory. For shared cache
 pressure, place Hugging Face caches outside the repository before launching

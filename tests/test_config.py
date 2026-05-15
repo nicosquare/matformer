@@ -331,7 +331,7 @@ def test_dmodel256_reduced_budget_rejects_table_budget_reference_label():
         validate_run_config(mislabeled)
 
 
-def test_dmodel256_sampling_mode_must_match_granularity_sampling():
+def test_dmodel256_sampling_mode_derives_granularity_sampling():
     random_sampling = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
     assert random_sampling["run"]["sampling_mode"] == "nested-random"
     assert random_sampling["training"]["granularity_sampling"] == "random"
@@ -341,13 +341,25 @@ def test_dmodel256_sampling_mode_must_match_granularity_sampling():
         overrides=[
             "run.run_id=dmodel256-pilot-nested-all-001",
             "run.sampling_mode=nested-all",
-            "training.granularity_sampling=all",
         ],
     )
     assert nested_all["run"]["sampling_mode"] == "nested-all"
     assert nested_all["training"]["granularity_sampling"] == "all"
 
-    with pytest.raises(ConfigError, match="sampling_mode"):
+    standalone = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        overrides=[
+            "run.run_id=dmodel256-standalone-m-001",
+            "run.model_family=standalone",
+            "run.sampling_mode=standalone",
+            "run.granularity=m",
+        ],
+    )
+    assert standalone["run"]["sampling_mode"] == "standalone"
+    assert standalone["training"]["granularity_sampling"] == "all"
+    assert standalone["model"]["granularities"] == ["m"]
+
+    with pytest.raises(ConfigError, match="conflicts"):
         resolve_run_config(
             "configs/dmodel256_pilot_comparison.yaml",
             overrides=[

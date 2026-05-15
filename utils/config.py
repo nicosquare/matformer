@@ -84,12 +84,54 @@ def apply_overrides(
     return resolved
 
 
+def _snapshot_overrides(
+    overrides: Mapping[str, Any] | Iterable[str] | None,
+) -> Mapping[str, Any] | list[str] | None:
+    if overrides is None or isinstance(overrides, Mapping):
+        return overrides
+    return list(overrides)
+
+
+def _override_keys(overrides: Mapping[str, Any] | Iterable[str] | None) -> set[str]:
+    if not overrides:
+        return set()
+
+    if isinstance(overrides, Mapping):
+        keys: set[str] = set()
+        for key, value in overrides.items():
+            key_text = str(key)
+            keys.add(key_text)
+            if isinstance(value, Mapping):
+                keys.update(
+                    f"{key_text}.{nested_key}"
+                    for nested_key in _mapping_dotted_keys(value)
+                )
+        return keys
+
+    return {raw_override.split("=", 1)[0].strip() for raw_override in overrides}
+
+
+def _mapping_dotted_keys(mapping: Mapping[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    for key, value in mapping.items():
+        key_text = str(key)
+        keys.add(key_text)
+        if isinstance(value, Mapping):
+            keys.update(
+                f"{key_text}.{nested_key}"
+                for nested_key in _mapping_dotted_keys(value)
+            )
+    return keys
+
+
 def resolve_run_config(
     config_path: str | Path,
     run_id: str | None = None,
     overrides: Mapping[str, Any] | Iterable[str] | None = None,
     output_dir: str | Path | None = None,
 ) -> dict[str, Any]:
+    overrides = _snapshot_overrides(overrides)
+    explicit_override_keys = _override_keys(overrides)
     config = apply_overrides(load_yaml_config(config_path), overrides)
 
     if "matrix" in config:
@@ -107,6 +149,12 @@ def resolve_run_config(
         resolved["run"]["output_dir"] = str(output_dir)
 
     _resolve_output_paths(resolved)
+    _resolve_sampling_mode_defaults(
+        resolved,
+        explicit_granularity_sampling=(
+            "training.granularity_sampling" in explicit_override_keys
+        ),
+    )
     _resolve_training_length(resolved)
     _resolve_parameter_reporting_defaults(resolved)
     validate_run_config(resolved)
@@ -117,11 +165,19 @@ def resolve_all_run_configs(
     config_path: str | Path,
     overrides: Mapping[str, Any] | Iterable[str] | None = None,
 ) -> list[dict[str, Any]]:
+    overrides = _snapshot_overrides(overrides)
+    explicit_override_keys = _override_keys(overrides)
     config = apply_overrides(load_yaml_config(config_path), overrides)
 
     if "matrix" not in config:
         resolved = _compose_single_run(config)
         _resolve_output_paths(resolved)
+        _resolve_sampling_mode_defaults(
+            resolved,
+            explicit_granularity_sampling=(
+                "training.granularity_sampling" in explicit_override_keys
+            ),
+        )
         _resolve_training_length(resolved)
         _resolve_parameter_reporting_defaults(resolved)
         validate_run_config(resolved)
@@ -137,6 +193,12 @@ def resolve_all_run_configs(
     for run_entry in runs:
         resolved = _compose_matrix_run(config, run_entry)
         _resolve_output_paths(resolved)
+        _resolve_sampling_mode_defaults(
+            resolved,
+            explicit_granularity_sampling=(
+                "training.granularity_sampling" in explicit_override_keys
+            ),
+        )
         _resolve_training_length(resolved)
         _resolve_parameter_reporting_defaults(resolved)
         validate_run_config(resolved)
@@ -386,6 +448,39 @@ def _table_reference_label(run: Mapping[str, Any]) -> str | None:
     return str(label)
 
 
+def _resolve_sampling_mode_defaults(
+    config: dict[str, Any],
+    explicit_granularity_sampling: bool = False,
+) -> None:
+    run = config.get("run", {})
+    training = config.get("training")
+    if not isinstance(run, Mapping) or not isinstance(training, dict):
+        return
+
+    sampling_mode = run.get("sampling_mode")
+    if sampling_mode not in VALID_SAMPLING_MODES:
+        return
+
+    expected_sampling = {
+        "nested-random": "random",
+        "nested-all": "all",
+        "standalone": "all",
+    }[sampling_mode]
+    current_sampling = training.get("granularity_sampling")
+    if (
+        explicit_granularity_sampling
+        and current_sampling is not None
+        and current_sampling != expected_sampling
+    ):
+        raise ConfigError(
+            f"training.granularity_sampling={current_sampling} conflicts with "
+            f"run.sampling_mode={sampling_mode}; omit the training override or "
+            f"use training.granularity_sampling={expected_sampling}"
+        )
+
+    training["granularity_sampling"] = expected_sampling
+
+
 def _validate_sampling_mode(
     run: Mapping[str, Any],
     granularity_sampling: str,
@@ -403,14 +498,13 @@ def _validate_sampling_mode(
     if sampling_mode == "standalone":
         if model_family != "standalone":
             raise ConfigError("run.sampling_mode=standalone requires standalone")
-        return
-
-    if model_family != "nested":
+    elif model_family != "nested":
         raise ConfigError(f"run.sampling_mode={sampling_mode} requires nested")
 
     expected_sampling = {
         "nested-random": "random",
         "nested-all": "all",
+        "standalone": "all",
     }[sampling_mode]
     if granularity_sampling != expected_sampling:
         raise ConfigError(
@@ -616,6 +710,8 @@ def resolve_training_length_for_world_size(
     effective_world_size: int | None = None,
     world_size_source: str | None = None,
 ) -> None:
+    _resolve_sampling_mode_defaults(config)
+
     training = config.get("training")
     model = config.get("model")
     if not isinstance(training, dict) or not isinstance(model, Mapping):

@@ -162,5 +162,7 @@ def test_validation_loss_perplexity_and_metric_rows():
     )
     assert rows[0]["run_id"] == "debug-nested-001"
     assert rows[0]["granularity"] == "s"
+    assert rows[0]["tokens_seen"] == 5
+    assert rows[0]["content_tokens_seen"] == 5
     assert rows[1]["granularity"] == "xl"
     assert rows[0]["peak_memory_bytes"] == 2048

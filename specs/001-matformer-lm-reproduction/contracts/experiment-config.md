@@ -9,8 +9,9 @@ to `outputs/<run_id>/`.
 Source YAML files contain hand-authored experiment inputs only. Researchers
 must not manually set `training.effective_world_size`,
 `training.expected_tokens_per_step`, `training.derived_max_steps`, or the
-resolved effective `training.max_steps`; those fields are produced during
-config resolution and saved in `config.json`.
+resolved effective `training.max_steps`. When `run.sampling_mode` is present,
+researchers also should not manually set `training.granularity_sampling`; those
+fields are produced during config resolution and saved in `config.json`.
 
 ```yaml
 run:
@@ -50,7 +51,6 @@ training:
   eval_interval: 100
   mixed_precision: bf16
   activation_checkpointing: true
-  granularity_sampling: all
 
 parameter_reporting:
   lm_head_counting: separately_counted
@@ -138,16 +138,17 @@ effective `training.max_steps` into `config.json`. `training.max_steps` is the
 step count used by the training loop, derived from token budget unless an
 explicit safety cap is modeled with `training.max_steps_cap`.
 
-`training.granularity_sampling` controls how nested MatFormer subnetworks are
-trained. `random` samples one configured granularity per batch, matching the
-original `train.py` behavior. `all` evaluates all configured granularities on
-the same batch and averages their losses; this is useful for debug and ablation
-runs but is not the original pilot training rule.
+`run.sampling_mode` is the comparison-facing source of truth. The resolver
+derives internal `training.granularity_sampling=random` for `nested-random`,
+`training.granularity_sampling=all` for `nested-all`, and
+`training.granularity_sampling=all` for standalone baselines. Explicit
+contradictory `training.granularity_sampling` overrides are rejected.
 
-`run.sampling_mode` is the comparison-facing label. It must be `nested-random`
-when `training.granularity_sampling=random`, `nested-all` when
-`training.granularity_sampling=all`, and `standalone` for independently trained
-baselines.
+The derived `training.granularity_sampling` controls how nested MatFormer
+subnetworks are trained. `random` samples one configured granularity per batch,
+matching the original `train.py` behavior. `all` evaluates all configured
+granularities on the same batch and averages their losses; this is useful for
+debug and ablation runs but is not the original pilot training rule.
 
 ## Granularity Values
 

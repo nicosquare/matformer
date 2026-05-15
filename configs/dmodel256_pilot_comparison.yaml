@@ -42,7 +42,6 @@ training:
   eval_interval: 500
   mixed_precision: bf16
   activation_checkpointing: true
-  granularity_sampling: random
 
 dataset:
   dataset_name: HuggingFaceFW/fineweb

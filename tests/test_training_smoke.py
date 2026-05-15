@@ -181,7 +181,7 @@ def test_budgeted_training_stops_at_token_budget_before_manual_step_cap(
         run_id="debug-nested-001",
         output_dir=output_dir,
         overrides=[
-            "training.token_budget=4",
+            "training.token_budget=64",
             "training.max_steps=10",
             "training.eval_interval=0",
             "training.batch_size_per_process=1",
@@ -193,7 +193,7 @@ def test_budgeted_training_stops_at_token_budget_before_manual_step_cap(
     tokenized_dataset = Dataset.from_dict(
         {
             "input_ids": [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]],
-            "attention_mask": [[1, 1, 1, 1], [1, 1, 1, 1], [1, 1, 1, 1]],
+            "attention_mask": [[1, 1, 1, 1], [1, 1, 0, 0], [1, 1, 1, 1]],
         }
     )
 
@@ -210,23 +210,26 @@ def test_budgeted_training_stops_at_token_budget_before_manual_step_cap(
         "expected_tokens_per_step",
         "derived_max_steps",
         "effective_world_size",
+        "content_tokens_seen",
     ]:
         assert field_name in summary
     assert summary["stop_reason"] == "token_budget_reached"
-    assert summary["token_budget"] == 4
-    assert summary["tokens_seen"] == 4
+    assert summary["token_budget"] == 64
+    assert summary["tokens_seen"] == 64
+    assert summary["content_tokens_seen"] == 2
     assert summary["expected_tokens_per_step"] == 64
     assert summary["derived_max_steps"] == 1
     assert summary["effective_world_size"] == 1
     assert summary["steps_completed"] == 1
 
     with result["metrics_path"].open("r", encoding="utf-8", newline="") as metrics_file:
-        train_steps = {
-            row["step"]
-            for row in csv.DictReader(metrics_file)
-            if row["split"] == "train"
-        }
+        train_rows = [
+            row for row in csv.DictReader(metrics_file) if row["split"] == "train"
+        ]
+        train_steps = {row["step"] for row in train_rows}
     assert train_steps == {"1"}
+    assert {row["tokens_seen"] for row in train_rows} == {"64"}
+    assert {row["content_tokens_seen"] for row in train_rows} == {"2"}
 
 
 def test_config_driven_training_uses_distributed_fsdp_path_when_enabled(

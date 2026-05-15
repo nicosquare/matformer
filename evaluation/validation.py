@@ -112,6 +112,8 @@ def validation_results_to_metric_rows(
     wall_clock_seconds: float | None = None,
     tokens_per_second: float | None = None,
     peak_memory_bytes: int | None = None,
+    tokens_seen: int | None = None,
+    content_tokens_seen: int | None = None,
 ) -> list[dict[str, Any]]:
     run = config["run"]
     rows = []
@@ -129,7 +131,14 @@ def validation_results_to_metric_rows(
                 "granularity": result["granularity"],
                 "loss": result["loss"],
                 "perplexity": result["perplexity"],
-                "tokens_seen": result["tokens_seen"],
+                "tokens_seen": (
+                    result["tokens_seen"] if tokens_seen is None else tokens_seen
+                ),
+                "content_tokens_seen": (
+                    result["tokens_seen"]
+                    if content_tokens_seen is None
+                    else content_tokens_seen
+                ),
                 "wall_clock_seconds": wall_clock_seconds,
                 "tokens_per_second": tokens_per_second,
                 "peak_memory_bytes": peak_memory_bytes,

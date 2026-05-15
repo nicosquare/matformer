@@ -43,7 +43,7 @@ or stderr, but they must not race to write shared run artifacts.
 Required columns:
 
 ```text
-run_id,step,split,model_family,sampling_mode,model_shape_label,table_reference_label,granularity,loss,perplexity,tokens_seen,wall_clock_seconds,tokens_per_second,peak_memory_bytes
+run_id,step,split,model_family,sampling_mode,model_shape_label,table_reference_label,granularity,loss,perplexity,tokens_seen,content_tokens_seen,wall_clock_seconds,tokens_per_second,peak_memory_bytes
 ```
 
 ## `task_results.csv`
@@ -95,6 +95,7 @@ Required fields:
   "derived_max_steps": 489,
   "effective_world_size": 1,
   "tokens_seen": 1000000,
+  "content_tokens_seen": 925000,
   "stop_reason": "token_budget_reached",
   "seed": 42,
   "status": "completed",
@@ -123,8 +124,11 @@ Required fields:
 ```
 
 `expected_tokens_per_step`, `derived_max_steps`, and `effective_world_size` are
-copied from the resolved `config.json`. `tokens_seen` and `stop_reason` are
-runtime outcomes written by the training loop.
+copied from the resolved `config.json`. `tokens_seen`, `content_tokens_seen`,
+and `stop_reason` are runtime outcomes written by the training loop.
+`tokens_seen` is the global budget counter based on planned token slots across
+the effective world size. `content_tokens_seen` is the global non-padding
+training-token counter observed from attention masks.
 
 Distributed run summaries must also include active distributed context when a
 run is launched with more than one process:
@@ -157,6 +161,7 @@ Each line is one JSON object. Required fields:
   "step": 10,
   "derived_max_steps": 100,
   "tokens_seen": 81920,
+  "content_tokens_seen": 74250,
   "token_budget": 1000000,
   "latest_loss": 1.25,
   "tokens_per_second": 512.0,
@@ -193,9 +198,12 @@ either the configured step interval or elapsed-time interval is reached.
   mismatch notes.
 - `expected_tokens_per_step`, `derived_max_steps`, and `effective_world_size`
   must match the resolved `config.json` for the run.
-- `tokens_seen` must report actual non-padding training tokens observed by the
-  loop, which may meet or slightly exceed `token_budget` because stopping occurs
-  at batch boundaries.
+- `tokens_seen` must report the global budget counter used for stopping. It is
+  derived from planned token slots, effective world size, and completed steps,
+  and should reach `token_budget` when the budget-derived step count is
+  completed.
+- `content_tokens_seen` must report global non-padding training tokens observed
+  by the loop. This value may be lower than `tokens_seen` for padded datasets.
 - `stop_reason` must make budget completion explicit. Allowed values are
   `not_started`, `token_budget_reached`,
   `max_steps_reached_before_token_budget`, and `failed`.

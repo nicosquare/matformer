@@ -15,7 +15,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Submit the Phase 4.6 d_model=256 reduced-token pilot comparison to Slurm.
+Submit the Phase 4.7 d_model=256 reduced-token pilot comparison to Slurm.
 
 Usage:
   sbatch scripts/slurm_dmodel256_pilot.sh --output-root /mnt/experiments/matformer [options] [-- runner args]
@@ -25,10 +25,12 @@ Options:
   --output-root PATH          Root for run artifacts; forwarded as OUTPUT_ROOT.
   --run-id RUN_ID             Run id from configs/dmodel256_pilot_comparison.yaml.
   --config PATH               Pilot config path.
+  --mode MODE                 nested-random, nested-all, standalone, or comparison.
+  --granularity NAME          Standalone granularity: s, m, l, or xl.
   --python-bin PATH           Python executable to use inside the job.
   -h, --help                  Show this message.
 
-Any remaining args are forwarded to scripts/run_dmodel256_pilot.sh, for example:
+Any remaining args are forwarded to the training launcher, for example:
   --override training.max_steps_cap=1
 
 For multi-GPU allocations, the launcher starts one training process per GPU
@@ -43,6 +45,8 @@ USAGE
 
 REPO_ROOT_ARG=""
 OUTPUT_ROOT_ARG=""
+MODE_ARG=""
+GRANULARITY_ARG=""
 FORWARDED_ARGS=()
 DEFAULT_RUN_ID="dmodel256-pilot-comparison-001"
 if [[ -n "${RUN_ID:-}" ]]; then
@@ -85,6 +89,22 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       export CONFIG_PATH="$2"
+      shift 2
+      ;;
+    --mode)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --mode" >&2
+        exit 2
+      fi
+      MODE_ARG="$2"
+      shift 2
+      ;;
+    --granularity)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --granularity" >&2
+        exit 2
+      fi
+      GRANULARITY_ARG="$2"
       shift 2
       ;;
     --python-bin)
@@ -138,6 +158,9 @@ if [[ -n "$OUTPUT_ROOT_ARG" ]]; then
   export OUTPUT_ROOT="$OUTPUT_ROOT_ARG"
 fi
 export OUTPUT_ROOT="${OUTPUT_ROOT:-$ROOT_DIR/outputs}"
+export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
+export TORCH_NCCL_ASYNC_ERROR_HANDLING="${TORCH_NCCL_ASYNC_ERROR_HANDLING:-1}"
+unset NCCL_ASYNC_ERROR_HANDLING
 
 CONDA_ENV_NAME="${CONDA_ENV_NAME:-elasticnn}"
 DEFAULT_CONDA_PYTHON="$HOME/.conda/envs/$CONDA_ENV_NAME/bin/python"
@@ -187,6 +210,10 @@ resolve_gpus_per_node() {
     gpu_count_from_value "$GPUS_PER_NODE"
     return 0
   fi
+  if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+    visible_cuda_device_count
+    return 0
+  fi
   if [[ -n "${SLURM_GPUS_ON_NODE:-}" ]]; then
     gpu_count_from_value "$SLURM_GPUS_ON_NODE"
     return 0
@@ -203,10 +230,6 @@ resolve_gpus_per_node() {
     gpu_count_from_value "$SLURM_JOB_GPUS"
     return 0
   fi
-  if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
-    visible_cuda_device_count
-    return 0
-  fi
   if [[ "${ALLOW_LOCAL_SLURM_WRAPPER:-0}" == "1" ]]; then
     printf '1\n'
     return 0
@@ -217,17 +240,95 @@ resolve_gpus_per_node() {
 GPUS_PER_NODE="$(resolve_gpus_per_node)"
 export GPUS_PER_NODE
 
+if [[ -z "${OMP_NUM_THREADS:-}" ]]; then
+  CPUS_PER_TASK="${SLURM_CPUS_PER_TASK:-1}"
+  if [[ "$CPUS_PER_TASK" =~ ^[0-9]+$ ]] && [[ "$GPUS_PER_NODE" -gt 0 ]]; then
+    OMP_THREADS=$(( CPUS_PER_TASK / GPUS_PER_NODE ))
+    if [[ "$OMP_THREADS" -lt 1 ]]; then
+      OMP_THREADS=1
+    fi
+  else
+    OMP_THREADS=1
+  fi
+  export OMP_NUM_THREADS="$OMP_THREADS"
+fi
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-$OMP_NUM_THREADS}"
+
+mode_run_id() {
+  local mode="$1"
+  local granularity="${2:-}"
+  case "$mode" in
+    nested-random) printf 'dmodel256-nested-random-001\n' ;;
+    nested-all) printf 'dmodel256-nested-all-001\n' ;;
+    standalone) printf 'dmodel256-standalone-%s-001\n' "$granularity" ;;
+    *)
+      echo "Unknown mode: $mode" >&2
+      exit 2
+      ;;
+  esac
+}
+
+DISPLAY_RUN_ID="$RUN_ID"
+if [[ "$RUN_ID_EXPLICIT" != "true" ]]; then
+  case "$MODE_ARG" in
+    nested-random|nested-all|standalone)
+      DISPLAY_RUN_ID="$(mode_run_id "$MODE_ARG" "$GRANULARITY_ARG")"
+      ;;
+  esac
+fi
+
 printf 'Slurm job id: %s\n' "${SLURM_JOB_ID:-local-shell}"
 printf 'Python: %s\n' "$PYTHON_BIN"
 printf 'Output root: %s\n' "$OUTPUT_ROOT"
 printf 'Config: %s\n' "${CONFIG_PATH:-configs/dmodel256_pilot_comparison.yaml}"
-printf 'Run id: %s\n' "$RUN_ID"
+printf 'Run id: %s\n' "$DISPLAY_RUN_ID"
+if [[ -n "$MODE_ARG" ]]; then
+  printf 'Mode: %s\n' "$MODE_ARG"
+fi
+if [[ "$MODE_ARG" == "standalone" ]]; then
+  printf 'Granularity: %s\n' "$GRANULARITY_ARG"
+fi
 printf 'CUDA_VISIBLE_DEVICES: %s\n' "${CUDA_VISIBLE_DEVICES:-unset}"
 printf 'SLURM_GPUS_ON_NODE: %s\n' "${SLURM_GPUS_ON_NODE:-unset}"
 printf 'SLURM_GPUS_PER_NODE: %s\n' "${SLURM_GPUS_PER_NODE:-unset}"
 printf 'SLURM_GPUS: %s\n' "${SLURM_GPUS:-unset}"
 printf 'SLURM_JOB_GPUS: %s\n' "${SLURM_JOB_GPUS:-unset}"
 printf 'GPUs per node: %s\n' "$GPUS_PER_NODE"
+printf 'OMP_NUM_THREADS: %s\n' "$OMP_NUM_THREADS"
+printf 'MKL_NUM_THREADS: %s\n' "$MKL_NUM_THREADS"
+
+append_mode_overrides() {
+  local mode="$1"
+  local granularity="${2:-}"
+  case "$mode" in
+    nested-random)
+      TRAIN_ARGS+=(--override "run.model_family=nested")
+      TRAIN_ARGS+=(--override "run.sampling_mode=nested-random")
+      ;;
+    nested-all)
+      TRAIN_ARGS+=(--override "run.model_family=nested")
+      TRAIN_ARGS+=(--override "run.sampling_mode=nested-all")
+      ;;
+    standalone)
+      if [[ "$granularity" != "s" && "$granularity" != "m" \
+        && "$granularity" != "l" && "$granularity" != "xl" ]]; then
+        echo "Standalone mode requires --granularity s, m, l, or xl" >&2
+        exit 2
+      fi
+      TRAIN_ARGS+=(--override "run.model_family=standalone")
+      TRAIN_ARGS+=(--override "run.sampling_mode=standalone")
+      TRAIN_ARGS+=(--override "run.granularity=$granularity")
+      ;;
+    comparison)
+      echo "Multi-GPU Slurm jobs run one selected mode; submit nested-random, nested-all, and standalone jobs separately." >&2
+      exit 2
+      ;;
+    *)
+      echo "Unknown --mode: $mode" >&2
+      exit 2
+      ;;
+  esac
+}
 
 if [[ "$GPUS_PER_NODE" -gt 1 ]]; then
   OUTPUT_ARGS=(--output-root "$OUTPUT_ROOT")
@@ -240,10 +341,27 @@ if [[ "$GPUS_PER_NODE" -gt 1 ]]; then
   if [[ "$RUN_ID_EXPLICIT" == "true" ]]; then
     TRAIN_ARGS+=(--override "run.run_id=$RUN_ID")
   fi
+  if [[ -n "$MODE_ARG" ]]; then
+    append_mode_overrides "$MODE_ARG" "$GRANULARITY_ARG"
+    if [[ "$RUN_ID_EXPLICIT" != "true" ]]; then
+      TRAIN_ARGS+=(--override "run.run_id=$(mode_run_id "$MODE_ARG" "$GRANULARITY_ARG")")
+    fi
+  fi
   exec "$PYTHON_BIN" -m torch.distributed.run \
     --standalone \
+    --max_restarts 0 \
+    --monitor_interval 5 \
     --nproc_per_node "$GPUS_PER_NODE" \
     "${TRAIN_ARGS[@]}"
 fi
 
-exec bash scripts/run_dmodel256_pilot.sh "${FORWARDED_ARGS[@]}"
+RUNNER_ARGS=()
+if [[ -n "$MODE_ARG" ]]; then
+  RUNNER_ARGS+=(--mode "$MODE_ARG")
+fi
+if [[ -n "$GRANULARITY_ARG" ]]; then
+  RUNNER_ARGS+=(--granularity "$GRANULARITY_ARG")
+fi
+RUNNER_ARGS+=("${FORWARDED_ARGS[@]}")
+
+exec bash scripts/run_dmodel256_pilot.sh "${RUNNER_ARGS[@]}"

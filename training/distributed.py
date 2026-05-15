@@ -111,6 +111,45 @@ def barrier(context: DistributedContext | None = None) -> None:
         torch.distributed.barrier()
 
 
+def broadcast_object(
+    value: T | None,
+    context: DistributedContext | None = None,
+    src: int = 0,
+) -> T | None:
+    if context is not None and not context.enabled:
+        return value
+    if not distributed_is_initialized():
+        return value
+
+    object_list: list[T | None] = [value if get_rank(default=0) == src else None]
+    torch.distributed.broadcast_object_list(object_list, src=src)
+    return object_list[0]
+
+
+def sum_int(
+    value: int,
+    device: torch.device | str,
+    context: DistributedContext | None = None,
+) -> int:
+    if context is not None and not context.enabled:
+        return int(value)
+    if not distributed_is_initialized():
+        return int(value)
+
+    tensor = torch.tensor(int(value), dtype=torch.long, device=device)
+    torch.distributed.all_reduce(tensor, op=torch.distributed.ReduceOp.SUM)
+    return int(tensor.item())
+
+
+def destroy_distributed_process_group(
+    context: DistributedContext | None = None,
+) -> None:
+    if context is not None and not context.enabled:
+        return
+    if distributed_is_initialized():
+        torch.distributed.destroy_process_group()
+
+
 def get_rank(default: int = 0) -> int:
     if distributed_is_initialized():
         return int(torch.distributed.get_rank())

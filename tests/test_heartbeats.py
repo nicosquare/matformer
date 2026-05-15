@@ -33,6 +33,7 @@ def test_heartbeat_writer_emits_stdout_and_jsonl_schema(tmp_path):
         step=10,
         derived_max_steps=100,
         tokens_seen=81_920,
+        content_tokens_seen=74_250,
         token_budget=1_000_000,
         latest_loss=1.25,
         tokens_per_second=512.0,
@@ -59,6 +60,7 @@ def test_heartbeat_writer_emits_stdout_and_jsonl_schema(tmp_path):
         "step",
         "derived_max_steps",
         "tokens_seen",
+        "content_tokens_seen",
         "token_budget",
         "latest_loss",
         "tokens_per_second",
@@ -75,6 +77,7 @@ def test_heartbeat_writer_emits_stdout_and_jsonl_schema(tmp_path):
     assert event["step"] == 10
     assert event["derived_max_steps"] == 100
     assert event["tokens_seen"] == 81_920
+    assert event["content_tokens_seen"] == 74_250
     assert event["token_budget"] == 1_000_000
 
     stdout_line = stdout.getvalue()
@@ -83,6 +86,28 @@ def test_heartbeat_writer_emits_stdout_and_jsonl_schema(tmp_path):
     assert "rank=0/2" in stdout_line
     assert "step=10/100" in stdout_line
     assert "tokens=81920/1000000" in stdout_line
+    assert "content_tokens=74250" in stdout_line
+
+
+def test_heartbeat_writer_accepts_extra_stage_fields(tmp_path):
+    from utils.heartbeats import HeartbeatWriter
+
+    stdout = io.StringIO()
+    writer = HeartbeatWriter(
+        output_dir=tmp_path,
+        run_id="dmodel256-nested-random-001",
+        rank=0,
+        world_size=4,
+        stdout=stdout,
+        time_fn=FakeClock(1000.0, 1001.0),
+    )
+
+    writer.stage_start("checkpointing", checkpoint_status="best_eval")
+
+    event = json.loads((tmp_path / "heartbeats.jsonl").read_text(encoding="utf-8"))
+    assert event["event_type"] == "stage_start"
+    assert event["stage"] == "checkpointing"
+    assert event["checkpoint_status"] == "best_eval"
 
 
 def test_heartbeat_cadence_emits_on_step_or_elapsed_interval():

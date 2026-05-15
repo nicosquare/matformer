@@ -86,12 +86,14 @@ class HeartbeatWriter:
         step: int | None = None,
         derived_max_steps: int | None = None,
         tokens_seen: int | None = None,
+        content_tokens_seen: int | None = None,
         token_budget: int | None = None,
         latest_loss: float | None = None,
         tokens_per_second: float | None = None,
         peak_gpu_memory_bytes: int | None = None,
         eta_seconds: float | None = None,
         extra_fields: dict[str, Any] | None = None,
+        **fields: Any,
     ) -> Path:
         now = float(self.time_fn())
         event = {
@@ -105,6 +107,7 @@ class HeartbeatWriter:
             "step": step,
             "derived_max_steps": derived_max_steps,
             "tokens_seen": tokens_seen,
+            "content_tokens_seen": content_tokens_seen,
             "token_budget": token_budget,
             "latest_loss": latest_loss,
             "tokens_per_second": tokens_per_second,
@@ -113,6 +116,8 @@ class HeartbeatWriter:
         }
         if extra_fields:
             event.update(extra_fields)
+        if fields:
+            event.update(fields)
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as heartbeat_file:
@@ -148,6 +153,8 @@ class HeartbeatWriter:
                 parts.append(f"tokens={event['tokens_seen']}/{event['token_budget']}")
             else:
                 parts.append(f"tokens={event['tokens_seen']}")
+        if event.get("content_tokens_seen") is not None:
+            parts.append(f"content_tokens={event['content_tokens_seen']}")
         if event.get("latest_loss") is not None:
             parts.append(f"loss={event['latest_loss']}")
         if event.get("tokens_per_second") is not None:

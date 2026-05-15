@@ -184,7 +184,9 @@ Use `--output-root` for an explicit root, pass
 `--override training.max_steps_cap=...` only for intentionally short runs, and
 use `--mode nested-random`, `--mode nested-all`, or
 `--mode standalone --granularity <s|m|l|xl>` only for selected smoke/debug
-runs. Example single-mode checks:
+runs. The resolver derives internal `training.granularity_sampling` and
+standalone `model.granularities` from those public fields. Example single-mode
+checks:
 
 ```bash
 bash scripts/run_dmodel256_pilot.sh \
@@ -274,10 +276,11 @@ Expected heartbeat stages include `artifact_writing`, `model_initialization`,
 `fsdp_wrapping`, `tokenizer_loading`, `dataset_loading_preprocessing`,
 `dataloader_creation`, `training`, `validation`, and `checkpointing` when those
 stages occur. Training heartbeats include `step`, `derived_max_steps`,
-`tokens_seen`, `token_budget`, `latest_loss`, `tokens_per_second`,
-`peak_gpu_memory_bytes`, and `eta_seconds`. Nonzero ranks may emit process
-diagnostics to stdout or stderr, but shared artifacts and `heartbeats.jsonl`
-are rank-0-only.
+`tokens_seen`, `content_tokens_seen`, `token_budget`, `latest_loss`,
+`tokens_per_second`, `peak_gpu_memory_bytes`, and `eta_seconds`.
+`tokens_seen` is the global budget-token counter; `content_tokens_seen` is the
+global non-padding token counter. Nonzero ranks may emit process diagnostics to
+stdout or stderr, but shared artifacts and `heartbeats.jsonl` are rank-0-only.
 
 ## 6. Add Downstream Evaluation
 
