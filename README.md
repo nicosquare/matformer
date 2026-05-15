@@ -71,55 +71,56 @@ The Slurm launcher uses the `elasticnn` conda environment by default through
 `PYTHON_BIN` if the environment lives elsewhere. Submit it with `sbatch`; it
 refuses direct `bash` execution outside a Slurm allocation.
 
-The 78M reduced-token pilot has the same Slurm wrapper pattern:
+The d_model=256 reduced-token pilot comparison has the same Slurm wrapper pattern:
 
 ```bash
-sbatch scripts/slurm_78m_pilot.sh \
+sbatch scripts/slurm_dmodel256_pilot.sh \
   --output-root /mnt/experiments/matformer
 ```
 
 For a short scheduler smoke check, cap the derived token-budget step count:
 
 ```bash
-sbatch --time=01:00:00 scripts/slurm_78m_pilot.sh \
+sbatch --time=01:00:00 scripts/slurm_dmodel256_pilot.sh \
   --output-root /mnt/experiments/matformer \
   --override training.max_steps_cap=1
 ```
 
-The 78M Slurm launcher is the Phase 4.6 distributed pilot path. It requests one
-node with multiple GPUs and launches one config-driven process per allocated
-GPU through `python -m torch.distributed.run`. The launcher can use Slurm GPU
-allocation variables or `CUDA_VISIBLE_DEVICES` to choose `--nproc_per_node`,
-but the resolved training length uses the active distributed `WORLD_SIZE`
-inside the training process. Do not hand-maintain
-`training.effective_world_size`, `training.expected_tokens_per_step`, or
-`training.derived_max_steps` in source configs.
+The d_model=256 Slurm launcher requests one node with multiple GPUs and
+launches one config-driven process per allocated GPU through
+`python -m torch.distributed.run`. The launcher can use Slurm GPU allocation
+variables or `CUDA_VISIBLE_DEVICES` to choose `--nproc_per_node`, but the
+resolved training length uses the active distributed `WORLD_SIZE` inside the
+training process. Do not hand-maintain `training.effective_world_size`,
+`training.expected_tokens_per_step`, or `training.derived_max_steps` in source
+configs.
 
-The 78M pilot defaults to `training.granularity_sampling=random`, which matches
-the original training script by sampling one MatFormer granularity per batch.
-Use `--override training.granularity_sampling=all` only for the ablation path
-that evaluates all configured granularities on each batch and averages losses.
+The d_model=256 pilot comparison defaults to
+`training.granularity_sampling=random`, which matches the original training
+script by sampling one MatFormer granularity per batch. Use
+`--override training.granularity_sampling=all` only for the ablation path that
+evaluates all configured granularities on each batch and averages losses.
 
 To request a different single-node GPU count, override the Slurm resource
 request at submission time:
 
 ```bash
-sbatch --gres=gpu:2 scripts/slurm_78m_pilot.sh \
+sbatch --gres=gpu:2 scripts/slurm_dmodel256_pilot.sh \
   --output-root /mnt/experiments/matformer \
   --override training.max_steps_cap=10
 ```
 
 Submit the launcher with `sbatch`; it is not intended for direct execution on a
-login node. Scheduler stdout/stderr default to `logs/matformer_78m_%j.out` and
-`logs/matformer_78m_%j.err`. If repository-local `logs/` is not writable,
+login node. Scheduler stdout/stderr default to `logs/matformer_dmodel256_%j.out` and
+`logs/matformer_dmodel256_%j.err`. If repository-local `logs/` is not writable,
 override those paths before the script name:
 
 ```bash
 mkdir -p /mnt/experiments/matformer/slurm
 sbatch \
-  --output=/mnt/experiments/matformer/slurm/78m_%j.out \
-  --error=/mnt/experiments/matformer/slurm/78m_%j.err \
-  scripts/slurm_78m_pilot.sh \
+  --output=/mnt/experiments/matformer/slurm/dmodel256_%j.out \
+  --error=/mnt/experiments/matformer/slurm/dmodel256_%j.err \
+  scripts/slurm_dmodel256_pilot.sh \
   --output-root /mnt/experiments/matformer
 ```
 
@@ -127,8 +128,8 @@ During the job, check scheduler status and heartbeat progress:
 
 ```bash
 squeue -j <jobid>
-tail -f /mnt/experiments/matformer/slurm/78m_<jobid>.out
-tail -n 20 /mnt/experiments/matformer/78m-reduced-pilot-001/heartbeats.jsonl
+tail -f /mnt/experiments/matformer/slurm/dmodel256_<jobid>.out
+tail -n 20 /mnt/experiments/matformer/dmodel256-pilot-comparison-001/heartbeats.jsonl
 ```
 
 `heartbeats.jsonl` is written by rank 0 under the run output directory and

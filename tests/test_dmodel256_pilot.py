@@ -9,7 +9,7 @@ from utils.config import resolve_run_config, validate_run_config
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _capture_78m_pilot_invocation(tmp_path, extra_args, env_updates=None):
+def _capture_dmodel256_pilot_comparison_invocation(tmp_path, extra_args, env_updates=None):
     recorder = tmp_path / "python-recorder.sh"
     argv_path = tmp_path / "argv.txt"
     recorder.write_text(
@@ -30,7 +30,7 @@ def _capture_78m_pilot_invocation(tmp_path, extra_args, env_updates=None):
         env.update(env_updates)
 
     subprocess.run(
-        ["bash", "scripts/run_78m_pilot.sh", *extra_args],
+        ["bash", "scripts/run_dmodel256_pilot.sh", *extra_args],
         cwd=REPO_ROOT,
         env=env,
         check=True,
@@ -47,8 +47,8 @@ def _has_arg_pair(args, flag, value):
     )
 
 
-def _read_slurm_78m_script():
-    return (REPO_ROOT / "scripts" / "slurm_78m_pilot.sh").read_text(
+def _read_slurm_dmodel256_script():
+    return (REPO_ROOT / "scripts" / "slurm_dmodel256_pilot.sh").read_text(
         encoding="utf-8"
     )
 
@@ -77,19 +77,19 @@ def _resource_count(value):
     return int(match.group(1)) if match else None
 
 
-def test_78m_reduced_pilot_resolves_paper_aligned_config(tmp_path):
+def test_dmodel256_pilot_resolves_current_reference_config(tmp_path):
     output_root = tmp_path / "pilot-output"
     config = resolve_run_config(
-        "configs/78m_reduced_pilot.yaml",
+        "configs/dmodel256_pilot_comparison.yaml",
         overrides=[f"run.output_root={output_root}"],
     )
 
-    assert config["run"]["run_id"] == "78m-reduced-pilot-001"
-    assert config["run"]["phase_id"] == "78m_pilot"
+    assert config["run"]["run_id"] == "dmodel256-pilot-comparison-001"
+    assert config["run"]["phase_id"] == "dmodel256_pilot_comparison"
     assert config["run"]["model_family"] == "nested"
     assert config["run"]["model_size_label"] == "78m"
     assert config["run"]["completion_label"] == "reduced-token-pilot"
-    assert config["run"]["output_dir"] == str(output_root / "78m-reduced-pilot-001")
+    assert config["run"]["output_dir"] == str(output_root / "dmodel256-pilot-comparison-001")
 
     assert config["model"]["paper_aligned"] is True
     assert config["model"]["num_layers"] == 16
@@ -106,32 +106,32 @@ def test_78m_reduced_pilot_resolves_paper_aligned_config(tmp_path):
     validate_run_config(config)
 
 
-def test_78m_pilot_runner_propagates_output_root_env(tmp_path):
+def test_dmodel256_pilot_runner_propagates_output_root_env(tmp_path):
     output_root = tmp_path / "pilot-output"
 
-    args = _capture_78m_pilot_invocation(
+    args = _capture_dmodel256_pilot_comparison_invocation(
         tmp_path,
         ["--override", "training.max_steps_cap=1"],
         env_updates={"OUTPUT_ROOT": str(output_root)},
     )
 
     assert args[0] == "train.py"
-    assert _has_arg_pair(args, "--config", "configs/78m_reduced_pilot.yaml")
+    assert _has_arg_pair(args, "--config", "configs/dmodel256_pilot_comparison.yaml")
     assert "--run-id" not in args
     assert _has_arg_pair(args, "--output-root", str(output_root))
     assert _has_arg_pair(args, "--override", "training.max_steps_cap=1")
 
 
-def test_78m_pilot_runner_forwards_explicit_arguments(tmp_path):
+def test_dmodel256_pilot_runner_forwards_explicit_arguments(tmp_path):
     output_root = tmp_path / "pilot-output"
-    run_id = "78m-bs1-gpu2-smoke"
+    run_id = "dmodel256-bs1-gpu2-smoke"
     output_dir = tmp_path / "explicit-output" / run_id
 
-    args = _capture_78m_pilot_invocation(
+    args = _capture_dmodel256_pilot_comparison_invocation(
         tmp_path,
         [
             "--config",
-            "configs/78m_reduced_pilot.yaml",
+            "configs/dmodel256_pilot_comparison.yaml",
             "--run-id",
             run_id,
             "--output-root",
@@ -144,7 +144,7 @@ def test_78m_pilot_runner_forwards_explicit_arguments(tmp_path):
         env_updates={"OUTPUT_ROOT": str(tmp_path / "ignored-env-output")},
     )
 
-    assert _has_arg_pair(args, "--config", "configs/78m_reduced_pilot.yaml")
+    assert _has_arg_pair(args, "--config", "configs/dmodel256_pilot_comparison.yaml")
     assert "--run-id" not in args
     assert _has_arg_pair(args, "--override", f"run.run_id={run_id}")
     assert _has_arg_pair(args, "--output-root", str(output_root))
@@ -153,8 +153,8 @@ def test_78m_pilot_runner_forwards_explicit_arguments(tmp_path):
     assert _has_arg_pair(args, "--override", "training.max_steps_cap=1")
 
 
-def test_slurm_78m_pilot_requests_single_node_multi_gpu_resources():
-    script_text = _read_slurm_78m_script()
+def test_slurm_dmodel256_pilot_comparison_requests_single_node_multi_gpu_resources():
+    script_text = _read_slurm_dmodel256_script()
 
     node_count = _sbatch_option_value(script_text, "--nodes") or _sbatch_option_value(
         script_text,
@@ -172,8 +172,8 @@ def test_slurm_78m_pilot_requests_single_node_multi_gpu_resources():
     assert _sbatch_option_value(script_text, "--qos") == "cscc-gpu-qos"
 
 
-def test_slurm_78m_pilot_launches_one_training_process_per_gpu():
-    script_text = _read_slurm_78m_script()
+def test_slurm_dmodel256_pilot_comparison_launches_one_training_process_per_gpu():
+    script_text = _read_slurm_dmodel256_script()
 
     assert "torch.distributed.run" in script_text or "torchrun" in script_text
     assert "--nproc_per_node" in script_text or "--nproc-per-node" in script_text
@@ -188,7 +188,7 @@ def test_slurm_78m_pilot_launches_one_training_process_per_gpu():
     )
 
 
-def test_slurm_78m_pilot_wrapper_forwards_to_runner(tmp_path):
+def test_slurm_dmodel256_pilot_comparison_wrapper_forwards_to_runner(tmp_path):
     recorder = tmp_path / "python-recorder.sh"
     argv_path = tmp_path / "argv.txt"
     output_root = tmp_path / "slurm-output"
@@ -212,11 +212,11 @@ def test_slurm_78m_pilot_wrapper_forwards_to_runner(tmp_path):
     subprocess.run(
         [
             "bash",
-            "scripts/slurm_78m_pilot.sh",
+            "scripts/slurm_dmodel256_pilot.sh",
             "--output-root",
             str(output_root),
             "--run-id",
-            "78m-reduced-pilot-001",
+            "dmodel256-pilot-comparison-001",
             "--override",
             "training.max_steps_cap=1",
         ],
@@ -229,14 +229,14 @@ def test_slurm_78m_pilot_wrapper_forwards_to_runner(tmp_path):
 
     args = argv_path.read_text(encoding="utf-8").splitlines()
     assert args[0] == "train.py"
-    assert _has_arg_pair(args, "--config", "configs/78m_reduced_pilot.yaml")
+    assert _has_arg_pair(args, "--config", "configs/dmodel256_pilot_comparison.yaml")
     assert "--run-id" not in args
-    assert _has_arg_pair(args, "--override", "run.run_id=78m-reduced-pilot-001")
+    assert _has_arg_pair(args, "--override", "run.run_id=dmodel256-pilot-comparison-001")
     assert _has_arg_pair(args, "--output-root", str(output_root))
     assert _has_arg_pair(args, "--override", "training.max_steps_cap=1")
 
 
-def test_slurm_78m_pilot_wrapper_rejects_direct_execution(tmp_path):
+def test_slurm_dmodel256_pilot_comparison_wrapper_rejects_direct_execution(tmp_path):
     recorder = tmp_path / "python-recorder.sh"
     argv_path = tmp_path / "argv.txt"
 
@@ -262,7 +262,7 @@ def test_slurm_78m_pilot_wrapper_rejects_direct_execution(tmp_path):
     result = subprocess.run(
         [
             "bash",
-            "scripts/slurm_78m_pilot.sh",
+            "scripts/slurm_dmodel256_pilot.sh",
             "--output-root",
             str(tmp_path / "slurm-output"),
         ],

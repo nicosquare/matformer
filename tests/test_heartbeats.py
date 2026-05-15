@@ -20,7 +20,7 @@ def test_heartbeat_writer_emits_stdout_and_jsonl_schema(tmp_path):
     clock = FakeClock(1000.0, 1060.0)
     writer = HeartbeatWriter(
         output_dir=tmp_path,
-        run_id="78m-reduced-pilot-001",
+        run_id="dmodel256-pilot-comparison-001",
         rank=0,
         world_size=2,
         stdout=stdout,
@@ -67,7 +67,7 @@ def test_heartbeat_writer_emits_stdout_and_jsonl_schema(tmp_path):
     }
     assert required_fields <= set(event)
     assert event["event_type"] == "heartbeat"
-    assert event["run_id"] == "78m-reduced-pilot-001"
+    assert event["run_id"] == "dmodel256-pilot-comparison-001"
     assert event["stage"] == "training"
     assert event["rank"] == 0
     assert event["world_size"] == 2

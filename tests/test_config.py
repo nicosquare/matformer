@@ -131,26 +131,26 @@ def test_granularity_sampling_mode_validation():
 
 
 def test_write_resolved_config(tmp_path):
-    output_dir = tmp_path / "78m-reduced-pilot-001"
+    output_dir = tmp_path / "dmodel256-pilot-comparison-001"
     resolved = resolve_run_config(
-        "configs/78m_reduced_pilot.yaml",
+        "configs/dmodel256_pilot_comparison.yaml",
         output_dir=output_dir,
     )
 
     config_path = write_resolved_config(resolved)
 
     saved = json.loads(config_path.read_text(encoding="utf-8"))
-    assert saved["run"]["run_id"] == "78m-reduced-pilot-001"
+    assert saved["run"]["run_id"] == "dmodel256-pilot-comparison-001"
     assert saved["run"]["completion_label"] == "reduced-token-pilot"
     assert config_path == output_dir / "config.json"
 
 
-def test_78m_completion_label_validation():
-    resolved = resolve_run_config("configs/78m_reduced_pilot.yaml")
+def test_dmodel256_completion_label_validation():
+    resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
     validate_run_config(resolved)
 
     paper_budget = resolve_run_config(
-        "configs/78m_reduced_pilot.yaml",
+        "configs/dmodel256_pilot_comparison.yaml",
         overrides=[
             "training.token_budget=10000000000",
             "run.completion_label=paper-budget-complete",
@@ -285,8 +285,8 @@ def test_unwritable_output_root_fails_before_training(tmp_path):
         output_root.chmod(0o755)
 
 
-def test_78m_reduced_pilot_config_preserves_paper_alignment():
-    resolved = resolve_run_config("configs/78m_reduced_pilot.yaml")
+def test_dmodel256_pilot_config_preserves_current_shape_assumptions():
+    resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
 
     assert resolved["run"]["model_size_label"] == "78m"
     assert resolved["run"]["completion_label"] == "reduced-token-pilot"
@@ -300,8 +300,8 @@ def test_78m_reduced_pilot_config_preserves_paper_alignment():
     validate_run_config(resolved)
 
 
-def test_78m_reduced_budget_rejects_paper_budget_complete_label():
-    resolved = resolve_run_config("configs/78m_reduced_pilot.yaml")
+def test_dmodel256_reduced_budget_rejects_paper_budget_complete_label():
+    resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
 
     mislabeled = copy.deepcopy(resolved)
     mislabeled["run"]["completion_label"] = "paper-budget-complete"
@@ -310,12 +310,12 @@ def test_78m_reduced_budget_rejects_paper_budget_complete_label():
         validate_run_config(mislabeled)
 
 
-def test_78m_pilot_derives_training_length_with_default_world_size(tmp_path, monkeypatch):
+def test_dmodel256_pilot_derives_training_length_with_default_world_size(tmp_path, monkeypatch):
     monkeypatch.delenv("WORLD_SIZE", raising=False)
     output_root = tmp_path / "pilot-output"
 
     resolved = resolve_run_config(
-        "configs/78m_reduced_pilot.yaml",
+        "configs/dmodel256_pilot_comparison.yaml",
         overrides=[f"run.output_root={output_root}"],
     )
 
@@ -338,7 +338,7 @@ def test_78m_pilot_derives_training_length_with_default_world_size(tmp_path, mon
     assert training["max_steps"] == expected_steps
 
 
-def test_78m_pilot_derives_training_length_from_distributed_world_size(
+def test_dmodel256_pilot_derives_training_length_from_distributed_world_size(
     tmp_path,
     monkeypatch,
 ):
@@ -346,7 +346,7 @@ def test_78m_pilot_derives_training_length_from_distributed_world_size(
     output_root = tmp_path / "pilot-output"
 
     resolved = resolve_run_config(
-        "configs/78m_reduced_pilot.yaml",
+        "configs/dmodel256_pilot_comparison.yaml",
         overrides=[f"run.output_root={output_root}"],
     )
 

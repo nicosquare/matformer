@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Phase 4 runner: first paper-aligned 78M reduced-token pilot path.
+# Phase 4 runner: d_model=256 MatFormer-Llama/SwiGLU pilot comparison path.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 PYTHON_BIN="${PYTHON_BIN:-${PYTHON:-python}}"
-CONFIG_PATH="${CONFIG_PATH:-configs/78m_reduced_pilot.yaml}"
-DEFAULT_RUN_ID="78m-reduced-pilot-001"
+CONFIG_PATH="${CONFIG_PATH:-configs/dmodel256_pilot_comparison.yaml}"
+DEFAULT_RUN_ID="dmodel256-pilot-comparison-001"
 if [[ -n "${RUN_ID:-}" ]]; then
   RUN_ID_EXPLICIT=true
 else
@@ -64,7 +64,7 @@ if [[ -n "${OUTPUT_ROOT:-}" && "$HAS_OUTPUT_ROOT_ARG" != "true" ]]; then
   OUTPUT_ARGS+=(--output-root "$OUTPUT_ROOT")
 fi
 
-printf '78M pilot target: paper-aligned reduced-token pilot\n'
+printf 'd_model=256 pilot target: MatFormer-Llama/SwiGLU reduced-token comparison\n'
 printf 'Config: %s\n' "$CONFIG_PATH"
 printf 'Run id: %s\n' "$RUN_ID"
 if [[ -n "${OUTPUT_ROOT:-}" ]]; then

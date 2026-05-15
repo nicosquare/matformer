@@ -246,11 +246,6 @@ stages occur. Training heartbeats include `step`, `derived_max_steps`,
 diagnostics to stdout or stderr, but shared artifacts and `heartbeats.jsonl`
 are rank-0-only.
 
-Temporary compatibility: existing `scripts/run_78m_pilot.sh` and
-`scripts/slurm_78m_pilot.sh` may remain as aliases while implementation
-migrates, but new docs, configs, and summaries should use d_model=256 pilot
-terminology.
-
 ## 6. Add Downstream Evaluation
 
 After the debug matrix and d_model=256 pilot comparison artifacts are stable,

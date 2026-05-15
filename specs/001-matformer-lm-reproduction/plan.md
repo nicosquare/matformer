@@ -153,8 +153,7 @@ train.py                 # Existing training entry point; evolves into visible r
 modified_llama.py        # Existing MatFormer FFN slicing implementation
 configs/
 ├── debug_matrix.yaml
-├── dmodel256_pilot_comparison.yaml
-└── 78m_reduced_pilot.yaml        # temporary compatibility alias until renamed
+└── dmodel256_pilot_comparison.yaml
 training/
 ├── data.py
 ├── run.py
@@ -172,9 +171,7 @@ utils/
 scripts/
 ├── run_debug_matrix.sh
 ├── run_dmodel256_pilot.sh
-├── run_78m_pilot.sh              # temporary compatibility alias until renamed
 ├── slurm_dmodel256_pilot.sh
-├── slurm_78m_pilot.sh            # temporary compatibility alias until renamed
 └── make_figures.py
 <output_root>/
 └── <run_id>/
@@ -332,8 +329,7 @@ Follow-up task generation for Phase 4.7 should cover:
   shape fields.
 - Dependency-manifest maintenance so `requirements.txt` remains sufficient to
   rebuild a compatible environment when `elasticnn` is unavailable.
-- Preferred runner names for the d_model=256 pilot, with temporary compatibility
-  aliases for existing `78m` script/config names until implementation migrates.
+- Preferred runner and config names for the d_model=256 pilot comparison.
 - Actual implementation parameter-count reporting and mismatch notes across
   resolved configs, run summaries, scaling rows, and comparison artifacts.
 - Rank-0-safe best-eval checkpoint writing and `run_summary.json` references.

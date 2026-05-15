@@ -69,10 +69,6 @@ Required behavior:
   summaries.
 - Accept the same output-root controls as the debug matrix runner.
 
-Temporary compatibility: existing `scripts/run_78m_pilot.sh` may remain as a
-thin alias while implementation migrates, but user-facing docs and summaries
-should prefer the d_model=256 pilot terminology.
-
 ## Queue d_model=256 Pilot Comparison On Slurm
 
 ```bash
@@ -103,9 +99,6 @@ Required behavior:
 - Default Slurm output to heartbeat lines instead of tqdm-style progress bars.
 - Forward remaining runner arguments, including `--override`, to the
   config-driven d_model=256 pilot entry point.
-
-Temporary compatibility: existing `scripts/slurm_78m_pilot.sh` may remain as a
-thin alias while implementation migrates.
 
 ## Generate Figures
 

@@ -4,9 +4,10 @@
 **Prerequisites**: plan.md, spec.md, research.md, data-model.md, contracts/, quickstart.md
 
 **Tests/Verification**: Include focused smoke checks for config resolution,
-FFN prefix slicing, artifact writing, non-embedding parameter counting, and
-debug run wiring. These checks target research failure modes rather than broad
-production coverage.
+FFN prefix slicing, artifact writing, disaggregated parameter counting,
+checkpoint status/path reporting, pilot comparison rows, and debug run wiring.
+These checks target research failure modes rather than broad production
+coverage.
 
 **Organization**: Tasks are grouped by user story so each phase produces an
 independently testable research increment.
@@ -27,7 +28,7 @@ dependency documentation needed by all later phases.
 - [X] T002 Add package marker files `training/__init__.py`, `evaluation/__init__.py`, and `utils/__init__.py`
 - [X] T003 [P] Create dependency specification in `requirements.txt` for torch, transformers, datasets, pyyaml, pandas, matplotlib, pytest, and lm-eval
 - [X] T004 [P] Create debug matrix config skeleton in `configs/debug_matrix.yaml`
-- [X] T005 [P] Create 78M reduced-token pilot config skeleton in `configs/78m_reduced_pilot.yaml`
+- [X] T005 [P] Create d_model=256 pilot comparison config skeleton in `configs/dmodel256_pilot_comparison.yaml`
 - [X] T006 [P] Create consistency evaluation config skeleton in `configs/consistency.yaml`
 - [X] T007 [P] Create speculative evaluation config skeleton in `configs/speculative.yaml`
 - [X] T008 [P] Update environment setup notes in `README.md`
@@ -113,7 +114,7 @@ repository `outputs/` directory.
 - [X] T079 [P] Add runner smoke checks for `OUTPUT_ROOT` propagation and argument forwarding in `tests/test_debug_matrix.py`
 - [X] T080 Implement configurable output-root resolution, default `outputs/`, explicit `run.output_dir` escape hatch, and early writable-root validation in `utils/config.py`
 - [X] T081 Implement `OUTPUT_ROOT`, `--output-root`, and `--output-dir` support in `train.py`, `training/baselines.py`, and `scripts/run_debug_matrix.sh`
-- [X] T082 Replace hardcoded output directories with output-root-compatible config values in `configs/78m_reduced_pilot.yaml`, `configs/consistency.yaml`, and `configs/speculative.yaml`
+- [X] T082 Replace hardcoded output directories with output-root-compatible config values in `configs/dmodel256_pilot_comparison.yaml`, `configs/consistency.yaml`, and `configs/speculative.yaml`
 - [X] T083 Document external output and Hugging Face cache environment variables in `README.md` and `specs/001-matformer-lm-reproduction/quickstart.md`
 - [X] T084 Add external-output artifact smoke coverage proving required run artifacts stay under the configured root in `tests/test_training_smoke.py`
 
@@ -125,18 +126,18 @@ redirect outputs and caches away from the repository filesystem.
 ## Phase 4: User Story 2 - Compare Against Standalone Baselines (Priority: P2)
 
 **Goal**: Complete matched S/M/L/XL standalone baseline coverage for the
-debug-size matrix and prepare the first paper-aligned 78M reduced-token pilot
-labeling path.
+debug-size matrix and prepare the d_model=256 MatFormer-Llama/SwiGLU pilot
+shape and token-budget path.
 
 **Independent Test**: Confirm S, M, L, and XL standalone runs exist for the
-debug-size matrix and that 78M reduced-token pilot configs label token-budget
-completion correctly.
+debug-size matrix and that d_model=256 pilot configs label token-budget
+completion for the initial reduced-token pilot path.
 
 ### Verification for User Story 2
 
 - [X] T033 [P] [US2] Add standalone granularity config validation checks in `tests/test_config.py`
 - [X] T034 [P] [US2] Add baseline matching validation checks in `tests/test_baseline_matching.py`
-- [X] T035 [P] [US2] Add 78M completion label checks in `tests/test_config.py`
+- [X] T035 [P] [US2] Add existing reduced-token pilot completion-label checks in `tests/test_config.py`
 
 ### Implementation for User Story 2
 
@@ -145,13 +146,13 @@ completion correctly.
 - [X] T038 [US2] Extend `scripts/run_debug_matrix.sh` to run nested plus S/M/L/XL standalone debug matrix
 - [X] T039 [US2] Implement baseline match records with mismatch notes in `training/baselines.py`
 - [X] T040 [US2] Emit matched baseline rows with non-embedding parameters in `utils/metrics.py`
-- [X] T041 [US2] Add paper-aligned 78M reduced-token pilot values to `configs/78m_reduced_pilot.yaml`
-- [X] T042 [US2] Implement `scripts/run_78m_pilot.sh` with reduced-token pilot labeling
-- [X] T043 [US2] Update 78M pilot instructions in `specs/001-matformer-lm-reproduction/quickstart.md`
+- [X] T041 [US2] Add initial d_model=256 reduced-token pilot shape and token-budget values to `configs/dmodel256_pilot_comparison.yaml`
+- [X] T042 [US2] Implement `scripts/run_dmodel256_pilot.sh` with reduced-token pilot labeling
+- [X] T043 [US2] Update d_model=256 pilot instructions in `specs/001-matformer-lm-reproduction/quickstart.md`
 
 **Checkpoint**: User Story 2 is independently complete when debug-size
-S/M/L/XL nested and standalone comparisons are present and 78M reduced-token
-pilot output labels are correct.
+S/M/L/XL nested and standalone comparisons are present and d_model=256
+reduced-token pilot completion labels are correct.
 
 ---
 
@@ -162,7 +163,7 @@ runs by deriving planned training length from batch size, context length, and
 effective distributed world size instead of relying on manually chosen
 `max_steps` values.
 
-**Independent Test**: Resolve the 78M pilot config and confirm it records
+**Independent Test**: Resolve the d_model=256 pilot config and confirm it records
 `expected_tokens_per_step`, `derived_max_steps`, `effective_world_size`,
 `token_budget`, and output labels consistently; run a small mocked or tiny-data
 training smoke test and confirm the summary reports `tokens_seen` and a
@@ -181,29 +182,29 @@ deterministic `stop_reason`.
 - [X] T090 [US2] Implement effective world size and derived max-step resolution in `utils/config.py`
 - [X] T091 [US2] Update budgeted training loop stopping and `stop_reason` calculation in `training/run.py`
 - [X] T092 [US2] Emit token-budget-derived summary fields through `utils/metrics.py`
-- [X] T093 [US2] Update 78M pilot config and quickstart guidance for token-budget-derived step counts in `configs/78m_reduced_pilot.yaml` and `specs/001-matformer-lm-reproduction/quickstart.md`
+- [X] T093 [US2] Update d_model=256 pilot config and quickstart guidance for token-budget-derived step counts in `configs/dmodel256_pilot_comparison.yaml` and `specs/001-matformer-lm-reproduction/quickstart.md`
 
-**Checkpoint**: Budgeted runs are ready for 78M pilot execution only when the
-resolved config and run summary expose derived training length, effective world
-size, actual tokens seen, and stop reason.
+**Checkpoint**: Budgeted runs are ready for d_model=256 pilot execution only
+when the resolved config and run summary expose derived training length,
+effective world size, actual tokens seen, and stop reason.
 
 ---
 
 ## Phase 4.6: Distributed Pilot Execution and Runtime Observability (US2 Hardening)
 
-**Purpose**: Prepare the 78M reduced-token pilot for single-node multi-GPU
+**Purpose**: Prepare the d_model=256 reduced-token pilot for single-node multi-GPU
 Slurm execution through the config-driven training path and add durable runtime
 observability for long-running jobs.
 
-**Independent Test**: Submit or dry-run a short single-node multi-GPU 78M pilot
-job and confirm the Slurm wrapper launches one process per GPU, the resolved
-config records the active distributed world size and budget-derived step count,
-shared artifacts are written only by rank 0, and heartbeat stdout plus JSONL
-events identify the current stage and progress.
+**Independent Test**: Submit or dry-run a short single-node multi-GPU
+d_model=256 pilot job and confirm the Slurm wrapper launches one process per
+GPU, the resolved config records the active distributed world size and
+budget-derived step count, shared artifacts are written only by rank 0, and
+heartbeat stdout plus JSONL events identify the current stage and progress.
 
 ### Verification for Distributed Pilot Execution and Runtime Observability
 
-- [X] T094 [P] [US2] Add single-node multi-GPU Slurm launcher command checks in `tests/test_78m_pilot.py`
+- [X] T094 [P] [US2] Add single-node multi-GPU Slurm launcher command checks in `tests/test_dmodel256_pilot.py`
 - [X] T095 [P] [US2] Add config-driven distributed/FSDP training smoke checks in `tests/test_training_smoke.py`
 - [X] T096 [P] [US2] Add rank-0-only shared artifact write checks in `tests/test_artifacts.py`
 - [X] T097 [P] [US2] Add heartbeat JSONL schema, stdout line, and cadence checks in `tests/test_heartbeats.py`
@@ -216,13 +217,52 @@ events identify the current stage and progress.
 - [X] T101 [US2] Wire config-driven distributed device selection, dataloading, and FSDP model wrapping in `training/run.py`
 - [X] T102 [US2] Integrate effective `WORLD_SIZE` budget resolution with distributed launch metadata in `utils/config.py` and `training/run.py`
 - [X] T103 [US2] Gate resolved config, metrics, summary, checkpoint, and heartbeat shared writes to rank 0 in `training/run.py` and `utils/metrics.py`
-- [X] T104 [US2] Update `scripts/slurm_78m_pilot.sh` for single-node multi-GPU resource requests and one config-driven process per GPU
+- [X] T104 [US2] Update `scripts/slurm_dmodel256_pilot.sh` for single-node multi-GPU resource requests and one config-driven process per GPU
 - [X] T105 [US2] Instrument tokenizer loading, dataset loading/preprocessing, model initialization, FSDP wrapping, training, validation, checkpointing, and artifact-writing stages in `training/run.py`
-- [X] T106 [US2] Document distributed 78M pilot queueing and heartbeat inspection in `specs/001-matformer-lm-reproduction/quickstart.md` and `README.md`
+- [X] T106 [US2] Document distributed d_model=256 pilot queueing and heartbeat inspection in `specs/001-matformer-lm-reproduction/quickstart.md` and `README.md`
 
-**Checkpoint**: Phase 4.6 is complete when the 78M pilot has a single-node
-multi-GPU Slurm path, config-driven FSDP execution, rank-safe artifact writes,
-and heartbeat observability suitable for scheduler logs.
+**Checkpoint**: Phase 4.6 is complete when the d_model=256 pilot has a
+single-node multi-GPU Slurm path, config-driven FSDP execution, rank-safe
+artifact writes, and heartbeat observability suitable for scheduler logs.
+
+---
+
+## Phase 4.7: Pilot Terminology, Parameter Reporting, Checkpointing, and Comparison Scope (US2 Hardening)
+
+**Purpose**: Align the existing pilot implementation with the clarified
+d_model=256 MatFormer-Llama/SwiGLU scope before downstream phases consume pilot
+artifacts.
+
+**Independent Test**: Run a capped pilot comparison workflow and confirm
+`nested-random`, `nested-all`, and standalone rows expose actual parameter
+counts, sampling mode, token budget, effective world size, checkpoint
+status/path, and mismatch notes.
+
+### Verification for Pilot Terminology, Parameter Reporting, Checkpointing, and Comparison Scope
+
+- [ ] T107 [P] [US2] Add d_model=256 pilot terminology, `model_shape_label`, `table_reference_label`, and explicit shape-field config checks in `tests/test_config.py`
+- [ ] T108 [P] [US2] Add disaggregated parameter count, LM-head counting convention, and unavailable-component reason checks in `tests/test_model_size.py`
+- [ ] T109 [P] [US2] Add best-eval selection across multiple validation points plus final and no-checkpoint run summary checks in `tests/test_artifacts.py`
+- [ ] T110 [P] [US2] Add `nested-random`, `nested-all`, standalone, and omitted-standalone pilot comparison row checks with `run_status=omitted`, `omit_reason`, `model_family=standalone`, `granularity`, `sampling_mode=standalone`, token budget, effective world size when known, unavailable checkpoint path/status, and mismatch notes in `tests/test_pilot_comparison.py`
+- [ ] T111 [P] [US2] Add d_model=256 runner and Slurm wrapper checks in `tests/test_dmodel256_pilot.py`
+
+### Implementation for Pilot Terminology, Parameter Reporting, Checkpointing, and Comparison Scope
+
+- [ ] T112 [US2] Add `model_shape_label`, `table_reference_label`, `sampling_mode`, explicit shape fields, and mismatch notes to `configs/dmodel256_pilot_comparison.yaml`
+- [ ] T113 [US2] Update `utils/config.py` to accept d_model=256 pilot labels while preserving MatLM table-row token-budget validation
+- [ ] T114 [US2] Extend parameter reporting in `utils/model_size.py` to emit total, embedding, LM-head, non-embedding, FFN, attention, and other non-embedding counts with explicit null/unavailable status and reason when optional components cannot be computed
+- [ ] T115 [US2] Emit actual implementation counts, LM-head counting convention, and actual-vs-MatLM-table mismatch notes through resolved configs, `run_summary.json`, `scaling_results.csv`, and pilot comparison rows via `utils/metrics.py` and `utils/config.py`
+- [ ] T116 [US2] Implement rank-0-safe best-eval checkpoint selection by validation loss or perplexity across multiple eval points plus final and no-checkpoint status handling in `training/run.py`
+- [ ] T117 [US2] Record checkpoint status, checkpoint path, checkpoint selection metric, and validation-disabled final/no-checkpoint status in `run_summary.json` through `utils/metrics.py`
+- [ ] T118 [US2] Add default pilot comparison orchestration and omitted-baseline row emission for `nested-random`, `nested-all`, and standalone S/M/L/XL runs with `run_status=omitted`, `omit_reason`, null/unavailable checkpoint fields, and mismatch notes in `scripts/run_dmodel256_pilot.sh`
+- [X] T119 [US2] Update d_model=256 runner scripts in `scripts/run_dmodel256_pilot.sh` and `scripts/slurm_dmodel256_pilot.sh` for the preferred config name
+- [ ] T120 [US2] Update d_model=256 pilot comparison guidance in `specs/001-matformer-lm-reproduction/quickstart.md` and `README.md`
+- [ ] T121 [US2] Verify `requirements.txt` remains sufficient for rebuilding the `elasticnn` dependency environment
+
+**Checkpoint**: Phase 4.7 is complete when d_model=256 pilot comparison
+artifacts expose sampling mode, actual parameter counts, LM-head convention,
+token budget, effective world size, checkpoint status/path, and mismatch notes
+before downstream, consistency, or speculative evaluation tasks consume them.
 
 ---
 
@@ -244,7 +284,7 @@ non-embedding parameter count.
 
 - [ ] T046 [US3] Implement scaling summary aggregation in `evaluation/validation.py`
 - [ ] T047 [US3] Implement minimal downstream suite adapter for HellaSwag, PIQA, ARC-Challenge, BoolQ, WinoGrande, and OpenBookQA in `evaluation/downstream.py`
-- [ ] T048 [US3] Add downstream suite config values to `configs/78m_reduced_pilot.yaml`
+- [ ] T048 [US3] Add downstream suite config values to `configs/dmodel256_pilot_comparison.yaml`
 - [ ] T049 [US3] Extend `scripts/make_figures.py` to generate loss_vs_size, ppl_vs_size, and accuracy_vs_size plots from `scaling_results.csv`
 - [ ] T050 [US3] Add medium trend reporting helper in `scripts/make_figures.py`
 - [ ] T051 [US3] Document downstream and scaling commands in `specs/001-matformer-lm-reproduction/quickstart.md`
@@ -271,7 +311,7 @@ heterogeneous layer pattern, then write `consistency_results.csv`.
 ### Implementation for User Story 4
 
 - [ ] T054 [US4] Implement token-level argmax agreement in `evaluation/consistency.py`
-- [ ] T055 [US4] Implement optional top-k overlap or KL placeholder output fields in `evaluation/consistency.py`
+- [ ] T055 [US4] Implement top-k overlap output fields and explicit deferred-metric notes for KL divergence in `evaluation/consistency.py`
 - [ ] T056 [US4] Implement mix-and-match layer granularity configuration in `modified_llama.py`
 - [ ] T057 [US4] Add consistency and mix-and-match config values to `configs/consistency.yaml`
 - [ ] T058 [US4] Write `consistency_results.csv` rows through `utils/metrics.py`
@@ -334,20 +374,22 @@ all completed stories.
 - **US1 (Phase 3)**: Depends on Foundational.
 - **Output Storage (Phase 3.5)**: Depends on US1; blocks US2 and all larger runs.
 - **US2 (Phase 4)**: Depends on US1 and Output Storage for shared nested run, at least one baseline path, and external output control.
-- **Token Budget Hardening (Phase 4.5)**: Depends on US2 and blocks real budgeted 78M pilot execution.
-- **Distributed Pilot Observability (Phase 4.6)**: Depends on Token Budget Hardening and blocks real single-node multi-GPU 78M pilot execution.
-- **US3 (Phase 5)**: Depends on US2, Token Budget Hardening, and Distributed Pilot Observability for matched baseline matrix, 78M pilot labeling, budget-derived run lengths, and pilot execution artifacts.
-- **US4 (Phase 6)**: Depends on US2 for extracted nested and standalone comparisons.
-- **US5 (Phase 7)**: Depends on US4 for alignment artifacts and model-pair conventions.
+- **Token Budget Hardening (Phase 4.5)**: Depends on US2 and blocks real budgeted d_model=256 pilot execution.
+- **Distributed Pilot Observability (Phase 4.6)**: Depends on Token Budget Hardening and blocks real single-node multi-GPU d_model=256 pilot execution.
+- **Pilot Alignment (Phase 4.7)**: Depends on Distributed Pilot Observability and blocks US3, US4, and US5 until corrected pilot artifacts expose sampling mode, parameter counts, checkpoint status/path, and mismatch notes.
+- **US3 (Phase 5)**: Depends on Phase 4.7-corrected pilot comparison artifacts for matched or explicitly omitted baseline rows, d_model=256 pilot labeling, budget-derived run lengths, parameter-count components, checkpoint status/path, and pilot execution artifacts.
+- **US4 (Phase 6)**: Depends on Phase 4.7-corrected extracted nested and standalone comparisons with explicit sampling-mode labels and omitted-baseline markers when compute limits apply.
+- **US5 (Phase 7)**: Depends on US4 plus Phase 4.7 best-eval/final checkpoint availability and missing-checkpoint conventions for alignment artifacts and model-pair comparisons.
 - **Polish (Phase 8)**: Depends on completed target stories.
 
 ### User Story Dependencies
 
 - **US1**: MVP; validates nested training and one baseline comparison.
 - **Output Storage**: Cross-cutting blocker that preserves repository disk and inode capacity before larger Phase 4+ runs.
-- **US2**: Extends US1 to full debug S/M/L/XL standalone matrix and 78M pilot labeling.
-- **Token Budget Hardening**: Clarifies US2 budgeted-run semantics before real 78M or larger scaling runs.
+- **US2**: Extends US1 to full debug S/M/L/XL standalone matrix and d_model=256 pilot labeling.
+- **Token Budget Hardening**: Clarifies US2 budgeted-run semantics before real d_model=256 or larger scaling runs.
 - **Distributed Pilot Observability**: Hardens US2 execution for single-node multi-GPU Slurm pilot runs and long-running runtime inspection.
+- **Pilot Alignment**: Corrects US2 pilot terminology, comparison scope, parameter reporting, and checkpoint persistence before later evaluation phases.
 - **US3**: Adds scaling and downstream trend reporting after baseline matrix exists.
 - **US4**: Adds consistency and mix-and-match evaluation after matched runs exist.
 - **US5**: Adds speculative decoding after model-pair comparison conventions exist.
@@ -372,6 +414,8 @@ all completed stories.
 - Token budget documentation tasks T088-T089 can run in parallel with verification tasks T085-T087.
 - Distributed pilot verification tasks T094-T097 can run in parallel.
 - Distributed pilot helper tasks T099-T100 can run in parallel after T098 clarifies contracts.
+- Pilot alignment verification tasks T107-T111 can run in parallel.
+- Pilot alignment parameter reporting, checkpoint, and comparison-runner tasks T114-T118 can run in parallel after T112-T113 establish config labels.
 - US3 verification tasks T044-T045 can run in parallel.
 - US4 verification tasks T052-T053 can run in parallel.
 - US5 verification tasks T060-T061 can run in parallel.
@@ -392,7 +436,7 @@ Task: "T025 Add extraction metadata artifact check in tests/test_artifacts.py"
 ```bash
 Task: "T033 Add standalone granularity config validation checks in tests/test_config.py"
 Task: "T034 Add baseline matching validation checks in tests/test_baseline_matching.py"
-Task: "T035 Add 78M completion label checks in tests/test_config.py"
+Task: "T035 Add existing reduced-token pilot completion-label checks in tests/test_config.py"
 ```
 
 ## Parallel Example: Token-Budget-Derived Training Length
@@ -406,10 +450,19 @@ Task: "T087 Add token-budget stop behavior smoke coverage with mocked or tiny da
 ## Parallel Example: Distributed Pilot Execution and Runtime Observability
 
 ```bash
-Task: "T094 Add single-node multi-GPU Slurm launcher command checks in tests/test_78m_pilot.py"
+Task: "T094 Add single-node multi-GPU Slurm launcher command checks in tests/test_dmodel256_pilot.py"
 Task: "T095 Add config-driven distributed/FSDP training smoke checks in tests/test_training_smoke.py"
 Task: "T096 Add rank-0-only shared artifact write checks in tests/test_artifacts.py"
 Task: "T097 Add heartbeat JSONL schema, stdout line, and cadence checks in tests/test_heartbeats.py"
+```
+
+## Parallel Example: Pilot Terminology, Parameter Reporting, Checkpointing, and Comparison Scope
+
+```bash
+Task: "T107 Add d_model=256 pilot terminology, model_shape_label, table_reference_label, and explicit shape-field config checks in tests/test_config.py"
+Task: "T108 Add disaggregated parameter count, LM-head convention, and unavailable-component reason checks in tests/test_model_size.py"
+Task: "T109 Add best-eval selection across multiple validation points plus final and no-checkpoint summary checks in tests/test_artifacts.py"
+Task: "T110 Add nested-random, nested-all, standalone, and omitted-standalone pilot comparison row checks in tests/test_pilot_comparison.py"
 ```
 
 ## Parallel Example: User Story 3
@@ -449,20 +502,22 @@ Task: "T061 Add prompt-set pairing checks in tests/test_speculative.py"
 
 1. US1 validates the visible nested training flow and first comparison.
 2. Output Storage makes every later runner safe for filesystems with restricted space or inodes.
-3. US2 completes the debug-size S/M/L/XL baseline matrix and 78M pilot label path.
-4. Token Budget Hardening makes `training.token_budget` authoritative before real 78M or larger budgeted runs.
-5. Distributed Pilot Observability prepares the 78M pilot for single-node multi-GPU Slurm execution with rank-safe artifacts and heartbeat logs.
-6. US3 adds scaling/downstream reporting from structured artifacts.
-7. US4 adds consistency and elastic behavior analysis.
-8. US5 adds speculative decoding alignment.
+3. US2 completes the debug-size S/M/L/XL baseline matrix and d_model=256 pilot label path.
+4. Token Budget Hardening makes `training.token_budget` authoritative before real d_model=256 or larger budgeted runs.
+5. Distributed Pilot Observability prepares the d_model=256 pilot for single-node multi-GPU Slurm execution with rank-safe artifacts and heartbeat logs.
+6. Pilot Alignment adds corrected terminology, comparison modes, parameter reporting, and checkpoint persistence before downstream work.
+7. US3 adds scaling/downstream reporting from structured artifacts.
+8. US4 adds consistency and elastic behavior analysis.
+9. US5 adds speculative decoding alignment.
 
 ### Validation Gates
 
 - Before US1 completion: `metrics.csv`, `scaling_results.csv`, and `run_summary.json` exist for nested and one baseline run.
 - Before US2 start: custom output root runs place required artifacts under `<output_root>/<run_id>/` and avoid repository `outputs/`.
-- Before US2 completion: S/M/L/XL debug standalone baselines exist and 78M reduced-token pilot labels are correct.
-- Before budgeted 78M execution: resolved configs and summaries expose derived max steps, expected tokens per step, effective world size, tokens seen, and stop reason.
-- Before distributed 78M pilot execution: Slurm launcher checks, config-driven FSDP smoke coverage, rank-0-only artifact writes, and heartbeat JSONL/stdout checks pass.
+- Before US2 completion: S/M/L/XL debug standalone baselines exist and initial d_model=256 reduced-token pilot completion labels are correct.
+- Before budgeted d_model=256 execution: resolved configs and summaries expose derived max steps, expected tokens per step, effective world size, tokens seen, and stop reason.
+- Before distributed d_model=256 pilot execution: Slurm launcher checks, config-driven FSDP smoke coverage, rank-0-only artifact writes, and heartbeat JSONL/stdout checks pass.
+- Before Phase 5: d_model=256 pilot comparison artifacts expose sampling mode, actual parameter counts, LM-head convention, token budget, effective world size, checkpoint status/path, and mismatch notes.
 - Before US3 completion: plots derive from CSV files only.
 - Before US4 completion: consistency metrics distinguish nested and standalone sources.
 - Before US5 completion: speculative metrics include acceptance, rollback, throughput, and latency.

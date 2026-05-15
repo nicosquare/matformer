@@ -1,8 +1,8 @@
-# First paper-aligned scaling point using a reduced training-token budget.
-# A 78M run is paper-budget-complete only at 10B training tokens.
+# d_model=256 MatFormer-Llama/SwiGLU pilot comparison using a reduced
+# training-token budget and the MatLM 78M table row as a reference.
 run:
-  run_id: 78m-reduced-pilot-001
-  phase_id: 78m_pilot
+  run_id: dmodel256-pilot-comparison-001
+  phase_id: dmodel256_pilot_comparison
   model_family: nested
   model_size_label: 78m
   completion_label: reduced-token-pilot
@@ -10,7 +10,7 @@ run:
   output_root: outputs
 
 model:
-  base_model_name: 78m-paper-aligned
+  base_model_name: dmodel256-matformer-llama-swiglu
   tokenizer_name: hf-internal-testing/llama-tokenizer
   paper_aligned: true
   num_layers: 16

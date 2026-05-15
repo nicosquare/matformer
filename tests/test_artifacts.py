@@ -146,9 +146,9 @@ def test_write_failed_run_summary_records_failure_note(tmp_path):
 
 
 def test_run_summary_includes_budget_derived_fields(tmp_path):
-    output_dir = tmp_path / "78m-reduced-pilot-001"
+    output_dir = tmp_path / "dmodel256-pilot-comparison-001"
     config = resolve_run_config(
-        "configs/78m_reduced_pilot.yaml",
+        "configs/dmodel256_pilot_comparison.yaml",
         output_dir=output_dir,
     )
 
@@ -172,9 +172,9 @@ def test_run_summary_includes_budget_derived_fields(tmp_path):
 
 
 def test_run_summary_schema_requires_budget_derived_fields(tmp_path):
-    output_dir = tmp_path / "78m-reduced-pilot-001"
+    output_dir = tmp_path / "dmodel256-pilot-comparison-001"
     config = resolve_run_config(
-        "configs/78m_reduced_pilot.yaml",
+        "configs/dmodel256_pilot_comparison.yaml",
         output_dir=output_dir,
     )
     summary = build_run_summary(

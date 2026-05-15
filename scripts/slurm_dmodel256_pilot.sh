@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=matformer-78m
+#SBATCH --job-name=matformer-dmodel256
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
@@ -8,27 +8,27 @@
 #SBATCH --time=24:00:00
 #SBATCH -p cscc-gpu-p
 #SBATCH --qos=cscc-gpu-qos
-#SBATCH --output=./logs/matformer_78m_%j.out
-#SBATCH --error=./logs/matformer_78m_%j.err
+#SBATCH --output=./logs/matformer_dmodel256_%j.out
+#SBATCH --error=./logs/matformer_dmodel256_%j.err
 
 set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Submit the Phase 4.6 78M reduced-token pilot to Slurm.
+Submit the Phase 4.6 d_model=256 reduced-token pilot comparison to Slurm.
 
 Usage:
-  sbatch scripts/slurm_78m_pilot.sh --output-root /mnt/experiments/matformer [options] [-- runner args]
+  sbatch scripts/slurm_dmodel256_pilot.sh --output-root /mnt/experiments/matformer [options] [-- runner args]
 
 Options:
   --repo-root PATH            Repository root; defaults to the sbatch submit directory.
   --output-root PATH          Root for run artifacts; forwarded as OUTPUT_ROOT.
-  --run-id RUN_ID             Run id from configs/78m_reduced_pilot.yaml.
+  --run-id RUN_ID             Run id from configs/dmodel256_pilot_comparison.yaml.
   --config PATH               Pilot config path.
   --python-bin PATH           Python executable to use inside the job.
   -h, --help                  Show this message.
 
-Any remaining args are forwarded to scripts/run_78m_pilot.sh, for example:
+Any remaining args are forwarded to scripts/run_dmodel256_pilot.sh, for example:
   --override training.max_steps_cap=1
 
 For multi-GPU allocations, the launcher starts one training process per GPU
@@ -37,14 +37,14 @@ through CUDA_VISIBLE_DEVICES, that variable is used to choose --nproc_per_node
 when Slurm GPU count variables are unavailable.
 
 Resource requests can be overridden at submission time, for example:
-  sbatch --gres=gpu:2 --time=01:00:00 --mem=32G scripts/slurm_78m_pilot.sh --output-root /mnt/experiments/matformer --override training.max_steps_cap=1
+  sbatch --gres=gpu:2 --time=01:00:00 --mem=32G scripts/slurm_dmodel256_pilot.sh --output-root /mnt/experiments/matformer --override training.max_steps_cap=1
 USAGE
 }
 
 REPO_ROOT_ARG=""
 OUTPUT_ROOT_ARG=""
 FORWARDED_ARGS=()
-DEFAULT_RUN_ID="78m-reduced-pilot-001"
+DEFAULT_RUN_ID="dmodel256-pilot-comparison-001"
 if [[ -n "${RUN_ID:-}" ]]; then
   RUN_ID_EXPLICIT=true
 else
@@ -114,7 +114,7 @@ done
 if [[ "${ALLOW_LOCAL_SLURM_WRAPPER:-0}" != "1" ]] \
   && [[ -z "${SLURM_SUBMIT_DIR:-}" || -z "${SLURM_JOB_NAME:-}" ]]; then
   echo "This launcher is intended for sbatch, not direct execution on the current node." >&2
-  echo "Use: sbatch scripts/slurm_78m_pilot.sh --output-root /mnt/experiments/matformer" >&2
+  echo "Use: sbatch scripts/slurm_dmodel256_pilot.sh --output-root /mnt/experiments/matformer" >&2
   exit 2
 fi
 
@@ -128,8 +128,8 @@ else
 fi
 
 cd "$ROOT_DIR"
-if [[ ! -f scripts/run_78m_pilot.sh ]]; then
-  echo "Could not find scripts/run_78m_pilot.sh under repo root: $ROOT_DIR" >&2
+if [[ ! -f scripts/run_dmodel256_pilot.sh ]]; then
+  echo "Could not find scripts/run_dmodel256_pilot.sh under repo root: $ROOT_DIR" >&2
   echo "Submit from the repository root or pass --repo-root /path/to/matformer." >&2
   exit 2
 fi
@@ -220,7 +220,7 @@ export GPUS_PER_NODE
 printf 'Slurm job id: %s\n' "${SLURM_JOB_ID:-local-shell}"
 printf 'Python: %s\n' "$PYTHON_BIN"
 printf 'Output root: %s\n' "$OUTPUT_ROOT"
-printf 'Config: %s\n' "${CONFIG_PATH:-configs/78m_reduced_pilot.yaml}"
+printf 'Config: %s\n' "${CONFIG_PATH:-configs/dmodel256_pilot_comparison.yaml}"
 printf 'Run id: %s\n' "$RUN_ID"
 printf 'CUDA_VISIBLE_DEVICES: %s\n' "${CUDA_VISIBLE_DEVICES:-unset}"
 printf 'SLURM_GPUS_ON_NODE: %s\n' "${SLURM_GPUS_ON_NODE:-unset}"
@@ -233,7 +233,7 @@ if [[ "$GPUS_PER_NODE" -gt 1 ]]; then
   OUTPUT_ARGS=(--output-root "$OUTPUT_ROOT")
   TRAIN_ARGS=(
     train.py
-    --config "${CONFIG_PATH:-configs/78m_reduced_pilot.yaml}"
+    --config "${CONFIG_PATH:-configs/dmodel256_pilot_comparison.yaml}"
     "${OUTPUT_ARGS[@]}"
     "${FORWARDED_ARGS[@]}"
   )
@@ -246,4 +246,4 @@ if [[ "$GPUS_PER_NODE" -gt 1 ]]; then
     "${TRAIN_ARGS[@]}"
 fi
 
-exec bash scripts/run_78m_pilot.sh "${FORWARDED_ARGS[@]}"
+exec bash scripts/run_dmodel256_pilot.sh "${FORWARDED_ARGS[@]}"
