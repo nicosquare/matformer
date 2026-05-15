@@ -66,13 +66,25 @@ sbatch scripts/slurm_78m_pilot.sh --output-root /mnt/experiments/matformer
 ```
 
 Required behavior:
-- Request one GPU when submitted with `sbatch`.
+- Request one node with multiple GPUs when submitted with `sbatch`.
 - Refuse direct local execution outside a Slurm allocation.
 - Use the `elasticnn` conda environment by default unless `PYTHON_BIN` or
   `--python-bin` is provided.
 - Accept `--output-root`, `--run-id`, and `--config`.
-- Forward remaining runner arguments, including `--override`, to
-  `scripts/run_78m_pilot.sh`.
+- Launch one config-driven training process per allocated GPU through
+  `torchrun` or `python -m torch.distributed.run`.
+- The launcher may use Slurm allocation variables, including
+  `CUDA_VISIBLE_DEVICES` when that is how the cluster exposes assigned GPUs, to
+  choose `--nproc_per_node`.
+- After launch, use the active distributed `WORLD_SIZE` set by `torchrun`, not
+  `CUDA_VISIBLE_DEVICES` or available GPU count directly, when the resolved
+  config derives token-budget training length.
+- Use FSDP for the 78M pilot model when distributed execution is enabled.
+- Write shared artifacts such as `config.json`, `metrics.csv`,
+  `run_summary.json`, checkpoints, and `heartbeats.jsonl` from rank 0 only.
+- Default Slurm output to heartbeat lines instead of tqdm-style progress bars.
+- Forward remaining runner arguments, including `--override`, to the
+  config-driven 78M pilot entry point.
 
 ## Generate Figures
 

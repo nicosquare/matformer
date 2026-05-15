@@ -1,0 +1,183 @@
+"""Small heartbeat helpers for long-running experiment jobs."""
+
+from __future__ import annotations
+
+import json
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, TextIO
+
+
+class HeartbeatCadence:
+    """Tracks step- or time-based heartbeat emission."""
+
+    def __init__(
+        self,
+        step_interval: int | None = 10,
+        time_interval_seconds: float | None = 60.0,
+    ):
+        self.step_interval = _positive_int_or_none(step_interval, "step_interval")
+        self.time_interval_seconds = _positive_float_or_none(
+            time_interval_seconds,
+            "time_interval_seconds",
+        )
+        self.last_step: int | None = None
+        self.last_time: float | None = None
+
+    def should_emit(self, step: int | None, now: float | None = None) -> bool:
+        if now is None:
+            now = time.time()
+
+        if self.last_time is None:
+            return True
+
+        if (
+            step is not None
+            and self.step_interval is not None
+            and self.last_step is not None
+            and step - self.last_step >= self.step_interval
+        ):
+            return True
+
+        if (
+            self.time_interval_seconds is not None
+            and now - self.last_time >= self.time_interval_seconds
+        ):
+            return True
+
+        return False
+
+    def mark_emitted(self, step: int | None, now: float | None = None) -> None:
+        if now is None:
+            now = time.time()
+        if step is not None:
+            self.last_step = step
+        self.last_time = now
+
+
+class HeartbeatWriter:
+    """Writes heartbeat events to stdout and run-local JSONL."""
+
+    def __init__(
+        self,
+        output_dir: str | Path,
+        run_id: str,
+        rank: int = 0,
+        world_size: int = 1,
+        stdout: TextIO | None = None,
+        time_fn=time.time,
+        filename: str = "heartbeats.jsonl",
+    ):
+        self.output_dir = Path(output_dir)
+        self.run_id = run_id
+        self.rank = int(rank)
+        self.world_size = int(world_size)
+        self.stdout = stdout if stdout is not None else sys.stdout
+        self.time_fn = time_fn
+        self.path = self.output_dir / filename
+        self.start_time = float(self.time_fn())
+
+    def emit(
+        self,
+        event_type: str,
+        stage: str,
+        step: int | None = None,
+        derived_max_steps: int | None = None,
+        tokens_seen: int | None = None,
+        token_budget: int | None = None,
+        latest_loss: float | None = None,
+        tokens_per_second: float | None = None,
+        peak_gpu_memory_bytes: int | None = None,
+        eta_seconds: float | None = None,
+        extra_fields: dict[str, Any] | None = None,
+    ) -> Path:
+        now = float(self.time_fn())
+        event = {
+            "event_type": event_type,
+            "run_id": self.run_id,
+            "stage": stage,
+            "rank": self.rank,
+            "world_size": self.world_size,
+            "timestamp": _utc_timestamp(now),
+            "elapsed_seconds": now - self.start_time,
+            "step": step,
+            "derived_max_steps": derived_max_steps,
+            "tokens_seen": tokens_seen,
+            "token_budget": token_budget,
+            "latest_loss": latest_loss,
+            "tokens_per_second": tokens_per_second,
+            "peak_gpu_memory_bytes": peak_gpu_memory_bytes,
+            "eta_seconds": eta_seconds,
+        }
+        if extra_fields:
+            event.update(extra_fields)
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as heartbeat_file:
+            heartbeat_file.write(json.dumps(event, sort_keys=True))
+            heartbeat_file.write("\n")
+
+        print(self.format_stdout_line(event), file=self.stdout, flush=True)
+        return self.path
+
+    def stage_start(self, stage: str, **fields: Any) -> Path:
+        return self.emit("stage_start", stage, **fields)
+
+    def stage_complete(self, stage: str, **fields: Any) -> Path:
+        return self.emit("stage_complete", stage, **fields)
+
+    def heartbeat(self, stage: str, **fields: Any) -> Path:
+        return self.emit("heartbeat", stage, **fields)
+
+    def format_stdout_line(self, event: dict[str, Any]) -> str:
+        parts = [
+            event["event_type"],
+            f"stage={event['stage']}",
+            f"rank={event['rank']}/{event['world_size']}",
+            f"elapsed={event['elapsed_seconds']:.1f}s",
+        ]
+        if event.get("step") is not None:
+            if event.get("derived_max_steps") is not None:
+                parts.append(f"step={event['step']}/{event['derived_max_steps']}")
+            else:
+                parts.append(f"step={event['step']}")
+        if event.get("tokens_seen") is not None:
+            if event.get("token_budget") is not None:
+                parts.append(f"tokens={event['tokens_seen']}/{event['token_budget']}")
+            else:
+                parts.append(f"tokens={event['tokens_seen']}")
+        if event.get("latest_loss") is not None:
+            parts.append(f"loss={event['latest_loss']}")
+        if event.get("tokens_per_second") is not None:
+            parts.append(f"tok/s={event['tokens_per_second']}")
+        if event.get("eta_seconds") is not None:
+            parts.append(f"eta={event['eta_seconds']}s")
+        return " ".join(parts)
+
+
+def _utc_timestamp(seconds: float) -> str:
+    return (
+        datetime.fromtimestamp(seconds, timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def _positive_int_or_none(value: int | None, name: str) -> int | None:
+    if value is None:
+        return None
+    parsed = int(value)
+    if parsed <= 0:
+        raise ValueError(f"{name} must be positive or None")
+    return parsed
+
+
+def _positive_float_or_none(value: float | None, name: str) -> float | None:
+    if value is None:
+        return None
+    parsed = float(value)
+    if parsed <= 0:
+        raise ValueError(f"{name} must be positive or None")
+    return parsed

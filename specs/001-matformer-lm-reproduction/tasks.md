@@ -210,9 +210,9 @@ events identify the current stage and progress.
 
 ### Implementation for Distributed Pilot Execution and Runtime Observability
 
-- [ ] T098 [P] [US2] Update single-node multi-GPU Slurm and heartbeat artifact expectations in `specs/001-matformer-lm-reproduction/contracts/cli.md` and `specs/001-matformer-lm-reproduction/contracts/run-artifacts.md`
-- [ ] T099 [P] [US2] Implement heartbeat JSONL and stdout event helpers in `utils/heartbeats.py`
-- [ ] T100 [P] [US2] Implement distributed runtime helpers for rank, local rank, world size, rank-0 checks, and barriers in `training/distributed.py`
+- [X] T098 [P] [US2] Update single-node multi-GPU Slurm and heartbeat artifact expectations in `specs/001-matformer-lm-reproduction/contracts/cli.md` and `specs/001-matformer-lm-reproduction/contracts/run-artifacts.md`
+- [X] T099 [P] [US2] Implement heartbeat JSONL and stdout event helpers in `utils/heartbeats.py`
+- [X] T100 [P] [US2] Implement distributed runtime helpers for rank, local rank, world size, rank-0 checks, and barriers in `training/distributed.py`
 - [ ] T101 [US2] Wire config-driven distributed device selection, dataloading, and FSDP model wrapping in `training/run.py`
 - [ ] T102 [US2] Integrate effective `WORLD_SIZE` budget resolution with distributed launch metadata in `utils/config.py` and `training/run.py`
 - [ ] T103 [US2] Gate resolved config, metrics, summary, checkpoint, and heartbeat shared writes to rank 0 in `training/run.py` and `utils/metrics.py`

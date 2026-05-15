@@ -10,6 +10,7 @@ the repository filesystem.
 <output_root>/<run_id>/
 ├── config.json
 ├── run_summary.json
+├── heartbeats.jsonl
 ├── metrics.csv
 ├── task_results.csv
 ├── scaling_results.csv
@@ -24,11 +25,18 @@ the repository filesystem.
 
 Only artifacts relevant to the run phase are required. For example, a pure
 validation run may omit `task_results.csv` and `consistency_results.csv`.
+Long-running Slurm jobs must write `heartbeats.jsonl`; short local smoke runs
+may omit it when heartbeat logging is disabled.
 
 No required run artifact may be written under repository `outputs/` when the
 researcher configures a different output root. Generated figure directories
 should also live under the configured root unless the researcher explicitly
 chooses another path.
+
+For distributed runs, shared artifacts are written only by rank 0. This covers
+`config.json`, CSV metrics, summaries, checkpoints, generated figures, and
+`heartbeats.jsonl`. Nonzero ranks may emit process-local diagnostics to stdout
+or stderr, but they must not race to write shared run artifacts.
 
 ## `metrics.csv`
 
@@ -94,11 +102,59 @@ Required fields:
 copied from the resolved `config.json`. `tokens_seen` and `stop_reason` are
 runtime outcomes written by the training loop.
 
+Distributed run summaries must also include active distributed context when a
+run is launched with more than one process:
+
+```json
+{
+  "distributed_strategy": "fsdp",
+  "distributed_rank": 0,
+  "distributed_local_rank": 0,
+  "distributed_world_size": 2
+}
+```
+
+These fields describe the writer process. Shared summaries are written by rank
+0, so `distributed_rank` is expected to be `0` for shared `run_summary.json`.
+
+## `heartbeats.jsonl`
+
+Each line is one JSON object. Required fields:
+
+```json
+{
+  "event_type": "heartbeat",
+  "run_id": "78m-reduced-pilot-001",
+  "stage": "training",
+  "rank": 0,
+  "world_size": 2,
+  "timestamp": "2026-05-15T12:00:00Z",
+  "elapsed_seconds": 60.0,
+  "step": 10,
+  "derived_max_steps": 100,
+  "tokens_seen": 81920,
+  "token_budget": 1000000,
+  "latest_loss": 1.25,
+  "tokens_per_second": 512.0,
+  "peak_gpu_memory_bytes": 123456,
+  "eta_seconds": 120.0
+}
+```
+
+`event_type` may be `stage_start`, `stage_complete`, or `heartbeat`.
+Step-related and training-metric fields may be null for non-step stages such as
+tokenizer loading, dataset loading, preprocessing, model initialization, FSDP
+wrapping, validation, checkpointing, and artifact writing. Heartbeats emit when
+either the configured step interval or elapsed-time interval is reached.
+
 ## Validation Rules
 
 - Required scalar metrics must appear in CSV or JSON artifacts, not only logs.
 - `config.json`, CSV metrics, summaries, checkpoints, and generated plots must
   be rooted under the configured output root unless explicitly overridden.
+- Distributed shared artifacts must be written only by rank 0.
+- Slurm heartbeat output must be available both as readable stdout lines and as
+  `heartbeats.jsonl` under the run output directory.
 - Plot files must list their source CSV files in `run_summary.json` or a report.
 - Any baseline mismatch must be recorded in `run_summary.json`.
 - `expected_tokens_per_step`, `derived_max_steps`, and `effective_world_size`
