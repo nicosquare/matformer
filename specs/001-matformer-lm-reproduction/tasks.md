@@ -256,8 +256,8 @@ status/path, and mismatch notes.
 - [X] T117 [US2] Record checkpoint status, checkpoint path, checkpoint selection metric, and validation-disabled final/no-checkpoint status in `run_summary.json` through `utils/metrics.py`
 - [X] T118 [US2] Add default pilot comparison orchestration and omitted-baseline row emission for `nested-random`, `nested-all`, and standalone S/M/L/XL runs with `run_status=omitted`, `omit_reason`, null/unavailable checkpoint fields, and mismatch notes in `scripts/run_dmodel256_pilot.sh`
 - [X] T119 [US2] Update d_model=256 runner scripts in `scripts/run_dmodel256_pilot.sh` and `scripts/slurm_dmodel256_pilot.sh` for the preferred config name
-- [ ] T120 [US2] Update d_model=256 pilot comparison guidance in `specs/001-matformer-lm-reproduction/quickstart.md` and `README.md`
-- [ ] T121 [US2] Verify `requirements.txt` remains sufficient for rebuilding the `elasticnn` dependency environment
+- [X] T120 [US2] Update d_model=256 pilot comparison guidance in `specs/001-matformer-lm-reproduction/quickstart.md` and `README.md`
+- [X] T121 [US2] Verify `requirements.txt` remains sufficient for rebuilding the `elasticnn` dependency environment
 
 **Checkpoint**: Phase 4.7 is complete when d_model=256 pilot comparison
 artifacts expose sampling mode, actual parameter counts, LM-head convention,

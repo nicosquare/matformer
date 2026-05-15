@@ -78,6 +78,40 @@ sbatch scripts/slurm_dmodel256_pilot.sh \
   --output-root /mnt/experiments/matformer
 ```
 
+By default, `scripts/run_dmodel256_pilot.sh` is a comparison runner. It launches
+`nested-random` and `nested-all`, then records standalone S/M/L/XL baselines as
+explicit omitted rows when full standalone training is not requested. Omitted
+rows include `run_status=omitted`, an `omit_reason`, unavailable checkpoint
+fields, and mismatch notes so later reports do not confuse capped pilots with
+completed standalone baselines.
+
+To run a single selected mode for smoke/debugging:
+
+```bash
+OUTPUT_ROOT=/mnt/experiments/matformer \
+  bash scripts/run_dmodel256_pilot.sh \
+  --mode nested-all \
+  --run-id dmodel256-nested-all-001 \
+  --override training.max_steps_cap=1
+
+OUTPUT_ROOT=/mnt/experiments/matformer \
+  bash scripts/run_dmodel256_pilot.sh \
+  --mode standalone \
+  --granularity m \
+  --run-id dmodel256-standalone-m-001 \
+  --override training.max_steps_cap=1
+```
+
+When compute is available for independent baselines, set
+`RUN_STANDALONE_BASELINES=1` to train standalone S/M/L/XL instead of emitting
+omitted rows:
+
+```bash
+RUN_STANDALONE_BASELINES=1 \
+  OUTPUT_ROOT=/mnt/experiments/matformer \
+  bash scripts/run_dmodel256_pilot.sh
+```
+
 For a short scheduler smoke check, cap the derived token-budget step count:
 
 ```bash
@@ -95,11 +129,11 @@ training process. Do not hand-maintain `training.effective_world_size`,
 `training.expected_tokens_per_step`, or `training.derived_max_steps` in source
 configs.
 
-The d_model=256 pilot comparison defaults to
-`training.granularity_sampling=random`, which matches the original training
-script by sampling one MatFormer granularity per batch. Use
-`--override training.granularity_sampling=all` only for the ablation path that
-evaluates all configured granularities on each batch and averages losses.
+The runner translates `--mode nested-random`, `--mode nested-all`, and
+`--mode standalone --granularity <s|m|l|xl>` into explicit config overrides for
+model family, sampling mode, granularity, and granularity sampling. Use the
+mode flags rather than manually overriding `training.granularity_sampling` for
+the pilot comparison.
 
 To request a different single-node GPU count, override the Slurm resource
 request at submission time:

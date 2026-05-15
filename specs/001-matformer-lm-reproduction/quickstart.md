@@ -148,7 +148,9 @@ Expected result:
   `expected_tokens_per_step`, `derived_max_steps`, and the effective
   `max_steps`.
 - The default comparison includes `nested-random`, `nested-all`, and standalone
-  S/M/L/XL rows where compute allows.
+  S/M/L/XL rows. Standalone rows are emitted as explicit omitted rows by
+  default for capped comparison runs unless full standalone baselines are
+  requested.
 - Outputs record actual tokens seen, target token budget, `stop_reason`,
   sampling mode, actual parameter-count components, LM-head counting
   convention, checkpoint status/path, and mismatch notes.
@@ -171,11 +173,42 @@ sbatch scripts/slurm_dmodel256_pilot.sh \
   --output-root /mnt/experiments/matformer
 ```
 
-The default comparison run id prefix is `dmodel256-pilot-comparison`, so
-artifacts resolve under `<OUTPUT_ROOT>/<run_id>/`. Use `--output-root` for an
-explicit root, pass `--override training.max_steps_cap=...` only for
-intentionally short runs, and use `--mode nested-random`, `--mode nested-all`,
-or `--mode standalone` only for selected smoke/debug runs.
+The default comparison run id prefix is `dmodel256-pilot-comparison`. The
+runner launches `nested-random` and `nested-all`, then records standalone S/M/L/XL
+as omitted comparison rows when compute is capped. Those omitted rows include
+`run_status=omitted`, an `omit_reason`, `checkpoint_status=unavailable`, a null
+checkpoint path, and mismatch notes so downstream phases can distinguish
+planned-but-not-run baselines from missing metadata.
+
+Use `--output-root` for an explicit root, pass
+`--override training.max_steps_cap=...` only for intentionally short runs, and
+use `--mode nested-random`, `--mode nested-all`, or
+`--mode standalone --granularity <s|m|l|xl>` only for selected smoke/debug
+runs. Example single-mode checks:
+
+```bash
+bash scripts/run_dmodel256_pilot.sh \
+  --mode nested-all \
+  --run-id dmodel256-nested-all-001 \
+  --output-root /mnt/experiments/matformer \
+  --override training.max_steps_cap=1
+
+bash scripts/run_dmodel256_pilot.sh \
+  --mode standalone \
+  --granularity m \
+  --run-id dmodel256-standalone-m-001 \
+  --output-root /mnt/experiments/matformer \
+  --override training.max_steps_cap=1
+```
+
+When compute is available for independent baselines, request real standalone
+training instead of omitted rows:
+
+```bash
+RUN_STANDALONE_BASELINES=1 \
+  bash scripts/run_dmodel256_pilot.sh \
+  --output-root /mnt/experiments/matformer
+```
 
 The Slurm launcher requests one node and multiple GPUs by default. It starts
 one config-driven training process per allocated GPU with
