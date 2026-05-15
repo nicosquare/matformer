@@ -108,6 +108,7 @@ def resolve_run_config(
 
     _resolve_output_paths(resolved)
     _resolve_training_length(resolved)
+    _resolve_parameter_reporting_defaults(resolved)
     validate_run_config(resolved)
     return resolved
 
@@ -122,6 +123,7 @@ def resolve_all_run_configs(
         resolved = _compose_single_run(config)
         _resolve_output_paths(resolved)
         _resolve_training_length(resolved)
+        _resolve_parameter_reporting_defaults(resolved)
         validate_run_config(resolved)
         return [resolved]
 
@@ -136,6 +138,7 @@ def resolve_all_run_configs(
         resolved = _compose_matrix_run(config, run_entry)
         _resolve_output_paths(resolved)
         _resolve_training_length(resolved)
+        _resolve_parameter_reporting_defaults(resolved)
         validate_run_config(resolved)
         resolved_runs.append(resolved)
 
@@ -159,6 +162,31 @@ def write_resolved_config(
         config_file.write("\n")
 
     return output_path
+
+
+def attach_parameter_counts_to_config(
+    config: dict[str, Any],
+    parameter_counts_by_granularity: Mapping[str, Mapping[str, Any]],
+) -> None:
+    counts_by_granularity = {
+        str(granularity): copy.deepcopy(dict(counts))
+        for granularity, counts in parameter_counts_by_granularity.items()
+    }
+    config["parameter_counts_by_granularity"] = counts_by_granularity
+
+    selected_counts = _select_representative_parameter_counts(
+        config,
+        counts_by_granularity,
+    )
+    if selected_counts is not None:
+        parameter_counts = copy.deepcopy(dict(selected_counts))
+        parameter_counts["mismatch_notes"] = _parameter_mismatch_notes(
+            config,
+            parameter_counts,
+        )
+        config["parameter_counts"] = parameter_counts
+
+    _resolve_parameter_reporting_defaults(config)
 
 
 def validate_run_config(config: Mapping[str, Any]) -> None:
@@ -522,6 +550,65 @@ def _resolve_output_paths(config: dict[str, Any]) -> None:
 
 def _resolve_training_length(config: dict[str, Any]) -> None:
     resolve_training_length_for_world_size(config)
+
+
+def _resolve_parameter_reporting_defaults(config: dict[str, Any]) -> None:
+    reporting = config.setdefault("parameter_reporting", {})
+    if not isinstance(reporting, dict):
+        raise ConfigError("parameter_reporting must be a mapping when provided")
+
+    reporting.setdefault("lm_head_counting", "separately_counted")
+    reporting.setdefault("paper_total_parameters", None)
+    reporting.setdefault("paper_non_embedding_parameters", None)
+    reporting.setdefault("paper_ffn_parameters", None)
+    reporting.setdefault("paper_attention_parameters", None)
+    reporting.setdefault("mismatch_notes", _parameter_mismatch_notes(config))
+
+
+def _select_representative_parameter_counts(
+    config: Mapping[str, Any],
+    counts_by_granularity: Mapping[str, Mapping[str, Any]],
+) -> Mapping[str, Any] | None:
+    run = config.get("run", {})
+    model = config.get("model", {})
+
+    preferred_granularity = run.get("granularity")
+    if preferred_granularity in counts_by_granularity:
+        return counts_by_granularity[str(preferred_granularity)]
+
+    if "xl" in counts_by_granularity:
+        return counts_by_granularity["xl"]
+
+    for granularity in model.get("granularities", []):
+        if granularity in counts_by_granularity:
+            return counts_by_granularity[str(granularity)]
+
+    return next(iter(counts_by_granularity.values()), None)
+
+
+def _parameter_mismatch_notes(
+    config: Mapping[str, Any],
+    parameter_counts: Mapping[str, Any] | None = None,
+) -> list[str]:
+    notes: list[str] = []
+    model = config.get("model", {})
+    reporting = config.get("parameter_reporting", {})
+
+    notes.extend(str(note) for note in model.get("mismatch_notes", []) if note)
+    if isinstance(reporting, Mapping):
+        notes.extend(str(note) for note in reporting.get("mismatch_notes", []) if note)
+    if parameter_counts is not None:
+        notes.extend(
+            str(note)
+            for note in parameter_counts.get("mismatch_notes", [])
+            if note
+        )
+
+    deduplicated_notes: list[str] = []
+    for note in notes:
+        if note not in deduplicated_notes:
+            deduplicated_notes.append(note)
+    return deduplicated_notes
 
 
 def resolve_training_length_for_world_size(

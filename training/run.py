@@ -31,7 +31,11 @@ from training.distributed import (
     should_write_shared_artifact,
     wrap_model_for_distributed,
 )
-from utils.config import resolve_run_config, resolve_training_length_for_world_size
+from utils.config import (
+    attach_parameter_counts_to_config,
+    resolve_run_config,
+    resolve_training_length_for_world_size,
+)
 from utils.heartbeats import HeartbeatCadence, HeartbeatWriter
 from utils.metrics import (
     build_parameter_counts_by_granularity,
@@ -154,6 +158,8 @@ def run_training(
                     model,
                     config["model"]["granularities"],
                 )
+                attach_parameter_counts_to_config(config, parameter_counts_by_granularity)
+                write_config_artifact(config, distributed_context=distributed_context)
                 scaling_rows = build_scaling_result_rows(
                     config,
                     metrics_rows,
@@ -766,7 +772,9 @@ def build_extraction_metadata(config: dict[str, Any], model) -> dict[str, Any]:
         "run_id": run["run_id"],
         "phase_id": run["phase_id"],
         "model_family": run["model_family"],
-        "model_size_label": run["model_size_label"],
+        "model_size_label": _model_shape_label(run),
+        "model_shape_label": _model_shape_label(run),
+        "table_reference_label": run.get("table_reference_label"),
         "granularities": [
             build_granularity_extraction_metadata(
                 granularity,
@@ -822,7 +830,10 @@ def build_training_metric_row(
         "step": step,
         "split": "train",
         "model_family": run["model_family"],
-        "model_size_label": run["model_size_label"],
+        "model_size_label": _model_shape_label(run),
+        "model_shape_label": _model_shape_label(run),
+        "table_reference_label": run.get("table_reference_label"),
+        "sampling_mode": _sampling_mode(run, config["training"]),
         "granularity": granularity,
         "loss": loss,
         "perplexity": perplexity_from_loss(loss),
@@ -856,3 +867,20 @@ def set_random_seed(seed: int | None) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+def _model_shape_label(run: dict[str, Any]) -> Any:
+    return run.get("model_shape_label", run.get("model_size_label"))
+
+
+def _sampling_mode(run: dict[str, Any], training: dict[str, Any]) -> Any:
+    if run.get("sampling_mode") is not None:
+        return run["sampling_mode"]
+    if run.get("model_family") == "standalone":
+        return "standalone"
+    granularity_sampling = training.get("granularity_sampling")
+    if granularity_sampling == "random":
+        return "nested-random"
+    if granularity_sampling == "all":
+        return "nested-all"
+    return granularity_sampling

@@ -122,7 +122,10 @@ def validation_results_to_metric_rows(
                 "step": step,
                 "split": split,
                 "model_family": run["model_family"],
-                "model_size_label": run["model_size_label"],
+                "model_size_label": _model_shape_label(run),
+                "model_shape_label": _model_shape_label(run),
+                "table_reference_label": run.get("table_reference_label"),
+                "sampling_mode": _sampling_mode(run, config.get("training", {})),
                 "granularity": result["granularity"],
                 "loss": result["loss"],
                 "perplexity": result["perplexity"],
@@ -163,3 +166,20 @@ def _reduce_validation_stats(
     )
     dist.all_reduce(stats, op=dist.ReduceOp.SUM)
     return float(stats[0].item()), int(stats[1].item()), int(stats[2].item())
+
+
+def _model_shape_label(run: dict[str, Any]) -> Any:
+    return run.get("model_shape_label", run.get("model_size_label"))
+
+
+def _sampling_mode(run: dict[str, Any], training: dict[str, Any]) -> Any:
+    if run.get("sampling_mode") is not None:
+        return run["sampling_mode"]
+    if run.get("model_family") == "standalone":
+        return "standalone"
+    granularity_sampling = training.get("granularity_sampling")
+    if granularity_sampling == "random":
+        return "nested-random"
+    if granularity_sampling == "all":
+        return "nested-all"
+    return granularity_sampling

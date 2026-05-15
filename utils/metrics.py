@@ -16,6 +16,9 @@ METRICS_COLUMNS = [
     "split",
     "model_family",
     "model_size_label",
+    "model_shape_label",
+    "table_reference_label",
+    "sampling_mode",
     "granularity",
     "loss",
     "perplexity",
@@ -31,6 +34,9 @@ TASK_RESULTS_COLUMNS = [
     "task",
     "model_family",
     "model_size_label",
+    "model_shape_label",
+    "table_reference_label",
+    "sampling_mode",
     "granularity",
     "metric_name",
     "metric_value",
@@ -41,12 +47,28 @@ SCALING_RESULTS_COLUMNS = [
     "run_id",
     "model_family",
     "model_size_label",
+    "model_shape_label",
+    "table_reference_label",
+    "sampling_mode",
     "completion_label",
     "granularity",
+    "d_model",
+    "num_layers",
+    "num_attention_heads",
+    "context_length",
+    "vocab_size_assumption",
+    "token_budget",
+    "effective_world_size",
     "total_parameters",
     "embedding_parameters",
     "lm_head_parameters",
     "non_embedding_parameters",
+    "ffn_parameters",
+    "attention_parameters",
+    "other_non_embedding_parameters",
+    "lm_head_counting",
+    "checkpoint_path",
+    "mismatch_notes",
     "loss",
     "perplexity",
     "average_downstream_accuracy",
@@ -68,6 +90,9 @@ RUN_SUMMARY_FIELDS = [
     "phase_id",
     "model_family",
     "model_size_label",
+    "model_shape_label",
+    "table_reference_label",
+    "sampling_mode",
     "completion_label",
     "dataset_name",
     "dataset_split",
@@ -82,7 +107,27 @@ RUN_SUMMARY_FIELDS = [
     "output_root",
     "output_dir",
     "paper_aligned",
+    "paper_alignment_claim",
+    "d_model",
+    "num_layers",
+    "num_attention_heads",
+    "context_length",
+    "vocab_size_assumption",
+    "parameter_counts",
+    "parameter_counts_by_granularity",
+    "mismatch_notes",
     "notes",
+]
+
+PARAMETER_COUNT_FIELDS = [
+    "total_parameters",
+    "embedding_parameters",
+    "lm_head_parameters",
+    "non_embedding_parameters",
+    "ffn_parameters",
+    "attention_parameters",
+    "other_non_embedding_parameters",
+    "lm_head_counting",
 ]
 
 BASELINE_MATCH_FIELDS = [
@@ -133,6 +178,7 @@ def build_run_summary(
         "model_size_label": _model_shape_label(run),
         "model_shape_label": _model_shape_label(run),
         "table_reference_label": run.get("table_reference_label"),
+        "sampling_mode": _sampling_mode(run, training),
         "completion_label": run["completion_label"],
         "dataset_name": dataset["dataset_name"],
         "dataset_split": dataset["dataset_split"],
@@ -148,6 +194,23 @@ def build_run_summary(
         "output_dir": run["output_dir"],
         "paper_aligned": _paper_alignment_claim(model),
         "paper_alignment_claim": _paper_alignment_claim(model),
+        "d_model": model.get("d_model", model.get("hidden_size")),
+        "num_layers": model.get("num_layers"),
+        "num_attention_heads": model.get("num_attention_heads"),
+        "context_length": model.get("context_length"),
+        "vocab_size_assumption": model.get(
+            "vocab_size_assumption",
+            model.get("vocab_size"),
+        ),
+        "parameter_counts": config.get("parameter_counts"),
+        "parameter_counts_by_granularity": config.get(
+            "parameter_counts_by_granularity"
+        ),
+        "mismatch_notes": _mismatch_notes(
+            config.get("parameter_reporting", {}),
+            model,
+            config.get("parameter_counts") or {},
+        ),
         "notes": list(notes or []),
     }
 
@@ -256,7 +319,7 @@ def build_parameter_counts_by_granularity(
     model: Any,
     granularities: Iterable[str],
     trainable_only: bool = False,
-) -> dict[str, dict[str, int]]:
+) -> dict[str, dict[str, Any]]:
     from utils.model_size import model_parameter_counts
 
     return {
@@ -272,7 +335,7 @@ def build_parameter_counts_by_granularity(
 def build_scaling_result_rows(
     config: Mapping[str, Any],
     metrics_rows: Iterable[Mapping[str, Any]],
-    parameter_counts_by_granularity: Mapping[str, Mapping[str, int]],
+    parameter_counts_by_granularity: Mapping[str, Mapping[str, Any]],
     comparison_id_prefix: str | None = None,
 ) -> list[dict[str, Any]]:
     run = config["run"]
@@ -314,12 +377,7 @@ def build_scaling_result_rows(
             )
         _require_fields(
             parameter_counts,
-            [
-                "total_parameters",
-                "embedding_parameters",
-                "lm_head_parameters",
-                "non_embedding_parameters",
-            ],
+            PARAMETER_COUNT_FIELDS[:4],
             "scaling_results.csv",
         )
 
@@ -329,15 +387,42 @@ def build_scaling_result_rows(
                 "comparison_id": comparison_id,
                 "run_id": run["run_id"],
                 "model_family": run["model_family"],
-                "model_size_label": run["model_size_label"],
+                "model_size_label": _model_shape_label(run),
+                "model_shape_label": _model_shape_label(run),
+                "table_reference_label": run.get("table_reference_label"),
+                "sampling_mode": _sampling_mode(run, training),
                 "completion_label": run["completion_label"],
                 "granularity": granularity,
+                "d_model": model.get("d_model", model.get("hidden_size")),
+                "num_layers": model.get("num_layers"),
+                "num_attention_heads": model.get("num_attention_heads"),
+                "context_length": model.get("context_length"),
+                "vocab_size_assumption": model.get(
+                    "vocab_size_assumption",
+                    model.get("vocab_size"),
+                ),
+                "token_budget": training.get("token_budget"),
+                "effective_world_size": training.get("effective_world_size"),
                 "total_parameters": parameter_counts["total_parameters"],
                 "embedding_parameters": parameter_counts["embedding_parameters"],
                 "lm_head_parameters": parameter_counts["lm_head_parameters"],
                 "non_embedding_parameters": parameter_counts[
                     "non_embedding_parameters"
                 ],
+                "ffn_parameters": parameter_counts.get("ffn_parameters"),
+                "attention_parameters": parameter_counts.get(
+                    "attention_parameters"
+                ),
+                "other_non_embedding_parameters": parameter_counts.get(
+                    "other_non_embedding_parameters"
+                ),
+                "lm_head_counting": parameter_counts.get("lm_head_counting"),
+                "checkpoint_path": None,
+                "mismatch_notes": _mismatch_notes(
+                    config.get("parameter_reporting", {}),
+                    model,
+                    parameter_counts,
+                ),
                 "loss": metric_row["loss"],
                 "perplexity": metric_row["perplexity"],
                 "average_downstream_accuracy": None,
@@ -347,12 +432,155 @@ def build_scaling_result_rows(
     return rows
 
 
+def build_pilot_comparison_rows(
+    comparison_id: str,
+    run_summaries: Iterable[Mapping[str, Any]],
+    omitted_rows: Iterable[Mapping[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+
+    for summary in run_summaries:
+        granularities = _summary_granularities(summary)
+        for granularity in granularities:
+            parameter_counts = _summary_parameter_counts(summary, granularity)
+            rows.append(
+                _with_artifact_defaults(
+                    {
+                        "comparison_id": comparison_id,
+                        "run_id": summary["run_id"],
+                        "run_status": summary.get("status", "completed"),
+                        "omit_reason": None,
+                        "model_family": summary.get("model_family"),
+                        "model_size_label": _model_shape_label(summary),
+                        "model_shape_label": _model_shape_label(summary),
+                        "table_reference_label": summary.get(
+                            "table_reference_label",
+                            "matlm_78m",
+                        ),
+                        "sampling_mode": summary.get("sampling_mode"),
+                        "completion_label": summary.get(
+                            "completion_label",
+                            "reduced-token-pilot",
+                        ),
+                        "granularity": granularity,
+                        "d_model": summary.get("d_model"),
+                        "num_layers": summary.get("num_layers"),
+                        "num_attention_heads": summary.get(
+                            "num_attention_heads"
+                        ),
+                        "context_length": summary.get("context_length"),
+                        "vocab_size_assumption": summary.get(
+                            "vocab_size_assumption"
+                        ),
+                        "token_budget": summary.get("token_budget"),
+                        "effective_world_size": summary.get(
+                            "effective_world_size"
+                        ),
+                        "total_parameters": parameter_counts.get(
+                            "total_parameters"
+                        ),
+                        "embedding_parameters": parameter_counts.get(
+                            "embedding_parameters"
+                        ),
+                        "lm_head_parameters": parameter_counts.get(
+                            "lm_head_parameters"
+                        ),
+                        "non_embedding_parameters": parameter_counts.get(
+                            "non_embedding_parameters"
+                        ),
+                        "ffn_parameters": parameter_counts.get(
+                            "ffn_parameters"
+                        ),
+                        "attention_parameters": parameter_counts.get(
+                            "attention_parameters"
+                        ),
+                        "other_non_embedding_parameters": parameter_counts.get(
+                            "other_non_embedding_parameters"
+                        ),
+                        "lm_head_counting": parameter_counts.get(
+                            "lm_head_counting"
+                        ),
+                        "checkpoint_status": _summary_checkpoint_status(
+                            summary
+                        ),
+                        "checkpoint_path": _summary_checkpoint_path(summary),
+                        "checkpoint_metric": summary.get("checkpoint_metric"),
+                        "mismatch_notes": _mismatch_notes(
+                            summary,
+                            parameter_counts,
+                        ),
+                    }
+                )
+            )
+
+    for omitted_row in omitted_rows or []:
+        omit_reason = omitted_row.get("omit_reason")
+        rows.append(
+            _with_artifact_defaults(
+                {
+                    "comparison_id": comparison_id,
+                    "run_id": omitted_row.get("run_id"),
+                    "run_status": "omitted",
+                    "omit_reason": omit_reason,
+                    "model_family": omitted_row.get("model_family", "standalone"),
+                    "model_size_label": _model_shape_label(
+                        {
+                            "model_shape_label": omitted_row.get(
+                                "model_shape_label",
+                                "dmodel256",
+                            )
+                        }
+                    ),
+                    "model_shape_label": omitted_row.get(
+                        "model_shape_label",
+                        "dmodel256",
+                    ),
+                    "table_reference_label": omitted_row.get(
+                        "table_reference_label",
+                        "matlm_78m",
+                    ),
+                    "sampling_mode": omitted_row.get(
+                        "sampling_mode",
+                        "standalone",
+                    ),
+                    "completion_label": omitted_row.get(
+                        "completion_label",
+                        "reduced-token-pilot",
+                    ),
+                    "granularity": omitted_row.get("granularity"),
+                    "d_model": omitted_row.get("d_model"),
+                    "num_layers": omitted_row.get("num_layers"),
+                    "num_attention_heads": omitted_row.get(
+                        "num_attention_heads"
+                    ),
+                    "context_length": omitted_row.get("context_length"),
+                    "vocab_size_assumption": omitted_row.get(
+                        "vocab_size_assumption"
+                    ),
+                    "token_budget": omitted_row.get("token_budget"),
+                    "effective_world_size": omitted_row.get(
+                        "effective_world_size"
+                    ),
+                    "checkpoint_status": "unavailable",
+                    "checkpoint_path": None,
+                    "checkpoint_metric": None,
+                    "mismatch_notes": _normalize_notes(
+                        omitted_row.get("mismatch_notes"),
+                        omit_reason,
+                    ),
+                }
+            )
+        )
+
+    return rows
+
+
 def build_baseline_match_row(
     nested_config: Mapping[str, Any],
     standalone_config: Mapping[str, Any],
     granularity: str,
-    nested_counts: Mapping[str, int] | None = None,
-    standalone_counts: Mapping[str, int] | None = None,
+    nested_counts: Mapping[str, Any] | None = None,
+    standalone_counts: Mapping[str, Any] | None = None,
     match_notes: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     nested_run = nested_config["run"]
@@ -453,13 +681,50 @@ def write_csv_artifact(
 
 def _normalize_rows(
     rows: Mapping[str, Any] | Iterable[Mapping[str, Any]],
-) -> list[Mapping[str, Any]]:
+) -> list[dict[str, Any]]:
     if isinstance(rows, Mapping):
-        return [rows]
-    return list(rows)
+        return [_with_artifact_defaults(rows)]
+    return [_with_artifact_defaults(row) for row in rows]
 
 
-def _non_embedding_count(counts: Mapping[str, int] | None):
+def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
+    normalized_row = dict(row)
+    model_shape_label = normalized_row.get(
+        "model_shape_label",
+        normalized_row.get("model_size_label"),
+    )
+
+    defaults = {
+        "model_size_label": model_shape_label,
+        "model_shape_label": model_shape_label,
+        "table_reference_label": None,
+        "sampling_mode": None,
+        "d_model": None,
+        "num_layers": None,
+        "num_attention_heads": None,
+        "context_length": None,
+        "vocab_size_assumption": None,
+        "token_budget": None,
+        "effective_world_size": None,
+        "ffn_parameters": None,
+        "attention_parameters": None,
+        "other_non_embedding_parameters": None,
+        "lm_head_counting": None,
+        "checkpoint_path": None,
+        "checkpoint_status": None,
+        "checkpoint_metric": None,
+        "mismatch_notes": [],
+        "run_status": normalized_row.get("status"),
+        "omit_reason": None,
+    }
+
+    for key, value in defaults.items():
+        normalized_row.setdefault(key, value)
+
+    return normalized_row
+
+
+def _non_embedding_count(counts: Mapping[str, Any] | None):
     if counts is None:
         return None
     return counts.get("non_embedding_parameters")
@@ -469,8 +734,84 @@ def _model_shape_label(run: Mapping[str, Any]) -> Any:
     return run.get("model_shape_label", run.get("model_size_label"))
 
 
+def _sampling_mode(run: Mapping[str, Any], training: Mapping[str, Any]) -> Any:
+    if run.get("sampling_mode") is not None:
+        return run["sampling_mode"]
+    if run.get("model_family") == "standalone":
+        return "standalone"
+
+    granularity_sampling = training.get("granularity_sampling")
+    if granularity_sampling == "random":
+        return "nested-random"
+    if granularity_sampling == "all":
+        return "nested-all"
+    return granularity_sampling
+
+
 def _paper_alignment_claim(model: Mapping[str, Any]) -> bool:
     return bool(model.get("paper_alignment_claim", model.get("paper_aligned", False)))
+
+
+def _mismatch_notes(*sources: Mapping[str, Any]) -> list[str]:
+    return _normalize_notes(*(source.get("mismatch_notes") for source in sources))
+
+
+def _normalize_notes(*values: Any) -> list[str]:
+    notes: list[str] = []
+    for value in values:
+        if value in (None, ""):
+            continue
+        if isinstance(value, str):
+            notes.append(value)
+            continue
+        if isinstance(value, Mapping):
+            notes.append(json.dumps(value, sort_keys=True))
+            continue
+        for note in value:
+            if note not in (None, ""):
+                notes.append(str(note))
+    return notes
+
+
+def _summary_granularities(summary: Mapping[str, Any]) -> list[str]:
+    if summary.get("granularities"):
+        return [str(granularity) for granularity in summary["granularities"]]
+    if summary.get("granularity"):
+        return [str(summary["granularity"])]
+    parameter_counts = summary.get("parameter_counts_by_granularity") or {}
+    return [str(granularity) for granularity in parameter_counts]
+
+
+def _summary_parameter_counts(
+    summary: Mapping[str, Any],
+    granularity: str,
+) -> Mapping[str, Any]:
+    counts_by_granularity = summary.get("parameter_counts_by_granularity") or {}
+    if granularity in counts_by_granularity:
+        return counts_by_granularity[granularity]
+    if summary.get("granularity") == granularity:
+        return summary.get("parameter_counts") or {}
+    return {}
+
+
+def _summary_checkpoint_status(summary: Mapping[str, Any]) -> str:
+    if summary.get("checkpoint_status"):
+        return str(summary["checkpoint_status"])
+    if summary.get("best_checkpoint_path"):
+        return "best_eval"
+    if summary.get("final_checkpoint_path"):
+        return "final"
+    if summary.get("checkpoint_path"):
+        return "available"
+    return "unavailable"
+
+
+def _summary_checkpoint_path(summary: Mapping[str, Any]) -> Any:
+    return (
+        summary.get("checkpoint_path")
+        or summary.get("best_checkpoint_path")
+        or summary.get("final_checkpoint_path")
+    )
 
 
 def _require_fields(
