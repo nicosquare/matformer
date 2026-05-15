@@ -14,8 +14,14 @@ import yaml
 
 VALID_GRANULARITIES = {"s", "m", "l", "xl"}
 VALID_MODEL_FAMILIES = {"nested", "standalone"}
-VALID_COMPLETION_LABELS = {"debug", "reduced-token-pilot", "paper-budget-complete"}
+VALID_COMPLETION_LABELS = {
+    "debug",
+    "reduced-token-pilot",
+    "matlm-10b-budget-reference",
+    "paper-budget-complete",
+}
 VALID_GRANULARITY_SAMPLING = {"all", "random"}
+VALID_SAMPLING_MODES = {"nested-random", "nested-all", "standalone"}
 GRANULARITY_INTERMEDIATE_FRACTIONS = {
     "s": (1, 8),
     "m": (1, 4),
@@ -170,26 +176,38 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "run_id",
             "phase_id",
             "model_family",
-            "model_size_label",
             "completion_label",
             "output_root",
             "output_dir",
         ],
+    )
+    _require_one_of_fields(
+        run,
+        "run",
+        ["model_shape_label", "model_size_label"],
     )
     _require_fields(
         model,
         "model",
         [
             "base_model_name",
-            "paper_aligned",
             "num_layers",
             "num_attention_heads",
-            "hidden_size",
             "intermediate_size",
             "context_length",
             "vocab_size_assumption",
             "granularities",
         ],
+    )
+    _require_one_of_fields(
+        model,
+        "model",
+        ["d_model", "hidden_size"],
+    )
+    _require_one_of_fields(
+        model,
+        "model",
+        ["paper_alignment_claim", "paper_aligned"],
     )
     _require_fields(
         training,
@@ -250,27 +268,21 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "training.granularity_sampling must be one of "
             f"{sorted(VALID_GRANULARITY_SAMPLING)}"
         )
+    _validate_sampling_mode(run, granularity_sampling)
 
-    if model.get("paper_aligned"):
+    paper_alignment_claim = model.get(
+        "paper_alignment_claim",
+        model.get("paper_aligned", False),
+    )
+    if paper_alignment_claim:
         for field_name, expected_value in PAPER_ALIGNED_ARCHITECTURE.items():
             if model.get(field_name) != expected_value:
                 raise ConfigError(
-                    f"paper-aligned runs require model.{field_name}="
+                    f"paper-alignment claims require model.{field_name}="
                     f"{expected_value}, got {model.get(field_name)}"
                 )
 
-    if str(run["model_size_label"]) == "78m":
-        token_budget = training["token_budget"]
-        if token_budget < PAPER_78M_TOKEN_BUDGET:
-            expected_label = "reduced-token-pilot"
-        else:
-            expected_label = "paper-budget-complete"
-
-        if completion_label != expected_label:
-            raise ConfigError(
-                f"78m token_budget={token_budget} requires "
-                f"completion_label={expected_label}"
-            )
+    _validate_dmodel256_pilot_fields(run, model, training, completion_label)
 
     _validate_derived_training_length(training, model)
 
@@ -330,6 +342,135 @@ def _apply_run_granularities(config: dict[str, Any]) -> None:
         model["granularities"] = [run["granularity"]]
     elif "granularities" in run:
         model["granularities"] = list(run["granularities"])
+
+
+def _model_shape_label(run: Mapping[str, Any]) -> str | None:
+    label = run.get("model_shape_label", run.get("model_size_label"))
+    if label is None:
+        return None
+    return str(label)
+
+
+def _table_reference_label(run: Mapping[str, Any]) -> str | None:
+    label = run.get("table_reference_label")
+    if label is None:
+        return None
+    return str(label)
+
+
+def _validate_sampling_mode(
+    run: Mapping[str, Any],
+    granularity_sampling: str,
+) -> None:
+    sampling_mode = run.get("sampling_mode")
+    if sampling_mode is None:
+        return
+
+    if sampling_mode not in VALID_SAMPLING_MODES:
+        raise ConfigError(
+            f"run.sampling_mode must be one of {sorted(VALID_SAMPLING_MODES)}"
+        )
+
+    model_family = run["model_family"]
+    if sampling_mode == "standalone":
+        if model_family != "standalone":
+            raise ConfigError("run.sampling_mode=standalone requires standalone")
+        return
+
+    if model_family != "nested":
+        raise ConfigError(f"run.sampling_mode={sampling_mode} requires nested")
+
+    expected_sampling = {
+        "nested-random": "random",
+        "nested-all": "all",
+    }[sampling_mode]
+    if granularity_sampling != expected_sampling:
+        raise ConfigError(
+            f"run.sampling_mode={sampling_mode} requires "
+            f"training.granularity_sampling={expected_sampling}"
+        )
+
+
+def _validate_dmodel256_pilot_fields(
+    run: Mapping[str, Any],
+    model: Mapping[str, Any],
+    training: Mapping[str, Any],
+    completion_label: str,
+) -> None:
+    model_shape_label = _model_shape_label(run)
+    table_reference_label = _table_reference_label(run)
+    is_legacy_78m = str(run.get("model_size_label")) == "78m"
+    is_dmodel256_pilot = (
+        model_shape_label == "dmodel256"
+        or table_reference_label == "matlm_78m"
+        or is_legacy_78m
+    )
+    if not is_dmodel256_pilot:
+        return
+
+    token_budget = training["token_budget"]
+    if token_budget < PAPER_78M_TOKEN_BUDGET:
+        expected_label = "reduced-token-pilot"
+    elif is_legacy_78m:
+        expected_label = "paper-budget-complete"
+    else:
+        expected_label = "matlm-10b-budget-reference"
+
+    if completion_label != expected_label:
+        raise ConfigError(
+            f"{model_shape_label or '78m'} token_budget={token_budget} "
+            f"requires completion_label={expected_label}"
+        )
+
+    if model_shape_label == "dmodel256":
+        _require_fields(
+            model,
+            "model",
+            [
+                "d_model",
+                "num_layers",
+                "num_attention_heads",
+                "context_length",
+                "vocab_size_assumption",
+                "granularity_prefixes",
+            ],
+        )
+        if _positive_int(model["d_model"], "model.d_model") != 256:
+            raise ConfigError("model_shape_label=dmodel256 requires model.d_model=256")
+        _validate_granularity_prefixes(model["granularity_prefixes"])
+
+    paper_alignment_claim = model.get(
+        "paper_alignment_claim",
+        model.get("paper_aligned", False),
+    )
+    if table_reference_label and not paper_alignment_claim:
+        mismatch_notes = model.get("mismatch_notes")
+        if not isinstance(mismatch_notes, list) or not mismatch_notes:
+            raise ConfigError(
+                "table_reference_label requires non-empty model.mismatch_notes "
+                "unless paper_alignment_claim=true"
+            )
+
+
+def _validate_granularity_prefixes(prefixes: Any) -> None:
+    if not isinstance(prefixes, Mapping):
+        raise ConfigError("model.granularity_prefixes must be a mapping")
+
+    missing = sorted(VALID_GRANULARITIES - set(prefixes))
+    if missing:
+        raise ConfigError(f"model.granularity_prefixes missing keys: {missing}")
+
+    for granularity in VALID_GRANULARITIES:
+        try:
+            value = float(prefixes[granularity])
+        except (TypeError, ValueError) as error:
+            raise ConfigError(
+                f"model.granularity_prefixes.{granularity} must be numeric"
+            ) from error
+        if value <= 0:
+            raise ConfigError(
+                f"model.granularity_prefixes.{granularity} must be positive"
+            )
 
 
 def _apply_standalone_fixed_width(model: dict[str, Any], granularity: str) -> None:
@@ -547,3 +688,13 @@ def _require_fields(
     missing_fields = [field_name for field_name in field_names if field_name not in section]
     if missing_fields:
         raise ConfigError(f"Missing {section_name} fields: {missing_fields}")
+
+
+def _require_one_of_fields(
+    section: Mapping[str, Any],
+    section_name: str,
+    field_names: list[str],
+) -> None:
+    if any(field_name in section for field_name in field_names):
+        return
+    raise ConfigError(f"Missing {section_name} field; expected one of {field_names}")

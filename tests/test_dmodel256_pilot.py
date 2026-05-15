@@ -93,15 +93,26 @@ def test_dmodel256_pilot_resolves_current_reference_config(tmp_path):
     assert config["run"]["run_id"] == "dmodel256-pilot-comparison-001"
     assert config["run"]["phase_id"] == "dmodel256_pilot_comparison"
     assert config["run"]["model_family"] == "nested"
-    assert config["run"]["model_size_label"] == "78m"
+    assert config["run"]["sampling_mode"] == "nested-random"
+    assert config["run"]["model_shape_label"] == "dmodel256"
+    assert config["run"]["table_reference_label"] == "matlm_78m"
     assert config["run"]["completion_label"] == "reduced-token-pilot"
     assert config["run"]["output_dir"] == str(output_root / "dmodel256-pilot-comparison-001")
 
-    assert config["model"]["paper_aligned"] is True
+    assert config["model"]["paper_alignment_claim"] is False
+    assert config["model"]["d_model"] == 256
     assert config["model"]["num_layers"] == 16
     assert config["model"]["num_attention_heads"] == 16
     assert config["model"]["context_length"] == 1024
     assert config["model"]["vocab_size_assumption"] == 256000
+    assert config["model"]["granularity_prefixes"] == {
+        "s": 0.125,
+        "m": 0.25,
+        "l": 0.5,
+        "xl": 1.0,
+    }
+    assert any("SwiGLU" in note for note in config["model"]["mismatch_notes"])
+    assert any("LM-head" in note for note in config["model"]["mismatch_notes"])
     assert config["model"]["tokenizer_name"] == "hf-internal-testing/llama-tokenizer"
     assert config["model"]["tokenizer_name"] != config["model"]["base_model_name"]
     assert config["dataset"]["dataset_name"] == "HuggingFaceFW/fineweb"

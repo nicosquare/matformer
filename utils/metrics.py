@@ -130,7 +130,9 @@ def build_run_summary(
         "run_id": run["run_id"],
         "phase_id": run["phase_id"],
         "model_family": run["model_family"],
-        "model_size_label": run["model_size_label"],
+        "model_size_label": _model_shape_label(run),
+        "model_shape_label": _model_shape_label(run),
+        "table_reference_label": run.get("table_reference_label"),
         "completion_label": run["completion_label"],
         "dataset_name": dataset["dataset_name"],
         "dataset_split": dataset["dataset_split"],
@@ -144,7 +146,8 @@ def build_run_summary(
         "status": status,
         "output_root": run["output_root"],
         "output_dir": run["output_dir"],
-        "paper_aligned": bool(model["paper_aligned"]),
+        "paper_aligned": _paper_alignment_claim(model),
+        "paper_alignment_claim": _paper_alignment_claim(model),
         "notes": list(notes or []),
     }
 
@@ -460,6 +463,14 @@ def _non_embedding_count(counts: Mapping[str, int] | None):
     if counts is None:
         return None
     return counts.get("non_embedding_parameters")
+
+
+def _model_shape_label(run: Mapping[str, Any]) -> Any:
+    return run.get("model_shape_label", run.get("model_size_label"))
+
+
+def _paper_alignment_claim(model: Mapping[str, Any]) -> bool:
+    return bool(model.get("paper_alignment_claim", model.get("paper_aligned", False)))
 
 
 def _require_fields(

@@ -229,7 +229,7 @@ def build_llama_config(config: dict[str, Any]) -> LlamaConfig:
     model = config["model"]
     return LlamaConfig(
         vocab_size=model["vocab_size_assumption"],
-        hidden_size=model["hidden_size"],
+        hidden_size=model.get("d_model", model.get("hidden_size")),
         intermediate_size=model["intermediate_size"],
         num_hidden_layers=model["num_layers"],
         num_attention_heads=model["num_attention_heads"],

@@ -248,8 +248,8 @@ status/path, and mismatch notes.
 
 ### Implementation for Pilot Terminology, Parameter Reporting, Checkpointing, and Comparison Scope
 
-- [ ] T112 [US2] Add `model_shape_label`, `table_reference_label`, `sampling_mode`, explicit shape fields, and mismatch notes to `configs/dmodel256_pilot_comparison.yaml`
-- [ ] T113 [US2] Update `utils/config.py` to accept d_model=256 pilot labels while preserving MatLM table-row token-budget validation
+- [X] T112 [US2] Add `model_shape_label`, `table_reference_label`, `sampling_mode`, explicit shape fields, and mismatch notes to `configs/dmodel256_pilot_comparison.yaml`
+- [X] T113 [US2] Update `utils/config.py` to accept d_model=256 pilot labels while preserving MatLM table-row token-budget validation
 - [ ] T114 [US2] Extend parameter reporting in `utils/model_size.py` to emit total, embedding, LM-head, non-embedding, FFN, attention, and other non-embedding counts with explicit null/unavailable status and reason when optional components cannot be computed
 - [ ] T115 [US2] Emit actual implementation counts, LM-head counting convention, and actual-vs-MatLM-table mismatch notes through resolved configs, `run_summary.json`, `scaling_results.csv`, and pilot comparison rows via `utils/metrics.py` and `utils/config.py`
 - [ ] T116 [US2] Implement rank-0-safe best-eval checkpoint selection by validation loss or perplexity across multiple eval points plus final and no-checkpoint status handling in `training/run.py`
