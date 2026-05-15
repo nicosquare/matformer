@@ -193,6 +193,58 @@ def test_run_summary_schema_requires_budget_derived_fields(tmp_path):
         write_run_summary(output_dir, summary)
 
 
+def test_rank_zero_only_shared_artifact_helper_writes_on_rank_zero(tmp_path):
+    from training.distributed import DistributedContext, rank_zero_only
+
+    context = DistributedContext(
+        enabled=True,
+        rank=0,
+        local_rank=0,
+        world_size=2,
+        strategy="fsdp",
+        device="cpu",
+    )
+    artifact_path = tmp_path / "rank-zero-artifact.json"
+    calls = []
+
+    def write_artifact():
+        calls.append("write")
+        artifact_path.write_text('{"status": "written"}\n', encoding="utf-8")
+        return artifact_path
+
+    result = rank_zero_only(context, write_artifact)
+
+    assert result == artifact_path
+    assert calls == ["write"]
+    assert artifact_path.exists()
+
+
+def test_rank_zero_only_shared_artifact_helper_skips_nonzero_rank(tmp_path):
+    from training.distributed import DistributedContext, rank_zero_only
+
+    context = DistributedContext(
+        enabled=True,
+        rank=1,
+        local_rank=1,
+        world_size=2,
+        strategy="fsdp",
+        device="cpu",
+    )
+    artifact_path = tmp_path / "nonzero-rank-artifact.json"
+    calls = []
+
+    def write_artifact():
+        calls.append("write")
+        artifact_path.write_text('{"status": "written"}\n', encoding="utf-8")
+        return artifact_path
+
+    result = rank_zero_only(context, write_artifact)
+
+    assert result is None
+    assert calls == []
+    assert not artifact_path.exists()
+
+
 def test_write_all_csv_artifact_types(tmp_path):
     output_dir = tmp_path / "debug-nested-001"
 

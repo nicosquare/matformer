@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -44,6 +45,36 @@ def _has_arg_pair(args, flag, value):
         args[index] == flag and args[index + 1] == value
         for index in range(len(args) - 1)
     )
+
+
+def _read_slurm_78m_script():
+    return (REPO_ROOT / "scripts" / "slurm_78m_pilot.sh").read_text(
+        encoding="utf-8"
+    )
+
+
+def _sbatch_option_value(script_text, option):
+    for line in script_text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("#SBATCH"):
+            continue
+
+        payload = stripped.removeprefix("#SBATCH").strip()
+        if payload.startswith(f"{option}="):
+            return payload.split("=", 1)[1]
+
+        parts = payload.split()
+        if parts and parts[0] == option and len(parts) > 1:
+            return parts[1]
+
+    return None
+
+
+def _resource_count(value):
+    if value is None:
+        return None
+    match = re.search(r"(\d+)$", value.strip())
+    return int(match.group(1)) if match else None
 
 
 def test_78m_reduced_pilot_resolves_paper_aligned_config(tmp_path):
@@ -118,6 +149,37 @@ def test_78m_pilot_runner_forwards_explicit_arguments(tmp_path):
     assert args.count("--output-root") == 1
     assert _has_arg_pair(args, "--output-dir", str(output_dir))
     assert _has_arg_pair(args, "--override", "training.max_steps_cap=1")
+
+
+def test_slurm_78m_pilot_requests_single_node_multi_gpu_resources():
+    script_text = _read_slurm_78m_script()
+
+    node_count = _sbatch_option_value(script_text, "--nodes") or _sbatch_option_value(
+        script_text,
+        "-N",
+    )
+    gpu_count = _resource_count(
+        _sbatch_option_value(script_text, "--gpus-per-node")
+        or _sbatch_option_value(script_text, "--gpus")
+    )
+
+    assert node_count == "1"
+    assert gpu_count is not None and gpu_count > 1
+
+
+def test_slurm_78m_pilot_launches_one_training_process_per_gpu():
+    script_text = _read_slurm_78m_script()
+
+    assert "torch.distributed.run" in script_text or "torchrun" in script_text
+    assert "--nproc_per_node" in script_text or "--nproc-per-node" in script_text
+    assert any(
+        variable_name in script_text
+        for variable_name in [
+            "SLURM_GPUS_ON_NODE",
+            "SLURM_GPUS_PER_NODE",
+            "GPUS_PER_NODE",
+        ]
+    )
 
 
 def test_slurm_78m_pilot_wrapper_forwards_to_runner(tmp_path):

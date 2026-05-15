@@ -180,3 +180,88 @@ def test_budgeted_training_stops_at_token_budget_before_manual_step_cap(
             if row["split"] == "train"
         }
     assert train_steps == {"1"}
+
+
+def test_config_driven_training_uses_distributed_fsdp_path_when_enabled(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setenv("LOCAL_RANK", "0")
+
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "training.token_budget=4",
+            "training.max_steps_cap=1",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.warmup_steps=0",
+            "training.distributed.enabled=true",
+            "training.distributed.strategy=fsdp",
+            "evaluation.validation=false",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3, 4], [5, 6, 7, 8]],
+            "attention_mask": [[1, 1, 1, 1], [1, 1, 1, 1]],
+        }
+    )
+
+    import training.run as training_run
+
+    prepare_calls = []
+    wrap_calls = []
+
+    def fake_prepare_distributed_context(*args, **kwargs):
+        prepare_calls.append((args, kwargs))
+        return SimpleNamespace(
+            enabled=True,
+            rank=0,
+            local_rank=0,
+            world_size=2,
+            is_rank_zero=True,
+            strategy="fsdp",
+            device=torch.device("cpu"),
+        )
+
+    def fake_wrap_model_for_distributed(*args, **kwargs):
+        wrap_calls.append((args, kwargs))
+        model = args[0] if args else kwargs["model"]
+        model.fsdp_wrapped = True
+        return model
+
+    monkeypatch.setattr(
+        training_run,
+        "prepare_distributed_context",
+        fake_prepare_distributed_context,
+    )
+    monkeypatch.setattr(
+        training_run,
+        "wrap_model_for_distributed",
+        fake_wrap_model_for_distributed,
+    )
+
+    result = run_training(
+        config,
+        model=TinyNestedTrainingModel(),
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    assert prepare_calls
+    assert wrap_calls
+    assert wrap_calls[0][0][0].fsdp_wrapped is True
+
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    assert summary["effective_world_size"] == 2
+    assert summary["distributed_strategy"] == "fsdp"
+    assert summary["distributed_rank"] == 0
+    assert summary["distributed_local_rank"] == 0
+    assert summary["distributed_world_size"] == 2

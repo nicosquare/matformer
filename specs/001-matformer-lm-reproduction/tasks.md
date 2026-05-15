@@ -203,10 +203,10 @@ events identify the current stage and progress.
 
 ### Verification for Distributed Pilot Execution and Runtime Observability
 
-- [ ] T094 [P] [US2] Add single-node multi-GPU Slurm launcher command checks in `tests/test_78m_pilot.py`
-- [ ] T095 [P] [US2] Add config-driven distributed/FSDP training smoke checks in `tests/test_training_smoke.py`
-- [ ] T096 [P] [US2] Add rank-0-only shared artifact write checks in `tests/test_artifacts.py`
-- [ ] T097 [P] [US2] Add heartbeat JSONL schema, stdout line, and cadence checks in `tests/test_heartbeats.py`
+- [X] T094 [P] [US2] Add single-node multi-GPU Slurm launcher command checks in `tests/test_78m_pilot.py`
+- [X] T095 [P] [US2] Add config-driven distributed/FSDP training smoke checks in `tests/test_training_smoke.py`
+- [X] T096 [P] [US2] Add rank-0-only shared artifact write checks in `tests/test_artifacts.py`
+- [X] T097 [P] [US2] Add heartbeat JSONL schema, stdout line, and cadence checks in `tests/test_heartbeats.py`
 
 ### Implementation for Distributed Pilot Execution and Runtime Observability
 
