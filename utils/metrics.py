@@ -115,6 +115,13 @@ RUN_SUMMARY_FIELDS = [
     "vocab_size_assumption",
     "parameter_counts",
     "parameter_counts_by_granularity",
+    "checkpoint_status",
+    "best_checkpoint_path",
+    "final_checkpoint_path",
+    "checkpoint_metric",
+    "checkpoint_metric_value",
+    "checkpoint_selection_step",
+    "checkpoint_unavailable_reason",
     "mismatch_notes",
     "notes",
 ]
@@ -206,6 +213,15 @@ def build_run_summary(
         "parameter_counts_by_granularity": config.get(
             "parameter_counts_by_granularity"
         ),
+        **build_checkpoint_summary_fields(
+            config,
+            metrics_rows=[],
+            validation_enabled=config.get("evaluation", {}).get("validation", False),
+            save_checkpoints=config.get("outputs", {}).get(
+                "save_checkpoints",
+                False,
+            ),
+        ),
         "mismatch_notes": _mismatch_notes(
             config.get("parameter_reporting", {}),
             model,
@@ -253,6 +269,64 @@ def write_failed_run_summary(
     )
     run_output_dir = output_dir or config["run"]["output_dir"]
     return write_run_summary(run_output_dir, summary)
+
+
+def build_checkpoint_summary_fields(
+    config: Mapping[str, Any],
+    metrics_rows: Iterable[Mapping[str, Any]],
+    validation_enabled: bool | None = None,
+    save_checkpoints: bool | None = None,
+) -> dict[str, Any]:
+    output_dir = Path(config["run"]["output_dir"])
+    checkpoint_dir = output_dir / "checkpoints"
+
+    if validation_enabled is None:
+        validation_enabled = bool(config.get("evaluation", {}).get("validation", False))
+    if save_checkpoints is None:
+        save_checkpoints = bool(config.get("outputs", {}).get("save_checkpoints", False))
+
+    fields = {
+        "checkpoint_status": "none",
+        "best_checkpoint_path": None,
+        "final_checkpoint_path": None,
+        "checkpoint_metric": None,
+        "checkpoint_metric_value": None,
+        "checkpoint_selection_step": None,
+        "checkpoint_unavailable_reason": None,
+    }
+
+    if not save_checkpoints:
+        fields["checkpoint_unavailable_reason"] = "checkpoint writes disabled"
+        return fields
+
+    if not validation_enabled:
+        fields["checkpoint_status"] = "final"
+        fields["final_checkpoint_path"] = str(checkpoint_dir / "final.pt")
+        return fields
+
+    best_row, metric_name, metric_value = _best_validation_metric_row(metrics_rows)
+    if best_row is None:
+        fields["checkpoint_status"] = "unavailable"
+        fields["checkpoint_unavailable_reason"] = (
+            "validation enabled but no validation loss or perplexity rows were available"
+        )
+        return fields
+
+    selection_step = _int_value(best_row.get("step"))
+    fields.update(
+        {
+            "checkpoint_status": "best_eval",
+            "best_checkpoint_path": str(
+                checkpoint_dir / f"best_eval_step_{selection_step}.pt"
+            ),
+            "checkpoint_metric": metric_name,
+            "checkpoint_metric_value": metric_value,
+            "checkpoint_selection_step": selection_step,
+        }
+    )
+    if best_row.get("granularity") is not None:
+        fields["checkpoint_selection_granularity"] = best_row["granularity"]
+    return fields
 
 
 def write_metrics_csv(
@@ -824,10 +898,42 @@ def _require_fields(
         raise ArtifactError(f"{artifact_name} missing fields: {missing_fields}")
 
 
+def _best_validation_metric_row(
+    rows: Iterable[Mapping[str, Any]],
+) -> tuple[Mapping[str, Any] | None, str | None, float | None]:
+    validation_rows = [row for row in rows if row.get("split") == "validation"]
+    if not validation_rows:
+        return None, None, None
+
+    for field_name, metric_name in [
+        ("loss", "validation_loss"),
+        ("perplexity", "validation_perplexity"),
+    ]:
+        candidates = []
+        for row in validation_rows:
+            metric_value = _float_value(row.get(field_name))
+            if metric_value is not None:
+                candidates.append((metric_value, _int_value(row.get("step")), row))
+        if candidates:
+            metric_value, _, row = min(candidates, key=lambda candidate: candidate[:2])
+            return row, metric_name, metric_value
+
+    return None, None, None
+
+
 def _int_value(value: Any) -> int:
     if value in (None, ""):
         return -1
     return int(value)
+
+
+def _float_value(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _should_write_shared_artifact(distributed_context: Any | None) -> bool:

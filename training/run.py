@@ -38,6 +38,7 @@ from utils.config import (
 )
 from utils.heartbeats import HeartbeatCadence, HeartbeatWriter
 from utils.metrics import (
+    build_checkpoint_summary_fields,
     build_parameter_counts_by_granularity,
     build_run_summary,
     build_scaling_result_rows,
@@ -124,6 +125,7 @@ def run_training(
             num_training_steps=training["max_steps"],
         )
 
+        checkpoint_state: dict[str, Any] = {}
         metrics_rows = train_for_steps(
             config,
             model,
@@ -133,15 +135,26 @@ def run_training(
             scheduler,
             device,
             heartbeat_writer=heartbeat_writer,
+            distributed_context=distributed_context,
+            checkpoint_state=checkpoint_state,
         )
         extraction_metadata_path = None
         metrics_path = None
         scaling_path = None
         scaling_rows = []
         parameter_counts_by_granularity = {}
+        checkpoint_summary_fields = build_checkpoint_summary_fields(
+            config,
+            metrics_rows,
+        )
 
         if should_write_shared_artifact(distributed_context):
-            emit_checkpointing_placeholder_if_needed(config, heartbeat_writer)
+            checkpoint_summary_fields = write_checkpoint_if_needed(
+                config,
+                model,
+                metrics_rows,
+                heartbeat_writer,
+            )
             with heartbeat_stage(heartbeat_writer, "artifact_writing"):
                 extraction_metadata_path = write_extraction_metadata_if_nested(
                     config,
@@ -179,6 +192,7 @@ def run_training(
             "granularities": config["model"]["granularities"],
             "granularity_sampling": training.get("granularity_sampling", "all"),
             "parameter_counts_by_granularity": parameter_counts_by_granularity,
+            **checkpoint_summary_fields,
             **distributed_summary_fields(distributed_context),
         }
         if metrics_path is not None:
@@ -395,18 +409,136 @@ def estimate_eta_seconds(
     return remaining_tokens / tokens_per_second
 
 
-def emit_checkpointing_placeholder_if_needed(
+def write_checkpoint_if_needed(
     config: dict[str, Any],
+    model,
+    metrics_rows: list[dict[str, Any]],
     heartbeat_writer,
-) -> None:
-    if not config.get("outputs", {}).get("save_checkpoints", False):
-        return
+) -> dict[str, Any]:
+    checkpoint_fields = build_checkpoint_summary_fields(config, metrics_rows)
+    checkpoint_path = checkpoint_fields.get("best_checkpoint_path")
+    if checkpoint_path is None:
+        checkpoint_path = checkpoint_fields.get("final_checkpoint_path")
+
+    if checkpoint_path is None:
+        return checkpoint_fields
+
+    output_path = Path(str(checkpoint_path))
+    if output_path.exists():
+        return checkpoint_fields
+
     with heartbeat_stage(
         heartbeat_writer,
         "checkpointing",
-        extra_fields={"status": "not_implemented_for_config_driven_loop"},
+        checkpoint_status=checkpoint_fields["checkpoint_status"],
     ):
+        save_model_checkpoint(config, model, output_path, checkpoint_fields)
+
+    return checkpoint_fields
+
+
+def maybe_write_best_eval_checkpoint(
+    config: dict[str, Any],
+    model,
+    validation_results: list[dict[str, Any]],
+    step: int,
+    heartbeat_writer,
+    checkpoint_state: dict[str, Any],
+    distributed_context=None,
+) -> None:
+    if not config.get("outputs", {}).get("save_checkpoints", False):
         return
+    if not config.get("evaluation", {}).get("validation", False):
+        return
+    if not should_write_shared_artifact(distributed_context):
+        return
+
+    metric_name, metric_value = best_validation_metric_value(validation_results)
+    if metric_name is None or metric_value is None:
+        return
+
+    previous_metric_value = checkpoint_state.get("checkpoint_metric_value")
+    if previous_metric_value is not None and metric_value >= previous_metric_value:
+        return
+
+    metric_field = "loss" if metric_name == "validation_loss" else "perplexity"
+    best_result = min(
+        (
+            result
+            for result in validation_results
+            if result.get(metric_field) is not None
+        ),
+        key=lambda result: float(result[metric_field]),
+    )
+    metric_row = {
+        "split": "validation",
+        "step": step,
+        "granularity": best_result.get("granularity"),
+        metric_field: metric_value,
+    }
+    checkpoint_fields = build_checkpoint_summary_fields(
+        config,
+        [metric_row],
+        validation_enabled=True,
+        save_checkpoints=True,
+    )
+    checkpoint_path = Path(str(checkpoint_fields["best_checkpoint_path"]))
+
+    with heartbeat_stage(
+        heartbeat_writer,
+        "checkpointing",
+        checkpoint_status=checkpoint_fields["checkpoint_status"],
+    ):
+        save_model_checkpoint(config, model, checkpoint_path, checkpoint_fields)
+
+    checkpoint_state.clear()
+    checkpoint_state.update(checkpoint_fields)
+
+
+def save_model_checkpoint(
+    config: dict[str, Any],
+    model,
+    output_path: Path,
+    checkpoint_fields: dict[str, Any],
+) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "run_id": config["run"]["run_id"],
+            "checkpoint_status": checkpoint_fields["checkpoint_status"],
+            "checkpoint_metric": checkpoint_fields["checkpoint_metric"],
+            "checkpoint_metric_value": checkpoint_fields[
+                "checkpoint_metric_value"
+            ],
+            "checkpoint_selection_step": checkpoint_fields[
+                "checkpoint_selection_step"
+            ],
+            "model_state_dict": model.state_dict(),
+        },
+        output_path,
+    )
+
+
+def best_validation_metric_value(
+    validation_results: list[dict[str, Any]],
+) -> tuple[str | None, float | None]:
+    loss_values = [
+        float(result["loss"])
+        for result in validation_results
+        if result.get("loss") is not None
+    ]
+    if loss_values:
+        return "validation_loss", min(loss_values)
+
+    perplexity_values = [
+        float(result["perplexity"])
+        for result in validation_results
+        if result.get("perplexity") is not None
+    ]
+    if perplexity_values:
+        return "validation_perplexity", min(perplexity_values)
+
+    return None, None
 
 
 def build_dataloaders(
@@ -486,6 +618,8 @@ def train_for_steps(
     scheduler,
     device: torch.device,
     heartbeat_writer=None,
+    distributed_context=None,
+    checkpoint_state: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     training = config["training"]
     granularities = config["model"]["granularities"]
@@ -500,6 +634,7 @@ def train_for_steps(
     epoch = 0
     heartbeat_writer = heartbeat_writer or NoopHeartbeatWriter()
     heartbeat_cadence = build_heartbeat_cadence(config)
+    checkpoint_state = checkpoint_state if checkpoint_state is not None else {}
 
     model.train()
     with heartbeat_stage(heartbeat_writer, "training"):
@@ -585,6 +720,15 @@ def train_for_steps(
                             granularities=granularities,
                             device=device,
                         )
+                    maybe_write_best_eval_checkpoint(
+                        config,
+                        model,
+                        validation_results,
+                        step,
+                        heartbeat_writer,
+                        checkpoint_state,
+                        distributed_context=distributed_context,
+                    )
                     metrics_rows.extend(
                         validation_results_to_metric_rows(
                             validation_results,
@@ -612,6 +756,8 @@ def train_for_steps(
         tokens_seen=tokens_seen,
         start_time=start_time,
         heartbeat_writer=heartbeat_writer,
+        distributed_context=distributed_context,
+        checkpoint_state=checkpoint_state,
     )
 
     return metrics_rows
@@ -706,6 +852,8 @@ def append_final_validation_if_needed(
     tokens_seen: int,
     start_time: float,
     heartbeat_writer=None,
+    distributed_context=None,
+    checkpoint_state: dict[str, Any] | None = None,
 ) -> None:
     if not config.get("evaluation", {}).get("validation", False):
         return
@@ -733,6 +881,15 @@ def append_final_validation_if_needed(
             granularities=granularities,
             device=device,
         )
+    maybe_write_best_eval_checkpoint(
+        config,
+        model,
+        validation_results,
+        step,
+        heartbeat_writer,
+        checkpoint_state if checkpoint_state is not None else {},
+        distributed_context=distributed_context,
+    )
     metrics_rows.extend(
         validation_results_to_metric_rows(
             validation_results,
