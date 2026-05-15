@@ -17,47 +17,57 @@ avoid a second model framework.
 - Full external training framework: more features, but too much hidden control
   flow for research iteration.
 
-## Decision: Use a debug-size matrix before paper-aligned 78M work
+## Decision: Use a debug-size matrix before the d_model=256 pilot comparison
 
 **Decision**: First implement a debug-size S/M/L/XL nested and standalone
-matrix, then treat 78M as the first paper-aligned scaling point.
+matrix, then run a d_model=256 MatFormer-Llama/SwiGLU pilot comparison
+inspired by the MatLM 78M table row.
 
 **Rationale**: The debug matrix catches FFN prefix, config, artifact, and
 baseline-matching bugs before expensive runs. It also proves the central
 nested-versus-standalone comparison across all granularities.
 
 **Alternatives considered**:
-- Start directly with 78M: closer to the paper, but slow and risky before the
-  workflow is proven.
+- Start directly with the d_model=256 pilot: closer to the target pilot, but
+  slow and risky before the workflow is proven.
 - Use only one standalone baseline: faster, but it leaves the central
   granularity comparison incomplete before scaling.
 
-## Decision: Label 78M reduced-token pilots separately from 78M/10B complete
+## Decision: Frame the pilot as d_model=256 with MatLM table references
 
-**Decision**: A 78M run with fewer than 10B training tokens is a
-`reduced-token-pilot`. A 78M run trained with the 10B budget is
-`paper-budget-complete`.
+**Decision**: The pilot is labeled as a d_model=256 MatFormer-Llama/SwiGLU run
+with an optional `table_reference_label=matlm_78m`. Runs with fewer than the
+MatLM table-row 10B-token budget are `reduced-token-pilot`; runs using that
+reference budget are table-budget reference runs, not exact MatLM-paper
+reproductions.
 
-**Rationale**: This avoids overstating reproduction progress while still
-allowing practical pilots under limited compute.
+**Rationale**: The implementation uses a Llama/SwiGLU-style gated FFN and a
+language-model-head counting convention that differ from the paper table. This
+framing preserves the useful table reference without overstating architecture,
+parameter-count, or training-behavior alignment.
 
 **Alternatives considered**:
-- Count any 78M run as paper-aligned: too easy to misread reduced-token trends.
-- Require full 10B before any 78M label: too strict for iterative planning.
+- Keep calling the pilot "78M": compact, but it hides actual implementation
+  parameter counts and counting conventions.
+- Require full 10B before any pilot run: too strict for iterative planning and
+  checkpoint/artifact validation.
 
-## Decision: Preserve paper architecture only for paper-aligned runs
+## Decision: Preserve explicit shape fields and mismatch notes
 
-**Decision**: Debug runs may shrink architecture constants. Paper-aligned runs
-preserve 16 layers, 16 heads, context length 1024, and the 256k vocabulary
-assumption unless explicitly labeled non-paper-aligned.
+**Decision**: Debug runs may shrink architecture constants. Pilot and scaling
+artifacts preserve explicit fields for d_model, layer count, attention-head
+count, context length, vocabulary-size assumption, token budget, and
+granularity prefixes, and record mismatch notes when any value or counting
+convention differs from a MatLM table reference.
 
 **Rationale**: The debug stage exists to test workflow correctness. The
-paper-aligned stage exists to support trend reproduction claims, so it must
-carry the paper constants.
+pilot stage exists to support trend checks and later evaluation, so it must
+make its actual shape and known deviations inspectable.
 
 **Alternatives considered**:
 - Preserve all constants in debug runs: too expensive for iteration.
-- Allow proportional scaling in all phases: risks unclear reproduction labels.
+- Allow proportional scaling without mismatch notes: risks unclear reproduction
+  labels and invalid comparisons.
 
 ## Decision: Use YAML configs with resolved JSON snapshots
 
@@ -88,17 +98,61 @@ generation repeatable.
 - Heavy experiment trackers: useful later, but unnecessary for the first
   implementation and less inspectable than local files.
 
-## Decision: Use non-embedding parameters for Figure 2-style x-axis
+## Decision: Report disaggregated implementation parameter counts
 
-**Decision**: Report non-embedding parameters as
-`total_parameters - embedding_parameters - lm_head_parameters`.
+**Decision**: Report actual implementation counts for
+`total_parameters`, `embedding_parameters`, `lm_head_parameters`,
+`non_embedding_parameters`, and `ffn_parameters`; when feasible also report
+`attention_parameters` and `other_non_embedding_parameters`. Reports must state
+whether the LM head is tied, untied, excluded, or separately counted.
 
 **Rationale**: The spec requires Figure 2-style reporting, and embedding
 parameters dominate smaller models while being mostly unaffected by FFN nesting.
+The clarified pilot also needs to distinguish implementation counts from paper
+table counts because the FFN and LM-head conventions differ.
 
 **Alternatives considered**:
-- Total parameters: easier but less faithful to the paper's comparison.
-- FFN-only parameters: too narrow for model-size comparisons.
+- Total parameters only: easier but hides the exact mismatch motivating Phase
+  4.7.
+- FFN-only parameters: useful but too narrow for model-size comparisons.
+- Paper table counts only: misleading for the actual implementation.
+
+## Decision: Default the pilot runner to comparison mode
+
+**Decision**: The d_model=256 pilot runner defaults to a comparison workflow
+with `nested-random`, `nested-all`, and standalone S/M/L/XL baselines where
+compute allows. `nested-random` is the primary nested mode because it matches
+the original `train.py` sampling behavior; `nested-all` remains an ablation for
+the existing all-at-once averaged-loss behavior.
+
+**Rationale**: The central question is whether jointly trained nested
+granularities are competitive with independently trained baselines. A single
+nested run cannot answer that question, and unlabeled sampling modes would make
+later downstream or consistency results ambiguous.
+
+**Alternatives considered**:
+- Keep a single nested pilot by default: cheaper, but it defers the central
+  comparison and risks misleading early reports.
+- Use only `nested-all`: preserves existing behavior but does not match the
+  original random-granularity training rule.
+
+## Decision: Save best-eval pilot checkpoints when validation is enabled
+
+**Decision**: Pilot runs with validation enabled save a rank-0-safe best-eval
+checkpoint under the run output directory and record its path and selection
+metric in `run_summary.json`. Runs without validation either save a final
+checkpoint or record that no best-eval checkpoint was produced.
+
+**Rationale**: Downstream, consistency, and speculative decoding phases should
+reuse trained pilot models instead of requiring a rerun. Recording the
+checkpoint status also prevents comparison rows from implying that evaluation
+can proceed when no usable model state exists.
+
+**Alternatives considered**:
+- Save no pilot checkpoint by default: cheaper on storage but blocks later
+  evaluation reuse.
+- Save every checkpoint: unnecessary storage pressure for a repository already
+  designed around redirectable output roots.
 
 ## Decision: Start downstream evaluation with the minimal six-task suite
 

@@ -17,21 +17,29 @@ run:
   run_id: debug-nested-001
   phase_id: debug_matrix
   model_family: nested
-  model_size_label: debug
+  sampling_mode: nested-all
+  model_shape_label: debug
+  table_reference_label: null
   completion_label: debug
   seed: 42
   output_root: outputs
 
 model:
   base_model_name: debug-llama
-  paper_aligned: false
+  paper_alignment_claim: false
+  d_model: 256
   num_layers: 4
   num_attention_heads: 4
-  hidden_size: 256
   intermediate_size: 1024
   context_length: 256
   vocab_size_assumption: 32000
   granularities: [s, m, l, xl]
+  granularity_prefixes:
+    s: 0.125
+    m: 0.25
+    l: 0.5
+    xl: 1.0
+  mismatch_notes: []
 
 training:
   token_budget: 1000000
@@ -44,6 +52,11 @@ training:
   activation_checkpointing: true
   granularity_sampling: all
 
+parameter_reporting:
+  lm_head_counting: separately_counted
+  include_attention_parameters_when_feasible: true
+  include_paper_table_reference_counts: false
+
 dataset:
   dataset_name: tiny-stories
   dataset_split: train
@@ -55,7 +68,7 @@ outputs:
   save_config: true
   save_metrics_csv: true
   save_run_summary_json: true
-  save_checkpoints: true
+  checkpoint_policy: best_eval_when_validation
   make_plots: true
 
 evaluation:
@@ -80,7 +93,9 @@ run:
   run_id: debug-nested-001
   phase_id: debug_matrix
   model_family: nested
-  model_size_label: debug
+  sampling_mode: nested-all
+  model_shape_label: debug
+  table_reference_label: null
   completion_label: debug
   seed: 42
   output_root: outputs
@@ -96,6 +111,20 @@ training:
   max_steps: 489
   max_steps_cap: null
   granularity_sampling: all
+
+parameter_counts:
+  total_parameters: 123456
+  embedding_parameters: 32000
+  lm_head_parameters: 32000
+  non_embedding_parameters: 59456
+  ffn_parameters: 32768
+  attention_parameters: 16384
+  other_non_embedding_parameters: 10304
+  lm_head_counting: separately_counted
+  paper_total_parameters: null
+  paper_non_embedding_parameters: null
+  paper_ffn_parameters: null
+  mismatch_notes: []
 ```
 
 `run.output_dir` is derived as `<run.output_root>/<run.run_id>` unless an
@@ -115,6 +144,11 @@ original `train.py` behavior. `all` evaluates all configured granularities on
 the same batch and averages their losses; this is useful for debug and ablation
 runs but is not the original pilot training rule.
 
+`run.sampling_mode` is the comparison-facing label. It must be `nested-random`
+when `training.granularity_sampling=random`, `nested-all` when
+`training.granularity_sampling=all`, and `standalone` for independently trained
+baselines.
+
 ## Granularity Values
 
 `granularities` uses canonical lowercase values: `s`, `m`, `l`, `xl`.
@@ -124,10 +158,19 @@ The corresponding display labels are `S`, `M`, `L`, `XL`.
 ## Completion Labels
 
 - `debug`: Debug-size workflow validation.
-- `reduced-token-pilot`: Paper-aligned model shape with less than the paper
-  training-token budget.
-- `paper-budget-complete`: Paper-aligned model shape with the paper
-  training-token budget.
+- `reduced-token-pilot`: d_model=256 pilot run with less than the MatLM
+  table-row 10B-token budget reference.
+- `matlm-10b-budget-reference`: d_model=256 pilot run using the MatLM table-row
+  10B-token budget reference.
+
+## Pilot Table References
+
+The d_model=256 pilot uses `model_shape_label=dmodel256` and may use
+`table_reference_label=matlm_78m` to preserve the MatLM table-row reference.
+That reference is not an exact paper-alignment claim. The resolved config and
+run summary must expose actual implementation parameter counts and mismatch
+notes for Llama/SwiGLU FFN structure, LM-head counting, token budget, and any
+shape differences.
 
 ## Output Root and Cache Paths
 
@@ -152,13 +195,24 @@ The corresponding display labels are `S`, `M`, `L`, `XL`.
   before training starts.
 - `run.model_family=standalone` requires exactly one granularity.
 - `run.model_family=nested` may include multiple granularities.
-- `model.paper_aligned=true` requires 16 layers, 16 heads, context length 1024,
-  and 256k vocabulary assumption unless the run is explicitly labeled
-  non-paper-aligned in `run_summary.json`.
-- `model_size_label=78m` and `training.token_budget < 10000000000` requires
+- `run.sampling_mode` must be one of `nested-random`, `nested-all`, or
+  `standalone` and must be consistent with `run.model_family`.
+- `model.paper_alignment_claim=true` is allowed only when the actual
+  implementation matches the cited architecture, parameter-count convention,
+  and training behavior.
+- `model_shape_label=dmodel256` and `training.token_budget < 10000000000`
+  requires
   `completion_label=reduced-token-pilot`.
-- `model_size_label=78m` and `training.token_budget = 10000000000` requires
-  `completion_label=paper-budget-complete`.
+- `model_shape_label=dmodel256` and `training.token_budget = 10000000000`
+  requires `completion_label=matlm-10b-budget-reference`.
+- Pilot resolved configs must expose `d_model`, layer count, attention-head
+  count, context length, vocabulary-size assumption, token budget, and
+  granularity prefixes.
+- Pilot resolved configs and run summaries must include `parameter_counts`
+  fields for total, embedding, LM-head, non-embedding, and FFN parameters, plus
+  attention and other non-embedding parameters when feasible.
+- `parameter_counts.lm_head_counting` must state whether the LM head is tied,
+  untied, excluded, or separately counted.
 - `training.token_budget`, `training.batch_size_per_process`, and
   `model.context_length` must be positive integers for budgeted runs.
 - `training.effective_world_size` must resolve from the active distributed
@@ -174,3 +228,8 @@ The corresponding display labels are `S`, `M`, `L`, `XL`.
   `training.token_budget`; any early safety cap must be explicit and visible in
   the resolved training section.
 - Every run must write a resolved `config.json`.
+- Pilot runs with validation enabled must use
+  `outputs.checkpoint_policy=best_eval_when_validation` or an equivalent policy
+  and record the best-eval checkpoint path in `run_summary.json`.
+- Pilot runs without validation must record final-checkpoint or no-checkpoint
+  status in `run_summary.json`.

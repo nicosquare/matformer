@@ -5,11 +5,14 @@
 Represents a planned scale of work.
 
 **Fields**
-- `phase_id`: Stable label such as `debug_matrix`, `78m_pilot`,
-  `medium_trends`, `consistency`, or `speculative`.
+- `phase_id`: Stable label such as `debug_matrix`,
+  `dmodel256_pilot_comparison`, `medium_trends`, `consistency`, or
+  `speculative`.
 - `description`: Human-readable purpose.
 - `required_model_families`: `nested`, `standalone`, or both.
 - `required_granularities`: List of `s`, `m`, `l`, `xl`.
+- `required_sampling_modes`: List such as `nested-random`, `nested-all`, and
+  `standalone`.
 - `dataset_plan`: Dataset identities and splits.
 - `completion_criteria`: Required artifacts and comparisons.
 
@@ -20,20 +23,39 @@ Represents a planned scale of work.
 **Validation Rules**
 - `debug_matrix` requires nested and standalone coverage for all four
   granularities.
-- `78m_pilot` must identify whether it is reduced-token or paper-budget
-  complete.
+- `dmodel256_pilot_comparison` must identify whether each run is a
+  reduced-token pilot or uses the MatLM table-row 10B-token budget reference.
+- `dmodel256_pilot_comparison` defaults to `nested-random`, `nested-all`, and
+  standalone S/M/L/XL rows where compute allows; omitted rows must be explicit.
 
 ## ModelFamily
 
 Groups runs by model type.
 
 **Values**
-- `nested`: MatFormer model that can expose S/M/L/XL submodels by FFN prefix.
+- `nested`: MatFormer-Llama/SwiGLU model that can expose S/M/L/XL submodels by
+  FFN prefix.
 - `standalone`: Independently trained fixed-width Transformer baseline.
 
 **Validation Rules**
 - `standalone` runs have exactly one granularity.
 - `nested` runs may evaluate one or more granularities from the same checkpoint.
+
+## SamplingMode
+
+Represents the training or comparison mode for a run.
+
+**Values**
+- `nested-random`: Nested MatFormer training samples one configured granularity
+  per batch or step, matching the original `train.py` behavior.
+- `nested-all`: Nested MatFormer training evaluates all configured
+  granularities on each batch and averages their losses.
+- `standalone`: Fixed-width independent baseline training for one granularity.
+
+**Validation Rules**
+- `nested-random` and `nested-all` require `model_family=nested`.
+- `standalone` requires `model_family=standalone`.
+- Metrics, summaries, scaling rows, and reports must expose the sampling mode.
 
 ## Granularity
 
@@ -51,26 +73,39 @@ Represents an FFN expansion ratio and prefix rule.
 - Comparison labels must use the same canonical names across configs, metrics,
   and reports.
 
-## ModelSizeTarget
+## ModelShapeTarget
 
-Represents debug or paper-aligned model-size targets.
+Represents debug, pilot, or later scaling shape targets.
 
 **Fields**
-- `size_label`: `debug`, `78m`, `180m`, `310m`, `463m`, or `850m`.
-- `paper_aligned`: Boolean.
+- `model_shape_label`: Stable implementation label such as `debug` or
+  `dmodel256`.
+- `table_reference_label`: Optional paper table reference such as `matlm_78m`.
+- `paper_alignment_claim`: Boolean; false unless the actual implementation
+  matches the cited architecture, parameter-count convention, and training
+  behavior.
+- `d_model`: Transformer hidden size.
 - `num_layers`: Transformer layer count.
 - `num_attention_heads`: Attention-head count.
 - `context_length`: Maximum context length.
 - `vocab_size_assumption`: Vocabulary-size assumption.
+- `granularity_prefixes`: Ordered mapping of S/M/L/XL FFN prefix widths or
+  fractions.
 - `training_token_budget`: Planned token budget.
 - `completion_label`: `debug`, `reduced-token-pilot`, or
-  `paper-budget-complete`.
+  `matlm-10b-budget-reference`.
+- `mismatch_notes`: Known deviations from the table reference.
 
 **Validation Rules**
-- Paper-aligned runs preserve 16 layers, 16 heads, context length 1024, and
-  256k vocabulary assumption unless explicitly labeled non-paper-aligned.
-- `78m` with fewer than 10B training tokens is `reduced-token-pilot`.
-- `78m` with 10B training tokens is `paper-budget-complete`.
+- Pilot artifacts must preserve explicit shape fields rather than relying on a
+  single model-size label.
+- `model_shape_label=dmodel256` with fewer than the MatLM table-row 10B-token
+  budget is `reduced-token-pilot`.
+- `model_shape_label=dmodel256` with the MatLM table-row 10B-token budget uses
+  `completion_label=matlm-10b-budget-reference`.
+- Any exact paper-alignment claim requires matching architecture, parameter
+  count convention, and training behavior; otherwise mismatch notes are
+  required when a table reference is present.
 
 ## DatasetPlan
 
@@ -98,7 +133,8 @@ Represents one train/eval execution.
 - `run_id`: Unique run directory name.
 - `phase_id`: Related `ReproductionPhase`.
 - `model_family`: `nested` or `standalone`.
-- `model_size_target`: Related `ModelSizeTarget`.
+- `sampling_mode`: Related `SamplingMode`.
+- `model_shape_target`: Related `ModelShapeTarget`.
 - `granularity`: Required for standalone; optional or list-valued for nested.
 - `seed`: Optional integer.
 - `config_path`: Saved resolved config path.
@@ -122,16 +158,23 @@ Represents one train/eval execution.
   configured granularity per batch to match the original `train.py` behavior;
   `all` evaluates all configured granularities on each batch and averages their
   losses for debug or ablation runs.
+- `parameter_report_id`: Related `ParameterCountReport`.
 - `tokens_seen`: Actual non-padding training tokens observed by the run.
 - `stop_reason`: Reason training stopped, such as `not_started`,
   `token_budget_reached`, `max_steps_reached_before_token_budget`, or `failed`.
-- `checkpoint_path`: Optional checkpoint path.
+- `checkpoint_status`: `best_eval`, `final`, `none`, or `unavailable`.
+- `best_checkpoint_path`: Optional best-eval checkpoint path.
+- `final_checkpoint_path`: Optional final checkpoint path.
+- `checkpoint_metric`: Validation metric used for best-eval selection, such as
+  `validation_loss` or `perplexity`.
 - `status`: `planned`, `running`, `completed`, `failed`, or `superseded`.
 
 **Relationships**
 - Belongs to one `ReproductionPhase`.
 - Uses one `DatasetPlan`.
 - Uses one `StorageEnvironment`.
+- Has one `ParameterCountReport` once the model is materialized.
+- May have one `CheckpointArtifact`.
 - Produces many `MetricsArtifact` records.
 - May participate in one or more `BaselineMatch` records.
 
@@ -154,7 +197,66 @@ Represents one train/eval execution.
 - `derived_max_steps` must equal
   `ceil(token_budget / expected_tokens_per_step)`.
 - Resolved configs and run summaries must expose the derived budget fields so
-  reduced-token pilots cannot be confused with paper-budget-complete runs.
+  reduced-token pilots cannot be confused with table-budget reference runs.
+- `sampling_mode` must be one of `nested-random`, `nested-all`, or
+  `standalone` and must be consistent with `model_family`.
+- Pilot runs with validation enabled must save a best-eval checkpoint or record
+  why no best-eval checkpoint was produced.
+- Pilot run summaries must expose checkpoint status and path fields even when
+  no checkpoint exists.
+
+## ParameterCountReport
+
+Captures actual implementation parameter counts and table-reference mismatch
+notes.
+
+**Fields**
+- `parameter_report_id`: Unique id.
+- `run_id`: Related training run.
+- `total_parameters`: Actual implementation total.
+- `embedding_parameters`: Token embedding parameters.
+- `lm_head_parameters`: Language-model-head parameters.
+- `non_embedding_parameters`: Total excluding token embeddings and LM-head or
+  output embedding parameters.
+- `ffn_parameters`: FFN parameters for the relevant model or granularity.
+- `attention_parameters`: Optional attention parameter count when feasible.
+- `other_non_embedding_parameters`: Optional remaining non-embedding count when
+  feasible.
+- `lm_head_counting`: `tied`, `untied`, `excluded`, or `separately_counted`.
+- `paper_total_parameters`: Optional paper table total reference.
+- `paper_non_embedding_parameters`: Optional paper table non-embedding
+  reference.
+- `paper_ffn_parameters`: Optional paper table FFN reference.
+- `mismatch_notes`: Known differences in architecture, counting convention, or
+  table assumptions.
+
+**Validation Rules**
+- Actual implementation count fields are required for pilot resolved configs,
+  run summaries, scaling rows, and comparison artifacts.
+- Paper table count fields are references only and must not replace actual
+  implementation counts.
+- `lm_head_counting` is required whenever any total or non-embedding count is
+  reported.
+
+## CheckpointArtifact
+
+Represents a saved or explicitly omitted model state for reuse.
+
+**Fields**
+- `checkpoint_id`: Unique id.
+- `run_id`: Related training run.
+- `checkpoint_status`: `best_eval`, `final`, `none`, or `unavailable`.
+- `checkpoint_path`: Path under the run output directory when available.
+- `selection_metric`: Validation metric used for best-eval selection.
+- `selection_metric_value`: Numeric metric value when available.
+- `written_by_rank`: Distributed rank that wrote the shared checkpoint.
+
+**Validation Rules**
+- Pilot best-eval checkpoints are written only by rank 0 under distributed/FSDP
+  execution.
+- `run_summary.json` must reference the checkpoint path when one exists.
+- Runs with validation disabled must record final-checkpoint or no-checkpoint
+  status.
 
 ## StorageEnvironment
 
@@ -182,8 +284,11 @@ Pairs an extracted nested submodel with a standalone baseline.
 - `nested_run_id`: Source nested run.
 - `standalone_run_id`: Source standalone run.
 - `granularity`: `s`, `m`, `l`, or `xl`.
+- `nested_sampling_mode`: `nested-random` or `nested-all`.
 - `non_embedding_parameters_nested`: Numeric count.
 - `non_embedding_parameters_standalone`: Numeric count.
+- `nested_parameter_report_id`: Related nested `ParameterCountReport`.
+- `standalone_parameter_report_id`: Related standalone `ParameterCountReport`.
 - `match_notes`: Any known mismatch or caveat.
 
 **Validation Rules**
@@ -191,6 +296,9 @@ Pairs an extracted nested submodel with a standalone baseline.
   match unless the mismatch is recorded.
 - Every reported nested comparison either has a `BaselineMatch` or is marked
   baseline missing.
+- Pilot comparison rows must expose model family, granularity, sampling mode,
+  token budget, effective world size, checkpoint path when available, and
+  mismatch notes.
 
 ## EvaluationSuite
 

@@ -15,7 +15,8 @@ Required behavior:
 - Accept `--output-root` and resolve artifacts under `<output_root>/<run_id>/`.
 - Accept `--output-dir` as an explicit one-run output directory override.
 - Save `<output_root>/<run_id>/config.json` unless `--output-dir` is used.
-- Train or evaluate the requested model family and granularity set.
+- Train or evaluate the requested model family, sampling mode, and granularity
+  set.
 - Write relevant CSV/JSON artifacts.
 
 ## Run Debug Matrix
@@ -47,22 +48,35 @@ Required behavior:
 - Forward remaining runner arguments, including `--override`, to
   `scripts/run_debug_matrix.sh`.
 
-## Run 78M Reduced-Token Pilot
+## Run d_model=256 Pilot Comparison
 
 ```bash
-OUTPUT_ROOT=/mnt/experiments/matformer bash scripts/run_78m_pilot.sh
+OUTPUT_ROOT=/mnt/experiments/matformer bash scripts/run_dmodel256_pilot.sh
 ```
 
 Required behavior:
-- Use paper-aligned architecture constants.
-- Label the run `reduced-token-pilot` unless the token budget is 10B.
-- Write model-size and token-budget labels into summaries.
+- Default to the pilot comparison workflow rather than a single nested run.
+- Run or schedule `nested-random`, `nested-all`, and standalone S/M/L/XL rows
+  where compute allows.
+- Allow smoke/debug invocations that select one mode through an explicit mode
+  argument.
+- Label the pilot as d_model=256 MatFormer-Llama/SwiGLU with optional
+  `table_reference_label=matlm_78m`, not as an exact MatLM-paper reproduction.
+- Label the run `reduced-token-pilot` unless it uses the MatLM table-row
+  10B-token budget reference.
+- Write explicit shape fields, token-budget labels, sampling mode, actual
+  parameter counts, LM-head counting convention, and mismatch notes into
+  summaries.
 - Accept the same output-root controls as the debug matrix runner.
 
-## Queue 78M Reduced-Token Pilot On Slurm
+Temporary compatibility: existing `scripts/run_78m_pilot.sh` may remain as a
+thin alias while implementation migrates, but user-facing docs and summaries
+should prefer the d_model=256 pilot terminology.
+
+## Queue d_model=256 Pilot Comparison On Slurm
 
 ```bash
-sbatch scripts/slurm_78m_pilot.sh --output-root /mnt/experiments/matformer
+sbatch scripts/slurm_dmodel256_pilot.sh --output-root /mnt/experiments/matformer
 ```
 
 Required behavior:
@@ -70,7 +84,8 @@ Required behavior:
 - Refuse direct local execution outside a Slurm allocation.
 - Use the `elasticnn` conda environment by default unless `PYTHON_BIN` or
   `--python-bin` is provided.
-- Accept `--output-root`, `--run-id`, and `--config`.
+- Accept `--output-root`, `--run-id`, `--config`, `--mode`, and baseline
+  selection arguments.
 - Launch one config-driven training process per allocated GPU through
   `torchrun` or `python -m torch.distributed.run`.
 - The launcher may use Slurm allocation variables, including
@@ -79,12 +94,18 @@ Required behavior:
 - After launch, use the active distributed `WORLD_SIZE` set by `torchrun`, not
   `CUDA_VISIBLE_DEVICES` or available GPU count directly, when the resolved
   config derives token-budget training length.
-- Use FSDP for the 78M pilot model when distributed execution is enabled.
+- Use FSDP for the d_model=256 pilot model when distributed execution is
+  enabled.
 - Write shared artifacts such as `config.json`, `metrics.csv`,
   `run_summary.json`, checkpoints, and `heartbeats.jsonl` from rank 0 only.
+- Save a rank-0-safe best-eval checkpoint when validation is enabled and record
+  checkpoint status/path in `run_summary.json`.
 - Default Slurm output to heartbeat lines instead of tqdm-style progress bars.
 - Forward remaining runner arguments, including `--override`, to the
-  config-driven 78M pilot entry point.
+  config-driven d_model=256 pilot entry point.
+
+Temporary compatibility: existing `scripts/slurm_78m_pilot.sh` may remain as a
+thin alias while implementation migrates.
 
 ## Generate Figures
 
