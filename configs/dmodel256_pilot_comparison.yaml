@@ -60,6 +60,29 @@ outputs:
 
 evaluation:
   validation: true
-  downstream_suite: []
+  downstream_suite:
+    - suite_id: minimal-downstream
+      suite_type: downstream
+      tool: lm-eval
+      tasks:
+        - hellaswag
+        - piqa
+        - arc_challenge
+        - boolq
+        - winogrande
+        - openbookqa
+      metric_name: accuracy
+      metric_candidates:
+        - acc_norm,none
+        - acc,none
+        - exact_match,none
+        - acc_norm
+        - acc
+        - accuracy
+      model: hf
+      model_args: {}
+      batch_size: auto
+      num_fewshot: 0
+      limit: null
   consistency: false
   speculative: false

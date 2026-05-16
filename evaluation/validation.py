@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from collections import defaultdict
+from typing import Any, Iterable, Mapping
 
 import torch
 import torch.distributed as dist
@@ -147,6 +148,72 @@ def validation_results_to_metric_rows(
     return rows
 
 
+def aggregate_scaling_summary(
+    scaling_rows: Iterable[Mapping[str, Any]],
+    task_result_rows: Iterable[Mapping[str, Any]],
+    accuracy_metric_names: Iterable[str] = (
+        "accuracy",
+        "acc",
+        "acc_norm",
+        "acc,none",
+        "acc_norm,none",
+        "exact_match,none",
+    ),
+) -> list[dict[str, Any]]:
+    downstream_accuracy = average_downstream_accuracy_by_run_granularity(
+        task_result_rows,
+        accuracy_metric_names=accuracy_metric_names,
+    )
+    aggregated_rows = []
+
+    for row in scaling_rows:
+        aggregated_row = dict(row)
+        run_id = str(row.get("run_id") or "")
+        granularity = str(row.get("granularity") or "")
+        accuracy = downstream_accuracy.get((run_id, granularity))
+        if accuracy is None:
+            accuracy = downstream_accuracy.get((run_id, ""))
+        if accuracy is not None:
+            aggregated_row["average_downstream_accuracy"] = accuracy
+        aggregated_rows.append(aggregated_row)
+
+    return aggregated_rows
+
+
+def average_downstream_accuracy_by_run_granularity(
+    task_result_rows: Iterable[Mapping[str, Any]],
+    accuracy_metric_names: Iterable[str] = (
+        "accuracy",
+        "acc",
+        "acc_norm",
+        "acc,none",
+        "acc_norm,none",
+        "exact_match,none",
+    ),
+) -> dict[tuple[str, str], float]:
+    allowed_metric_names = {str(metric_name) for metric_name in accuracy_metric_names}
+    values_by_run_granularity: dict[tuple[str, str], list[float]] = defaultdict(list)
+
+    for row in task_result_rows:
+        metric_name = str(row.get("metric_name") or "")
+        if metric_name not in allowed_metric_names:
+            continue
+        run_id = str(row.get("run_id") or "")
+        if not run_id:
+            continue
+        metric_value = _float_or_none(row.get("metric_value"))
+        if metric_value is None:
+            continue
+        granularity = str(row.get("granularity") or "")
+        values_by_run_granularity[(run_id, granularity)].append(metric_value)
+
+    return {
+        key: sum(values) / len(values)
+        for key, values in values_by_run_granularity.items()
+        if values
+    }
+
+
 def _count_tokens(batch: dict[str, torch.Tensor]) -> int:
     if "attention_mask" in batch and batch["attention_mask"] is not None:
         return int(batch["attention_mask"].sum().item())
@@ -192,3 +259,12 @@ def _sampling_mode(run: dict[str, Any], training: dict[str, Any]) -> Any:
     if granularity_sampling == "all":
         return "nested-all"
     return granularity_sampling
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

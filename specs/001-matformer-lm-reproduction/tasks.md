@@ -282,9 +282,9 @@ non-embedding parameter count.
 
 ### Implementation for User Story 3
 
-- [ ] T046 [US3] Implement scaling summary aggregation in `evaluation/validation.py`
-- [ ] T047 [US3] Implement minimal downstream suite adapter for HellaSwag, PIQA, ARC-Challenge, BoolQ, WinoGrande, and OpenBookQA in `evaluation/downstream.py`
-- [ ] T048 [US3] Add downstream suite config values to `configs/dmodel256_pilot_comparison.yaml`
+- [X] T046 [US3] Implement scaling summary aggregation in `evaluation/validation.py`
+- [X] T047 [US3] Implement minimal downstream suite adapter for HellaSwag, PIQA, ARC-Challenge, BoolQ, WinoGrande, and OpenBookQA in `evaluation/downstream.py`
+- [X] T048 [US3] Add downstream suite config values to `configs/dmodel256_pilot_comparison.yaml`
 - [ ] T049 [US3] Extend `scripts/make_figures.py` to generate loss_vs_size, ppl_vs_size, and accuracy_vs_size plots from `scaling_results.csv`
 - [ ] T050 [US3] Add medium trend reporting helper in `scripts/make_figures.py`
 - [ ] T051 [US3] Document downstream and scaling commands in `specs/001-matformer-lm-reproduction/quickstart.md`
