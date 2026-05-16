@@ -277,8 +277,8 @@ non-embedding parameter count.
 
 ### Verification for User Story 3
 
-- [ ] T044 [P] [US3] Add scaling result schema checks in `tests/test_artifacts.py`
-- [ ] T045 [P] [US3] Add downstream task result schema checks in `tests/test_downstream.py`
+- [X] T044 [P] [US3] Add scaling result schema checks in `tests/test_artifacts.py`
+- [X] T045 [P] [US3] Add downstream task result schema checks in `tests/test_downstream.py`
 
 ### Implementation for User Story 3
 

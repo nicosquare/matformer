@@ -9,6 +9,7 @@ from datasets import Dataset
 from utils.config import resolve_run_config
 from utils.metrics import (
     ArtifactError,
+    SCALING_RESULTS_COLUMNS,
     build_run_summary,
     build_scaling_result_rows,
     write_config_artifact,
@@ -473,6 +474,96 @@ def test_build_scaling_rows_uses_latest_validation_metrics():
     assert rows[0]["comparison_id"] == "debug-nested-001__s"
     assert rows[0]["loss"] == 2.0
     assert rows[0]["non_embedding_parameters"] == 800
+
+
+def test_scaling_result_schema_exposes_phase5_reporting_fields(tmp_path):
+    output_dir = tmp_path / "dmodel256-pilot-comparison-001"
+    config = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        output_dir=output_dir,
+    )
+    metrics_rows = [
+        {
+            "run_id": "dmodel256-pilot-comparison-001",
+            "step": 10,
+            "split": "validation",
+            "model_family": "nested",
+            "sampling_mode": "nested-random",
+            "model_shape_label": "dmodel256",
+            "table_reference_label": "matlm_78m",
+            "granularity": granularity,
+            "loss": 2.0 + index * 0.1,
+            "perplexity": 7.0 + index,
+            "tokens_seen": 81920,
+            "content_tokens_seen": 80000,
+            "wall_clock_seconds": 20.0,
+            "tokens_per_second": 4096.0,
+            "peak_memory_bytes": 1024,
+        }
+        for index, granularity in enumerate(["s", "m", "l", "xl"])
+    ]
+    parameter_counts = {
+        granularity: {
+            "total_parameters": 1000 + index,
+            "embedding_parameters": 100,
+            "lm_head_parameters": 100,
+            "non_embedding_parameters": 800 + index,
+            "ffn_parameters": 400 + index,
+            "attention_parameters": 200,
+            "other_non_embedding_parameters": 200 + index,
+            "lm_head_counting": "separately_counted",
+        }
+        for index, granularity in enumerate(["s", "m", "l", "xl"])
+    }
+
+    rows = build_scaling_result_rows(config, metrics_rows, parameter_counts)
+    scaling_path = write_scaling_results_csv(output_dir, rows)
+
+    with scaling_path.open("r", encoding="utf-8", newline="") as scaling_file:
+        reader = csv.DictReader(scaling_file)
+        assert reader.fieldnames == SCALING_RESULTS_COLUMNS
+        saved_rows = list(reader)
+
+    assert len(saved_rows) == 4
+    row = saved_rows[0]
+    for field_name in [
+        "comparison_id",
+        "run_id",
+        "model_family",
+        "sampling_mode",
+        "model_shape_label",
+        "table_reference_label",
+        "completion_label",
+        "granularity",
+        "d_model",
+        "num_layers",
+        "num_attention_heads",
+        "context_length",
+        "vocab_size_assumption",
+        "token_budget",
+        "effective_world_size",
+        "total_parameters",
+        "embedding_parameters",
+        "lm_head_parameters",
+        "non_embedding_parameters",
+        "ffn_parameters",
+        "attention_parameters",
+        "other_non_embedding_parameters",
+        "lm_head_counting",
+        "checkpoint_path",
+        "mismatch_notes",
+        "loss",
+        "perplexity",
+        "average_downstream_accuracy",
+    ]:
+        assert field_name in row
+
+    assert row["sampling_mode"] == "nested-random"
+    assert row["model_shape_label"] == "dmodel256"
+    assert row["table_reference_label"] == "matlm_78m"
+    assert row["token_budget"] == "100000000"
+    assert row["effective_world_size"] == "1"
+    assert row["lm_head_counting"] == "separately_counted"
 
 
 def test_append_metrics_keeps_one_header(tmp_path):
