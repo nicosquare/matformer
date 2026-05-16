@@ -28,6 +28,26 @@ class TinyNestedTrainingModel(torch.nn.Module):
         return SimpleNamespace(loss=loss)
 
 
+class FlatParameterRuntimeWrapper(torch.nn.Module):
+    def __init__(self, wrapped):
+        super().__init__()
+        self.wrapped = wrapped
+        self.flat_param = torch.nn.Parameter(torch.ones(999))
+
+    def configure_subnetwork(self, granularity):
+        self.wrapped.configure_subnetwork(granularity)
+
+    def forward(self, input_ids, attention_mask=None, labels=None):
+        return self.wrapped(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=labels,
+        )
+
+    def named_parameters(self, prefix="", recurse=True, remove_duplicate=True):
+        yield "flat_param", self.flat_param
+
+
 def test_tiny_nested_training_accumulates_all_granularities_per_batch(tmp_path):
     output_dir = tmp_path / "debug-nested-001"
     config = resolve_run_config(
@@ -68,6 +88,54 @@ def test_tiny_nested_training_accumulates_all_granularities_per_batch(tmp_path):
         ]
 
     assert [row["granularity"] for row in train_rows] == ["s", "m", "l", "xl"]
+
+
+def test_training_counts_parameters_before_runtime_wrapping(tmp_path, monkeypatch):
+    import training.run as training_run
+
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "training.max_steps=1",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.warmup_steps=0",
+            "evaluation.validation=false",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+    monkeypatch.setattr(
+        training_run,
+        "wrap_model_for_distributed",
+        lambda model, context: FlatParameterRuntimeWrapper(model),
+    )
+
+    result = run_training(
+        config,
+        model=TinyNestedTrainingModel(),
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    counts = result["parameter_counts_by_granularity"]["s"]
+    assert counts["total_parameters"] == 1
+    assert counts["non_embedding_parameters"] == 1
+
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    assert summary["parameter_counts_by_granularity"]["s"]["total_parameters"] == 1
+
+    with result["scaling_path"].open("r", encoding="utf-8", newline="") as scaling_file:
+        rows = list(csv.DictReader(scaling_file))
+    assert {row["total_parameters"] for row in rows} == {"1"}
 
 
 def test_tiny_nested_training_can_sample_one_random_granularity_per_batch(

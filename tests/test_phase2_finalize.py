@@ -5,7 +5,11 @@ from types import SimpleNamespace
 import torch
 from datasets import Dataset
 
-from scripts.make_figures import generate_figures
+from scripts.make_figures import (
+    generate_figures,
+    group_scaling_rows,
+    refresh_scaling_parameter_counts,
+)
 from train import parse_args
 from training.baselines import (
     add_baseline_notes_to_summary,
@@ -294,6 +298,67 @@ def test_make_figures_reads_csv_artifacts(tmp_path):
     for path in figure_paths:
         assert path.exists()
         assert path.stat().st_size > 0
+
+
+def test_make_figures_refreshes_parameter_counts_from_run_config(tmp_path):
+    run_dir = tmp_path / "debug-standalone-s-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-standalone-s-001",
+        output_dir=run_dir,
+    )
+    run_dir.mkdir(parents=True)
+    (run_dir / "config.json").write_text(
+        json.dumps(config, indent=2, default=str),
+        encoding="utf-8",
+    )
+    stale_row = {
+        "_source_csv": str(run_dir / "scaling_results.csv"),
+        "run_id": "debug-standalone-s-001",
+        "granularity": "s",
+        "total_parameters": "999",
+        "embedding_parameters": "0",
+        "lm_head_parameters": "0",
+        "non_embedding_parameters": "999",
+        "ffn_parameters": "",
+        "attention_parameters": "",
+        "other_non_embedding_parameters": "",
+        "lm_head_counting": "",
+    }
+
+    refreshed_rows = refresh_scaling_parameter_counts(tmp_path, [stale_row])
+
+    from training.run import build_model
+    from utils.model_size import model_parameter_counts
+
+    model = build_model(config)
+    expected_counts = model_parameter_counts(model, granularity="s")
+    del model
+
+    refreshed_row = refreshed_rows[0]
+    assert refreshed_row["total_parameters"] == expected_counts["total_parameters"]
+    assert (
+        refreshed_row["non_embedding_parameters"]
+        == expected_counts["non_embedding_parameters"]
+    )
+    assert refreshed_row["total_parameters"] != stale_row["total_parameters"]
+
+
+def test_make_figures_groups_scaling_curves_by_sampling_mode():
+    rows = [
+        {"model_family": "nested", "sampling_mode": "nested-random", "granularity": "s"},
+        {"model_family": "nested", "sampling_mode": "nested-random", "granularity": "xl"},
+        {"model_family": "nested", "sampling_mode": "nested-all", "granularity": "s"},
+        {"model_family": "nested", "sampling_mode": "nested-all", "granularity": "xl"},
+        {"model_family": "standalone", "sampling_mode": "standalone", "granularity": "s"},
+        {"model_family": "standalone", "sampling_mode": "standalone", "granularity": "xl"},
+    ]
+
+    grouped = group_scaling_rows(rows)
+
+    assert set(grouped) == {"nested-random", "nested-all", "standalone"}
+    assert [row["granularity"] for row in grouped["nested-random"]] == ["s", "xl"]
+    assert [row["granularity"] for row in grouped["standalone"]] == ["s", "xl"]
 
 
 def test_train_cli_accepts_config_run_id_and_overrides():

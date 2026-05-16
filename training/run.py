@@ -82,6 +82,7 @@ def run_training(
     distributed_context = prepare_distributed_context(config, device=device)
     sync_config_with_distributed_context(config, distributed_context)
     heartbeat_writer = build_heartbeat_writer(config, distributed_context)
+    parameter_counts_by_granularity = {}
 
     with heartbeat_stage(heartbeat_writer, "artifact_writing"):
         write_config_artifact(config, distributed_context=distributed_context)
@@ -93,7 +94,21 @@ def run_training(
         with heartbeat_stage(heartbeat_writer, "model_initialization"):
             if model is None:
                 model = build_model(config)
+            parameter_counts_by_granularity = build_artifact_parameter_counts(
+                config,
+                model,
+                distributed_context,
+            )
+            if parameter_counts_by_granularity:
+                attach_parameter_counts_to_config(
+                    config,
+                    parameter_counts_by_granularity,
+                )
             model = model.to(device)
+
+        if parameter_counts_by_granularity:
+            with heartbeat_stage(heartbeat_writer, "artifact_writing"):
+                write_config_artifact(config, distributed_context=distributed_context)
 
         with heartbeat_stage(heartbeat_writer, "fsdp_wrapping"):
             model = wrap_model_for_distributed(model, distributed_context)
@@ -144,7 +159,6 @@ def run_training(
         metrics_path = None
         scaling_path = None
         scaling_rows = []
-        parameter_counts_by_granularity = {}
         checkpoint_summary_fields = build_checkpoint_summary_fields(
             config,
             metrics_rows,
@@ -171,11 +185,6 @@ def run_training(
                     metrics_rows,
                     distributed_context=distributed_context,
                 )
-                parameter_counts_by_granularity = build_parameter_counts_by_granularity(
-                    model,
-                    config["model"]["granularities"],
-                )
-                attach_parameter_counts_to_config(config, parameter_counts_by_granularity)
                 write_config_artifact(config, distributed_context=distributed_context)
                 scaling_rows = build_scaling_result_rows(
                     config,
@@ -249,6 +258,19 @@ def run_training(
         raise
     finally:
         destroy_distributed_process_group(distributed_context)
+
+
+def build_artifact_parameter_counts(
+    config: dict[str, Any],
+    model,
+    distributed_context=None,
+) -> dict[str, dict[str, Any]]:
+    if not should_write_shared_artifact(distributed_context):
+        return {}
+    return build_parameter_counts_by_granularity(
+        model,
+        config["model"]["granularities"],
+    )
 
 
 def build_model(config: dict[str, Any]):
