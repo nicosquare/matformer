@@ -71,7 +71,13 @@ def generate_figures(
     if refresh_counts:
         scaling_rows = refresh_scaling_parameter_counts(input_root, scaling_rows)
     metrics_rows = read_csv_artifacts(input_root, "metrics.csv")
+    task_result_rows = read_csv_artifacts(input_root, "task_results.csv")
     consistency_rows = read_csv_artifacts(input_root, "consistency_results.csv")
+
+    if scaling_rows and task_result_rows:
+        from evaluation.validation import aggregate_scaling_summary
+
+        scaling_rows = aggregate_scaling_summary(scaling_rows, task_result_rows)
 
     if scaling_rows:
         figure_paths.append(
@@ -99,6 +105,12 @@ def generate_figures(
                     output_path=output_dir / "accuracy_vs_size.png",
                 )
             )
+        figure_paths.append(
+            write_medium_trend_report(
+                scaling_rows,
+                output_dir / "medium_trend_report.md",
+            )
+        )
 
     if metrics_rows and not scaling_rows:
         figure_paths.append(
@@ -278,6 +290,141 @@ def plot_consistency_results(rows: list[dict[str, str]], output_path: Path) -> P
     return output_path
 
 
+def write_medium_trend_report(rows: list[dict[str, Any]], output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        "\n".join(build_medium_trend_report_lines(rows)) + "\n",
+        encoding="utf-8",
+    )
+    return output_path
+
+
+def build_medium_trend_report_lines(rows: list[dict[str, Any]]) -> list[str]:
+    source_csvs = sorted(
+        {
+            str(row["_source_csv"])
+            for row in rows
+            if row.get("_source_csv") not in (None, "")
+        }
+    )
+    curve_groups = group_scaling_rows(rows)
+    lines = [
+        "# Medium Trend Report",
+        "",
+        "Generated from structured scaling and downstream result CSV artifacts.",
+        "",
+        "## Inputs",
+        f"- Scaling rows: {len(rows)}",
+    ]
+
+    if source_csvs:
+        lines.append(f"- Source CSV files: {format_list(source_csvs)}")
+
+    run_ids = sorted({str(row["run_id"]) for row in rows if row.get("run_id")})
+    granularities = sorted(
+        {str(row["granularity"]) for row in rows if row.get("granularity")},
+        key=granularity_sort_key,
+    )
+    sampling_modes = sorted(
+        {
+            str(row["sampling_mode"])
+            for row in rows
+            if row.get("sampling_mode") not in (None, "")
+        }
+    )
+    lines.extend(
+        [
+            f"- Runs: {format_list(run_ids)}",
+            f"- Granularities: {format_list(granularities)}",
+            f"- Sampling modes: {format_list(sampling_modes)}",
+            "",
+            "## Curve Groups",
+        ]
+    )
+
+    for label, group_rows_for_label in curve_groups.items():
+        group_granularities = sorted(
+            {
+                str(row["granularity"])
+                for row in group_rows_for_label
+                if row.get("granularity")
+            },
+            key=granularity_sort_key,
+        )
+        lines.append(
+            f"- {label}: {len(group_rows_for_label)} rows; "
+            f"granularities={format_list(group_granularities)}"
+        )
+
+    lines.extend(["", "## Best Observed Points"])
+    metric_summaries = [
+        summarize_metric(rows, "loss", lower_is_better=True),
+        summarize_metric(rows, "perplexity", lower_is_better=True),
+        summarize_metric(rows, "average_downstream_accuracy", lower_is_better=False),
+    ]
+    for summary in metric_summaries:
+        if summary is None:
+            continue
+        lines.append(f"- {summary}")
+
+    return lines
+
+
+def summarize_metric(
+    rows: list[dict[str, Any]],
+    metric_name: str,
+    lower_is_better: bool,
+) -> str | None:
+    points = []
+    for row in rows:
+        metric_value = to_float_or_none(row.get(metric_name))
+        if metric_value is None:
+            continue
+        points.append((metric_value, row))
+
+    if not points:
+        return None
+
+    metric_value, row = (
+        min(points, key=lambda point: point[0])
+        if lower_is_better
+        else max(points, key=lambda point: point[0])
+    )
+    parameters = to_float_or_none(row.get("non_embedding_parameters"))
+    parameter_text = (
+        "unknown non-embedding parameters"
+        if parameters is None
+        else f"{parameters:.0f} non-embedding parameters"
+    )
+    return (
+        f"{metric_name}: {metric_value:.6g} at {describe_scaling_row(row)} "
+        f"({parameter_text})"
+    )
+
+
+def describe_scaling_row(row: dict[str, Any]) -> str:
+    parts = [
+        str(row.get("sampling_mode") or row.get("model_family") or "unknown"),
+        str(row.get("granularity") or "unknown-granularity"),
+        str(row.get("run_id") or "unknown-run"),
+    ]
+    return " / ".join(parts)
+
+
+def format_list(values: list[str], limit: int = 8) -> str:
+    if not values:
+        return "none"
+    if len(values) <= limit:
+        return ", ".join(values)
+    shown = ", ".join(values[:limit])
+    return f"{shown}, ... ({len(values)} total)"
+
+
+def granularity_sort_key(value: str) -> tuple[int, str]:
+    order = {"s": 0, "m": 1, "l": 2, "xl": 3}
+    return (order.get(value, len(order)), value)
+
+
 def group_rows(rows: list[dict[str, str]], keys: list[str]) -> dict[str, list[dict[str, str]]]:
     grouped: dict[str, list[dict[str, str]]] = {}
     for row in rows:
@@ -312,6 +459,15 @@ def place_legend_outside(axis) -> None:
 
 def to_float(value: Any) -> float:
     return float(value)
+
+
+def to_float_or_none(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 if __name__ == "__main__":

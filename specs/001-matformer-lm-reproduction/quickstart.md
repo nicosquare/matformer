@@ -293,9 +293,46 @@ run the minimal downstream suite:
 - WinoGrande
 - OpenBookQA
 
+The preferred downstream tool is EleutherAI LM Evaluation Harness. Use the
+saved best-eval or final checkpoint path recorded in `run_summary.json` when
+one is available:
+
+```bash
+"${PYTHON_BIN:-python}" -m evaluation.downstream \
+  --config configs/dmodel256_pilot_comparison.yaml \
+  --run-id dmodel256-nested-random-001 \
+  --checkpoint-path "$OUTPUT_ROOT/dmodel256-nested-random-001/checkpoints/best_eval_step_<step>.pt" \
+  --granularity xl
+```
+
+If `lm_eval` was already run separately, convert its JSON output into this
+project's `task_results.csv` schema without relaunching evaluation:
+
+```bash
+"${PYTHON_BIN:-python}" -m evaluation.downstream \
+  --config configs/dmodel256_pilot_comparison.yaml \
+  --run-id dmodel256-nested-random-001 \
+  --output-dir "$OUTPUT_ROOT/dmodel256-nested-random-001" \
+  --results-json "$OUTPUT_ROOT/dmodel256-nested-random-001/lm_eval_results.json" \
+  --granularity xl
+```
+
+After downstream task rows exist for the runs you want to compare, regenerate
+scaling figures and the medium trend report from the structured artifacts:
+
+```bash
+"${PYTHON_BIN:-python}" scripts/make_figures.py \
+  --input "$OUTPUT_ROOT" \
+  --output "$OUTPUT_ROOT/figures"
+```
+
 Expected result:
 - `task_results.csv` records per-task metrics.
-- `scaling_results.csv` records average downstream accuracy.
+- `scaling_results.csv` records loss, perplexity, parameter counts, sampling
+  mode, checkpoint path, and mismatch notes for each plotted point.
+- `scripts/make_figures.py` reads `scaling_results.csv` and `task_results.csv`
+  to generate `loss_vs_size.png`, `ppl_vs_size.png`, `accuracy_vs_size.png`,
+  and `medium_trend_report.md`.
 
 ## 7. Add Consistency and Speculative Evaluations
 

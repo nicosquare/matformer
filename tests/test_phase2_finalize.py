@@ -25,6 +25,7 @@ from utils.metrics import (
     write_consistency_results_csv,
     write_run_summary,
     write_scaling_results_csv,
+    write_task_results_csv,
 )
 
 
@@ -294,10 +295,115 @@ def test_make_figures_reads_csv_artifacts(tmp_path):
     figure_paths = generate_figures(tmp_path, tmp_path / "figures")
 
     figure_names = {path.name for path in figure_paths}
-    assert {"loss_vs_size.png", "ppl_vs_size.png", "consistency_vs_size.png"} <= figure_names
+    assert {
+        "loss_vs_size.png",
+        "ppl_vs_size.png",
+        "accuracy_vs_size.png",
+        "consistency_vs_size.png",
+        "medium_trend_report.md",
+    } <= figure_names
     for path in figure_paths:
         assert path.exists()
         assert path.stat().st_size > 0
+
+
+def test_make_figures_aggregates_task_results_for_accuracy_plot(tmp_path):
+    run_dir = tmp_path / "dmodel256-nested-random-001"
+    write_scaling_results_csv(
+        run_dir,
+        [
+            {
+                "comparison_id": "dmodel256-s",
+                "run_id": "dmodel256-nested-random-001",
+                "model_family": "nested",
+                "sampling_mode": "nested-random",
+                "model_shape_label": "dmodel256",
+                "table_reference_label": "matlm_78m",
+                "completion_label": "reduced-token-pilot",
+                "granularity": "s",
+                "total_parameters": 1000,
+                "embedding_parameters": 100,
+                "lm_head_parameters": 100,
+                "non_embedding_parameters": 800,
+                "loss": 2.0,
+                "perplexity": 7.4,
+                "average_downstream_accuracy": None,
+            },
+            {
+                "comparison_id": "dmodel256-xl",
+                "run_id": "dmodel256-nested-random-001",
+                "model_family": "nested",
+                "sampling_mode": "nested-random",
+                "model_shape_label": "dmodel256",
+                "table_reference_label": "matlm_78m",
+                "completion_label": "reduced-token-pilot",
+                "granularity": "xl",
+                "total_parameters": 2000,
+                "embedding_parameters": 100,
+                "lm_head_parameters": 100,
+                "non_embedding_parameters": 1800,
+                "loss": 1.5,
+                "perplexity": 4.5,
+                "average_downstream_accuracy": None,
+            },
+        ],
+    )
+    write_task_results_csv(
+        run_dir,
+        [
+            {
+                "run_id": "dmodel256-nested-random-001",
+                "suite_id": "minimal-downstream",
+                "task": "hellaswag",
+                "model_family": "nested",
+                "sampling_mode": "nested-random",
+                "model_shape_label": "dmodel256",
+                "table_reference_label": "matlm_78m",
+                "granularity": "s",
+                "metric_name": "accuracy",
+                "metric_value": 0.2,
+            },
+            {
+                "run_id": "dmodel256-nested-random-001",
+                "suite_id": "minimal-downstream",
+                "task": "piqa",
+                "model_family": "nested",
+                "sampling_mode": "nested-random",
+                "model_shape_label": "dmodel256",
+                "table_reference_label": "matlm_78m",
+                "granularity": "s",
+                "metric_name": "accuracy",
+                "metric_value": 0.4,
+            },
+            {
+                "run_id": "dmodel256-nested-random-001",
+                "suite_id": "minimal-downstream",
+                "task": "hellaswag",
+                "model_family": "nested",
+                "sampling_mode": "nested-random",
+                "model_shape_label": "dmodel256",
+                "table_reference_label": "matlm_78m",
+                "granularity": "xl",
+                "metric_name": "accuracy",
+                "metric_value": 0.8,
+            },
+        ],
+    )
+
+    figure_paths = generate_figures(
+        tmp_path,
+        tmp_path / "figures",
+        refresh_counts=False,
+    )
+
+    figure_names = {path.name for path in figure_paths}
+    assert "accuracy_vs_size.png" in figure_names
+    assert "medium_trend_report.md" in figure_names
+    report = (tmp_path / "figures" / "medium_trend_report.md").read_text(
+        encoding="utf-8"
+    )
+    assert "average_downstream_accuracy: 0.8" in report
+    assert "nested-random / xl / dmodel256-nested-random-001" in report
 
 
 def test_make_figures_refreshes_parameter_counts_from_run_config(tmp_path):
