@@ -305,8 +305,8 @@ heterogeneous layer pattern, then write `consistency_results.csv`.
 
 ### Verification for User Story 4
 
-- [ ] T052 [P] [US4] Add token-level agreement metric checks in `tests/test_consistency.py`
-- [ ] T053 [P] [US4] Add mix-and-match pattern validation checks in `tests/test_consistency.py`
+- [X] T052 [P] [US4] Add token-level agreement metric checks in `tests/test_consistency.py`
+- [X] T053 [P] [US4] Add mix-and-match pattern validation checks in `tests/test_consistency.py`
 
 ### Implementation for User Story 4
 
