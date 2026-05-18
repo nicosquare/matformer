@@ -312,8 +312,8 @@ heterogeneous layer pattern, then write `consistency_results.csv`.
 
 - [X] T054 [US4] Implement token-level argmax agreement in `evaluation/consistency.py`
 - [X] T055 [US4] Implement top-k overlap output fields and explicit deferred-metric notes for KL divergence in `evaluation/consistency.py`
-- [ ] T056 [US4] Implement mix-and-match layer granularity configuration in `modified_llama.py`
-- [ ] T057 [US4] Add consistency and mix-and-match config values to `configs/consistency.yaml`
+- [X] T056 [US4] Implement mix-and-match layer granularity configuration in `modified_llama.py`
+- [X] T057 [US4] Add consistency and mix-and-match config values to `configs/consistency.yaml`
 - [ ] T058 [US4] Write `consistency_results.csv` rows through `utils/metrics.py`
 - [ ] T059 [US4] Extend `scripts/make_figures.py` to generate consistency_vs_size plots from `consistency_results.csv`
 

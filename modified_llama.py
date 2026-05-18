@@ -65,6 +65,21 @@ def get_ffn_prefix_metadata(intermediate_size):
         )
     return metadata
 
+
+def expand_layer_granularity_pattern(layer_granularities, num_layers):
+    if not isinstance(layer_granularities, (list, tuple)) or not layer_granularities:
+        raise ValueError("layer_granularities must be a non-empty list or tuple")
+    if num_layers <= 0:
+        raise ValueError("num_layers must be positive")
+
+    expanded = []
+    for layer_index in range(num_layers):
+        granularity = layer_granularities[layer_index % len(layer_granularities)]
+        get_granularity_metadata(granularity)
+        expanded.append(granularity)
+    return expanded
+
+
 class ModifiedLlamaMLP(LlamaMLP):
     def __init__(self, config):
         super().__init__(config)
@@ -132,13 +147,27 @@ class ModifiedLlamaForCausalLM(LlamaForCausalLM):
         super().__init__(config)
         self.granularity_order = MATFORMER_GRANULARITY_ORDER
         self.ffn_prefix_metadata = get_ffn_prefix_metadata(config.intermediate_size)
+        self.matformer_layers = []
+        self.current_layer_granularities = None
 
         # Replace FFN in each layer with ModifiedFFN
         for layer_idx in range(config.num_hidden_layers):
-            self.model.layers[layer_idx].mlp = ModifiedLlamaMLP(config)
+            mlp = ModifiedLlamaMLP(config)
+            self.model.layers[layer_idx].mlp = mlp
+            self.matformer_layers.append(mlp)
 
     def configure_subnetwork(self, flag):
         """Configure the subnetwork for all layers based on the flag."""
-        for module in self.modules():
-            if isinstance(module, ModifiedLlamaMLP):
-                module.configure_subnetwork(flag)
+        self.current_layer_granularities = [flag] * len(self.matformer_layers)
+        for layer in self.matformer_layers:
+            layer.configure_subnetwork(flag)
+
+    def configure_layer_granularities(self, layer_granularities):
+        """Configure a repeating or explicit granularity pattern across layers."""
+        expanded_pattern = expand_layer_granularity_pattern(
+            layer_granularities,
+            len(self.matformer_layers),
+        )
+        self.current_layer_granularities = expanded_pattern
+        for layer, granularity in zip(self.matformer_layers, expanded_pattern):
+            layer.configure_subnetwork(granularity)

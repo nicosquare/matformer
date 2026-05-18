@@ -21,6 +21,7 @@ VALID_CONSISTENCY_METRICS = {
     "distribution_divergence",
     "top_k_overlap",
 }
+VALID_DEFERRED_METRICS = {"kl_divergence"}
 
 
 def load_consistency_config(path="configs/consistency.yaml"):
@@ -64,12 +65,29 @@ def validate_mix_and_match_patterns(patterns):
         )
 
 
+def validate_top_k_values(top_k_values):
+    assert isinstance(top_k_values, list) and top_k_values, (
+        "consistency.top_k_values must be non-empty"
+    )
+    assert all(isinstance(value, int) and value > 0 for value in top_k_values)
+
+
+def validate_deferred_metrics(metrics):
+    assert isinstance(metrics, list), "consistency.deferred_metrics must be a list"
+    unknown_metrics = [metric for metric in metrics if metric not in VALID_DEFERRED_METRICS]
+    assert not unknown_metrics, f"unknown deferred metrics: {unknown_metrics}"
+
+
 def test_consistency_config_includes_token_level_agreement_metric():
     config = load_consistency_config()
 
     assert config["run"]["phase_id"] == "consistency"
     validate_consistency_metrics(config["consistency"]["metrics"])
     assert "token_level_agreement" in config["consistency"]["metrics"]
+    assert "top_k_overlap" in config["consistency"]["metrics"]
+    validate_top_k_values(config["consistency"]["top_k_values"])
+    validate_deferred_metrics(config["consistency"]["deferred_metrics"])
+    assert "kl_divergence" in config["consistency"]["deferred_metrics"]
     assert config["consistency"]["sample_count"] > 0
     validate_consistency_pairs(config["consistency"]["pairs"])
 

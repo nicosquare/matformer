@@ -6,6 +6,7 @@ from modified_llama import (
     MATFORMER_GRANULARITY_ORDER,
     ModifiedLlamaForCausalLM,
     ModifiedLlamaMLP,
+    expand_layer_granularity_pattern,
     get_ffn_prefix_metadata,
     granularity_prefix_width,
 )
@@ -98,3 +99,28 @@ def test_model_configures_all_layer_prefixes():
     ]
     assert layer_widths == [16, 16]
     assert model.ffn_prefix_metadata[-1]["prefix_width"] == config.intermediate_size
+
+
+def test_layer_granularity_pattern_repeats_across_model_layers():
+    config = tiny_llama_config(num_hidden_layers=4)
+    model = ModifiedLlamaForCausalLM(config)
+
+    model.configure_layer_granularities(["xl", "s"])
+
+    assert model.current_layer_granularities == ["xl", "s", "xl", "s"]
+    assert [
+        layer.current_granularity for layer in model.matformer_layers
+    ] == ["xl", "s", "xl", "s"]
+    assert [
+        layer.current_subset_hd for layer in model.matformer_layers
+    ] == [64, 8, 64, 8]
+
+
+def test_layer_granularity_pattern_rejects_unknown_granularity():
+    with pytest.raises(ValueError, match="Unknown MatFormer granularity"):
+        expand_layer_granularity_pattern(["xl", "tiny"], num_layers=4)
+
+
+def test_layer_granularity_pattern_must_be_non_empty():
+    with pytest.raises(ValueError, match="non-empty"):
+        expand_layer_granularity_pattern([], num_layers=4)
