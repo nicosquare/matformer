@@ -256,7 +256,6 @@ def lm_eval_results_to_task_rows(
                 "model_family": run["model_family"],
                 "model_size_label": _model_shape_label(run),
                 "model_shape_label": _model_shape_label(run),
-                "table_reference_label": run.get("table_reference_label"),
                 "sampling_mode": _sampling_mode(run, config.get("training", {})),
                 "granularity": granularity or run.get("granularity"),
                 "metric_name": suite["metric_name"],

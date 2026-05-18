@@ -1,12 +1,11 @@
 # d_model=256 MatFormer-Llama/SwiGLU pilot comparison using a reduced
-# training-token budget and the MatLM 78M table row as a reference.
+# training-token budget.
 run:
   run_id: dmodel256-pilot-comparison-001
   phase_id: dmodel256_pilot_comparison
   model_family: nested
   sampling_mode: nested-random
   model_shape_label: dmodel256
-  table_reference_label: matlm_78m
   completion_label: reduced-token-pilot
   seed: 42
   output_root: outputs
@@ -14,7 +13,6 @@ run:
 model:
   base_model_name: dmodel256-matformer-llama-swiglu
   tokenizer_name: hf-internal-testing/llama-tokenizer
-  paper_alignment_claim: false
   d_model: 256
   num_layers: 16
   num_attention_heads: 16
@@ -27,14 +25,9 @@ model:
     m: 0.25
     l: 0.5
     xl: 1.0
-  mismatch_notes:
-    - MatFormer-Llama/SwiGLU implementation uses gated FFN layers and is not an exact MatLM table architecture match.
-    - LM-head parameters are counted separately from non-embedding parameters, unlike some paper table conventions.
-    - Reduced-token pilot uses fewer than the MatLM 78M table-row 10B-token budget.
 
 training:
   token_budget: 100000000
-  paper_token_budget: 10000000000
   max_steps_cap: null
   batch_size_per_process: 8
   learning_rate: 0.0001

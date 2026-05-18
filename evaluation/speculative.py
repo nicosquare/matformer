@@ -378,8 +378,6 @@ def evaluate_speculative_pair(
         "model_shape_label": draft_summary.get("model_shape_label")
         or draft_run.get("model_shape_label")
         or draft_run.get("model_size_label"),
-        "table_reference_label": draft_summary.get("table_reference_label")
-        or draft_run.get("table_reference_label"),
         **metrics,
     }
 

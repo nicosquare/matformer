@@ -360,7 +360,6 @@ def test_evaluate_speculative_pair_uses_generator_metrics():
                 "summary": {
                     "sampling_mode": "nested-random",
                     "model_shape_label": "dmodel256",
-                    "table_reference_label": "matlm_78m",
                 },
             },
             "model": object(),
@@ -374,7 +373,6 @@ def test_evaluate_speculative_pair_uses_generator_metrics():
                 "summary": {
                     "sampling_mode": "nested-random",
                     "model_shape_label": "dmodel256",
-                    "table_reference_label": "matlm_78m",
                 },
             },
             "model": object(),
@@ -422,7 +420,6 @@ def test_build_speculative_task_rows_serializes_pair_metrics():
                 "verifier_granularity": "xl",
                 "sampling_mode": "nested-random",
                 "model_shape_label": "dmodel256",
-                "table_reference_label": "matlm_78m",
                 "acceptance_rate": 0.5,
                 "rollback_frequency": 1.0,
                 "throughput": 2.0,
@@ -468,7 +465,6 @@ def test_run_speculative_evaluation_writes_task_results_csv(tmp_path):
                 "nested-random" if pair["pair_type"] == "nested" else "standalone"
             ),
             "model_shape_label": "dmodel256",
-            "table_reference_label": "matlm_78m",
             "acceptance_rate": 0.5,
             "rollback_frequency": 1.0,
             "throughput": 2.0,
@@ -486,6 +482,6 @@ def test_run_speculative_evaluation_writes_task_results_csv(tmp_path):
     rows = task_results_path.read_text(encoding="utf-8").strip().splitlines()
     assert rows[0] == (
         "run_id,suite_id,task,model_family,model_size_label,model_shape_label,"
-        "table_reference_label,sampling_mode,granularity,metric_name,metric_value"
+        "sampling_mode,granularity,metric_name,metric_value"
     )
     assert len(rows) == 1 + 2 * len(config["metrics"])

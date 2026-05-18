@@ -17,8 +17,7 @@ VALID_MODEL_FAMILIES = {"nested", "standalone"}
 VALID_COMPLETION_LABELS = {
     "debug",
     "reduced-token-pilot",
-    "matlm-10b-budget-reference",
-    "paper-budget-complete",
+    "full-token-budget",
 }
 VALID_GRANULARITY_SAMPLING = {"all", "random"}
 VALID_SAMPLING_MODES = {"nested-random", "nested-all", "standalone"}
@@ -29,13 +28,7 @@ GRANULARITY_INTERMEDIATE_FRACTIONS = {
     "xl": (1, 1),
 }
 
-PAPER_78M_TOKEN_BUDGET = 10_000_000_000
-PAPER_ALIGNED_ARCHITECTURE = {
-    "num_layers": 16,
-    "num_attention_heads": 16,
-    "context_length": 1024,
-    "vocab_size_assumption": 256000,
-}
+FULL_TOKEN_BUDGET = 10_000_000_000
 
 
 class ConfigError(ValueError):
@@ -241,12 +234,7 @@ def attach_parameter_counts_to_config(
         counts_by_granularity,
     )
     if selected_counts is not None:
-        parameter_counts = copy.deepcopy(dict(selected_counts))
-        parameter_counts["mismatch_notes"] = _parameter_mismatch_notes(
-            config,
-            parameter_counts,
-        )
-        config["parameter_counts"] = parameter_counts
+        config["parameter_counts"] = copy.deepcopy(dict(selected_counts))
 
     _resolve_parameter_reporting_defaults(config)
 
@@ -293,11 +281,6 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         model,
         "model",
         ["d_model", "hidden_size"],
-    )
-    _require_one_of_fields(
-        model,
-        "model",
-        ["paper_alignment_claim", "paper_aligned"],
     )
     _require_fields(
         training,
@@ -359,18 +342,6 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             f"{sorted(VALID_GRANULARITY_SAMPLING)}"
         )
     _validate_sampling_mode(run, granularity_sampling)
-
-    paper_alignment_claim = model.get(
-        "paper_alignment_claim",
-        model.get("paper_aligned", False),
-    )
-    if paper_alignment_claim:
-        for field_name, expected_value in PAPER_ALIGNED_ARCHITECTURE.items():
-            if model.get(field_name) != expected_value:
-                raise ConfigError(
-                    f"paper-alignment claims require model.{field_name}="
-                    f"{expected_value}, got {model.get(field_name)}"
-                )
 
     _validate_dmodel256_pilot_fields(run, model, training, completion_label)
 
@@ -436,13 +407,6 @@ def _apply_run_granularities(config: dict[str, Any]) -> None:
 
 def _model_shape_label(run: Mapping[str, Any]) -> str | None:
     label = run.get("model_shape_label", run.get("model_size_label"))
-    if label is None:
-        return None
-    return str(label)
-
-
-def _table_reference_label(run: Mapping[str, Any]) -> str | None:
-    label = run.get("table_reference_label")
     if label is None:
         return None
     return str(label)
@@ -520,27 +484,20 @@ def _validate_dmodel256_pilot_fields(
     completion_label: str,
 ) -> None:
     model_shape_label = _model_shape_label(run)
-    table_reference_label = _table_reference_label(run)
     is_legacy_78m = str(run.get("model_size_label")) == "78m"
-    is_dmodel256_pilot = (
-        model_shape_label == "dmodel256"
-        or table_reference_label == "matlm_78m"
-        or is_legacy_78m
-    )
+    is_dmodel256_pilot = model_shape_label == "dmodel256" or is_legacy_78m
     if not is_dmodel256_pilot:
         return
 
     token_budget = training["token_budget"]
-    if token_budget < PAPER_78M_TOKEN_BUDGET:
+    if token_budget < FULL_TOKEN_BUDGET:
         expected_label = "reduced-token-pilot"
-    elif is_legacy_78m:
-        expected_label = "paper-budget-complete"
     else:
-        expected_label = "matlm-10b-budget-reference"
+        expected_label = "full-token-budget"
 
     if completion_label != expected_label:
         raise ConfigError(
-            f"{model_shape_label or '78m'} token_budget={token_budget} "
+            f"{model_shape_label or 'legacy-model'} token_budget={token_budget} "
             f"requires completion_label={expected_label}"
         )
 
@@ -560,18 +517,6 @@ def _validate_dmodel256_pilot_fields(
         if _positive_int(model["d_model"], "model.d_model") != 256:
             raise ConfigError("model_shape_label=dmodel256 requires model.d_model=256")
         _validate_granularity_prefixes(model["granularity_prefixes"])
-
-    paper_alignment_claim = model.get(
-        "paper_alignment_claim",
-        model.get("paper_aligned", False),
-    )
-    if table_reference_label and not paper_alignment_claim:
-        mismatch_notes = model.get("mismatch_notes")
-        if not isinstance(mismatch_notes, list) or not mismatch_notes:
-            raise ConfigError(
-                "table_reference_label requires non-empty model.mismatch_notes "
-                "unless paper_alignment_claim=true"
-            )
 
 
 def _validate_granularity_prefixes(prefixes: Any) -> None:
@@ -652,11 +597,6 @@ def _resolve_parameter_reporting_defaults(config: dict[str, Any]) -> None:
         raise ConfigError("parameter_reporting must be a mapping when provided")
 
     reporting.setdefault("lm_head_counting", "separately_counted")
-    reporting.setdefault("paper_total_parameters", None)
-    reporting.setdefault("paper_non_embedding_parameters", None)
-    reporting.setdefault("paper_ffn_parameters", None)
-    reporting.setdefault("paper_attention_parameters", None)
-    reporting.setdefault("mismatch_notes", _parameter_mismatch_notes(config))
 
 
 def _select_representative_parameter_counts(
@@ -678,31 +618,6 @@ def _select_representative_parameter_counts(
             return counts_by_granularity[str(granularity)]
 
     return next(iter(counts_by_granularity.values()), None)
-
-
-def _parameter_mismatch_notes(
-    config: Mapping[str, Any],
-    parameter_counts: Mapping[str, Any] | None = None,
-) -> list[str]:
-    notes: list[str] = []
-    model = config.get("model", {})
-    reporting = config.get("parameter_reporting", {})
-
-    notes.extend(str(note) for note in model.get("mismatch_notes", []) if note)
-    if isinstance(reporting, Mapping):
-        notes.extend(str(note) for note in reporting.get("mismatch_notes", []) if note)
-    if parameter_counts is not None:
-        notes.extend(
-            str(note)
-            for note in parameter_counts.get("mismatch_notes", [])
-            if note
-        )
-
-    deduplicated_notes: list[str] = []
-    for note in notes:
-        if note not in deduplicated_notes:
-            deduplicated_notes.append(note)
-    return deduplicated_notes
 
 
 def resolve_training_length_for_world_size(

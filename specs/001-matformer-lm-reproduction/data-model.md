@@ -1,4 +1,4 @@
-# Data Model: MatFormer Language Model Reproduction
+# Data Model: MatFormer Language Model Workflow
 
 ## ReproductionPhase
 
@@ -24,7 +24,7 @@ Represents a planned scale of work.
 - `debug_matrix` requires nested and standalone coverage for all four
   granularities.
 - `dmodel256_pilot_comparison` must identify whether each run is a
-  reduced-token pilot or uses the MatLM table-row 10B-token budget reference.
+  reduced-token pilot or uses the full 10B-token budget.
 - `dmodel256_pilot_comparison` defaults to `nested-random`, `nested-all`, and
   standalone S/M/L/XL rows where compute allows; omitted rows must be explicit.
 
@@ -80,10 +80,6 @@ Represents debug, pilot, or later scaling shape targets.
 **Fields**
 - `model_shape_label`: Stable implementation label such as `debug` or
   `dmodel256`.
-- `table_reference_label`: Optional paper table reference such as `matlm_78m`.
-- `paper_alignment_claim`: Boolean; false unless the actual implementation
-  matches the cited architecture, parameter-count convention, and training
-  behavior.
 - `d_model`: Transformer hidden size.
 - `num_layers`: Transformer layer count.
 - `num_attention_heads`: Attention-head count.
@@ -93,19 +89,15 @@ Represents debug, pilot, or later scaling shape targets.
   fractions.
 - `training_token_budget`: Planned token budget.
 - `completion_label`: `debug`, `reduced-token-pilot`, or
-  `matlm-10b-budget-reference`.
-- `mismatch_notes`: Known deviations from the table reference.
+  `full-token-budget`.
 
 **Validation Rules**
 - Pilot artifacts must preserve explicit shape fields rather than relying on a
   single model-size label.
-- `model_shape_label=dmodel256` with fewer than the MatLM table-row 10B-token
-  budget is `reduced-token-pilot`.
-- `model_shape_label=dmodel256` with the MatLM table-row 10B-token budget uses
-  `completion_label=matlm-10b-budget-reference`.
-- Any exact paper-alignment claim requires matching architecture, parameter
-  count convention, and training behavior; otherwise mismatch notes are
-  required when a table reference is present.
+- `model_shape_label=dmodel256` with fewer than the full 10B-token budget is
+  `reduced-token-pilot`.
+- `model_shape_label=dmodel256` with the full 10B-token budget uses
+  `completion_label=full-token-budget`.
 
 ## DatasetPlan
 
@@ -207,8 +199,7 @@ Represents one train/eval execution.
 
 ## ParameterCountReport
 
-Captures actual implementation parameter counts and table-reference mismatch
-notes.
+Captures actual implementation parameter counts.
 
 **Fields**
 - `parameter_report_id`: Unique id.
@@ -223,18 +214,10 @@ notes.
 - `other_non_embedding_parameters`: Optional remaining non-embedding count when
   feasible.
 - `lm_head_counting`: `tied`, `untied`, `excluded`, or `separately_counted`.
-- `paper_total_parameters`: Optional paper table total reference.
-- `paper_non_embedding_parameters`: Optional paper table non-embedding
-  reference.
-- `paper_ffn_parameters`: Optional paper table FFN reference.
-- `mismatch_notes`: Known differences in architecture, counting convention, or
-  table assumptions.
 
 **Validation Rules**
 - Actual implementation count fields are required for pilot resolved configs,
   run summaries, scaling rows, and comparison artifacts.
-- Paper table count fields are references only and must not replace actual
-  implementation counts.
 - `lm_head_counting` is required whenever any total or non-embedding count is
   reported.
 

@@ -127,7 +127,7 @@ Check:
 - No required metric appears only in terminal logs.
 - Every plot can be traced to CSV inputs.
 - Baseline matches expose dataset, token budget, model shape labels, sampling
-  mode, parameter counts, and mismatch notes.
+  mode, and parameter counts.
 
 ## 5. Run d_model=256 Pilot Comparison
 
@@ -138,12 +138,11 @@ PYTHON_BIN=/home/nicolas.avila/.conda/envs/elasticnn/bin/python \
 ```
 
 Expected result:
-- The pilot is labeled as d_model=256 MatFormer-Llama/SwiGLU with optional
-  `table_reference_label=matlm_78m`, not as an exact MatLM-paper reproduction.
+- The pilot is labeled by explicit d_model=256 shape fields and sampling mode.
 - The dataset resolves to `HuggingFaceFW/fineweb` with the `sample-10BT`
   configuration.
-- Runs are labeled `reduced-token-pilot` unless they use the MatLM table-row
-  10B-token budget reference.
+- Runs are labeled `reduced-token-pilot` for capped pilot budgets and
+  `full-token-budget` for the full 10B-token budget.
 - The resolved config records `effective_world_size`,
   `expected_tokens_per_step`, `derived_max_steps`, and the effective
   `max_steps`.
@@ -153,7 +152,7 @@ Expected result:
   requested.
 - Outputs record actual tokens seen, target token budget, `stop_reason`,
   sampling mode, actual parameter-count components, LM-head counting
-  convention, checkpoint status/path, and mismatch notes.
+  convention, and checkpoint status/path.
 
 Queue this on a GPU node rather than the login node. For a short scheduler and
 artifact-path check, keep the d_model=256 pilot config but cap the derived step
@@ -177,8 +176,8 @@ The default comparison run id prefix is `dmodel256-pilot-comparison`. The
 runner launches `nested-random` and `nested-all`, then records standalone S/M/L/XL
 as omitted comparison rows when compute is capped. Those omitted rows include
 `run_status=omitted`, an `omit_reason`, `checkpoint_status=unavailable`, a null
-checkpoint path, and mismatch notes so downstream phases can distinguish
-planned-but-not-run baselines from missing metadata.
+checkpoint path, so downstream phases can distinguish planned-but-not-run
+baselines from missing metadata.
 
 Use `--output-root` for an explicit root, pass
 `--override training.max_steps_cap=...` only for intentionally short runs, and
@@ -329,7 +328,7 @@ scaling figures and the medium trend report from the structured artifacts:
 Expected result:
 - `task_results.csv` records per-task metrics.
 - `scaling_results.csv` records loss, perplexity, parameter counts, sampling
-  mode, checkpoint path, and mismatch notes for each plotted point.
+  mode, and checkpoint path for each plotted point.
 - `scripts/make_figures.py` reads `scaling_results.csv` and `task_results.csv`
   to generate `loss_vs_size.png`, `ppl_vs_size.png`, `accuracy_vs_size.png`,
   and `medium_trend_report.md`.
@@ -352,3 +351,17 @@ Expected result:
 - The default speculative config uses the inline debug prompt set in
   `configs/speculative.yaml`; replace `prompt_set.prompts` or set
   `prompt_set.path` to evaluate a different prompt source.
+
+## 8. Phase Coverage
+
+Use the generated artifacts with this division of responsibility:
+- Phase 3 and Phase 4 produce training artifacts, summaries, checkpoints, and
+  comparison rows.
+- Phase 5 reuses saved checkpoints for downstream evaluation, then regenerates
+  scaling plots and reports from CSV artifacts.
+- Phase 6 reloads completed run artifacts and checkpoints to measure
+  consistency across granularities or layer-pattern mixes.
+- Phase 7 reloads completed run artifacts and checkpoints to evaluate
+  speculative draft/verifier pairs on a shared prompt set.
+- Phase 8 keeps the docs, smoke checks, and artifact contracts aligned with the
+  implementation so later runs do not depend on terminal-only state.

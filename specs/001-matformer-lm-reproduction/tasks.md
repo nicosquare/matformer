@@ -356,12 +356,12 @@ throughput, and latency artifacts.
 **Purpose**: Tighten documentation, reproducibility, and artifact quality across
 all completed stories.
 
-- [ ] T068 Run focused smoke checks from `specs/001-matformer-lm-reproduction/quickstart.md`
-- [ ] T069 Update run output examples and caveats in `README.md`
-- [ ] T070 Verify all generated plots are reproducible from CSV inputs in `scripts/make_figures.py`
-- [ ] T071 Remove unnecessary abstraction or unused helpers from `training/`, `evaluation/`, and `utils/`
-- [ ] T072 Confirm no required metrics are terminal-only by inspecting `outputs/` and `utils/metrics.py`
-- [ ] T073 Update final phase coverage notes in `specs/001-matformer-lm-reproduction/quickstart.md`
+- [X] T068 Run focused smoke checks from `specs/001-matformer-lm-reproduction/quickstart.md`
+- [X] T069 Update run output examples and caveats in `README.md`
+- [X] T070 Verify all generated plots are reproducible from CSV inputs in `scripts/make_figures.py`
+- [X] T071 Remove unnecessary abstraction or unused helpers from `training/`, `evaluation/`, and `utils/`
+- [X] T072 Confirm no required metrics are terminal-only by inspecting `outputs/` and `utils/metrics.py`
+- [X] T073 Update final phase coverage notes in `specs/001-matformer-lm-reproduction/quickstart.md`
 
 ---
 

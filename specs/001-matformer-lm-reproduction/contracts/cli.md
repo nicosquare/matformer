@@ -60,13 +60,11 @@ Required behavior:
   where compute allows.
 - Allow smoke/debug invocations that select one mode through an explicit mode
   argument.
-- Label the pilot as d_model=256 MatFormer-Llama/SwiGLU with optional
-  `table_reference_label=matlm_78m`, not as an exact MatLM-paper reproduction.
-- Label the run `reduced-token-pilot` unless it uses the MatLM table-row
-  10B-token budget reference.
+- Label the pilot with explicit d_model=256 shape fields and sampling mode.
+- Label the run `reduced-token-pilot` unless it uses the full 10B-token
+  budget, in which case it is `full-token-budget`.
 - Write explicit shape fields, token-budget labels, sampling mode, actual
-  parameter counts, LM-head counting convention, and mismatch notes into
-  summaries.
+  parameter counts, and LM-head counting convention into summaries.
 - Accept the same output-root controls as the debug matrix runner.
 
 ## Queue d_model=256 Pilot Comparison On Slurm

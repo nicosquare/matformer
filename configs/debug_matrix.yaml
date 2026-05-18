@@ -7,7 +7,6 @@ run:
 model:
   base_model_name: debug-llama
   tokenizer_name: hf-internal-testing/llama-tokenizer
-  paper_aligned: false
   num_layers: 2
   num_attention_heads: 4
   hidden_size: 128

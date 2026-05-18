@@ -17,7 +17,6 @@ METRICS_COLUMNS = [
     "model_family",
     "model_size_label",
     "model_shape_label",
-    "table_reference_label",
     "sampling_mode",
     "granularity",
     "loss",
@@ -36,7 +35,6 @@ TASK_RESULTS_COLUMNS = [
     "model_family",
     "model_size_label",
     "model_shape_label",
-    "table_reference_label",
     "sampling_mode",
     "granularity",
     "metric_name",
@@ -49,7 +47,6 @@ SCALING_RESULTS_COLUMNS = [
     "model_family",
     "model_size_label",
     "model_shape_label",
-    "table_reference_label",
     "sampling_mode",
     "completion_label",
     "granularity",
@@ -69,7 +66,6 @@ SCALING_RESULTS_COLUMNS = [
     "other_non_embedding_parameters",
     "lm_head_counting",
     "checkpoint_path",
-    "mismatch_notes",
     "loss",
     "perplexity",
     "average_downstream_accuracy",
@@ -92,7 +88,6 @@ RUN_SUMMARY_FIELDS = [
     "model_family",
     "model_size_label",
     "model_shape_label",
-    "table_reference_label",
     "sampling_mode",
     "completion_label",
     "dataset_name",
@@ -108,8 +103,6 @@ RUN_SUMMARY_FIELDS = [
     "status",
     "output_root",
     "output_dir",
-    "paper_aligned",
-    "paper_alignment_claim",
     "d_model",
     "num_layers",
     "num_attention_heads",
@@ -124,7 +117,6 @@ RUN_SUMMARY_FIELDS = [
     "checkpoint_metric_value",
     "checkpoint_selection_step",
     "checkpoint_unavailable_reason",
-    "mismatch_notes",
     "notes",
 ]
 
@@ -189,7 +181,6 @@ def build_run_summary(
         "model_family": run["model_family"],
         "model_size_label": _model_shape_label(run),
         "model_shape_label": _model_shape_label(run),
-        "table_reference_label": run.get("table_reference_label"),
         "sampling_mode": _sampling_mode(run, training),
         "completion_label": run["completion_label"],
         "dataset_name": dataset["dataset_name"],
@@ -205,8 +196,6 @@ def build_run_summary(
         "status": status,
         "output_root": run["output_root"],
         "output_dir": run["output_dir"],
-        "paper_aligned": _paper_alignment_claim(model),
-        "paper_alignment_claim": _paper_alignment_claim(model),
         "d_model": model.get("d_model", model.get("hidden_size")),
         "num_layers": model.get("num_layers"),
         "num_attention_heads": model.get("num_attention_heads"),
@@ -227,11 +216,6 @@ def build_run_summary(
                 "save_checkpoints",
                 False,
             ),
-        ),
-        "mismatch_notes": _mismatch_notes(
-            config.get("parameter_reporting", {}),
-            model,
-            config.get("parameter_counts") or {},
         ),
         "notes": list(notes or []),
     }
@@ -505,7 +489,6 @@ def build_scaling_result_rows(
                 "model_family": run["model_family"],
                 "model_size_label": _model_shape_label(run),
                 "model_shape_label": _model_shape_label(run),
-                "table_reference_label": run.get("table_reference_label"),
                 "sampling_mode": _sampling_mode(run, training),
                 "completion_label": run["completion_label"],
                 "granularity": granularity,
@@ -534,11 +517,6 @@ def build_scaling_result_rows(
                 ),
                 "lm_head_counting": parameter_counts.get("lm_head_counting"),
                 "checkpoint_path": None,
-                "mismatch_notes": _mismatch_notes(
-                    config.get("parameter_reporting", {}),
-                    model,
-                    parameter_counts,
-                ),
                 "loss": metric_row["loss"],
                 "perplexity": metric_row["perplexity"],
                 "average_downstream_accuracy": None,
@@ -569,10 +547,6 @@ def build_pilot_comparison_rows(
                         "model_family": summary.get("model_family"),
                         "model_size_label": _model_shape_label(summary),
                         "model_shape_label": _model_shape_label(summary),
-                        "table_reference_label": summary.get(
-                            "table_reference_label",
-                            "matlm_78m",
-                        ),
                         "sampling_mode": summary.get("sampling_mode"),
                         "completion_label": summary.get(
                             "completion_label",
@@ -621,10 +595,6 @@ def build_pilot_comparison_rows(
                         ),
                         "checkpoint_path": _summary_checkpoint_path(summary),
                         "checkpoint_metric": summary.get("checkpoint_metric"),
-                        "mismatch_notes": _mismatch_notes(
-                            summary,
-                            parameter_counts,
-                        ),
                     }
                 )
             )
@@ -651,10 +621,6 @@ def build_pilot_comparison_rows(
                         "model_shape_label",
                         "dmodel256",
                     ),
-                    "table_reference_label": omitted_row.get(
-                        "table_reference_label",
-                        "matlm_78m",
-                    ),
                     "sampling_mode": omitted_row.get(
                         "sampling_mode",
                         "standalone",
@@ -680,10 +646,6 @@ def build_pilot_comparison_rows(
                     "checkpoint_status": "unavailable",
                     "checkpoint_path": None,
                     "checkpoint_metric": None,
-                    "mismatch_notes": _normalize_notes(
-                        omitted_row.get("mismatch_notes"),
-                        omit_reason,
-                    ),
                 }
             )
         )
@@ -711,7 +673,6 @@ def build_speculative_task_rows(
             "model_family": result["pair_type"],
             "model_size_label": result.get("model_shape_label"),
             "model_shape_label": result.get("model_shape_label"),
-            "table_reference_label": result.get("table_reference_label"),
             "sampling_mode": result.get("sampling_mode"),
             "granularity": granularity_label,
         }
@@ -849,7 +810,6 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
     defaults = {
         "model_size_label": model_shape_label,
         "model_shape_label": model_shape_label,
-        "table_reference_label": None,
         "sampling_mode": None,
         "d_model": None,
         "num_layers": None,
@@ -866,7 +826,6 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "checkpoint_path": None,
         "checkpoint_status": None,
         "checkpoint_metric": None,
-        "mismatch_notes": [],
         "run_status": normalized_row.get("status"),
         "omit_reason": None,
     }
@@ -899,31 +858,6 @@ def _sampling_mode(run: Mapping[str, Any], training: Mapping[str, Any]) -> Any:
     if granularity_sampling == "all":
         return "nested-all"
     return granularity_sampling
-
-
-def _paper_alignment_claim(model: Mapping[str, Any]) -> bool:
-    return bool(model.get("paper_alignment_claim", model.get("paper_aligned", False)))
-
-
-def _mismatch_notes(*sources: Mapping[str, Any]) -> list[str]:
-    return _normalize_notes(*(source.get("mismatch_notes") for source in sources))
-
-
-def _normalize_notes(*values: Any) -> list[str]:
-    notes: list[str] = []
-    for value in values:
-        if value in (None, ""):
-            continue
-        if isinstance(value, str):
-            notes.append(value)
-            continue
-        if isinstance(value, Mapping):
-            notes.append(json.dumps(value, sort_keys=True))
-            continue
-        for note in value:
-            if note not in (None, ""):
-                notes.append(str(note))
-    return notes
 
 
 def _summary_granularities(summary: Mapping[str, Any]) -> list[str]:

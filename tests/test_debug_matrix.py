@@ -66,7 +66,6 @@ def test_debug_nested_run_resolves_phase3_p1_contract(tmp_path):
     assert config["run"]["completion_label"] == "debug"
     assert config["run"]["output_dir"] == str(output_dir)
 
-    assert config["model"]["paper_aligned"] is False
     assert config["model"]["granularities"] == ["s", "m", "l", "xl"]
     assert config["dataset"]["dataset_phase"] == "debug"
     assert config["evaluation"]["validation"] is True

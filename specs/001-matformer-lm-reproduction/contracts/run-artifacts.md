@@ -43,7 +43,7 @@ or stderr, but they must not race to write shared run artifacts.
 Required columns:
 
 ```text
-run_id,step,split,model_family,sampling_mode,model_shape_label,table_reference_label,granularity,loss,perplexity,tokens_seen,content_tokens_seen,wall_clock_seconds,tokens_per_second,peak_memory_bytes
+run_id,step,split,model_family,model_size_label,model_shape_label,sampling_mode,granularity,loss,perplexity,tokens_seen,content_tokens_seen,wall_clock_seconds,tokens_per_second,peak_memory_bytes
 ```
 
 ## `task_results.csv`
@@ -51,7 +51,7 @@ run_id,step,split,model_family,sampling_mode,model_shape_label,table_reference_l
 Required columns:
 
 ```text
-run_id,suite_id,task,model_family,sampling_mode,model_shape_label,table_reference_label,granularity,metric_name,metric_value
+run_id,suite_id,task,model_family,model_size_label,model_shape_label,sampling_mode,granularity,metric_name,metric_value
 ```
 
 ## `scaling_results.csv`
@@ -59,7 +59,7 @@ run_id,suite_id,task,model_family,sampling_mode,model_shape_label,table_referenc
 Required columns:
 
 ```text
-comparison_id,run_id,model_family,sampling_mode,model_shape_label,table_reference_label,completion_label,granularity,d_model,num_layers,num_attention_heads,context_length,vocab_size_assumption,token_budget,effective_world_size,total_parameters,embedding_parameters,lm_head_parameters,non_embedding_parameters,ffn_parameters,attention_parameters,other_non_embedding_parameters,lm_head_counting,checkpoint_path,mismatch_notes,loss,perplexity,average_downstream_accuracy
+comparison_id,run_id,model_family,model_size_label,model_shape_label,sampling_mode,completion_label,granularity,d_model,num_layers,num_attention_heads,context_length,vocab_size_assumption,token_budget,effective_world_size,total_parameters,embedding_parameters,lm_head_parameters,non_embedding_parameters,ffn_parameters,attention_parameters,other_non_embedding_parameters,lm_head_counting,checkpoint_path,loss,perplexity,average_downstream_accuracy
 ```
 
 ## `consistency_results.csv`
@@ -79,9 +79,9 @@ Required fields:
   "run_id": "debug-nested-001",
   "phase_id": "debug_matrix",
   "model_family": "nested",
+  "model_size_label": "debug",
   "sampling_mode": "nested-all",
   "model_shape_label": "debug",
-  "table_reference_label": null,
   "completion_label": "debug",
   "d_model": 256,
   "num_layers": 4,
@@ -101,7 +101,6 @@ Required fields:
   "status": "completed",
   "output_root": "/mnt/experiments/matformer",
   "output_dir": "/mnt/experiments/matformer/debug-nested-001",
-  "paper_alignment_claim": false,
   "parameter_counts": {
     "total_parameters": 123456,
     "embedding_parameters": 32000,
@@ -110,16 +109,12 @@ Required fields:
     "ffn_parameters": 32768,
     "attention_parameters": 16384,
     "other_non_embedding_parameters": 10304,
-    "lm_head_counting": "separately_counted",
-    "paper_total_parameters": null,
-    "paper_non_embedding_parameters": null,
-    "paper_ffn_parameters": null
+    "lm_head_counting": "separately_counted"
   },
   "checkpoint_status": "best_eval",
   "best_checkpoint_path": "/mnt/experiments/matformer/debug-nested-001/checkpoints/best_eval.pt",
   "final_checkpoint_path": null,
-  "checkpoint_metric": "validation_loss",
-  "mismatch_notes": []
+  "checkpoint_metric": "validation_loss"
 }
 ```
 
@@ -185,17 +180,13 @@ either the configured step interval or elapsed-time interval is reached.
 - Slurm heartbeat output must be available both as readable stdout lines and as
   `heartbeats.jsonl` under the run output directory.
 - Plot files must list their source CSV files in `run_summary.json` or a report.
-- Any baseline mismatch must be recorded in `run_summary.json`.
 - Pilot artifacts must expose actual implementation counts for total,
   embedding, LM-head, non-embedding, and FFN parameters, plus attention and
   other non-embedding parameters when feasible.
 - Pilot artifacts must state whether the LM head is tied, untied, excluded, or
   separately counted.
-- Paper table counts, when present, are reference fields and must not replace
-  actual implementation counts.
 - Pilot comparison artifacts must expose model family, granularity, sampling
-  mode, token budget, effective world size, checkpoint path when available, and
-  mismatch notes.
+  mode, token budget, effective world size, and checkpoint path when available.
 - `expected_tokens_per_step`, `derived_max_steps`, and `effective_world_size`
   must match the resolved `config.json` for the run.
 - `tokens_seen` must report the global budget counter used for stopping. It is

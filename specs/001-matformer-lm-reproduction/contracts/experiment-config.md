@@ -20,14 +20,12 @@ run:
   model_family: nested
   sampling_mode: nested-all
   model_shape_label: debug
-  table_reference_label: null
   completion_label: debug
   seed: 42
   output_root: outputs
 
 model:
   base_model_name: debug-llama
-  paper_alignment_claim: false
   d_model: 256
   num_layers: 4
   num_attention_heads: 4
@@ -40,7 +38,6 @@ model:
     m: 0.25
     l: 0.5
     xl: 1.0
-  mismatch_notes: []
 
 training:
   token_budget: 1000000
@@ -55,7 +52,6 @@ training:
 parameter_reporting:
   lm_head_counting: separately_counted
   include_attention_parameters_when_feasible: true
-  include_paper_table_reference_counts: false
 
 dataset:
   dataset_name: tiny-stories
@@ -95,7 +91,6 @@ run:
   model_family: nested
   sampling_mode: nested-all
   model_shape_label: debug
-  table_reference_label: null
   completion_label: debug
   seed: 42
   output_root: outputs
@@ -121,10 +116,6 @@ parameter_counts:
   attention_parameters: 16384
   other_non_embedding_parameters: 10304
   lm_head_counting: separately_counted
-  paper_total_parameters: null
-  paper_non_embedding_parameters: null
-  paper_ffn_parameters: null
-  mismatch_notes: []
 ```
 
 `run.output_dir` is derived as `<run.output_root>/<run.run_id>` unless an
@@ -159,19 +150,9 @@ The corresponding display labels are `S`, `M`, `L`, `XL`.
 ## Completion Labels
 
 - `debug`: Debug-size workflow validation.
-- `reduced-token-pilot`: d_model=256 pilot run with less than the MatLM
-  table-row 10B-token budget reference.
-- `matlm-10b-budget-reference`: d_model=256 pilot run using the MatLM table-row
-  10B-token budget reference.
-
-## Pilot Table References
-
-The d_model=256 pilot uses `model_shape_label=dmodel256` and may use
-`table_reference_label=matlm_78m` to preserve the MatLM table-row reference.
-That reference is not an exact paper-alignment claim. The resolved config and
-run summary must expose actual implementation parameter counts and mismatch
-notes for Llama/SwiGLU FFN structure, LM-head counting, token budget, and any
-shape differences.
+- `reduced-token-pilot`: d_model=256 pilot run with less than the full
+  10B-token budget.
+- `full-token-budget`: d_model=256 pilot run using the full 10B-token budget.
 
 ## Output Root and Cache Paths
 
@@ -198,14 +179,11 @@ shape differences.
 - `run.model_family=nested` may include multiple granularities.
 - `run.sampling_mode` must be one of `nested-random`, `nested-all`, or
   `standalone` and must be consistent with `run.model_family`.
-- `model.paper_alignment_claim=true` is allowed only when the actual
-  implementation matches the cited architecture, parameter-count convention,
-  and training behavior.
 - `model_shape_label=dmodel256` and `training.token_budget < 10000000000`
   requires
   `completion_label=reduced-token-pilot`.
 - `model_shape_label=dmodel256` and `training.token_budget = 10000000000`
-  requires `completion_label=matlm-10b-budget-reference`.
+  requires `completion_label=full-token-budget`.
 - Pilot resolved configs must expose `d_model`, layer count, attention-head
   count, context length, vocabulary-size assumption, token budget, and
   granularity prefixes.

@@ -1077,7 +1077,6 @@ def build_extraction_metadata(config: dict[str, Any], model) -> dict[str, Any]:
         "model_family": run["model_family"],
         "model_size_label": _model_shape_label(run),
         "model_shape_label": _model_shape_label(run),
-        "table_reference_label": run.get("table_reference_label"),
         "granularities": [
             build_granularity_extraction_metadata(
                 granularity,
@@ -1136,7 +1135,6 @@ def build_training_metric_row(
         "model_family": run["model_family"],
         "model_size_label": _model_shape_label(run),
         "model_shape_label": _model_shape_label(run),
-        "table_reference_label": run.get("table_reference_label"),
         "sampling_mode": _sampling_mode(run, config["training"]),
         "granularity": granularity,
         "loss": loss,

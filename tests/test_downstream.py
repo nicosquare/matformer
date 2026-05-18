@@ -26,9 +26,9 @@ def test_downstream_task_results_schema_records_minimal_suite(tmp_path):
             "suite_id": "minimal-downstream",
             "task": task_name,
             "model_family": "nested",
+            "model_size_label": "dmodel256",
             "sampling_mode": "nested-random",
             "model_shape_label": "dmodel256",
-            "table_reference_label": "matlm_78m",
             "granularity": "s",
             "metric_name": "accuracy",
             "metric_value": 0.25 + index * 0.01,
@@ -48,8 +48,8 @@ def test_downstream_task_results_schema_records_minimal_suite(tmp_path):
         assert row["suite_id"] == "minimal-downstream"
         assert row["model_family"] == "nested"
         assert row["sampling_mode"] == "nested-random"
+        assert row["model_size_label"] == "dmodel256"
         assert row["model_shape_label"] == "dmodel256"
-        assert row["table_reference_label"] == "matlm_78m"
         assert row["granularity"] == "s"
         assert row["metric_name"] == "accuracy"
         assert row["metric_value"] != ""
@@ -66,9 +66,9 @@ def test_downstream_task_results_schema_requires_metric_fields(tmp_path):
                 "suite_id": "minimal-downstream",
                 "task": "hellaswag",
                 "model_family": "standalone",
+                "model_size_label": "dmodel256",
                 "sampling_mode": "standalone",
                 "model_shape_label": "dmodel256",
-                "table_reference_label": "matlm_78m",
                 "granularity": "s",
                 "metric_name": "accuracy",
             },
@@ -130,7 +130,6 @@ def test_lm_eval_results_convert_to_task_rows():
     assert {row["model_family"] for row in rows} == {"nested"}
     assert {row["sampling_mode"] for row in rows} == {"nested-random"}
     assert {row["model_shape_label"] for row in rows} == {"dmodel256"}
-    assert {row["table_reference_label"] for row in rows} == {"matlm_78m"}
     assert {row["granularity"] for row in rows} == {"xl"}
     assert rows[0]["metric_value"] == 0.2
 

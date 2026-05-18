@@ -95,11 +95,9 @@ def test_dmodel256_pilot_resolves_current_reference_config(tmp_path):
     assert config["run"]["model_family"] == "nested"
     assert config["run"]["sampling_mode"] == "nested-random"
     assert config["run"]["model_shape_label"] == "dmodel256"
-    assert config["run"]["table_reference_label"] == "matlm_78m"
     assert config["run"]["completion_label"] == "reduced-token-pilot"
     assert config["run"]["output_dir"] == str(output_root / "dmodel256-pilot-comparison-001")
 
-    assert config["model"]["paper_alignment_claim"] is False
     assert config["model"]["d_model"] == 256
     assert config["model"]["num_layers"] == 16
     assert config["model"]["num_attention_heads"] == 16
@@ -111,14 +109,11 @@ def test_dmodel256_pilot_resolves_current_reference_config(tmp_path):
         "l": 0.5,
         "xl": 1.0,
     }
-    assert any("SwiGLU" in note for note in config["model"]["mismatch_notes"])
-    assert any("LM-head" in note for note in config["model"]["mismatch_notes"])
     assert config["model"]["tokenizer_name"] == "hf-internal-testing/llama-tokenizer"
     assert config["model"]["tokenizer_name"] != config["model"]["base_model_name"]
     assert config["dataset"]["dataset_name"] == "HuggingFaceFW/fineweb"
     assert config["dataset"]["dataset_config_name"] == "sample-10BT"
-    assert config["training"]["token_budget"] < config["training"]["paper_token_budget"]
-    assert config["training"]["paper_token_budget"] == 10_000_000_000
+    assert config["training"]["token_budget"] < 10_000_000_000
 
     validate_run_config(config)
 

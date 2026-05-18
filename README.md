@@ -1,6 +1,6 @@
 # MatFormer: Nested Transformer for Elastic Inference
 
-This repository provides a public reproduction and open-source implementation of the [MatFormer](https://nips.cc/virtual/2024/poster/94199)'s language modeling experiments (MatLM). It includes the essential building blocks and code required to reproduce the results presented in the paper.
+This repository contains a compact MatFormer-style language modeling workflow built around nested FFN-prefix granularities, standalone baselines, and config-driven experiment artifacts. The focus is on inspectable training, evaluation, and reporting runs rather than paper-specific metadata.
 
 ## Features
 - Simplified implementation of MatFormer for language modeling tasks.
@@ -81,9 +81,9 @@ sbatch scripts/slurm_dmodel256_pilot.sh \
 By default, `scripts/run_dmodel256_pilot.sh` is a comparison runner. It launches
 `nested-random` and `nested-all`, then records standalone S/M/L/XL baselines as
 explicit omitted rows when full standalone training is not requested. Omitted
-rows include `run_status=omitted`, an `omit_reason`, unavailable checkpoint
-fields, and mismatch notes so later reports do not confuse capped pilots with
-completed standalone baselines.
+rows include `run_status=omitted`, an `omit_reason`, and unavailable checkpoint
+fields so later reports do not confuse capped pilots with completed standalone
+baselines.
 
 To run a single selected mode for smoke/debugging:
 

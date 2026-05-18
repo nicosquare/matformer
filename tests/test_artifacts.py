@@ -583,9 +583,9 @@ def test_scaling_result_schema_exposes_phase5_reporting_fields(tmp_path):
             "step": 10,
             "split": "validation",
             "model_family": "nested",
+            "model_size_label": "dmodel256",
             "sampling_mode": "nested-random",
             "model_shape_label": "dmodel256",
-            "table_reference_label": "matlm_78m",
             "granularity": granularity,
             "loss": 2.0 + index * 0.1,
             "perplexity": 7.0 + index,
@@ -625,9 +625,9 @@ def test_scaling_result_schema_exposes_phase5_reporting_fields(tmp_path):
         "comparison_id",
         "run_id",
         "model_family",
+        "model_size_label",
         "sampling_mode",
         "model_shape_label",
-        "table_reference_label",
         "completion_label",
         "granularity",
         "d_model",
@@ -646,7 +646,6 @@ def test_scaling_result_schema_exposes_phase5_reporting_fields(tmp_path):
         "other_non_embedding_parameters",
         "lm_head_counting",
         "checkpoint_path",
-        "mismatch_notes",
         "loss",
         "perplexity",
         "average_downstream_accuracy",
@@ -655,7 +654,6 @@ def test_scaling_result_schema_exposes_phase5_reporting_fields(tmp_path):
 
     assert row["sampling_mode"] == "nested-random"
     assert row["model_shape_label"] == "dmodel256"
-    assert row["table_reference_label"] == "matlm_78m"
     assert row["token_budget"] == "100000000"
     assert row["effective_world_size"] == "1"
     assert row["lm_head_counting"] == "separately_counted"

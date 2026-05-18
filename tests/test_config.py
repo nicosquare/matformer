@@ -29,7 +29,6 @@ def _write_single_run_config(tmp_path):
 
             model:
               base_model_name: debug-llama
-              paper_aligned: false
               num_layers: 2
               num_attention_heads: 4
               hidden_size: 128
@@ -142,7 +141,6 @@ def test_write_resolved_config(tmp_path):
     saved = json.loads(config_path.read_text(encoding="utf-8"))
     assert saved["run"]["run_id"] == "dmodel256-pilot-comparison-001"
     assert saved["run"]["model_shape_label"] == "dmodel256"
-    assert saved["run"]["table_reference_label"] == "matlm_78m"
     assert saved["run"]["sampling_mode"] == "nested-random"
     assert saved["run"]["completion_label"] == "reduced-token-pilot"
     assert config_path == output_dir / "config.json"
@@ -156,13 +154,13 @@ def test_dmodel256_completion_label_validation():
         "configs/dmodel256_pilot_comparison.yaml",
         overrides=[
             "training.token_budget=10000000000",
-            "run.completion_label=matlm-10b-budget-reference",
+            "run.completion_label=full-token-budget",
         ],
     )
     mislabeled = copy.deepcopy(paper_budget)
     mislabeled["run"]["completion_label"] = "reduced-token-pilot"
 
-    with pytest.raises(ConfigError, match="matlm-10b-budget-reference"):
+    with pytest.raises(ConfigError, match="full-token-budget"):
         validate_run_config(mislabeled)
 
     validate_run_config(paper_budget)
@@ -295,13 +293,10 @@ def test_dmodel256_pilot_config_preserves_clarified_terms_and_shape_fields():
     model = resolved["model"]
 
     assert run["model_shape_label"] == "dmodel256"
-    assert run["table_reference_label"] == "matlm_78m"
     assert run["sampling_mode"] == "nested-random"
     assert run["completion_label"] == "reduced-token-pilot"
     assert "model_size_label" not in run
 
-    assert model["paper_alignment_claim"] is False
-    assert "paper_aligned" not in model
     assert model["d_model"] == 256
     assert model["num_layers"] == 16
     assert model["num_attention_heads"] == 16
@@ -313,8 +308,6 @@ def test_dmodel256_pilot_config_preserves_clarified_terms_and_shape_fields():
         "l": 0.5,
         "xl": 1.0,
     }
-    assert any("SwiGLU" in note for note in model["mismatch_notes"])
-    assert any("LM-head" in note for note in model["mismatch_notes"])
 
     assert resolved["training"]["token_budget"] < 10_000_000_000
     assert resolved["training"]["granularity_sampling"] == "random"
@@ -325,7 +318,7 @@ def test_dmodel256_reduced_budget_rejects_table_budget_reference_label():
     resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
 
     mislabeled = copy.deepcopy(resolved)
-    mislabeled["run"]["completion_label"] = "matlm-10b-budget-reference"
+    mislabeled["run"]["completion_label"] = "full-token-budget"
 
     with pytest.raises(ConfigError, match="reduced-token-pilot"):
         validate_run_config(mislabeled)

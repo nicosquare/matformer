@@ -109,11 +109,6 @@ def model_parameter_counts(
         "attention_parameters": attention_parameters_value,
         "other_non_embedding_parameters": other_non_embedding_parameters_value,
         "lm_head_counting": _lm_head_counting_convention(model, named_parameters),
-        "paper_total_parameters": None,
-        "paper_non_embedding_parameters": None,
-        "paper_ffn_parameters": None,
-        "paper_attention_parameters": None,
-        "mismatch_notes": [],
         "unavailable_component_reasons": unavailable_component_reasons,
     }
 

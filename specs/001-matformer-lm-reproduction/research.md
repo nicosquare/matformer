@@ -1,4 +1,4 @@
-# Research: MatFormer Language Model Reproduction
+# Research: MatFormer Language Model Workflow
 
 ## Decision: Keep the implementation Llama-based and local to the repo
 
@@ -33,18 +33,16 @@ nested-versus-standalone comparison across all granularities.
 - Use only one standalone baseline: faster, but it leaves the central
   granularity comparison incomplete before scaling.
 
-## Decision: Frame the pilot as d_model=256 with MatLM table references
+## Decision: Frame the pilot as an explicit d_model=256 workflow
 
-**Decision**: The pilot is labeled as a d_model=256 MatFormer-Llama/SwiGLU run
-with an optional `table_reference_label=matlm_78m`. Runs with fewer than the
-MatLM table-row 10B-token budget are `reduced-token-pilot`; runs using that
-reference budget are table-budget reference runs, not exact MatLM-paper
-reproductions.
+**Decision**: The pilot is labeled by explicit d_model=256 shape fields,
+sampling mode, and token-budget completion labels. Runs with fewer than the
+full 10B-token budget are `reduced-token-pilot`; runs using that budget are
+`full-token-budget`.
 
-**Rationale**: The implementation uses a Llama/SwiGLU-style gated FFN and a
-language-model-head counting convention that differ from the paper table. This
-framing preserves the useful table reference without overstating architecture,
-parameter-count, or training-behavior alignment.
+**Rationale**: The implementation should describe what it actually runs. The
+shape fields and parameter counts are enough to identify the pilot without
+carrying paper-reference metadata through configs and artifacts.
 
 **Alternatives considered**:
 - Keep calling the pilot "78M": compact, but it hides actual implementation
@@ -52,22 +50,21 @@ parameter-count, or training-behavior alignment.
 - Require full 10B before any pilot run: too strict for iterative planning and
   checkpoint/artifact validation.
 
-## Decision: Preserve explicit shape fields and mismatch notes
+## Decision: Preserve explicit shape fields and implementation counts
 
 **Decision**: Debug runs may shrink architecture constants. Pilot and scaling
 artifacts preserve explicit fields for d_model, layer count, attention-head
 count, context length, vocabulary-size assumption, token budget, and
-granularity prefixes, and record mismatch notes when any value or counting
-convention differs from a MatLM table reference.
+granularity prefixes, plus implementation parameter counts.
 
 **Rationale**: The debug stage exists to test workflow correctness. The
 pilot stage exists to support trend checks and later evaluation, so it must
-make its actual shape and known deviations inspectable.
+make its actual shape inspectable.
 
 **Alternatives considered**:
 - Preserve all constants in debug runs: too expensive for iteration.
-- Allow proportional scaling without mismatch notes: risks unclear reproduction
-  labels and invalid comparisons.
+- Allow proportional scaling without explicit shape reporting: risks unclear
+  comparison labels.
 
 ## Decision: Use YAML configs with resolved JSON snapshots
 
@@ -108,14 +105,13 @@ whether the LM head is tied, untied, excluded, or separately counted.
 
 **Rationale**: The spec requires Figure 2-style reporting, and embedding
 parameters dominate smaller models while being mostly unaffected by FFN nesting.
-The clarified pilot also needs to distinguish implementation counts from paper
-table counts because the FFN and LM-head conventions differ.
+The clarified pilot needs disaggregated implementation counts because FFN size
+changes and LM-head counting materially affect comparisons.
 
 **Alternatives considered**:
 - Total parameters only: easier but hides the exact mismatch motivating Phase
   4.7.
 - FFN-only parameters: useful but too narrow for model-size comparisons.
-- Paper table counts only: misleading for the actual implementation.
 
 ## Decision: Default the pilot runner to comparison mode
 

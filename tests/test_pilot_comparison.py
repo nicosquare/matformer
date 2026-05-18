@@ -27,7 +27,6 @@ def _pilot_summary(
         "model_family": model_family,
         "sampling_mode": sampling_mode,
         "model_shape_label": "dmodel256",
-        "table_reference_label": "matlm_78m",
         "completion_label": "reduced-token-pilot",
         "granularity": granularity,
         "granularities": (
@@ -50,10 +49,6 @@ def _pilot_summary(
             checkpoint_path if checkpoint_status == "final" else None
         ),
         "checkpoint_metric": "validation_loss" if checkpoint_status == "best_eval" else None,
-        "mismatch_notes": [
-            "MatFormer-Llama/SwiGLU implementation differs from MatLM table FFN.",
-            "LM-head parameters are counted separately.",
-        ],
         "parameter_counts_by_granularity": {
             "s": {
                 "total_parameters": 12,
@@ -132,9 +127,6 @@ def test_pilot_comparison_rows_cover_nested_and_standalone_modes(tmp_path):
                 "granularity": "m",
                 "token_budget": 100_000_000,
                 "omit_reason": "not scheduled for capped pilot smoke",
-                "mismatch_notes": [
-                    "Standalone M baseline omitted from this capped pilot run."
-                ],
             }
         ],
     )
@@ -164,10 +156,8 @@ def test_pilot_comparison_rows_cover_nested_and_standalone_modes(tmp_path):
     for row in rows:
         assert row["comparison_id"] == "dmodel256-pilot-comparison-001"
         assert row["model_shape_label"] == "dmodel256"
-        assert row["table_reference_label"] == "matlm_78m"
         assert row["completion_label"] == "reduced-token-pilot"
         assert row["token_budget"] == 100_000_000
-        assert "mismatch_notes" in row
 
     assert standalone["run_status"] == "completed"
     assert standalone["model_family"] == "standalone"
@@ -186,4 +176,3 @@ def test_pilot_comparison_rows_cover_nested_and_standalone_modes(tmp_path):
     assert omitted["effective_world_size"] is None
     assert omitted["checkpoint_status"] == "unavailable"
     assert omitted["checkpoint_path"] is None
-    assert "Standalone M baseline omitted" in omitted["mismatch_notes"][0]

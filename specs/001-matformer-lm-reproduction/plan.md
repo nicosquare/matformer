@@ -278,18 +278,13 @@ with the clarified spec: the pilot is a d_model=256 MatFormer-Llama/SwiGLU
 workflow inspired by the MatLM 78M table row, not an exact MatLM-paper
 reproduction.
 
-The plan should preserve explicit shape fields and table references without
-turning them into claims:
+The plan should preserve explicit shape fields and implementation counts:
 
 - Keep fields for d_model, layer count, attention-head count, context length,
   vocabulary-size assumption, token budget, and granularity prefixes in
   configs, resolved configs, summaries, scaling rows, and comparison artifacts.
-- Replace single-label reporting such as "78M" with a combination of
-  `model_shape_label`, optional `table_reference_label`, and actual
-  implementation parameter-count fields.
-- Record mismatch notes for the Llama/SwiGLU gated FFN, LM-head counting
-  convention, token-budget reductions, and any future architecture or training
-  behavior deviation.
+- Replace single-label reporting such as "78M" with `model_shape_label` and
+  actual implementation parameter-count fields.
 
 Parameter reporting should be implemented as a small, inspectable utility in
 `utils/model_size.py` rather than a framework layer. It should report at least
@@ -325,13 +320,12 @@ comparison artifacts mark them as omitted or pending.
 Follow-up task generation for Phase 4.7 should cover:
 
 - Config and CLI schema changes for `model_shape_label`,
-  `table_reference_label`, `sampling_mode`, checkpoint policy, and explicit
-  shape fields.
+  `sampling_mode`, checkpoint policy, and explicit shape fields.
 - Dependency-manifest maintenance so `requirements.txt` remains sufficient to
   rebuild a compatible environment when `elasticnn` is unavailable.
 - Preferred runner and config names for the d_model=256 pilot comparison.
-- Actual implementation parameter-count reporting and mismatch notes across
-  resolved configs, run summaries, scaling rows, and comparison artifacts.
+- Actual implementation parameter-count reporting across resolved configs, run
+  summaries, scaling rows, and comparison artifacts.
 - Rank-0-safe best-eval checkpoint writing and `run_summary.json` references.
 - Default pilot comparison orchestration for `nested-random`, `nested-all`, and
   standalone S/M/L/XL runs.
