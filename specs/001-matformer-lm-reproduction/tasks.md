@@ -333,8 +333,8 @@ draft/verifier pair on the same prompt set and compare speculative metrics.
 
 ### Verification for User Story 5
 
-- [ ] T060 [P] [US5] Add speculative result schema checks in `tests/test_speculative.py`
-- [ ] T061 [P] [US5] Add prompt-set pairing checks in `tests/test_speculative.py`
+- [X] T060 [P] [US5] Add speculative result schema checks in `tests/test_speculative.py`
+- [X] T061 [P] [US5] Add prompt-set pairing checks in `tests/test_speculative.py`
 
 ### Implementation for User Story 5
 
