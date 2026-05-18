@@ -347,5 +347,8 @@ OUTPUT_ROOT=/mnt/experiments/matformer \
 
 Expected result:
 - `consistency_results.csv` records nested-vs-standalone alignment metrics.
-- Speculative evaluation reports acceptance rate, rollback frequency,
-  throughput, and latency.
+- `speculative-001/task_results.csv` records one row per pair/metric for
+  `acceptance_rate`, `rollback_frequency`, `throughput`, and `latency`.
+- The default speculative config uses the inline debug prompt set in
+  `configs/speculative.yaml`; replace `prompt_set.prompts` or set
+  `prompt_set.path` to evaluate a different prompt source.

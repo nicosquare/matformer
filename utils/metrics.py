@@ -691,6 +691,42 @@ def build_pilot_comparison_rows(
     return rows
 
 
+def build_speculative_task_rows(
+    config: Mapping[str, Any],
+    pair_results: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    run = config["run"]
+    suite_id = "speculative-alignment"
+    requested_metrics = [str(metric) for metric in config.get("metrics", [])]
+    rows = []
+
+    for result in pair_results:
+        granularity_label = (
+            f"{result.get('draft_granularity')}->{result.get('verifier_granularity')}"
+        )
+        row_base = {
+            "run_id": run["run_id"],
+            "suite_id": suite_id,
+            "task": result["pair_id"],
+            "model_family": result["pair_type"],
+            "model_size_label": result.get("model_shape_label"),
+            "model_shape_label": result.get("model_shape_label"),
+            "table_reference_label": result.get("table_reference_label"),
+            "sampling_mode": result.get("sampling_mode"),
+            "granularity": granularity_label,
+        }
+        for metric_name in requested_metrics:
+            rows.append(
+                row_base
+                | {
+                    "metric_name": metric_name,
+                    "metric_value": result.get(metric_name),
+                }
+            )
+
+    return rows
+
+
 def build_baseline_match_row(
     nested_config: Mapping[str, Any],
     standalone_config: Mapping[str, Any],

@@ -7,17 +7,35 @@ run:
 prompt_set:
   name: debug-prompts
   path: null
+  prompts:
+    - "Once upon a time"
+    - "The scientist looked at the data"
+    - "In a distant village"
+    - "The model predicts that"
+  text_field: prompt
   sample_count: 64
+  max_prompt_length: 128
 
 pairs:
   nested:
+    pair_id: nested-s-xl
     draft_run_id: debug-nested-001
     draft_granularity: s
     verifier_run_id: debug-nested-001
     verifier_granularity: xl
   standalone:
+    pair_id: standalone-s-xl
     draft_run_id: debug-standalone-s-001
+    draft_granularity: s
     verifier_run_id: debug-standalone-xl-001
+    verifier_granularity: xl
+
+decoding:
+  max_draft_tokens: 4
+  max_new_tokens: 32
+  batch_size: 1
+  temperature: 0.0
+  do_sample: false
 
 metrics:
   - acceptance_rate

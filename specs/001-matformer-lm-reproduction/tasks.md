@@ -338,12 +338,12 @@ draft/verifier pair on the same prompt set and compare speculative metrics.
 
 ### Implementation for User Story 5
 
-- [ ] T062 [US5] Implement draft/verifier pair loading for nested and standalone models in `evaluation/speculative.py`
-- [ ] T063 [US5] Implement acceptance rate and rollback frequency measurement in `evaluation/speculative.py`
-- [ ] T064 [US5] Implement throughput and latency measurement in `evaluation/speculative.py`
-- [ ] T065 [US5] Add speculative prompt-set and pair config values to `configs/speculative.yaml`
-- [ ] T066 [US5] Write speculative metrics into `task_results.csv` or `run_summary.json` through `utils/metrics.py`
-- [ ] T067 [US5] Document speculative evaluation commands in `specs/001-matformer-lm-reproduction/quickstart.md`
+- [X] T062 [US5] Implement draft/verifier pair loading for nested and standalone models in `evaluation/speculative.py`
+- [X] T063 [US5] Implement acceptance rate and rollback frequency measurement in `evaluation/speculative.py`
+- [X] T064 [US5] Implement throughput and latency measurement in `evaluation/speculative.py`
+- [X] T065 [US5] Add speculative prompt-set and pair config values to `configs/speculative.yaml`
+- [X] T066 [US5] Write speculative metrics into `task_results.csv` or `run_summary.json` through `utils/metrics.py`
+- [X] T067 [US5] Document speculative evaluation commands in `specs/001-matformer-lm-reproduction/quickstart.md`
 
 **Checkpoint**: User Story 5 is independently complete when nested and
 standalone speculative decoding comparisons write acceptance, rollback,
