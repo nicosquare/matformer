@@ -390,11 +390,45 @@ def write_consistency_results_csv(
 ) -> Path | None:
     return write_csv_artifact(
         Path(output_dir) / "consistency_results.csv",
-        rows,
+        build_consistency_result_rows(rows),
         CONSISTENCY_RESULTS_COLUMNS,
         append=append,
         distributed_context=distributed_context,
     )
+
+
+def build_consistency_result_rows(
+    rows: Mapping[str, Any] | Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    if isinstance(rows, Mapping):
+        rows = [rows]
+
+    normalized_rows = []
+    for row in rows:
+        normalized_rows.append(
+            {
+                "comparison_id": row.get("comparison_id"),
+                "small_run_id": row.get("small_run_id"),
+                "large_run_id": row.get("large_run_id"),
+                "small_granularity": row.get("small_granularity"),
+                "large_granularity": row.get("large_granularity"),
+                "metric_name": _normalize_consistency_metric_name(row),
+                "metric_value": row.get("metric_value"),
+                "sample_count": row.get("sample_count"),
+            }
+        )
+    return normalized_rows
+
+
+def _normalize_consistency_metric_name(row: Mapping[str, Any]) -> str:
+    metric_name = str(row.get("metric_name") or "")
+    top_k = row.get("top_k")
+
+    if metric_name == "top_k_overlap" and top_k not in (None, ""):
+        return f"top_k_overlap@{int(top_k)}"
+    if metric_name == "kl_divergence" and row.get("deferred"):
+        return "kl_divergence_deferred"
+    return metric_name
 
 
 def build_parameter_counts_by_granularity(

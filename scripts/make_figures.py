@@ -274,18 +274,73 @@ def plot_metric_over_steps(
 
 
 def plot_consistency_results(rows: list[dict[str, str]], output_path: Path) -> Path:
-    figure, axis = plt.subplots(figsize=(7, 4))
-    labels = [
-        f"{row['small_granularity']}->{row['large_granularity']}\n{row['metric_name']}"
-        for row in rows
+    figure, axis = plt.subplots(figsize=(10, 5))
+    numeric_rows = [
+        row for row in rows if to_float_or_none(row.get("metric_value")) is not None
     ]
-    values = [to_float(row["metric_value"]) for row in rows]
-    axis.bar(range(len(values)), values)
-    axis.set_xticks(range(len(values)), labels, rotation=30, ha="right")
+
+    if not numeric_rows:
+        axis.text(
+            0.5,
+            0.5,
+            "No numeric consistency metrics found",
+            ha="center",
+            va="center",
+            transform=axis.transAxes,
+        )
+        axis.set_axis_off()
+        figure.tight_layout()
+        figure.savefig(output_path, bbox_inches="tight")
+        plt.close(figure)
+        return output_path
+
+    pair_labels = sorted(
+        {
+            consistency_pair_label(row)
+            for row in numeric_rows
+        },
+        key=consistency_pair_sort_key,
+    )
+    metric_names = sorted(
+        {str(row["metric_name"]) for row in numeric_rows},
+        key=consistency_metric_sort_key,
+    )
+    pair_to_metric_values = {
+        pair_label: {
+            str(row["metric_name"]): to_float(row["metric_value"])
+            for row in numeric_rows
+            if consistency_pair_label(row) == pair_label
+        }
+        for pair_label in pair_labels
+    }
+
+    group_width = 0.8
+    bar_width = group_width / max(len(metric_names), 1)
+    offsets = [
+        (index - (len(metric_names) - 1) / 2.0) * bar_width
+        for index in range(len(metric_names))
+    ]
+    x_positions = list(range(len(pair_labels)))
+
+    for offset, metric_name in zip(offsets, metric_names):
+        values = [
+            pair_to_metric_values[pair_label].get(metric_name, float("nan"))
+            for pair_label in pair_labels
+        ]
+        axis.bar(
+            [position + offset for position in x_positions],
+            values,
+            width=bar_width,
+            label=metric_name,
+        )
+
+    axis.set_xticks(x_positions, pair_labels, rotation=0, ha="center")
+    axis.set_xlabel("Granularity pair")
     axis.set_ylabel("Metric value")
     axis.grid(True, axis="y", alpha=0.3)
-    figure.tight_layout()
-    figure.savefig(output_path)
+    place_legend_outside(axis)
+    figure.tight_layout(rect=[0, 0, 0.78, 1])
+    figure.savefig(output_path, bbox_inches="tight")
     plt.close(figure)
     return output_path
 
@@ -455,6 +510,32 @@ def place_legend_outside(axis) -> None:
         borderaxespad=0.0,
         frameon=False,
     )
+
+
+def consistency_pair_label(row: dict[str, Any]) -> str:
+    return f"{row['small_granularity']} -> {row['large_granularity']}"
+
+
+def consistency_pair_sort_key(value: str) -> tuple[tuple[int, str], tuple[int, str], str]:
+    left, _, right = value.partition(" -> ")
+    return (
+        granularity_sort_key(left),
+        granularity_sort_key(right),
+        value,
+    )
+
+
+def consistency_metric_sort_key(value: str) -> tuple[int, int, str]:
+    if value == "token_level_agreement":
+        return (0, 0, value)
+    if value.startswith("top_k_overlap@"):
+        try:
+            return (1, int(value.split("@", 1)[1]), value)
+        except ValueError:
+            return (1, 0, value)
+    if value == "kl_divergence_deferred":
+        return (2, 0, value)
+    return (3, 0, value)
 
 
 def to_float(value: Any) -> float:

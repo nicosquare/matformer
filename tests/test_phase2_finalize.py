@@ -307,6 +307,64 @@ def test_make_figures_reads_csv_artifacts(tmp_path):
         assert path.stat().st_size > 0
 
 
+def test_make_figures_plots_grouped_consistency_metrics_and_skips_deferred_rows(tmp_path):
+    run_dir = tmp_path / "consistency-001"
+    write_consistency_results_csv(
+        run_dir,
+        [
+            {
+                "comparison_id": "nested-s-xl",
+                "small_run_id": "debug-nested-001",
+                "large_run_id": "debug-nested-001",
+                "small_granularity": "s",
+                "large_granularity": "xl",
+                "metric_name": "token_level_agreement",
+                "metric_value": 0.7,
+                "sample_count": 16,
+            },
+            {
+                "comparison_id": "nested-s-xl",
+                "small_run_id": "debug-nested-001",
+                "large_run_id": "debug-nested-001",
+                "small_granularity": "s",
+                "large_granularity": "xl",
+                "metric_name": "top_k_overlap",
+                "metric_value": 0.8,
+                "sample_count": 16,
+                "top_k": 5,
+            },
+            {
+                "comparison_id": "nested-s-xl",
+                "small_run_id": "debug-nested-001",
+                "large_run_id": "debug-nested-001",
+                "small_granularity": "s",
+                "large_granularity": "xl",
+                "metric_name": "kl_divergence",
+                "metric_value": None,
+                "sample_count": 16,
+                "deferred": True,
+            },
+            {
+                "comparison_id": "nested-m-l",
+                "small_run_id": "debug-nested-001",
+                "large_run_id": "debug-nested-001",
+                "small_granularity": "m",
+                "large_granularity": "l",
+                "metric_name": "token_level_agreement",
+                "metric_value": 0.6,
+                "sample_count": 16,
+            },
+        ],
+    )
+
+    figure_paths = generate_figures(tmp_path, tmp_path / "figures")
+
+    consistency_path = tmp_path / "figures" / "consistency_vs_size.png"
+    assert consistency_path in figure_paths
+    assert consistency_path.exists()
+    assert consistency_path.stat().st_size > 0
+
+
 def test_make_figures_aggregates_task_results_for_accuracy_plot(tmp_path):
     run_dir = tmp_path / "dmodel256-nested-random-001"
     write_scaling_results_csv(

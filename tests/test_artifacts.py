@@ -11,6 +11,7 @@ from utils.metrics import (
     ArtifactError,
     SCALING_RESULTS_COLUMNS,
     build_run_summary,
+    build_consistency_result_rows,
     build_scaling_result_rows,
     write_config_artifact,
     write_consistency_results_csv,
@@ -416,6 +417,100 @@ def test_write_all_csv_artifact_types(tmp_path):
         with artifact_path.open("r", encoding="utf-8", newline="") as artifact_file:
             rows = list(csv.DictReader(artifact_file))
         assert len(rows) == 1
+
+
+def test_build_consistency_result_rows_normalizes_top_k_and_deferred_metrics():
+    rows = build_consistency_result_rows(
+        [
+            {
+                "comparison_id": "debug-s-xl",
+                "small_run_id": "debug-nested-001",
+                "large_run_id": "debug-nested-001",
+                "small_granularity": "s",
+                "large_granularity": "xl",
+                "metric_name": "top_k_overlap",
+                "metric_value": 0.75,
+                "sample_count": 16,
+                "top_k": 5,
+            },
+            {
+                "comparison_id": "debug-s-xl",
+                "small_run_id": "debug-nested-001",
+                "large_run_id": "debug-nested-001",
+                "small_granularity": "s",
+                "large_granularity": "xl",
+                "metric_name": "kl_divergence",
+                "metric_value": None,
+                "sample_count": 16,
+                "deferred": True,
+                "deferred_reason": "later phase",
+            },
+        ]
+    )
+
+    assert rows == [
+        {
+            "comparison_id": "debug-s-xl",
+            "small_run_id": "debug-nested-001",
+            "large_run_id": "debug-nested-001",
+            "small_granularity": "s",
+            "large_granularity": "xl",
+            "metric_name": "top_k_overlap@5",
+            "metric_value": 0.75,
+            "sample_count": 16,
+        },
+        {
+            "comparison_id": "debug-s-xl",
+            "small_run_id": "debug-nested-001",
+            "large_run_id": "debug-nested-001",
+            "small_granularity": "s",
+            "large_granularity": "xl",
+            "metric_name": "kl_divergence_deferred",
+            "metric_value": None,
+            "sample_count": 16,
+        },
+    ]
+
+
+def test_write_consistency_results_csv_preserves_normalized_metric_names(tmp_path):
+    output_dir = tmp_path / "consistency-001"
+
+    artifact_path = write_consistency_results_csv(
+        output_dir,
+        [
+            {
+                "comparison_id": "debug-s-xl",
+                "small_run_id": "debug-nested-001",
+                "large_run_id": "debug-nested-001",
+                "small_granularity": "s",
+                "large_granularity": "xl",
+                "metric_name": "top_k_overlap",
+                "metric_value": 0.75,
+                "sample_count": 16,
+                "top_k": 5,
+            },
+            {
+                "comparison_id": "debug-s-xl",
+                "small_run_id": "debug-nested-001",
+                "large_run_id": "debug-nested-001",
+                "small_granularity": "s",
+                "large_granularity": "xl",
+                "metric_name": "kl_divergence",
+                "metric_value": None,
+                "sample_count": 16,
+                "deferred": True,
+            },
+        ],
+    )
+
+    with artifact_path.open("r", encoding="utf-8", newline="") as artifact_file:
+        rows = list(csv.DictReader(artifact_file))
+
+    assert [row["metric_name"] for row in rows] == [
+        "top_k_overlap@5",
+        "kl_divergence_deferred",
+    ]
+    assert rows[1]["metric_value"] == ""
 
 
 def test_build_scaling_rows_uses_latest_validation_metrics():
