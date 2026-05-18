@@ -1,7 +1,18 @@
 import textwrap
 
 import pytest
+import torch
 import yaml
+
+from evaluation.consistency import (
+    DEFAULT_TOP_K_VALUES,
+    KL_DIVERGENCE_DEFERRED_REASON,
+    build_consistency_rows,
+    deferred_kl_divergence_note,
+    summarize_consistency_suite,
+    token_level_agreement,
+    top_k_overlap,
+)
 
 
 VALID_GRANULARITIES = {"s", "m", "l", "xl"}
@@ -88,3 +99,93 @@ def test_mix_and_match_pattern_validation_rejects_invalid_granularity():
 
     with pytest.raises(AssertionError):
         validate_mix_and_match_patterns(invalid_config["mix_and_match"]["patterns"])
+
+
+def test_token_level_agreement_uses_attention_mask():
+    small_logits = torch.tensor(
+        [
+            [
+                [10.0, 1.0, 0.0],
+                [0.0, 9.0, 1.0],
+                [0.0, 8.0, 2.0],
+            ]
+        ]
+    )
+    large_logits = torch.tensor(
+        [
+            [
+                [9.0, 2.0, 0.0],
+                [8.0, 1.0, 0.0],
+                [1.0, 7.0, 0.0],
+            ]
+        ]
+    )
+    attention_mask = torch.tensor([[1, 1, 0]])
+
+    result = token_level_agreement(
+        small_logits,
+        large_logits,
+        attention_mask=attention_mask,
+    )
+
+    assert result["metric_name"] == "token_level_agreement"
+    assert result["sample_count"] == 2
+    assert result["metric_value"] == pytest.approx(0.5)
+
+
+def test_top_k_overlap_reports_top_k_field_and_overlap_value():
+    small_logits = torch.tensor(
+        [[[9.0, 8.0, 7.0, 1.0], [6.0, 5.0, 4.0, 3.0]]]
+    )
+    large_logits = torch.tensor(
+        [[[8.0, 9.0, 1.0, 7.0], [6.0, 4.0, 5.0, 3.0]]]
+    )
+
+    result = top_k_overlap(small_logits, large_logits, k=2)
+
+    assert result["metric_name"] == "top_k_overlap"
+    assert result["top_k"] == 2
+    assert result["sample_count"] == 2
+    assert result["metric_value"] == pytest.approx(0.75)
+
+
+def test_deferred_kl_divergence_note_is_explicit():
+    note = deferred_kl_divergence_note(sample_count=8)
+
+    assert note["metric_name"] == "kl_divergence"
+    assert note["metric_value"] is None
+    assert note["sample_count"] == 8
+    assert note["deferred"] is True
+    assert note["deferred_reason"] == KL_DIVERGENCE_DEFERRED_REASON
+
+
+def test_build_consistency_rows_includes_token_agreement_top_k_and_kl_note():
+    small_logits = torch.tensor(
+        [[[9.0, 1.0, 0.0], [0.0, 8.0, 2.0]]]
+    )
+    large_logits = torch.tensor(
+        [[[8.0, 2.0, 0.0], [1.0, 7.0, 0.0]]]
+    )
+
+    rows = build_consistency_rows(
+        comparison_id="nested-s-xl",
+        small_run_id="debug-nested-001",
+        large_run_id="debug-nested-001",
+        small_granularity="s",
+        large_granularity="xl",
+        small_logits=small_logits,
+        large_logits=large_logits,
+        top_k_values=DEFAULT_TOP_K_VALUES,
+        include_deferred_kl_note=True,
+    )
+    summary = summarize_consistency_suite(rows)
+
+    assert [row["metric_name"] for row in rows] == [
+        "token_level_agreement",
+        "top_k_overlap",
+        "kl_divergence",
+    ]
+    assert all(row["comparison_id"] == "nested-s-xl" for row in rows)
+    assert summary["token_level_agreement"]["sample_count"] == 2
+    assert summary["top_k_overlap"]["top_k"] == 3
+    assert summary["kl_divergence"]["deferred"] is True
