@@ -365,6 +365,28 @@ all completed stories.
 
 ---
 
+## Phase 8.5: Derived Naming and Output Grouping Cleanup
+
+**Purpose**: Replace manually maintained pilot completion and output naming
+fields with resolver-derived workflow labels and grouped output paths based on
+ architecture family, XL model size, and token budget.
+
+**Independent Test**: Resolve debug and non-debug configs and confirm they
+derive `completion_label`, `model_family_slug`, `model_size_slug`,
+`token_budget_slug`, `output_group`, and default `output_dir` consistently;
+then verify emitted summaries and scaling rows preserve the derived naming and
+that runner docs no longer require manual label overrides.
+
+- [ ] T122 [P] Add derived naming and grouped output-path config checks for debug, pilot, and explicit output-dir override cases in `tests/test_config.py`
+- [ ] T123 [P] Add run summary and scaling-row schema checks for `model_family_slug`, `model_size_slug`, `token_budget_slug`, and `output_group` in `tests/test_artifacts.py` and `tests/test_pilot_comparison.py`
+- [ ] T124 [P] Update derived naming and grouped output-path contract language in `specs/001-matformer-lm-reproduction/spec.md`, `specs/001-matformer-lm-reproduction/data-model.md`, `specs/001-matformer-lm-reproduction/contracts/experiment-config.md`, and `specs/001-matformer-lm-reproduction/contracts/run-artifacts.md`
+- [ ] T125 [P] Update runner and filesystem grouping guidance for resolver-derived labels and `<output_root>/<output_group>/<run_id>` layout in `README.md`, `specs/001-matformer-lm-reproduction/quickstart.md`, and `specs/001-matformer-lm-reproduction/contracts/cli.md`
+- [ ] T126 Implement resolver-derived `completion_label`, `model_family_slug`, `model_size_slug`, `token_budget_slug`, `output_group`, and grouped default `output_dir` in `utils/config.py` and `utils/model_size.py`
+- [ ] T127 Emit derived naming fields through `run_summary.json`, `scaling_results.csv`, pilot comparison rows, and downstream task rows in `utils/metrics.py`, `evaluation/downstream.py`, `evaluation/speculative.py`, `evaluation/validation.py`, and `training/run.py`
+- [ ] T128 Remove manual completion-label assumptions from runner scripts and config fixtures in `configs/dmodel256_pilot_comparison.yaml`, `scripts/run_dmodel256_pilot.sh`, `scripts/slurm_dmodel256_pilot.sh`, and `tests/test_dmodel256_pilot.py`
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies
@@ -381,6 +403,7 @@ all completed stories.
 - **US4 (Phase 6)**: Depends on Phase 4.7-corrected extracted nested and standalone comparisons with explicit sampling-mode labels and omitted-baseline markers when compute limits apply.
 - **US5 (Phase 7)**: Depends on US4 plus Phase 4.7 best-eval/final checkpoint availability and missing-checkpoint conventions for alignment artifacts and model-pair comparisons.
 - **Polish (Phase 8)**: Depends on completed target stories.
+- **Derived Naming Cleanup (Phase 8.5)**: Depends on Polish and updates resolver, artifacts, and documentation before any future pilot reruns rely on grouped output paths.
 
 ### User Story Dependencies
 
@@ -393,6 +416,7 @@ all completed stories.
 - **US3**: Adds scaling and downstream trend reporting after baseline matrix exists.
 - **US4**: Adds consistency and mix-and-match evaluation after matched runs exist.
 - **US5**: Adds speculative decoding after model-pair comparison conventions exist.
+- **Derived Naming Cleanup**: Replaces manual completion/output naming with resolver-derived workflow and filesystem grouping semantics.
 
 ### Within Each User Story
 
@@ -420,6 +444,7 @@ all completed stories.
 - US4 verification tasks T052-T053 can run in parallel.
 - US5 verification tasks T060-T061 can run in parallel.
 - Evaluation modules `evaluation/downstream.py`, `evaluation/consistency.py`, and `evaluation/speculative.py` are independent after foundational artifacts exist.
+- Phase 8.5 verification and contract tasks T122-T125 can run in parallel before resolver/artifact implementation T126-T128.
 
 ---
 

@@ -65,6 +65,17 @@ preliminary plan."
   nested-random, nested-all, and standalone S/M/L/XL baselines where compute
   allows, with explicit labels.
 
+### Session 2026-05-19
+
+- Q: How should Phase 8 derive completion labels and grouped output paths? ->
+  A: `completion_label` resolves only to workflow class (`debug` or `run`),
+  while the resolved config derives `model_family_slug`, `model_size_slug`,
+  `token_budget_slug`, `output_group`, and the default `output_dir` as
+  `<output_root>/<output_group>/<run_id>`. `model_family_slug` is
+  `matformer_llama` for the current implementation, `model_size_slug` is based
+  on the maximum achievable XL total parameter count, and `token_budget_slug`
+  is normalized to million/billion token units.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Validate Nested MatFormer Training (Priority: P1)
@@ -310,12 +321,14 @@ rollback frequency, throughput, and latency.
 - Debug-size runs may reduce architecture scale to keep iteration cheap, but
   pilot and scaling artifacts must preserve explicit shape fields and avoid
   exact paper-architecture claims unless those claims are true.
-- d_model=256 runs with fewer than the MatLM table-row 10B-token budget must be
-  labeled as reduced-token pilots, not table-budget complete runs.
+- Completion labels should describe workflow class only and must not encode
+  budget-policy distinctions such as reduced-token versus full-budget runs.
 - A single model-size label such as "78M" can hide mismatches introduced by the
   Llama/SwiGLU gated FFN and language-model-head counting convention; pilot
   artifacts must expose actual parameter components instead of relying on that
   label alone.
+- Output grouping must be derived from architecture family, XL model size, and
+  token budget so researchers do not hand-maintain folder names for runs.
 - Available GPU count can differ from the effective data-parallel world size;
   budget-derived step counts must use the active distributed `WORLD_SIZE` when
   distributed training is launched, otherwise 1.
@@ -410,9 +423,7 @@ rollback frequency, throughput, and latency.
   preserving matched nested-versus-standalone comparisons.
 - **FR-016**: Pilot and scaling reports MUST avoid exact paper-architecture,
   parameter-count, or training-behavior alignment claims unless those claims
-  are true for the implementation. Known deviations such as the Llama/SwiGLU
-  gated FFN, language-model-head counting convention, token-budget reductions,
-  or any changed shape field MUST be recorded as mismatch notes.
+  are true for the implementation.
 - **FR-017**: Figure 2-style reporting MUST plot loss, perplexity, downstream
   accuracy, and consistency against non-embedding parameters.
 - **FR-018**: Parameter reporting MUST disaggregate actual implementation
@@ -443,55 +454,70 @@ rollback frequency, throughput, and latency.
   is not expected because the original pretraining data is proprietary.
 - **FR-027**: Reports MUST distinguish completed phases from proposed or
   resource-dependent phases.
-- **FR-028**: Reports MUST distinguish d_model=256 reduced-token pilot runs
-  from runs that use the MatLM table-row 10B-token budget reference.
+- **FR-028**: The resolved config MUST derive `completion_label` automatically
+  from workflow class only, using `debug` for debug workflows and `run` for
+  non-debug experiment workflows. Researchers MUST NOT hand-maintain
+  budget-policy-specific completion labels.
 - **FR-029**: Experiment workflows MUST support a configurable output root for
   all generated run artifacts, defaulting to `outputs/` when the researcher does
   not provide one.
-- **FR-030**: Matrix and single-run workflows MUST resolve run artifacts under
-  `<output_root>/<run_id>` unless an explicit per-run output directory is
-  intentionally provided.
-- **FR-031**: Researcher-facing runner commands MUST allow the output root to be
+- **FR-030**: Matrix and single-run workflows MUST derive `model_family_slug`,
+  `model_size_slug`, `token_budget_slug`, and `output_group` automatically in
+  the resolved config. For the current implementation, `model_family_slug`
+  MUST be `matformer_llama`.
+- **FR-031**: The default resolved output directory MUST be
+  `<output_root>/<output_group>/<run_id>`, where `output_group` is
+  `<model_family_slug>_<model_size_slug>_<token_budget_slug>`, unless an
+  explicit per-run output directory is intentionally provided.
+- **FR-032**: `model_size_slug` MUST be derived from the maximum achievable XL
+  total parameter count for the configured model so researchers do not
+  hand-maintain model size labels. The slug MUST use normalized million or
+  billion units such as `78m`, `850m`, or `1b`.
+- **FR-033**: `token_budget_slug` MUST be derived from `training.token_budget`
+  and normalized to million or billion token units such as `100m_tokens`,
+  `1b_tokens`, or `10b_tokens`.
+- **FR-034**: Researcher-facing runner commands MUST allow the output root to be
   set through configuration, command arguments, or an `OUTPUT_ROOT` environment
   variable so artifacts can be written outside the repository filesystem.
-- **FR-032**: The config-driven d_model=256 pilot MUST support single-node
+- **FR-035**: The config-driven d_model=256 pilot MUST support single-node
   multi-GPU Slurm execution before Phase 5; multi-node execution is out of
   scope for this phase.
-- **FR-033**: Distributed config-driven pilot execution MUST launch one process
+- **FR-036**: Distributed config-driven pilot execution MUST launch one process
   per GPU, initialize torch distributed state, set each process to its local
   CUDA device, and use FSDP for the local MatFormer/Llama model.
-- **FR-034**: Distributed config-driven training MUST use distributed-aware data
+- **FR-037**: Distributed config-driven training MUST use distributed-aware data
   sampling and MUST ensure shared artifacts are written only by rank 0.
-- **FR-035**: Resolved configs and run summaries for distributed runs MUST
+- **FR-038**: Resolved configs and run summaries for distributed runs MUST
   expose the active rank/world-size context needed to interpret
   token-budget-derived step counts and runtime outcomes.
-- **FR-036**: Long-running pipeline stages MUST emit structured runtime events
+- **FR-039**: Long-running pipeline stages MUST emit structured runtime events
   for stage start, stage completion, and heartbeat progress during tokenizer
   loading, dataset loading, dataset preprocessing, dataloader creation, model
   initialization, FSDP wrapping, training, validation, checkpointing, and
   artifact writing when those stages occur.
-- **FR-037**: Heartbeat logging MUST write both human-readable stdout lines and
+- **FR-040**: Heartbeat logging MUST write both human-readable stdout lines and
   durable JSONL event artifacts.
-- **FR-038**: Heartbeat emission MUST be configurable by both elapsed-time
+- **FR-041**: Heartbeat emission MUST be configurable by both elapsed-time
   interval and training-step interval, with emission occurring when either
   threshold is reached.
-- **FR-039**: Slurm jobs MUST default to heartbeat lines rather than tqdm-style
+- **FR-042**: Slurm jobs MUST default to heartbeat lines rather than tqdm-style
   progress bars, while local interactive runs MAY enable tqdm-style progress
   output through configuration.
-- **FR-040**: The pilot runner MUST make comparison scope explicit and MUST
+- **FR-043**: The pilot runner MUST make comparison scope explicit and MUST
   default to a comparison workflow rather than a single nested run. Smoke and
   debug invocations MAY run only one selected mode when requested.
-- **FR-041**: The default pilot comparison workflow MUST include
+- **FR-044**: The default pilot comparison workflow MUST include
   `nested-random`, `nested-all`, and independently trained standalone S, M, L,
   and XL pilot baselines where compute allows. Omitted baselines MUST be marked
   explicitly in comparison artifacts.
-- **FR-042**: Configs, metrics, scaling rows, summaries, and documentation MUST
+- **FR-045**: Configs, metrics, scaling rows, summaries, and documentation MUST
   use clear labels that distinguish `nested-random`, `nested-all`, and
   `standalone` runs.
-- **FR-043**: Pilot comparison artifacts MUST expose actual parameter counts,
+- **FR-046**: Pilot comparison artifacts MUST expose actual parameter counts,
   model family, granularity, sampling mode, token budget, effective world size,
-  checkpoint path when available, and known mismatch notes.
-- **FR-044**: Pilot training runs MUST persist a usable best-eval checkpoint
+  checkpoint path when available, and the derived output-group fields needed to
+  interpret filesystem placement.
+- **FR-047**: Pilot training runs MUST persist a usable best-eval checkpoint
   when validation is enabled. The checkpoint MUST be written only by rank 0
   under the run output directory during distributed/FSDP execution, and
   `run_summary.json` MUST reference its path. Best-eval MUST be defined by
