@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
+
+
+MODEL_FAMILY_SLUG = "matformer_llama"
 
 
 EMBEDDING_NAME_MARKERS = ("embed_tokens", "word_embeddings", "wte")
@@ -147,6 +150,81 @@ def count_non_embedding_parameters(
         trainable_only=trainable_only,
         granularity=granularity,
     )["non_embedding_parameters"]
+
+
+def estimate_llama_total_parameters(model: Mapping[str, Any]) -> int:
+    hidden_size = _positive_int(
+        model.get("d_model", model.get("hidden_size")),
+        "model.d_model",
+    )
+    intermediate_size = _positive_int(
+        model.get("intermediate_size"),
+        "model.intermediate_size",
+    )
+    num_layers = _positive_int(model.get("num_layers"), "model.num_layers")
+    vocab_size = _positive_int(
+        model.get("vocab_size_assumption", model.get("vocab_size")),
+        "model.vocab_size_assumption",
+    )
+    tie_word_embeddings = bool(model.get("tie_word_embeddings", False))
+
+    embedding_parameters = vocab_size * hidden_size
+    lm_head_parameters = 0 if tie_word_embeddings else vocab_size * hidden_size
+    per_layer_parameters = (
+        4 * hidden_size * hidden_size
+        + 3 * hidden_size * intermediate_size
+        + 2 * hidden_size
+    )
+    final_norm_parameters = hidden_size
+    return (
+        embedding_parameters
+        + lm_head_parameters
+        + (num_layers * per_layer_parameters)
+        + final_norm_parameters
+    )
+
+
+def model_size_slug_from_parameters(total_parameters: int) -> str:
+    return _normalized_magnitude_slug(total_parameters)
+
+
+def token_budget_slug(token_budget: int) -> str:
+    return f"{_normalized_magnitude_slug(token_budget)}_tokens"
+
+
+def derive_model_size_slug(model: Mapping[str, Any]) -> str:
+    return model_size_slug_from_parameters(estimate_llama_total_parameters(model))
+
+
+def derive_token_budget_slug(token_budget: int) -> str:
+    return token_budget_slug(token_budget)
+
+
+def _normalized_magnitude_slug(value: int) -> str:
+    if value < 0:
+        raise ValueError("Scaled slug value must be non-negative")
+    if value >= 1_000_000_000:
+        scaled_value = int(round(value / 1_000_000_000))
+        if scaled_value <= 0 and value > 0:
+            scaled_value = 1
+        return f"{scaled_value}b"
+
+    scaled_value = int(round(value / 1_000_000))
+    if scaled_value <= 0 and value > 0:
+        scaled_value = 1
+    return f"{scaled_value}m"
+
+
+def _positive_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a positive integer")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{field_name} must be a positive integer") from error
+    if parsed <= 0:
+        raise ValueError(f"{field_name} must be a positive integer")
+    return parsed
 
 
 def _is_embedding_parameter(name: str) -> bool:

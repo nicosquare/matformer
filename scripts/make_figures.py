@@ -186,9 +186,9 @@ def config_path_for_scaling_row(
 
     run_id = row.get("run_id")
     if run_id:
-        candidate = input_root / run_id / "config.json"
-        if candidate.exists():
-            return candidate
+        candidates = sorted(input_root.rglob(f"{run_id}/config.json"))
+        if candidates:
+            return candidates[0]
 
     return None
 

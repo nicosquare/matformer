@@ -213,7 +213,7 @@ def test_external_output_root_keeps_required_artifacts_outside_repo_outputs(tmp_
         device="cpu",
     )
 
-    run_dir = output_root / "debug-nested-001"
+    run_dir = output_root / config["run"]["output_group"] / "debug-nested-001"
     required_artifacts = {
         run_dir / "config.json",
         run_dir / "metrics.csv",

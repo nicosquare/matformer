@@ -28,14 +28,15 @@ Represents a planned scale of work.
 - `dmodel256_pilot_comparison` defaults to `nested-random`, `nested-all`, and
   standalone S/M/L/XL rows where compute allows; omitted rows must be explicit.
 
-## ModelFamily
+## TrainingTopology
 
-Groups runs by model type.
+Groups runs by training topology.
 
 **Values**
-- `nested`: MatFormer-Llama/SwiGLU model that can expose S/M/L/XL submodels by
-  FFN prefix.
-- `standalone`: Independently trained fixed-width Transformer baseline.
+- `nested`: MatFormer-Llama/SwiGLU topology that can expose S/M/L/XL
+  submodels by FFN prefix.
+- `standalone`: Independently trained fixed-width Transformer baseline
+  topology.
 
 **Validation Rules**
 - `standalone` runs have exactly one granularity.
@@ -53,8 +54,8 @@ Represents the training or comparison mode for a run.
 - `standalone`: Fixed-width independent baseline training for one granularity.
 
 **Validation Rules**
-- `nested-random` and `nested-all` require `model_family=nested`.
-- `standalone` requires `model_family=standalone`.
+- `nested-random` and `nested-all` require the nested training topology.
+- `standalone` requires the standalone training topology.
 - Metrics, summaries, scaling rows, and reports must expose the sampling mode.
 
 ## Granularity
@@ -88,16 +89,22 @@ Represents debug, pilot, or later scaling shape targets.
 - `granularity_prefixes`: Ordered mapping of S/M/L/XL FFN prefix widths or
   fractions.
 - `training_token_budget`: Planned token budget.
-- `completion_label`: `debug`, `reduced-token-pilot`, or
-  `full-token-budget`.
+- `completion_label`: Resolver-derived workflow class, either `debug` or
+  `run`.
+- `model_family_slug`: Filesystem grouping slug for the architecture family.
+- `model_size_slug`: Filesystem grouping slug for the maximum achievable XL
+  model size.
+- `token_budget_slug`: Filesystem grouping slug for the token budget.
+- `output_group`: Resolver-derived grouping directory combining family, size,
+  and token budget.
 
 **Validation Rules**
 - Pilot artifacts must preserve explicit shape fields rather than relying on a
   single model-size label.
-- `model_shape_label=dmodel256` with fewer than the full 10B-token budget is
-  `reduced-token-pilot`.
-- `model_shape_label=dmodel256` with the full 10B-token budget uses
-  `completion_label=full-token-budget`.
+- Resolved configs must derive the workflow completion label and output-group
+  slugs rather than hand-maintaining them in source YAML.
+- `output_group` must combine `model_family_slug`, `model_size_slug`, and
+  `token_budget_slug`.
 
 ## DatasetPlan
 
@@ -177,7 +184,7 @@ Represents one train/eval execution.
 
 **Validation Rules**
 - When `explicit_output_dir` is false or absent, `output_dir` is
-  `<output_root>/<run_id>`.
+  `<output_root>/<output_group>/<run_id>`.
 - The resolved output root must be writable before training starts.
 - A custom output root must keep required artifacts out of repository
   `outputs/` unless the researcher explicitly chooses that location.
@@ -188,8 +195,8 @@ Represents one train/eval execution.
   `batch_size_per_process * context_length * effective_world_size`.
 - `derived_max_steps` must equal
   `ceil(token_budget / expected_tokens_per_step)`.
-- Resolved configs and run summaries must expose the derived budget fields so
-  reduced-token pilots cannot be confused with table-budget reference runs.
+- Resolved configs and run summaries must expose the derived budget and naming
+  fields so grouped artifacts stay deterministic.
 - `sampling_mode` must be one of `nested-random`, `nested-all`, or
   `standalone` and must be consistent with `model_family`.
 - Pilot runs with validation enabled must save a best-eval checkpoint or record

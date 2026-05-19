@@ -39,7 +39,7 @@ launched with `torch.distributed.run`.
 ## Config-Driven Experiment Outputs
 
 Spec Kit experiment configs write resolved configs, metrics, summaries, and
-checkpoints under `<output_root>/<run_id>/`. The default output root is
+checkpoints under `<output_root>/<output_group>/<run_id>/`. The default output root is
 `outputs/`, but larger runs should use a filesystem with enough space and
 inodes:
 
@@ -71,7 +71,7 @@ The Slurm launcher uses the `elasticnn` conda environment by default through
 `PYTHON_BIN` if the environment lives elsewhere. Submit it with `sbatch`; it
 refuses direct `bash` execution outside a Slurm allocation.
 
-The d_model=256 reduced-token pilot comparison has the same Slurm wrapper pattern:
+The d_model=256 pilot comparison uses the same Slurm wrapper pattern:
 
 ```bash
 sbatch scripts/slurm_dmodel256_pilot.sh \
@@ -83,7 +83,9 @@ By default, `scripts/run_dmodel256_pilot.sh` is a comparison runner. It launches
 explicit omitted rows when full standalone training is not requested. Omitted
 rows include `run_status=omitted`, an `omit_reason`, and unavailable checkpoint
 fields so later reports do not confuse capped pilots with completed standalone
-baselines.
+baselines. Resolved run artifacts are grouped under
+`<output_root>/<output_group>/<run_id>/`, where `output_group` combines the
+model family slug, the XL model size slug, and the token-budget slug.
 
 To run a single selected mode for smoke/debugging:
 
@@ -127,7 +129,8 @@ variables or `CUDA_VISIBLE_DEVICES` to choose `--nproc_per_node`, but the
 resolved training length uses the active distributed `WORLD_SIZE` inside the
 training process. Do not hand-maintain `training.effective_world_size`,
 `training.expected_tokens_per_step`, or `training.derived_max_steps` in source
-configs.
+configs. The resolver also derives `completion_label`, `model_family_slug`,
+`model_size_slug`, `token_budget_slug`, and `output_group`.
 
 The runner translates `--mode nested-random`, `--mode nested-all`, and
 `--mode standalone --granularity <s|m|l|xl>` into explicit config overrides for
@@ -167,7 +170,7 @@ tail -f /mnt/experiments/matformer/slurm/dmodel256_<jobid>.out
 tail -n 20 /mnt/experiments/matformer/dmodel256-pilot-comparison-001/heartbeats.jsonl
 ```
 
-`heartbeats.jsonl` is written by rank 0 under the run output directory and
+`heartbeats.jsonl` is written by rank 0 under the grouped run output directory and
 records stage start/completion events plus training progress such as step,
 token budget, global budget-token progress, global non-padding token progress,
 loss, throughput, peak GPU memory, and ETA.

@@ -27,7 +27,11 @@ def _pilot_summary(
         "model_family": model_family,
         "sampling_mode": sampling_mode,
         "model_shape_label": "dmodel256",
-        "completion_label": "reduced-token-pilot",
+        "completion_label": "run",
+        "model_family_slug": "matformer_llama",
+        "model_size_slug": "148m",
+        "token_budget_slug": "100m_tokens",
+        "output_group": "matformer_llama_148m_100m_tokens",
         "granularity": granularity,
         "granularities": (
             ["s", "m", "l", "xl"]
@@ -156,8 +160,14 @@ def test_pilot_comparison_rows_cover_nested_and_standalone_modes(tmp_path):
     for row in rows:
         assert row["comparison_id"] == "dmodel256-pilot-comparison-001"
         assert row["model_shape_label"] == "dmodel256"
-        assert row["completion_label"] == "reduced-token-pilot"
+        assert row["completion_label"] == "run"
         assert row["token_budget"] == 100_000_000
+        if row["run_status"] == "omitted":
+            assert row["model_family_slug"] is None
+            assert row["output_group"] is None
+        else:
+            assert row["model_family_slug"] == "matformer_llama"
+            assert row["output_group"] == "matformer_llama_148m_100m_tokens"
 
     assert standalone["run_status"] == "completed"
     assert standalone["model_family"] == "standalone"

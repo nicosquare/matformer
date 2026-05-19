@@ -161,6 +161,10 @@ def test_run_summary_includes_budget_derived_fields(tmp_path):
         "derived_max_steps",
         "effective_world_size",
         "stop_reason",
+        "model_family_slug",
+        "model_size_slug",
+        "token_budget_slug",
+        "output_group",
     ]:
         assert field_name in summary
     assert summary["expected_tokens_per_step"] == config["training"][
@@ -388,6 +392,10 @@ def test_write_all_csv_artifact_types(tmp_path):
             "run_id": "debug-nested-001",
             "model_family": "nested",
             "model_size_label": "debug",
+            "model_family_slug": "matformer_llama",
+            "model_size_slug": "9m",
+            "token_budget_slug": "1m_tokens",
+            "output_group": "matformer_llama_9m_1m_tokens",
             "completion_label": "debug",
             "granularity": "s",
             "total_parameters": 1000,
@@ -628,6 +636,10 @@ def test_scaling_result_schema_exposes_phase5_reporting_fields(tmp_path):
         "model_size_label",
         "sampling_mode",
         "model_shape_label",
+        "model_family_slug",
+        "model_size_slug",
+        "token_budget_slug",
+        "output_group",
         "completion_label",
         "granularity",
         "d_model",

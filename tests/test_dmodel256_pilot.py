@@ -95,8 +95,11 @@ def test_dmodel256_pilot_resolves_current_reference_config(tmp_path):
     assert config["run"]["model_family"] == "nested"
     assert config["run"]["sampling_mode"] == "nested-random"
     assert config["run"]["model_shape_label"] == "dmodel256"
-    assert config["run"]["completion_label"] == "reduced-token-pilot"
-    assert config["run"]["output_dir"] == str(output_root / "dmodel256-pilot-comparison-001")
+    assert config["run"]["completion_label"] == "run"
+    assert config["run"]["model_family_slug"] == "matformer_llama"
+    assert config["run"]["output_dir"] == str(
+        output_root / config["run"]["output_group"] / "dmodel256-pilot-comparison-001"
+    )
 
     assert config["model"]["d_model"] == 256
     assert config["model"]["num_layers"] == 16

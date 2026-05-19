@@ -1,8 +1,9 @@
 # Contract: Experiment Configuration
 
 The reproduction uses simple YAML input configs. Each run saves a resolved
-`config.json` with the same fields under `<output_root>/<run_id>/`, defaulting
-to `outputs/<run_id>/`.
+`config.json` with the same fields under
+`<output_root>/<output_group>/<run_id>/`, defaulting to
+`outputs/<output_group>/<run_id>/`.
 
 ## Author-Written Source YAML
 
@@ -20,7 +21,6 @@ run:
   model_family: nested
   sampling_mode: nested-all
   model_shape_label: debug
-  completion_label: debug
   seed: 42
   output_root: outputs
 
@@ -81,7 +81,8 @@ step count.
 ## Resolved `config.json`
 
 Resolved configs contain the source inputs plus defaults and derived fields.
-Each run saves the resolved `config.json` under `<output_root>/<run_id>/`.
+Each run saves the resolved `config.json` under
+`<output_root>/<output_group>/<run_id>/`.
 Budget-derived fields appear here, not in source YAML:
 
 ```yaml
@@ -94,7 +95,11 @@ run:
   completion_label: debug
   seed: 42
   output_root: outputs
-  output_dir: outputs/debug-nested-001
+  model_family_slug: matformer_llama
+  model_size_slug: 9m
+  token_budget_slug: 1m_tokens
+  output_group: matformer_llama_9m_1m_tokens
+  output_dir: outputs/matformer_llama_9m_1m_tokens/debug-nested-001
   explicit_output_dir: false
 
 training:
@@ -118,9 +123,10 @@ parameter_counts:
   lm_head_counting: separately_counted
 ```
 
-`run.output_dir` is derived as `<run.output_root>/<run.run_id>` unless an
-explicit per-run output directory is provided. The derived value is saved in
-the resolved `config.json`.
+`run.output_dir` is derived as
+`<run.output_root>/<run.output_group>/<run.run_id>` unless an explicit per-run
+output directory is provided. The derived value is saved in the resolved
+`config.json`.
 
 `training.token_budget` is the source of truth for budgeted run length. The
 resolver writes `training.effective_world_size`,
@@ -149,15 +155,14 @@ The corresponding display labels are `S`, `M`, `L`, `XL`.
 
 ## Completion Labels
 
-- `debug`: Debug-size workflow validation.
-- `reduced-token-pilot`: d_model=256 pilot run with less than the full
-  10B-token budget.
-- `full-token-budget`: d_model=256 pilot run using the full 10B-token budget.
+- `debug`: Debug workflow validation.
+- `run`: Non-debug experiment workflow.
 
 ## Output Root and Cache Paths
 
 - `run.output_root` is the preferred storage field and defaults to `outputs`.
-- `run.output_dir` is normally derived from `run.output_root` and `run.run_id`.
+- `run.output_dir` is normally derived from `run.output_root`,
+  `run.output_group`, and `run.run_id`.
 - A direct `run.output_dir` value is an explicit escape hatch for one-off runs.
 - Matrix configs should use one `run.output_root` so nested and standalone runs
   resolve to sibling directories.
@@ -171,19 +176,19 @@ The corresponding display labels are `S`, `M`, `L`, `XL`.
 - If neither `run.output_root` nor `run.output_dir` is set, `run.output_root`
   defaults to `outputs`.
 - Unless explicitly overridden, `run.output_dir` resolves to
-  `<run.output_root>/<run.run_id>`.
+  `<run.output_root>/<run.output_group>/<run.run_id>`.
 - `run.run_id` must match the final path segment of `run.output_dir`.
 - The resolved output root must be created when missing and must be writable
   before training starts.
 - `run.model_family=standalone` requires exactly one granularity.
 - `run.model_family=nested` may include multiple granularities.
 - `run.sampling_mode` must be one of `nested-random`, `nested-all`, or
-  `standalone` and must be consistent with `run.model_family`.
-- `model_shape_label=dmodel256` and `training.token_budget < 10000000000`
-  requires
-  `completion_label=reduced-token-pilot`.
-- `model_shape_label=dmodel256` and `training.token_budget = 10000000000`
-  requires `completion_label=full-token-budget`.
+  `standalone` and must be consistent with the selected training topology.
+- `completion_label` must be resolver-derived and be either `debug` or `run`.
+- `run.model_family_slug` must be `matformer_llama` for the current
+  implementation.
+- `run.output_group` must combine the family slug, size slug, and token budget
+  slug.
 - Pilot resolved configs must expose `d_model`, layer count, attention-head
   count, context length, vocabulary-size assumption, token budget, and
   granularity prefixes.

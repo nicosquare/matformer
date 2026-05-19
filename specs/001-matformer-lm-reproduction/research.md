@@ -35,10 +35,9 @@ nested-versus-standalone comparison across all granularities.
 
 ## Decision: Frame the pilot as an explicit d_model=256 workflow
 
-**Decision**: The pilot is labeled by explicit d_model=256 shape fields,
-sampling mode, and token-budget completion labels. Runs with fewer than the
-full 10B-token budget are `reduced-token-pilot`; runs using that budget are
-`full-token-budget`.
+**Decision**: The pilot is labeled by explicit d_model=256 shape fields and
+sampling mode. `completion_label` is resolver-derived as `run` for pilot
+workflows and `debug` for debug workflows.
 
 **Rationale**: The implementation should describe what it actually runs. The
 shape fields and parameter counts are enough to identify the pilot without
@@ -69,7 +68,7 @@ make its actual shape inspectable.
 ## Decision: Use YAML configs with resolved JSON snapshots
 
 **Decision**: Author experiment inputs as simple YAML files and save a resolved
-`config.json` under each `outputs/<run_id>/`.
+`config.json` under each `<output_root>/<output_group>/<run_id>/`.
 
 **Rationale**: YAML is readable for experiments, while JSON snapshots are easy
 to diff, parse, and attach to summaries. The config maps directly to research

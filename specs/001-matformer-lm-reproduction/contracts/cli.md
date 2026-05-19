@@ -12,10 +12,12 @@ python train.py --config configs/debug_matrix.yaml --run-id debug-nested-001 --o
 
 Required behavior:
 - Resolve config and CLI overrides.
-- Accept `--output-root` and resolve artifacts under `<output_root>/<run_id>/`.
+- Accept `--output-root` and resolve artifacts under
+  `<output_root>/<output_group>/<run_id>/`.
 - Accept `--output-dir` as an explicit one-run output directory override.
-- Save `<output_root>/<run_id>/config.json` unless `--output-dir` is used.
-- Train or evaluate the requested model family, sampling mode, and granularity
+- Save `<output_root>/<output_group>/<run_id>/config.json` unless
+  `--output-dir` is used.
+- Train or evaluate the requested training topology, sampling mode, and granularity
   set.
 - Write relevant CSV/JSON artifacts.
 
@@ -29,7 +31,7 @@ Required behavior:
 - Run one debug-size nested S/M/L/XL experiment.
 - Run matched standalone S, M, L, and XL baselines.
 - Accept `OUTPUT_ROOT` or output-root arguments and place all matrix run
-  directories under `<output_root>/<run_id>/`.
+  directories under `<output_root>/<output_group>/<run_id>/`.
 - Write comparison artifacts and plots derived from CSV files.
 
 ## Queue Debug Matrix On Slurm
@@ -61,8 +63,9 @@ Required behavior:
 - Allow smoke/debug invocations that select one mode through an explicit mode
   argument.
 - Label the pilot with explicit d_model=256 shape fields and sampling mode.
-- Label the run `reduced-token-pilot` unless it uses the full 10B-token
-  budget, in which case it is `full-token-budget`.
+- Derive `completion_label` automatically as `debug` or `run`.
+- Derive `model_family_slug`, `model_size_slug`, `token_budget_slug`, and
+  `output_group` automatically in the resolved config.
 - Write explicit shape fields, token-budget labels, sampling mode, actual
   parameter counts, and LM-head counting convention into summaries.
 - Accept the same output-root controls as the debug matrix runner.

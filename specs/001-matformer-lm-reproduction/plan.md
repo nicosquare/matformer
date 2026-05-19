@@ -31,8 +31,9 @@ text datasets, PyYAML for config loading, pandas or Python CSV/JSON for
 summaries, matplotlib for plots, pytest for focused checks, and EleutherAI LM
 Evaluation Harness for downstream tasks once downstream evaluation begins.
 Dependencies belong in `requirements.txt` when added or removed.
-**Storage**: Configurable filesystem outputs under `<output_root>/<run_id>/`,
-defaulting to `outputs/<run_id>/`, plus optional checkpoint directories for
+**Storage**: Configurable filesystem outputs under
+`<output_root>/<output_group>/<run_id>/`, defaulting to
+`outputs/<output_group>/<run_id>/`, plus optional checkpoint directories for
 model extraction/resume/inspection. Pilot runs with validation enabled must
 write a rank-0-safe best-eval checkpoint under the run output directory and
 record the path in `run_summary.json`; runs without validation must record
@@ -174,7 +175,8 @@ scripts/
 ├── slurm_dmodel256_pilot.sh
 └── make_figures.py
 <output_root>/
-└── <run_id>/
+└── <output_group>/
+    └── <run_id>/
 tests/
 ├── test_config.py
 ├── test_matformer_prefixes.py
@@ -192,10 +194,10 @@ deep package hierarchies.
 ## Output Storage and Cache Policy
 
 `run.output_root` is the preferred storage control. It defaults to `outputs/`
-and each run resolves `run.output_dir` to `<output_root>/<run_id>`. A direct
-`run.output_dir` value remains an explicit escape hatch for one-off runs, but
-matrix runners should prefer output-root derivation so all runs in a matrix can
-move together.
+and each run resolves `run.output_dir` to
+`<output_root>/<output_group>/<run_id>`. A direct `run.output_dir` value
+remains an explicit escape hatch for one-off runs, but matrix runners should
+prefer output-root derivation so all runs in a matrix can move together.
 
 Researcher-facing commands must accept output-root control through config,
 CLI arguments, and `OUTPUT_ROOT`. Runners should create a missing output root

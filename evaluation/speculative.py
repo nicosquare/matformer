@@ -200,11 +200,15 @@ def load_speculative_model_pairs(
 
 
 def load_run_artifacts(run_id: str, output_root: str | Path) -> dict[str, Any]:
-    run_dir = Path(output_root) / run_id
+    output_root = Path(output_root)
+    matches = sorted(output_root.rglob(f"{run_id}/config.json"))
+    if not matches:
+        raise FileNotFoundError(
+            f"Speculative evaluation missing config for run_id={run_id} under {output_root}"
+        )
+    run_dir = matches[0].parent
     config_path = run_dir / "config.json"
     summary_path = run_dir / "run_summary.json"
-    if not config_path.exists():
-        raise FileNotFoundError(f"Speculative evaluation missing config: {config_path}")
     if not summary_path.exists():
         raise FileNotFoundError(
             f"Speculative evaluation missing run summary: {summary_path}"
@@ -378,6 +382,10 @@ def evaluate_speculative_pair(
         "model_shape_label": draft_summary.get("model_shape_label")
         or draft_run.get("model_shape_label")
         or draft_run.get("model_size_label"),
+        "model_family_slug": draft_run.get("model_family_slug"),
+        "model_size_slug": draft_run.get("model_size_slug"),
+        "token_budget_slug": draft_run.get("token_budget_slug"),
+        "output_group": draft_run.get("output_group"),
         **metrics,
     }
 

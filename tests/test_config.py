@@ -24,7 +24,6 @@ def _write_single_run_config(tmp_path):
               phase_id: debug_matrix
               model_family: nested
               model_size_label: debug
-              completion_label: debug
               seed: 42
 
             model:
@@ -84,13 +83,19 @@ def test_resolve_debug_matrix_expands_nested_and_standalone_runs():
     ]
 
     nested = resolved_runs[0]
-    assert nested["run"]["output_dir"] == "outputs/debug-nested-001"
+    assert nested["run"]["completion_label"] == "debug"
+    assert nested["run"]["model_family_slug"] == "matformer_llama"
+    assert nested["run"]["output_dir"] == (
+        f"outputs/{nested['run']['output_group']}/debug-nested-001"
+    )
     assert nested["model"]["granularities"] == ["s", "m", "l", "xl"]
     assert nested["training"]["granularity_sampling"] == "all"
 
     standalone_s = resolved_runs[1]
     assert standalone_s["run"]["model_family"] == "standalone"
     assert standalone_s["run"]["granularity"] == "s"
+    assert standalone_s["run"]["completion_label"] == "debug"
+    assert standalone_s["run"]["output_group"].startswith("matformer_llama_")
     assert standalone_s["model"]["granularities"] == ["s"]
 
     for resolved in resolved_runs:
@@ -142,28 +147,25 @@ def test_write_resolved_config(tmp_path):
     assert saved["run"]["run_id"] == "dmodel256-pilot-comparison-001"
     assert saved["run"]["model_shape_label"] == "dmodel256"
     assert saved["run"]["sampling_mode"] == "nested-random"
-    assert saved["run"]["completion_label"] == "reduced-token-pilot"
+    assert saved["run"]["completion_label"] == "run"
+    assert saved["run"]["model_family_slug"] == "matformer_llama"
+    assert saved["run"]["output_group"] == (
+        f"matformer_llama_{saved['run']['model_size_slug']}"
+        f"_{saved['run']['token_budget_slug']}"
+    )
     assert config_path == output_dir / "config.json"
-
 
 def test_dmodel256_completion_label_validation():
     resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
     validate_run_config(resolved)
 
-    paper_budget = resolve_run_config(
-        "configs/dmodel256_pilot_comparison.yaml",
-        overrides=[
-            "training.token_budget=10000000000",
-            "run.completion_label=full-token-budget",
-        ],
-    )
-    mislabeled = copy.deepcopy(paper_budget)
-    mislabeled["run"]["completion_label"] = "reduced-token-pilot"
+    mislabeled = copy.deepcopy(resolved)
+    mislabeled["run"]["completion_label"] = "full-token-budget"
 
-    with pytest.raises(ConfigError, match="full-token-budget"):
+    with pytest.raises(ConfigError, match="Unknown completion label"):
         validate_run_config(mislabeled)
 
-    validate_run_config(paper_budget)
+    validate_run_config(resolved)
 
 
 def test_standalone_requires_one_granularity():
@@ -198,7 +200,10 @@ def test_debug_matrix_resolves_all_standalone_granularities():
         assert resolved["model"]["granularities"] == [granularity]
         assert resolved["model"]["intermediate_size"] == intermediate_size
         assert resolved["model"]["matformer_source_intermediate_size"] == 512
-        assert resolved["run"]["output_dir"] == f"outputs/{run_id}"
+        assert resolved["run"]["completion_label"] == "debug"
+        assert resolved["run"]["output_dir"] == (
+            f"outputs/{resolved['run']['output_group']}/{run_id}"
+        )
         validate_run_config(resolved)
 
 
@@ -227,7 +232,9 @@ def test_matrix_output_root_override_derives_each_run_directory(tmp_path):
     for resolved in resolved_runs:
         run = resolved["run"]
         assert run["output_root"] == str(output_root)
-        assert run["output_dir"] == str(output_root / run["run_id"])
+        assert run["output_dir"] == str(
+            output_root / run["output_group"] / run["run_id"]
+        )
 
 
 def test_single_run_defaults_to_outputs_root(tmp_path):
@@ -236,7 +243,9 @@ def test_single_run_defaults_to_outputs_root(tmp_path):
     resolved = resolve_run_config(config_path)
 
     assert resolved["run"]["output_root"] == "outputs"
-    assert resolved["run"]["output_dir"] == "outputs/single-output-root-001"
+    assert resolved["run"]["output_dir"] == (
+        f"outputs/{resolved['run']['output_group']}/single-output-root-001"
+    )
 
 
 def test_single_run_output_root_override_derives_output_dir(tmp_path):
@@ -251,7 +260,7 @@ def test_single_run_output_root_override_derives_output_dir(tmp_path):
     assert output_root.is_dir()
     assert resolved["run"]["output_root"] == str(output_root)
     assert resolved["run"]["output_dir"] == str(
-        output_root / "single-output-root-001"
+        output_root / resolved["run"]["output_group"] / "single-output-root-001"
     )
 
 
@@ -294,7 +303,10 @@ def test_dmodel256_pilot_config_preserves_clarified_terms_and_shape_fields():
 
     assert run["model_shape_label"] == "dmodel256"
     assert run["sampling_mode"] == "nested-random"
-    assert run["completion_label"] == "reduced-token-pilot"
+    assert run["completion_label"] == "run"
+    assert run["model_family_slug"] == "matformer_llama"
+    assert run["output_group"].startswith("matformer_llama_")
+    assert run["output_dir"] == f"outputs/{run['output_group']}/{run['run_id']}"
     assert "model_size_label" not in run
 
     assert model["d_model"] == 256
@@ -314,13 +326,13 @@ def test_dmodel256_pilot_config_preserves_clarified_terms_and_shape_fields():
     validate_run_config(resolved)
 
 
-def test_dmodel256_reduced_budget_rejects_table_budget_reference_label():
+def test_dmodel256_rejects_old_completion_label_strings():
     resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
 
     mislabeled = copy.deepcopy(resolved)
     mislabeled["run"]["completion_label"] = "full-token-budget"
 
-    with pytest.raises(ConfigError, match="reduced-token-pilot"):
+    with pytest.raises(ConfigError, match="Unknown completion label"):
         validate_run_config(mislabeled)
 
 

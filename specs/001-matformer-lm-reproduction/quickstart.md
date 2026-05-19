@@ -42,7 +42,7 @@ export TRANSFORMERS_CACHE=/mnt/experiments/hf-cache/transformers
 `OUTPUT_ROOT` is the common runner path for matrix-style commands. Single-run
 commands can also pass `--output-root "$OUTPUT_ROOT"` directly. Use
 `--output-dir` only when one run needs an explicit directory that does not
-follow `<output_root>/<run_id>`.
+follow `<output_root>/<output_group>/<run_id>`.
 
 ## 2. Run Focused Smoke Checks
 
@@ -53,7 +53,8 @@ follow `<output_root>/<run_id>`.
 Expected result:
 - Configs resolve to explicit experiment concepts.
 - S/M/L/XL prefixes are valid and ordered.
-- Metrics/config artifacts can be written to `<output_root>/<run_id>/`.
+- Metrics/config artifacts can be written to
+  `<output_root>/<output_group>/<run_id>/`.
 
 ## 3. Run P1 Debug Validation
 
@@ -141,8 +142,9 @@ Expected result:
 - The pilot is labeled by explicit d_model=256 shape fields and sampling mode.
 - The dataset resolves to `HuggingFaceFW/fineweb` with the `sample-10BT`
   configuration.
-- Runs are labeled `reduced-token-pilot` for capped pilot budgets and
-  `full-token-budget` for the full 10B-token budget.
+- Runs resolve `completion_label` to `run` for non-debug pilot workflows.
+- The resolved config records `model_family_slug`, `model_size_slug`,
+  `token_budget_slug`, and `output_group`.
 - The resolved config records `effective_world_size`,
   `expected_tokens_per_step`, `derived_max_steps`, and the effective
   `max_steps`.
@@ -164,8 +166,8 @@ sbatch --time=01:00:00 --mem=64G scripts/slurm_dmodel256_pilot.sh \
   --override training.max_steps_cap=1
 ```
 
-For the full reduced-token pilot, omit the cap and use the Slurm script's
-default resource request unless the cluster queue requires overrides:
+For the full pilot comparison, omit the cap and use the Slurm script's default
+resource request unless the cluster queue requires overrides:
 
 ```bash
 sbatch scripts/slurm_dmodel256_pilot.sh \
@@ -261,14 +263,14 @@ tail -f /mnt/experiments/matformer/slurm/dmodel256_<jobid>.out
 Rank 0 also writes durable heartbeat events to:
 
 ```text
-/mnt/experiments/matformer/<run_id>/heartbeats.jsonl
+/mnt/experiments/matformer/<output_group>/<run_id>/heartbeats.jsonl
 ```
 
 Inspect that file to see stage starts, stage completions, and training
 progress:
 
 ```bash
-tail -n 20 /mnt/experiments/matformer/<run_id>/heartbeats.jsonl
+tail -n 20 /mnt/experiments/matformer/<output_group>/<run_id>/heartbeats.jsonl
 ```
 
 Expected heartbeat stages include `artifact_writing`, `model_initialization`,

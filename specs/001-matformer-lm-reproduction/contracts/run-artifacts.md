@@ -1,13 +1,13 @@
 # Contract: Run Artifacts
 
-Each completed run writes artifacts under `<output_root>/<run_id>/`.
-`output_root` defaults to repository-local `outputs/`, but may point outside
-the repository filesystem.
+Each completed run writes artifacts under
+`<output_root>/<output_group>/<run_id>/`. `output_root` defaults to
+repository-local `outputs/`, but may point outside the repository filesystem.
 
 ## Directory Layout
 
 ```text
-<output_root>/<run_id>/
+<output_root>/<output_group>/<run_id>/
 ├── config.json
 ├── run_summary.json
 ├── heartbeats.jsonl
@@ -59,7 +59,7 @@ run_id,suite_id,task,model_family,model_size_label,model_shape_label,sampling_mo
 Required columns:
 
 ```text
-comparison_id,run_id,model_family,model_size_label,model_shape_label,sampling_mode,completion_label,granularity,d_model,num_layers,num_attention_heads,context_length,vocab_size_assumption,token_budget,effective_world_size,total_parameters,embedding_parameters,lm_head_parameters,non_embedding_parameters,ffn_parameters,attention_parameters,other_non_embedding_parameters,lm_head_counting,checkpoint_path,loss,perplexity,average_downstream_accuracy
+comparison_id,run_id,model_family,model_size_label,model_shape_label,sampling_mode,model_family_slug,model_size_slug,token_budget_slug,output_group,completion_label,granularity,d_model,num_layers,num_attention_heads,context_length,vocab_size_assumption,token_budget,effective_world_size,total_parameters,embedding_parameters,lm_head_parameters,non_embedding_parameters,ffn_parameters,attention_parameters,other_non_embedding_parameters,lm_head_counting,checkpoint_path,loss,perplexity,average_downstream_accuracy
 ```
 
 ## `consistency_results.csv`
@@ -83,6 +83,10 @@ Required fields:
   "sampling_mode": "nested-all",
   "model_shape_label": "debug",
   "completion_label": "debug",
+  "model_family_slug": "matformer_llama",
+  "model_size_slug": "9m",
+  "token_budget_slug": "1m_tokens",
+  "output_group": "matformer_llama_9m_1m_tokens",
   "d_model": 256,
   "num_layers": 4,
   "num_attention_heads": 4,
@@ -100,7 +104,7 @@ Required fields:
   "seed": 42,
   "status": "completed",
   "output_root": "/mnt/experiments/matformer",
-  "output_dir": "/mnt/experiments/matformer/debug-nested-001",
+  "output_dir": "/mnt/experiments/matformer/matformer_llama_9m_1m_tokens/debug-nested-001",
   "parameter_counts": {
     "total_parameters": 123456,
     "embedding_parameters": 32000,
@@ -118,9 +122,11 @@ Required fields:
 }
 ```
 
-`expected_tokens_per_step`, `derived_max_steps`, and `effective_world_size` are
-copied from the resolved `config.json`. `tokens_seen`, `content_tokens_seen`,
-and `stop_reason` are runtime outcomes written by the training loop.
+`expected_tokens_per_step`, `derived_max_steps`, `effective_world_size`,
+`model_family_slug`, `model_size_slug`, `token_budget_slug`, and `output_group`
+are copied from the resolved `config.json`. `tokens_seen`,
+`content_tokens_seen`, and `stop_reason` are runtime outcomes written by the
+training loop.
 `tokens_seen` is the global budget counter based on planned token slots across
 the effective world size. `content_tokens_seen` is the global non-padding
 training-token counter observed from attention masks.
@@ -186,7 +192,8 @@ either the configured step interval or elapsed-time interval is reached.
 - Pilot artifacts must state whether the LM head is tied, untied, excluded, or
   separately counted.
 - Pilot comparison artifacts must expose model family, granularity, sampling
-  mode, token budget, effective world size, and checkpoint path when available.
+  mode, output-group slugs, token budget, effective world size, and checkpoint
+  path when available.
 - `expected_tokens_per_step`, `derived_max_steps`, and `effective_world_size`
   must match the resolved `config.json` for the run.
 - `tokens_seen` must report the global budget counter used for stopping. It is

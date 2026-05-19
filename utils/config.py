@@ -11,14 +11,16 @@ from typing import Any, Iterable, Mapping
 
 import yaml
 
+from utils.model_size import (
+    MODEL_FAMILY_SLUG,
+    derive_model_size_slug,
+    derive_token_budget_slug,
+)
+
 
 VALID_GRANULARITIES = {"s", "m", "l", "xl"}
-VALID_MODEL_FAMILIES = {"nested", "standalone"}
-VALID_COMPLETION_LABELS = {
-    "debug",
-    "reduced-token-pilot",
-    "full-token-budget",
-}
+VALID_MODEL_TOPOLOGIES = {"nested", "standalone"}
+VALID_COMPLETION_LABELS = {"debug", "run"}
 VALID_GRANULARITY_SAMPLING = {"all", "random"}
 VALID_SAMPLING_MODES = {"nested-random", "nested-all", "standalone"}
 GRANULARITY_INTERMEDIATE_FRACTIONS = {
@@ -27,8 +29,6 @@ GRANULARITY_INTERMEDIATE_FRACTIONS = {
     "l": (1, 2),
     "xl": (1, 1),
 }
-
-FULL_TOKEN_BUDGET = 10_000_000_000
 
 
 class ConfigError(ValueError):
@@ -141,6 +141,7 @@ def resolve_run_config(
     if output_dir is not None:
         resolved["run"]["output_dir"] = str(output_dir)
 
+    _resolve_naming_defaults(resolved)
     _resolve_output_paths(resolved)
     _resolve_sampling_mode_defaults(
         resolved,
@@ -164,6 +165,7 @@ def resolve_all_run_configs(
 
     if "matrix" not in config:
         resolved = _compose_single_run(config)
+        _resolve_naming_defaults(resolved)
         _resolve_output_paths(resolved)
         _resolve_sampling_mode_defaults(
             resolved,
@@ -185,6 +187,7 @@ def resolve_all_run_configs(
     resolved_runs = []
     for run_entry in runs:
         resolved = _compose_matrix_run(config, run_entry)
+        _resolve_naming_defaults(resolved)
         _resolve_output_paths(resolved)
         _resolve_sampling_mode_defaults(
             resolved,
@@ -255,6 +258,10 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "phase_id",
             "model_family",
             "completion_label",
+            "model_family_slug",
+            "model_size_slug",
+            "token_budget_slug",
+            "output_group",
             "output_root",
             "output_dir",
         ],
@@ -306,13 +313,29 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             f"run.output_dir must end with run.run_id: {output_dir} vs {run_id}"
         )
 
-    model_family = run["model_family"]
-    if model_family not in VALID_MODEL_FAMILIES:
-        raise ConfigError(f"Unknown model family: {model_family}")
+    model_topology = run["model_family"]
+    if model_topology not in VALID_MODEL_TOPOLOGIES:
+        raise ConfigError(f"Unknown training topology: {model_topology}")
 
     completion_label = run["completion_label"]
     if completion_label not in VALID_COMPLETION_LABELS:
         raise ConfigError(f"Unknown completion label: {completion_label}")
+
+    if run["model_family_slug"] != MODEL_FAMILY_SLUG:
+        raise ConfigError(
+            f"run.model_family_slug must be {MODEL_FAMILY_SLUG}: "
+            f"{run['model_family_slug']}"
+        )
+
+    expected_output_group = (
+        f"{run['model_family_slug']}_{run['model_size_slug']}"
+        f"_{run['token_budget_slug']}"
+    )
+    if run["output_group"] != expected_output_group:
+        raise ConfigError(
+            "run.output_group must match "
+            "<model_family_slug>_<model_size_slug>_<token_budget_slug>"
+        )
 
     granularities = model["granularities"]
     if not isinstance(granularities, list) or not granularities:
@@ -326,7 +349,7 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
     if unknown_granularities:
         raise ConfigError(f"Unknown granularities: {unknown_granularities}")
 
-    if model_family == "standalone":
+    if model_topology == "standalone":
         granularity = run.get("granularity")
         if granularity not in VALID_GRANULARITIES:
             raise ConfigError("standalone runs require run.granularity")
@@ -343,7 +366,7 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         )
     _validate_sampling_mode(run, granularity_sampling)
 
-    _validate_dmodel256_pilot_fields(run, model, training, completion_label)
+    _validate_dmodel256_pilot_fields(run, model, training)
 
     _validate_derived_training_length(training, model)
 
@@ -410,6 +433,29 @@ def _model_shape_label(run: Mapping[str, Any]) -> str | None:
     if label is None:
         return None
     return str(label)
+
+
+def _resolve_naming_defaults(config: dict[str, Any]) -> None:
+    run = config.setdefault("run", {})
+    model = config.setdefault("model", {})
+    training = config.setdefault("training", {})
+
+    phase_id = str(run.get("phase_id") or "")
+    model_shape_label = _model_shape_label(run)
+    if phase_id.startswith("debug") or model_shape_label == "debug":
+        run["completion_label"] = "debug"
+    else:
+        run["completion_label"] = "run"
+
+    run["model_family_slug"] = MODEL_FAMILY_SLUG
+    run["model_size_slug"] = derive_model_size_slug(model)
+    run["token_budget_slug"] = derive_token_budget_slug(
+        _positive_int(training.get("token_budget"), "training.token_budget")
+    )
+    run["output_group"] = (
+        f"{run['model_family_slug']}_{run['model_size_slug']}"
+        f"_{run['token_budget_slug']}"
+    )
 
 
 def _resolve_sampling_mode_defaults(
@@ -481,25 +527,12 @@ def _validate_dmodel256_pilot_fields(
     run: Mapping[str, Any],
     model: Mapping[str, Any],
     training: Mapping[str, Any],
-    completion_label: str,
 ) -> None:
     model_shape_label = _model_shape_label(run)
     is_legacy_78m = str(run.get("model_size_label")) == "78m"
     is_dmodel256_pilot = model_shape_label == "dmodel256" or is_legacy_78m
     if not is_dmodel256_pilot:
         return
-
-    token_budget = training["token_budget"]
-    if token_budget < FULL_TOKEN_BUDGET:
-        expected_label = "reduced-token-pilot"
-    else:
-        expected_label = "full-token-budget"
-
-    if completion_label != expected_label:
-        raise ConfigError(
-            f"{model_shape_label or 'legacy-model'} token_budget={token_budget} "
-            f"requires completion_label={expected_label}"
-        )
 
     if model_shape_label == "dmodel256":
         _require_fields(
@@ -578,7 +611,7 @@ def _resolve_output_paths(config: dict[str, Any]) -> None:
 
     run["output_root"] = str(output_root)
     if output_dir is None:
-        output_dir = output_root / str(run["run_id"])
+        output_dir = output_root / str(run["output_group"]) / str(run["run_id"])
     run["output_dir"] = str(output_dir)
     run["explicit_output_dir"] = explicit_output_dir
 

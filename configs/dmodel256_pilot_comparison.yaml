@@ -6,7 +6,6 @@ run:
   model_family: nested
   sampling_mode: nested-random
   model_shape_label: dmodel256
-  completion_label: reduced-token-pilot
   seed: 42
   output_root: outputs
 

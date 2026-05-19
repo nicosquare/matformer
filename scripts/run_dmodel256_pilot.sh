@@ -224,7 +224,7 @@ emit_omitted_standalone_row() {
   run_id="$(mode_run_id standalone "$granularity")"
 
   mkdir -p "$output_dir"
-  printf '{"comparison_id":"%s","run_id":"%s","run_status":"omitted","omit_reason":"standalone baseline not scheduled for capped pilot comparison","model_family":"standalone","granularity":"%s","sampling_mode":"standalone","model_shape_label":"dmodel256","completion_label":"reduced-token-pilot","token_budget":100000000,"effective_world_size":null,"checkpoint_status":"unavailable","checkpoint_path":null}\n' \
+  printf '{"comparison_id":"%s","run_id":"%s","run_status":"omitted","omit_reason":"standalone baseline not scheduled for capped pilot comparison","model_family":"standalone","granularity":"%s","sampling_mode":"standalone","model_shape_label":"dmodel256","completion_label":"run","token_budget":100000000,"effective_world_size":null,"checkpoint_status":"unavailable","checkpoint_path":null}\n' \
     "$COMPARISON_ID" "$run_id" "$granularity" >> "$rows_path"
 }
 
