@@ -6,7 +6,7 @@ import functools
 import torch
 import torch.distributed as dist
 from datasets import load_dataset
-from modified_llama import ModifiedLlamaForCausalLM
+from modified_llama import ModifiedLlamaForCausalLM, CatLlamaMLP
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     CheckpointImpl,
     apply_activation_checkpointing,
@@ -25,8 +25,24 @@ from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 FLAGS = ['s', 'm', 'l', 'xl']
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser()
+    parser.add_argument("--config", help="YAML experiment config for the Spec Kit flow.")
+    parser.add_argument("--run-id", help="Run id to select from a matrix config.")
+    parser.add_argument(
+        "--output-root",
+        help="Root directory for config-driven run artifacts.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        help="Explicit output directory for one config-driven run.",
+    )
+    parser.add_argument(
+        "--override",
+        action="append",
+        default=[],
+        help="Dotted config override, for example training.max_steps=10.",
+    )
     parser.add_argument("--model-name", default="NousResearch/Llama-3.2-1B")
     parser.add_argument("--dataset-name", default="vilm/RedPajama-v2-small")
     parser.add_argument("--dataset-split", default="train")
@@ -48,7 +64,7 @@ def parse_args():
         default=True,
         help="Checkpoint Llama decoder layers when running under torchrun/FSDP.",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def setup_distributed():
@@ -233,6 +249,22 @@ def evaluate_model(model, eval_dataloader, flags, device, distributed):
 
 def main():
     args = parse_args()
+    if args.config:
+        from training.run import run_from_config_path
+
+        overrides = list(args.override)
+        output_root = args.output_root or os.environ.get("OUTPUT_ROOT")
+        if output_root:
+            overrides.append(f"run.output_root={output_root}")
+
+        run_from_config_path(
+            args.config,
+            run_id=args.run_id,
+            overrides=overrides,
+            output_dir=args.output_dir,
+        )
+        return
+
     distributed, rank, _, world_size, device = setup_distributed()
     set_random_seed(args.seed)
 
@@ -253,7 +285,7 @@ def main():
     config.use_cache = False
 
     print_rank0(rank, "initializing model. This may take a while... ", end="", flush=True)
-    model = ModifiedLlamaForCausalLM(config)
+    model = ModifiedLlamaForCausalLM(config=config, mlp_cls=CatLlamaMLP)
     if distributed:
         model = wrap_with_fsdp(model, args, device, rank)
     else:

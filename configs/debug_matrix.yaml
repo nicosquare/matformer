@@ -1,0 +1,74 @@
+# Debug-size MatFormer reproduction matrix for Phase 3 validation.
+run:
+  phase_id: debug_matrix
+  seed: 42
+  output_root: outputs
+
+model:
+  base_model_name: debug-llama
+  tokenizer_name: hf-internal-testing/llama-tokenizer
+  num_layers: 2
+  num_attention_heads: 4
+  hidden_size: 128
+  intermediate_size: 512
+  context_length: 64
+  vocab_size_assumption: 32000
+  granularities: [s, m, l, xl]
+
+training:
+  token_budget: 8192
+  max_steps: 4
+  batch_size_per_process: 2
+  learning_rate: 0.0003
+  warmup_steps: 0
+  eval_interval: 2
+  eval_batches: 1
+  mixed_precision: none
+  activation_checkpointing: false
+  granularity_sampling: all
+  preprocess_num_proc: 1
+  dataloader_num_workers: 0
+
+dataset:
+  dataset_name: roneneldan/TinyStories
+  dataset_split: train
+  dataset_phase: debug
+  sample_limit: 16
+  preprocessing_notes: truncate_or_pad_to_context_length_64_debug_samples
+
+matrix:
+  nested:
+    run_id: debug-nested-001
+    model_family: nested
+    model_size_label: debug
+    granularities: [s, m, l, xl]
+  standalone:
+    - run_id: debug-standalone-s-001
+      model_family: standalone
+      model_size_label: debug
+      granularity: s
+    - run_id: debug-standalone-m-001
+      model_family: standalone
+      model_size_label: debug
+      granularity: m
+    - run_id: debug-standalone-l-001
+      model_family: standalone
+      model_size_label: debug
+      granularity: l
+    - run_id: debug-standalone-xl-001
+      model_family: standalone
+      model_size_label: debug
+      granularity: xl
+
+outputs:
+  save_config: true
+  save_metrics_csv: true
+  save_run_summary_json: true
+  save_checkpoints: false
+  make_plots: false
+
+evaluation:
+  validation: true
+  downstream_suite: []
+  consistency: false
+  speculative: false

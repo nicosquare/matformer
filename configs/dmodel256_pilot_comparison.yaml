@@ -1,0 +1,80 @@
+# d_model=256 MatFormer-Llama/SwiGLU pilot comparison using a reduced
+# training-token budget.
+run:
+  run_id: dmodel256-pilot-comparison-001
+  phase_id: dmodel256_pilot_comparison
+  model_family: nested
+  sampling_mode: nested-random
+  model_shape_label: dmodel256
+  seed: 42
+  output_root: outputs
+
+model:
+  base_model_name: dmodel256-matformer-llama-swiglu
+  tokenizer_name: hf-internal-testing/llama-tokenizer
+  d_model: 256
+  num_layers: 16
+  num_attention_heads: 16
+  intermediate_size: 1024
+  context_length: 1024
+  vocab_size_assumption: 256000
+  granularities: [s, m, l, xl]
+  granularity_prefixes:
+    s: 0.125
+    m: 0.25
+    l: 0.5
+    xl: 1.0
+
+training:
+  token_budget: 100000000
+  max_steps_cap: null
+  batch_size_per_process: 8
+  learning_rate: 0.0001
+  warmup_steps: 200
+  eval_interval: 500
+  mixed_precision: bf16
+  activation_checkpointing: true
+
+dataset:
+  dataset_name: HuggingFaceFW/fineweb
+  dataset_config_name: sample-10BT
+  dataset_split: train
+  dataset_phase: medium
+  sample_limit: null
+  preprocessing_notes: truncate_or_pad_to_context_length
+
+outputs:
+  save_config: true
+  save_metrics_csv: true
+  save_run_summary_json: true
+  save_checkpoints: true
+  make_plots: true
+
+evaluation:
+  validation: true
+  downstream_suite:
+    - suite_id: minimal-downstream
+      suite_type: downstream
+      tool: lm-eval
+      tasks:
+        - hellaswag
+        - piqa
+        - arc_challenge
+        - boolq
+        - winogrande
+        - openbookqa
+      metric_name: accuracy
+      metric_candidates:
+        - acc_norm,none
+        - acc,none
+        - exact_match,none
+        - acc_norm
+        - acc
+        - accuracy
+      model: hf
+      model_args: {}
+      batch_size: auto
+      num_fewshot: 0
+      limit: null
+  consistency: false
+  speculative: false
