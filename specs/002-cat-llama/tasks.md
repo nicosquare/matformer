@@ -41,9 +41,9 @@
 
 ### Implementation for User Story 1
 
-- [ ] T005 [P] [US1] Update `training/run.py` to choose `CatLlamaMLP` only when the resolved variant is `cat_llama`, and keep the default `ModifiedLlamaForCausalLM` path for `matformer_llama`
-- [ ] T006 [US1] Update the legacy direct execution path in `train.py` so it respects the same `model.variant` default and stays consistent with the baseline behavior
-- [ ] T007 [US1] Add a config-driven smoke test in `tests/test_training_smoke.py` that runs a debug nested job with `--override model.variant=cat_llama` and asserts the selected variant reaches the resolved run summary
+- [X] T005 [P] [US1] Update `training/run.py` to choose `CatLlamaMLP` only when the resolved variant is `cat_llama`, and keep the default `ModifiedLlamaForCausalLM` path for `matformer_llama`
+- [X] T006 [US1] Update the legacy direct execution path in `train.py` so it respects the same `model.variant` default and stays consistent with the baseline behavior
+- [X] T007 [US1] Add a config-driven smoke test in `tests/test_training_smoke.py` that runs a debug nested job with `--override model.variant=cat_llama` and asserts the selected variant reaches the resolved run summary
 
 ---
 

@@ -19,7 +19,11 @@ from evaluation.validation import (
     perplexity_from_loss,
     validation_results_to_metric_rows,
 )
-from modified_llama import ModifiedLlamaForCausalLM, get_ffn_prefix_metadata
+from modified_llama import (
+    CatLlamaMLP,
+    ModifiedLlamaForCausalLM,
+    get_ffn_prefix_metadata,
+)
 from training.data import (
     build_language_model_dataloader,
     load_and_tokenize_dataset,
@@ -278,6 +282,10 @@ def build_model(config: dict[str, Any]):
     llama_config = build_llama_config(config)
     if config["run"]["model_family"] == "standalone":
         return LlamaForCausalLM(llama_config)
+
+    if config["model"]["variant"] == "cat_llama":
+        return ModifiedLlamaForCausalLM(llama_config, mlp_cls=CatLlamaMLP)
+
     return ModifiedLlamaForCausalLM(llama_config)
 
 

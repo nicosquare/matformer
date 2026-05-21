@@ -20,6 +20,7 @@ from torch.utils.data.distributed import DistributedSampler
 from transformers import AutoTokenizer, LlamaConfig
 from transformers import get_scheduler
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
+from utils.config import DEFAULT_MODEL_VARIANT, VALID_MODEL_VARIANTS
 
 
 FLAGS = ['s', 'm', 'l', 'xl']
@@ -44,6 +45,12 @@ def parse_args(argv=None):
         help="Dotted config override, for example training.max_steps=10.",
     )
     parser.add_argument("--model-name", default="NousResearch/Llama-3.2-1B")
+    parser.add_argument(
+        "--model-variant",
+        choices=sorted(VALID_MODEL_VARIANTS),
+        default=DEFAULT_MODEL_VARIANT,
+        help="Select the MatFormer family variant for the legacy direct path.",
+    )
     parser.add_argument("--dataset-name", default="vilm/RedPajama-v2-small")
     parser.add_argument("--dataset-split", default="train")
     parser.add_argument("--dataset-size", type=int, default=10000)
@@ -247,6 +254,12 @@ def evaluate_model(model, eval_dataloader, flags, device, distributed):
     return eval_losses
 
 
+def build_legacy_model(config, model_variant):
+    if model_variant == "cat_llama":
+        return ModifiedLlamaForCausalLM(config=config, mlp_cls=CatLlamaMLP)
+    return ModifiedLlamaForCausalLM(config=config)
+
+
 def main():
     args = parse_args()
     if args.config:
@@ -284,8 +297,13 @@ def main():
     config = LlamaConfig.from_pretrained(args.model_name)
     config.use_cache = False
 
-    print_rank0(rank, "initializing model. This may take a while... ", end="", flush=True)
-    model = ModifiedLlamaForCausalLM(config=config, mlp_cls=CatLlamaMLP)
+    print_rank0(
+        rank,
+        f"initializing model for variant={args.model_variant}. This may take a while... ",
+        end="",
+        flush=True,
+    )
+    model = build_legacy_model(config=config, model_variant=args.model_variant)
     if distributed:
         model = wrap_with_fsdp(model, args, device, rank)
     else:

@@ -185,6 +185,40 @@ def test_tiny_nested_training_can_sample_one_random_granularity_per_batch(
     assert [row["granularity"] for row in train_rows] == ["l"]
 
 
+def test_config_driven_nested_training_records_cat_llama_variant_in_summary(tmp_path):
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "model.variant=cat_llama",
+            "training.max_steps=1",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.warmup_steps=0",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+
+    result = run_training(
+        config,
+        model=TinyNestedTrainingModel(),
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    assert config["model"]["variant"] == "cat_llama"
+    assert summary["model_variant"] == "cat_llama"
+
+
 def test_external_output_root_keeps_required_artifacts_outside_repo_outputs(tmp_path):
     output_root = tmp_path / "external-output-root"
     config = resolve_run_config(
