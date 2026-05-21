@@ -262,6 +262,25 @@ def test_shared_configs_resolve_default_model_variant():
     assert pilot_resolved["model"]["variant"] == "matformer_llama"
 
 
+def test_invalid_model_variant_override_fails_fast_before_output_setup(tmp_path):
+    output_root = tmp_path / "should-not-exist"
+
+    with pytest.raises(
+        ConfigError,
+        match=r"Unsupported model\.variant='dog_llama'",
+    ):
+        resolve_run_config(
+            "configs/debug_matrix.yaml",
+            run_id="debug-nested-001",
+            overrides=[
+                f"run.output_root={output_root}",
+                "model.variant=dog_llama",
+            ],
+        )
+
+    assert not output_root.exists()
+
+
 def test_single_run_output_root_override_derives_output_dir(tmp_path):
     config_path = _write_single_run_config(tmp_path)
     output_root = tmp_path / "single-output"

@@ -408,7 +408,12 @@ def _compose_matrix_run(
 
 def _resolve_model_variant_defaults(config: dict[str, Any]) -> None:
     model = config.setdefault("model", {})
-    raw_variant = model.get("variant", DEFAULT_MODEL_VARIANT)
+    model["variant"] = _normalize_model_variant(
+        model.get("variant", DEFAULT_MODEL_VARIANT)
+    )
+
+
+def _normalize_model_variant(raw_variant: Any) -> str:
     if not isinstance(raw_variant, str):
         raise ConfigError("model.variant must be a string")
 
@@ -417,11 +422,11 @@ def _resolve_model_variant_defaults(config: dict[str, Any]) -> None:
         raise ConfigError("model.variant must be a non-empty string")
     if variant not in VALID_MODEL_VARIANTS:
         raise ConfigError(
-            "model.variant must be one of "
+            f"Unsupported model.variant={variant!r}; expected one of "
             f"{sorted(VALID_MODEL_VARIANTS)}"
         )
 
-    model["variant"] = variant
+    return variant
 
 
 def _select_matrix_run(

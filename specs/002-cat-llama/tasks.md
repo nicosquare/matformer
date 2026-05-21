@@ -68,8 +68,8 @@
 
 ### Implementation for User Story 3
 
-- [ ] T010 [P] [US3] Harden `utils/config.py` to reject unsupported `model.variant` values before training starts and to surface a clear config error
-- [ ] T011 [US3] Add a negative-path test in `tests/test_config.py` that validates an invalid `model.variant` override fails fast with the expected error
+- [X] T010 [P] [US3] Harden `utils/config.py` to reject unsupported `model.variant` values before training starts and to surface a clear config error
+- [X] T011 [US3] Add a negative-path test in `tests/test_config.py` that validates an invalid `model.variant` override fails fast with the expected error
 
 ---
 
