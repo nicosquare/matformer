@@ -563,6 +563,7 @@ def build_pilot_comparison_rows(
                         "run_status": summary.get("status", "completed"),
                         "omit_reason": None,
                         "model_family": summary.get("model_family"),
+                        "model_variant": summary.get("model_variant"),
                         "model_size_label": _model_shape_label(summary),
                         "model_shape_label": _model_shape_label(summary),
                         "sampling_mode": summary.get("sampling_mode"),
@@ -631,6 +632,7 @@ def build_pilot_comparison_rows(
                     "run_status": "omitted",
                     "omit_reason": omit_reason,
                     "model_family": omitted_row.get("model_family", "standalone"),
+                    "model_variant": omitted_row.get("model_variant"),
                     "model_size_label": _model_shape_label(
                         {
                             "model_shape_label": omitted_row.get(
@@ -839,6 +841,7 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "model_shape_label": model_shape_label,
         "sampling_mode": None,
         "model_family_slug": None,
+        "model_variant": None,
         "model_size_slug": None,
         "token_budget_slug": None,
         "output_group": None,

@@ -150,6 +150,39 @@ def test_write_failed_run_summary_records_failure_note(tmp_path):
     assert saved_summary["notes"] == ["CUDA out of memory during debug smoke"]
 
 
+def test_baseline_and_cat_run_summaries_share_schema_and_differ_by_variant(tmp_path):
+    baseline_output_dir = tmp_path / "baseline" / "debug-nested-001"
+    cat_output_dir = tmp_path / "cat" / "debug-nested-001"
+
+    baseline_config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=baseline_output_dir,
+    )
+    cat_config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=cat_output_dir,
+        overrides=["model.variant=cat_llama"],
+    )
+
+    baseline_summary = build_run_summary(
+        baseline_config,
+        tokens_seen=128,
+        notes=["baseline comparison smoke"],
+    )
+    cat_summary = build_run_summary(
+        cat_config,
+        tokens_seen=128,
+        notes=["cat comparison smoke"],
+    )
+
+    assert set(baseline_summary) == set(cat_summary)
+    assert baseline_summary["model_variant"] == "matformer_llama"
+    assert cat_summary["model_variant"] == "cat_llama"
+    assert baseline_summary["model_family"] == cat_summary["model_family"] == "nested"
+
+
 def test_run_summary_includes_budget_derived_fields(tmp_path):
     output_dir = tmp_path / "dmodel256-pilot-comparison-001"
     config = resolve_run_config(

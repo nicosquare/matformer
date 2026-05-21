@@ -55,8 +55,8 @@
 
 ### Implementation for User Story 2
 
-- [ ] T008 [P] [US2] Keep comparison outputs stable in `utils/metrics.py` and ensure `model.variant` is visible in the resolved summary fields used to compare baseline and cat runs
-- [ ] T009 [US2] Add comparison assertions in `tests/test_pilot_comparison.py` or `tests/test_artifacts.py` that baseline and cat runs share the same artifact schema while remaining distinguishable by variant metadata
+- [X] T008 [P] [US2] Keep comparison outputs stable in `utils/metrics.py` and ensure `model.variant` is visible in the resolved summary fields used to compare baseline and cat runs
+- [X] T009 [US2] Add comparison assertions in `tests/test_pilot_comparison.py` or `tests/test_artifacts.py` that baseline and cat runs share the same artifact schema while remaining distinguishable by variant metadata
 
 ---
 
