@@ -6,6 +6,7 @@ run:
 
 model:
   base_model_name: debug-llama
+  variant: matformer_llama
   tokenizer_name: hf-internal-testing/llama-tokenizer
   num_layers: 2
   num_attention_heads: 4

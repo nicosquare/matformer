@@ -115,6 +115,7 @@ def test_write_config_metrics_and_run_summary(tmp_path):
 
     saved_config = json.loads(config_path.read_text(encoding="utf-8"))
     assert saved_config["run"]["run_id"] == "debug-nested-001"
+    assert saved_config["model"]["variant"] == "matformer_llama"
 
     with metrics_path.open("r", encoding="utf-8", newline="") as metrics_file:
         metric_rows = list(csv.DictReader(metrics_file))
@@ -124,6 +125,7 @@ def test_write_config_metrics_and_run_summary(tmp_path):
     saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert saved_summary["status"] == "completed"
     assert saved_summary["tokens_seen"] == 128
+    assert saved_summary["model_variant"] == "matformer_llama"
     assert saved_summary["notes"] == ["smoke test"]
 
 
@@ -144,6 +146,7 @@ def test_write_failed_run_summary_records_failure_note(tmp_path):
     saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert saved_summary["status"] == "failed"
     assert saved_summary["tokens_seen"] == 64
+    assert saved_summary["model_variant"] == "matformer_llama"
     assert saved_summary["notes"] == ["CUDA out of memory during debug smoke"]
 
 

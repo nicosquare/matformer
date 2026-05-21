@@ -17,7 +17,7 @@
 
 **Purpose**: Make the default model variant explicit in source configs so the new selector has a visible baseline.
 
-- [ ] T001 [P] Add `model.variant: matformer_llama` to the shared experiment configs that drive model construction in `configs/debug_matrix.yaml` and `configs/dmodel256_pilot_comparison.yaml`
+- [X] T001 [P] Add `model.variant: matformer_llama` to the shared experiment configs that drive model construction in `configs/debug_matrix.yaml` and `configs/dmodel256_pilot_comparison.yaml`
 
 ---
 
@@ -27,9 +27,9 @@
 
 **Checkpoint**: Foundation ready - user story implementation can now begin.
 
-- [ ] T002 [P] Add `model.variant` parsing and default-resolution support in `utils/config.py`, including the canonical variant list for `matformer_llama` and `cat_llama`
-- [ ] T003 [P] Extend `utils/metrics.py` and `training/run.py` so resolved `config.json` and `run_summary.json` persist `model.variant` alongside the existing topology and granularity labels
-- [ ] T004 [P] Add baseline smoke coverage in `tests/test_config.py` and `tests/test_artifacts.py` for default variant resolution and artifact presence
+- [X] T002 [P] Add `model.variant` parsing and default-resolution support in `utils/config.py`, including the canonical variant list for `matformer_llama` and `cat_llama`
+- [X] T003 [P] Extend `utils/metrics.py` and `training/run.py` so resolved `config.json` and `run_summary.json` persist `model.variant` alongside the existing topology and granularity labels
+- [X] T004 [P] Add baseline smoke coverage in `tests/test_config.py` and `tests/test_artifacts.py` for default variant resolution and artifact presence
 
 ---
 

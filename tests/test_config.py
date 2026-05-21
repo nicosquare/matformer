@@ -110,12 +110,14 @@ def test_cli_overrides_are_parsed_and_applied():
             "training.max_steps=7",
             "run.seed=123",
             "outputs.save_checkpoints=false",
+            "model.variant=cat_llama",
         ],
     )
 
     assert resolved["training"]["max_steps"] == 7
     assert resolved["run"]["seed"] == 123
     assert resolved["outputs"]["save_checkpoints"] is False
+    assert resolved["model"]["variant"] == "cat_llama"
 
 
 def test_granularity_sampling_mode_validation():
@@ -242,10 +244,22 @@ def test_single_run_defaults_to_outputs_root(tmp_path):
 
     resolved = resolve_run_config(config_path)
 
+    assert resolved["model"]["variant"] == "matformer_llama"
     assert resolved["run"]["output_root"] == "outputs"
     assert resolved["run"]["output_dir"] == (
         f"outputs/{resolved['run']['output_group']}/single-output-root-001"
     )
+
+
+def test_shared_configs_resolve_default_model_variant():
+    debug_resolved = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+    )
+    pilot_resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
+
+    assert debug_resolved["model"]["variant"] == "matformer_llama"
+    assert pilot_resolved["model"]["variant"] == "matformer_llama"
 
 
 def test_single_run_output_root_override_derives_output_dir(tmp_path):

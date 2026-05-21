@@ -20,8 +20,10 @@ from utils.model_size import (
 
 VALID_GRANULARITIES = {"s", "m", "l", "xl"}
 VALID_MODEL_TOPOLOGIES = {"nested", "standalone"}
+VALID_MODEL_VARIANTS = {"matformer_llama", "cat_llama"}
 VALID_COMPLETION_LABELS = {"debug", "run"}
 VALID_GRANULARITY_SAMPLING = {"all", "random"}
+DEFAULT_MODEL_VARIANT = "matformer_llama"
 VALID_SAMPLING_MODES = {"nested-random", "nested-all", "standalone"}
 GRANULARITY_INTERMEDIATE_FRACTIONS = {
     "s": (1, 8),
@@ -141,6 +143,7 @@ def resolve_run_config(
     if output_dir is not None:
         resolved["run"]["output_dir"] = str(output_dir)
 
+    _resolve_model_variant_defaults(resolved)
     _resolve_naming_defaults(resolved)
     _resolve_output_paths(resolved)
     _resolve_sampling_mode_defaults(
@@ -165,6 +168,7 @@ def resolve_all_run_configs(
 
     if "matrix" not in config:
         resolved = _compose_single_run(config)
+        _resolve_model_variant_defaults(resolved)
         _resolve_naming_defaults(resolved)
         _resolve_output_paths(resolved)
         _resolve_sampling_mode_defaults(
@@ -187,6 +191,7 @@ def resolve_all_run_configs(
     resolved_runs = []
     for run_entry in runs:
         resolved = _compose_matrix_run(config, run_entry)
+        _resolve_model_variant_defaults(resolved)
         _resolve_naming_defaults(resolved)
         _resolve_output_paths(resolved)
         _resolve_sampling_mode_defaults(
@@ -276,6 +281,7 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         "model",
         [
             "base_model_name",
+            "variant",
             "num_layers",
             "num_attention_heads",
             "intermediate_size",
@@ -349,6 +355,12 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
     if unknown_granularities:
         raise ConfigError(f"Unknown granularities: {unknown_granularities}")
 
+    if model["variant"] not in VALID_MODEL_VARIANTS:
+        raise ConfigError(
+            "model.variant must be one of "
+            f"{sorted(VALID_MODEL_VARIANTS)}"
+        )
+
     if model_topology == "standalone":
         granularity = run.get("granularity")
         if granularity not in VALID_GRANULARITIES:
@@ -392,6 +404,24 @@ def _compose_matrix_run(
     resolved["run"] = run
     _apply_run_granularities(resolved)
     return resolved
+
+
+def _resolve_model_variant_defaults(config: dict[str, Any]) -> None:
+    model = config.setdefault("model", {})
+    raw_variant = model.get("variant", DEFAULT_MODEL_VARIANT)
+    if not isinstance(raw_variant, str):
+        raise ConfigError("model.variant must be a string")
+
+    variant = raw_variant.strip()
+    if not variant:
+        raise ConfigError("model.variant must be a non-empty string")
+    if variant not in VALID_MODEL_VARIANTS:
+        raise ConfigError(
+            "model.variant must be one of "
+            f"{sorted(VALID_MODEL_VARIANTS)}"
+        )
+
+    model["variant"] = variant
 
 
 def _select_matrix_run(
