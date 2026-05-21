@@ -15,12 +15,13 @@ export OUTPUT_ROOT=/mnt/experiments/matformer
 ## 2. Run Focused Smoke Checks
 
 ```bash
-python -m pytest tests/test_config.py tests/test_matformer_prefixes.py tests/test_artifacts.py
+python -m pytest tests/test_config.py tests/test_training_smoke.py tests/test_artifacts.py
 ```
 
 Expected result:
 - Config resolution accepts the new model variant override.
 - Existing MatFormer runs still resolve unchanged when no override is used.
+- The config-driven nested smoke path records `cat_llama` in `run_summary.json`.
 - Config and artifact files can be written under the configured output root.
 
 ## 3. Run the Baseline Path

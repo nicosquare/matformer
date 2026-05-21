@@ -77,8 +77,8 @@
 
 **Purpose**: Finish docs alignment and run the focused validation path.
 
-- [ ] T012 [P] Update `specs/002-cat-llama/quickstart.md`, `specs/002-cat-llama/contracts/cli.md`, `specs/002-cat-llama/contracts/experiment-config.md`, and `specs/002-cat-llama/contracts/run-artifacts.md` if any implemented field names or command examples need to be kept in sync
-- [ ] T013 [P] Run the focused smoke checks documented in `specs/002-cat-llama/quickstart.md` against `tests/test_config.py`, `tests/test_training_smoke.py`, and `tests/test_artifacts.py` to confirm the variant-specific path works end to end
+- [X] T012 [P] Update `specs/002-cat-llama/quickstart.md`, `specs/002-cat-llama/contracts/cli.md`, `specs/002-cat-llama/contracts/experiment-config.md`, and `specs/002-cat-llama/contracts/run-artifacts.md` if any implemented field names or command examples need to be kept in sync
+- [X] T013 [P] Run the focused smoke checks documented in `specs/002-cat-llama/quickstart.md` against `tests/test_config.py`, `tests/test_training_smoke.py`, and `tests/test_artifacts.py` to confirm the variant-specific path works end to end
 
 ---
 
