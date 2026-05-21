@@ -6,7 +6,7 @@ import functools
 import torch
 import torch.distributed as dist
 from datasets import load_dataset
-from modified_llama import ModifiedLlamaForCausalLM
+from modified_llama import ModifiedLlamaForCausalLM, CatLlamaMLP
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     CheckpointImpl,
     apply_activation_checkpointing,
@@ -285,7 +285,7 @@ def main():
     config.use_cache = False
 
     print_rank0(rank, "initializing model. This may take a while... ", end="", flush=True)
-    model = ModifiedLlamaForCausalLM(config)
+    model = ModifiedLlamaForCausalLM(config=config, mlp_cls=CatLlamaMLP)
     if distributed:
         model = wrap_with_fsdp(model, args, device, rank)
     else:
