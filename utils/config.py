@@ -411,6 +411,13 @@ def _resolve_model_variant_defaults(config: dict[str, Any]) -> None:
     model["variant"] = _normalize_model_variant(
         model.get("variant", DEFAULT_MODEL_VARIANT)
     )
+    model["gradient_membership_correction"] = _normalize_bool(
+        model.get(
+            "gradient_membership_correction",
+            model["variant"] == "cat_llama",
+        ),
+        "model.gradient_membership_correction",
+    )
 
 
 def _normalize_model_variant(raw_variant: Any) -> str:
@@ -810,6 +817,12 @@ def _positive_int(value: Any, field_name: str) -> int:
     if parsed <= 0:
         raise ConfigError(f"{field_name} must be a positive integer")
     return parsed
+
+
+def _normalize_bool(value: Any, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise ConfigError(f"{field_name} must be a boolean")
 
 
 def _ensure_writable_directory(path: Path, label: str) -> None:

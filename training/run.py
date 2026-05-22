@@ -280,13 +280,24 @@ def build_artifact_parameter_counts(
 
 def build_model(config: dict[str, Any]):
     llama_config = build_llama_config(config)
+    mlp_kwargs = {
+        "trained_granularities": tuple(config["model"]["granularities"]),
+        "gradient_membership_correction_enabled": config["model"].get(
+            "gradient_membership_correction",
+            config["model"]["variant"] == "cat_llama",
+        ),
+    }
     if config["run"]["model_family"] == "standalone":
         return LlamaForCausalLM(llama_config)
 
     if config["model"]["variant"] == "cat_llama":
-        return ModifiedLlamaForCausalLM(llama_config, mlp_cls=CatLlamaMLP)
+        return ModifiedLlamaForCausalLM(
+            llama_config,
+            mlp_cls=CatLlamaMLP,
+            mlp_kwargs=mlp_kwargs,
+        )
 
-    return ModifiedLlamaForCausalLM(llama_config)
+    return ModifiedLlamaForCausalLM(llama_config, mlp_kwargs=mlp_kwargs)
 
 
 def build_llama_config(config: dict[str, Any]) -> LlamaConfig:
@@ -805,6 +816,7 @@ def train_for_steps(
                     [loss for _, loss in granularity_losses]
                 ).mean()
                 combined_loss.backward()
+
                 optimizer.step()
                 scheduler.step()
 

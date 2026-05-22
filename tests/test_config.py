@@ -111,6 +111,7 @@ def test_cli_overrides_are_parsed_and_applied():
             "run.seed=123",
             "outputs.save_checkpoints=false",
             "model.variant=cat_llama",
+            "model.gradient_membership_correction=false",
         ],
     )
 
@@ -118,6 +119,7 @@ def test_cli_overrides_are_parsed_and_applied():
     assert resolved["run"]["seed"] == 123
     assert resolved["outputs"]["save_checkpoints"] is False
     assert resolved["model"]["variant"] == "cat_llama"
+    assert resolved["model"]["gradient_membership_correction"] is False
 
 
 def test_granularity_sampling_mode_validation():
@@ -259,7 +261,31 @@ def test_shared_configs_resolve_default_model_variant():
     pilot_resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
 
     assert debug_resolved["model"]["variant"] == "matformer_llama"
+    assert debug_resolved["model"]["gradient_membership_correction"] is False
     assert pilot_resolved["model"]["variant"] == "matformer_llama"
+    assert pilot_resolved["model"]["gradient_membership_correction"] is False
+
+
+def test_cat_llama_defaults_gradient_membership_correction_on():
+    resolved = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        overrides=["model.variant=cat_llama"],
+    )
+
+    assert resolved["model"]["variant"] == "cat_llama"
+    assert resolved["model"]["gradient_membership_correction"] is True
+
+
+def test_matformer_llama_allows_enabling_gradient_membership_correction():
+    resolved = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        overrides=["model.gradient_membership_correction=true"],
+    )
+
+    assert resolved["model"]["variant"] == "matformer_llama"
+    assert resolved["model"]["gradient_membership_correction"] is True
 
 
 def test_invalid_model_variant_override_fails_fast_before_output_setup(tmp_path):

@@ -3,11 +3,15 @@ import torch
 from transformers import LlamaConfig
 
 from modified_llama import (
+    CatLlamaMLP,
     MATFORMER_GRANULARITY_ORDER,
     ModifiedLlamaForCausalLM,
     ModifiedLlamaMLP,
     expand_layer_granularity_pattern,
+    get_block_membership_counts,
     get_ffn_prefix_metadata,
+    get_gradient_membership_correction_scales,
+    get_prefix_membership_segment_metadata,
     granularity_prefix_width,
 )
 
@@ -124,3 +128,134 @@ def test_layer_granularity_pattern_rejects_unknown_granularity():
 def test_layer_granularity_pattern_must_be_non_empty():
     with pytest.raises(ValueError, match="non-empty"):
         expand_layer_granularity_pattern([], num_layers=4)
+
+
+def test_gradient_membership_correction_scales_match_configured_granularities():
+    total_blocks = 8
+
+    assert get_block_membership_counts(
+        ["s", "m", "l", "xl"],
+        total_blocks=total_blocks,
+    ) == [4, 3, 2, 2, 1, 1, 1, 1]
+    assert get_gradient_membership_correction_scales(
+        ["s", "m", "l", "xl"],
+        total_blocks=total_blocks,
+    ) == [1.0, 4 / 3, 2.0, 2.0, 4.0, 4.0, 4.0, 4.0]
+
+    assert get_block_membership_counts(
+        ["m", "xl"],
+        total_blocks=total_blocks,
+    ) == [2, 2, 1, 1, 1, 1, 1, 1]
+    assert get_gradient_membership_correction_scales(
+        ["m", "xl"],
+        total_blocks=total_blocks,
+    ) == [1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]
+
+
+def test_prefix_membership_segment_metadata_matches_sliced_prefix_boundaries():
+    metadata = get_prefix_membership_segment_metadata(64, ["s", "m", "l", "xl"])
+
+    assert [(segment["start"], segment["end"]) for segment in metadata] == [
+        (0, 8),
+        (8, 16),
+        (16, 32),
+        (32, 64),
+    ]
+    assert [segment["membership_count"] for segment in metadata] == [4, 3, 2, 1]
+    assert [segment["scale"] for segment in metadata] == [1.0, 4 / 3, 2.0, 4.0]
+
+
+def test_cat_llama_scales_active_block_gradients_by_inverse_membership():
+    torch.manual_seed(0)
+    config = tiny_llama_config(num_hidden_layers=1)
+    corrected = CatLlamaMLP(
+        config,
+        trained_granularities=["s", "m", "l", "xl"],
+    )
+    baseline = CatLlamaMLP(config, trained_granularities=["xl"])
+    baseline.load_state_dict(corrected.state_dict())
+
+    x = torch.randn(2, 3, config.hidden_size)
+    corrected.configure_subnetwork("m")
+    baseline.configure_subnetwork("m")
+
+    corrected(x).sum().backward()
+    baseline(x).sum().backward()
+
+    assert torch.allclose(
+        corrected.gate_weight_blocks[0].grad,
+        baseline.gate_weight_blocks[0].grad,
+    )
+    assert torch.allclose(
+        corrected.gate_weight_blocks[1].grad,
+        baseline.gate_weight_blocks[1].grad * (4 / 3),
+    )
+    assert corrected.gate_weight_blocks[2].grad is None
+    assert baseline.gate_weight_blocks[2].grad is None
+
+
+def test_cat_llama_can_disable_gradient_membership_correction():
+    torch.manual_seed(0)
+    config = tiny_llama_config(num_hidden_layers=1)
+    corrected = CatLlamaMLP(
+        config,
+        trained_granularities=["s", "m", "l", "xl"],
+        gradient_membership_correction_enabled=True,
+    )
+    uncorrected = CatLlamaMLP(
+        config,
+        trained_granularities=["s", "m", "l", "xl"],
+        gradient_membership_correction_enabled=False,
+    )
+    uncorrected.load_state_dict(corrected.state_dict())
+
+    x = torch.randn(2, 3, config.hidden_size)
+    corrected.configure_subnetwork("m")
+    uncorrected.configure_subnetwork("m")
+
+    corrected(x).sum().backward()
+    uncorrected(x).sum().backward()
+
+    assert uncorrected.gradient_membership_correction_enabled is False
+    assert torch.allclose(
+        corrected.gate_weight_blocks[1].grad,
+        uncorrected.gate_weight_blocks[1].grad * (4 / 3),
+    )
+
+
+def test_modified_llama_scales_active_prefix_gradients_by_inverse_membership():
+    torch.manual_seed(0)
+    config = tiny_llama_config(num_hidden_layers=1)
+    corrected = ModifiedLlamaMLP(
+        config,
+        trained_granularities=["s", "m", "l", "xl"],
+        gradient_membership_correction_enabled=True,
+    )
+    baseline = ModifiedLlamaMLP(
+        config,
+        trained_granularities=["s", "m", "l", "xl"],
+        gradient_membership_correction_enabled=False,
+    )
+    baseline.load_state_dict(corrected.state_dict())
+
+    x = torch.randn(2, 3, config.hidden_size)
+    corrected.configure_subnetwork("m")
+    baseline.configure_subnetwork("m")
+
+    corrected(x).sum().backward()
+    baseline(x).sum().backward()
+
+    assert torch.allclose(
+        corrected.gate_proj.weight.grad[:8],
+        baseline.gate_proj.weight.grad[:8],
+    )
+    assert torch.allclose(
+        corrected.gate_proj.weight.grad[8:16],
+        baseline.gate_proj.weight.grad[8:16] * (4 / 3),
+    )
+    assert torch.allclose(
+        corrected.down_proj.weight.grad[:, 8:16],
+        baseline.down_proj.weight.grad[:, 8:16] * (4 / 3),
+    )
+    assert torch.count_nonzero(corrected.gate_proj.weight.grad[16:]) == 0
+    assert torch.count_nonzero(baseline.gate_proj.weight.grad[16:]) == 0
