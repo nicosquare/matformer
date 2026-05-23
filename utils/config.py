@@ -21,6 +21,8 @@ from utils.model_size import (
 VALID_GRANULARITIES = {"s", "m", "l", "xl"}
 VALID_MODEL_TOPOLOGIES = {"nested", "standalone"}
 VALID_MODEL_VARIANTS = {"matformer_llama", "cat_llama"}
+VALID_LEARNING_RATE_SCALE_RULES = {"none", "linear", "sqrt"}
+VALID_OPTIMIZER_NAMES = {"adamw", "sgd"}
 VALID_COMPLETION_LABELS = {"debug", "run"}
 VALID_GRANULARITY_SAMPLING = {"all", "random"}
 DEFAULT_MODEL_VARIANT = "matformer_llama"
@@ -30,6 +32,23 @@ GRANULARITY_INTERMEDIATE_FRACTIONS = {
     "m": (1, 4),
     "l": (1, 2),
     "xl": (1, 1),
+}
+OPTIMIZER_DEFAULT_KWARGS = {
+    "adamw": {
+        "betas": [0.9, 0.999],
+        "eps": 1e-8,
+        "weight_decay": 0.0,
+    },
+    "sgd": {
+        "momentum": 0.0,
+        "dampening": 0.0,
+        "nesterov": False,
+        "weight_decay": 0.0,
+    },
+}
+OPTIMIZER_ALLOWED_KWARGS = {
+    "adamw": {"betas", "eps", "weight_decay"},
+    "sgd": {"momentum", "dampening", "nesterov", "weight_decay"},
 }
 
 
@@ -304,6 +323,16 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "expected_tokens_per_step",
             "derived_max_steps",
             "max_steps",
+            "base_learning_rate",
+            "learning_rate_scale_rule",
+            "learning_rate_scale_factor",
+            "resolved_learning_rate",
+            "warmup_ratio",
+            "warmup_steps",
+            "resolved_warmup_steps",
+            "optimizer",
+            "optimizer_name",
+            "optimizer_kwargs",
         ],
     )
     _require_fields(
@@ -758,12 +787,204 @@ def resolve_training_length_for_world_size(
         else derived_max_steps
     )
 
+    _resolve_training_schedule_defaults(training, effective_world_size)
+
 
 def _resolve_effective_world_size() -> int:
     raw_world_size = os.environ.get("WORLD_SIZE")
     if raw_world_size in (None, ""):
         return 1
     return _positive_int(raw_world_size, "WORLD_SIZE")
+
+
+def _resolve_training_schedule_defaults(
+    training: dict[str, Any],
+    effective_world_size: int,
+) -> None:
+    base_learning_rate = _positive_float(
+        training.get("learning_rate"),
+        "training.learning_rate",
+    )
+    training["base_learning_rate"] = base_learning_rate
+
+    scale_rule = _normalize_learning_rate_scale_rule(
+        training.get("learning_rate_scale_rule"),
+        effective_world_size,
+    )
+    training["learning_rate_scale_rule"] = scale_rule
+    learning_rate_scale_factor = _compute_learning_rate_scale_factor(
+        scale_rule,
+        effective_world_size,
+    )
+    training["learning_rate_scale_factor"] = learning_rate_scale_factor
+    training["resolved_learning_rate"] = base_learning_rate * learning_rate_scale_factor
+
+    warmup_ratio = training.get("warmup_ratio")
+    if warmup_ratio is None:
+        warmup_ratio = 0.0
+    warmup_ratio = _nonnegative_float(
+        warmup_ratio,
+        "training.warmup_ratio",
+    )
+    training["warmup_ratio"] = warmup_ratio
+
+    warmup_steps = training.get("warmup_steps")
+    if warmup_steps is None:
+        resolved_warmup_steps = math.ceil(int(training["max_steps"]) * warmup_ratio)
+    else:
+        warmup_steps = _nonnegative_int(warmup_steps, "training.warmup_steps")
+        resolved_warmup_steps = warmup_steps
+    training["warmup_steps"] = warmup_steps
+    training["resolved_warmup_steps"] = resolved_warmup_steps
+
+    optimizer = training.get("optimizer")
+    if optimizer is None:
+        optimizer = {}
+    if not isinstance(optimizer, dict):
+        raise ConfigError("training.optimizer must be a mapping when provided")
+
+    optimizer_name = _normalize_optimizer_name(optimizer.get("name", "adamw"))
+    optimizer_kwargs = _resolve_optimizer_kwargs(
+        optimizer_name,
+        optimizer.get("kwargs", {}),
+    )
+    training["optimizer"] = {
+        "name": optimizer_name,
+        "kwargs": copy.deepcopy(optimizer_kwargs),
+    }
+    training["optimizer_name"] = optimizer_name
+    training["optimizer_kwargs"] = optimizer_kwargs
+
+
+def _normalize_learning_rate_scale_rule(
+    raw_scale_rule: Any,
+    effective_world_size: int,
+) -> str:
+    if raw_scale_rule is None or raw_scale_rule == "":
+        return "linear" if effective_world_size > 1 else "none"
+    if not isinstance(raw_scale_rule, str):
+        raise ConfigError("training.learning_rate_scale_rule must be a string")
+
+    scale_rule = raw_scale_rule.strip()
+    if not scale_rule:
+        return "linear" if effective_world_size > 1 else "none"
+    if scale_rule not in VALID_LEARNING_RATE_SCALE_RULES:
+        raise ConfigError(
+            "training.learning_rate_scale_rule must be one of "
+            f"{sorted(VALID_LEARNING_RATE_SCALE_RULES)}"
+        )
+    return scale_rule
+
+
+def _compute_learning_rate_scale_factor(
+    scale_rule: str,
+    effective_world_size: int,
+) -> float:
+    if scale_rule == "none":
+        return 1.0
+    if scale_rule == "linear":
+        return float(effective_world_size)
+    if scale_rule == "sqrt":
+        return math.sqrt(effective_world_size)
+    raise ConfigError(
+        "training.learning_rate_scale_rule must be one of "
+        f"{sorted(VALID_LEARNING_RATE_SCALE_RULES)}"
+    )
+
+
+def _normalize_optimizer_name(raw_name: Any) -> str:
+    if not isinstance(raw_name, str):
+        raise ConfigError("training.optimizer.name must be a string")
+
+    optimizer_name = raw_name.strip()
+    if not optimizer_name:
+        raise ConfigError("training.optimizer.name must be a non-empty string")
+    if optimizer_name not in VALID_OPTIMIZER_NAMES:
+        raise ConfigError(
+            "training.optimizer.name must be one of "
+            f"{sorted(VALID_OPTIMIZER_NAMES)}"
+        )
+    return optimizer_name
+
+
+def _resolve_optimizer_kwargs(
+    optimizer_name: str,
+    raw_kwargs: Any,
+) -> dict[str, Any]:
+    if raw_kwargs is None:
+        raw_kwargs = {}
+    if not isinstance(raw_kwargs, dict):
+        raise ConfigError("training.optimizer.kwargs must be a mapping when provided")
+
+    allowed_kwargs = OPTIMIZER_ALLOWED_KWARGS[optimizer_name]
+    resolved_kwargs = copy.deepcopy(OPTIMIZER_DEFAULT_KWARGS[optimizer_name])
+    for key, value in raw_kwargs.items():
+        if key not in allowed_kwargs:
+            raise ConfigError(
+                f"training.optimizer.kwargs.{key} is not supported for {optimizer_name}"
+            )
+        resolved_kwargs[key] = _normalize_optimizer_kwarg(optimizer_name, key, value)
+
+    return resolved_kwargs
+
+
+def _normalize_optimizer_kwarg(
+    optimizer_name: str,
+    key: str,
+    value: Any,
+) -> Any:
+    if optimizer_name == "adamw" and key == "betas":
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            raise ConfigError("training.optimizer.kwargs.betas must be a pair of floats")
+        return [
+            _nonnegative_float(value[0], "training.optimizer.kwargs.betas[0]"),
+            _nonnegative_float(value[1], "training.optimizer.kwargs.betas[1]"),
+        ]
+
+    if key in {"eps", "weight_decay", "momentum", "dampening"}:
+        return _nonnegative_float(value, f"training.optimizer.kwargs.{key}")
+
+    if key == "nesterov":
+        if isinstance(value, bool):
+            return value
+        raise ConfigError("training.optimizer.kwargs.nesterov must be a boolean")
+
+    raise ConfigError(f"Unsupported optimizer kwarg: {key}")
+
+
+def _positive_float(value: Any, field_name: str) -> float:
+    number = _coerce_float(value, field_name)
+    if number <= 0:
+        raise ConfigError(f"{field_name} must be a positive number")
+    return number
+
+
+def _nonnegative_float(value: Any, field_name: str) -> float:
+    number = _coerce_float(value, field_name)
+    if number < 0:
+        raise ConfigError(f"{field_name} must be a non-negative number")
+    return number
+
+
+def _nonnegative_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise ConfigError(f"{field_name} must be a non-negative integer")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as error:
+        raise ConfigError(f"{field_name} must be a non-negative integer") from error
+    if parsed < 0:
+        raise ConfigError(f"{field_name} must be a non-negative integer")
+    return parsed
+
+
+def _coerce_float(value: Any, field_name: str) -> float:
+    if isinstance(value, bool):
+        raise ConfigError(f"{field_name} must be a number")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as error:
+        raise ConfigError(f"{field_name} must be a number") from error
 
 
 def _validate_derived_training_length(

@@ -491,3 +491,78 @@ def test_dmodel256_pilot_derives_training_length_from_distributed_world_size(
     assert training["expected_tokens_per_step"] == expected_tokens_per_step
     assert training["derived_max_steps"] == expected_steps
     assert training["max_steps"] == expected_steps
+
+
+def test_dmodel256_pilot_resolves_schedule_and_optimizer_defaults(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("WORLD_SIZE", "4")
+    output_root = tmp_path / "pilot-output"
+
+    resolved = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        overrides=[f"run.output_root={output_root}"],
+    )
+
+    training = resolved["training"]
+    assert training["base_learning_rate"] == 0.0001
+    assert training["learning_rate_scale_rule"] == "linear"
+    assert training["learning_rate_scale_factor"] == 4.0
+    assert training["resolved_learning_rate"] == 0.0004
+    assert training["warmup_ratio"] == 0.0
+    assert training["warmup_steps"] == 200
+    assert training["resolved_warmup_steps"] == 200
+    assert training["optimizer_name"] == "adamw"
+    assert training["optimizer_kwargs"] == {
+        "betas": [0.9, 0.999],
+        "eps": 1e-08,
+        "weight_decay": 0.0,
+    }
+    assert training["optimizer"] == {
+        "name": "adamw",
+        "kwargs": {
+            "betas": [0.9, 0.999],
+            "eps": 1e-08,
+            "weight_decay": 0.0,
+        },
+    }
+
+
+def test_single_run_resolves_explicit_schedule_and_optimizer_overrides(tmp_path):
+    config_path = _write_single_run_config(tmp_path)
+
+    resolved = resolve_run_config(
+        config_path,
+        overrides=[
+            "training.warmup_steps=null",
+            "training.warmup_ratio=0.25",
+            "training.optimizer.name=sgd",
+            "training.optimizer.kwargs.momentum=0.9",
+            "training.optimizer.kwargs.nesterov=true",
+        ],
+    )
+
+    training = resolved["training"]
+    assert training["learning_rate_scale_rule"] == "none"
+    assert training["learning_rate_scale_factor"] == 1.0
+    assert training["resolved_learning_rate"] == 0.0003
+    assert training["warmup_ratio"] == 0.25
+    assert training["warmup_steps"] is None
+    assert training["resolved_warmup_steps"] == 1
+    assert training["optimizer_name"] == "sgd"
+    assert training["optimizer_kwargs"] == {
+        "momentum": 0.9,
+        "dampening": 0.0,
+        "nesterov": True,
+        "weight_decay": 0.0,
+    }
+    assert training["optimizer"] == {
+        "name": "sgd",
+        "kwargs": {
+            "momentum": 0.9,
+            "dampening": 0.0,
+            "nesterov": True,
+            "weight_decay": 0.0,
+        },
+    }
