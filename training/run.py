@@ -6,7 +6,7 @@ from contextlib import contextmanager
 import random
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import torch
 from torch.utils.data.distributed import DistributedSampler
@@ -38,6 +38,7 @@ from training.distributed import (
     wrap_model_for_distributed,
 )
 from utils.config import (
+    ConfigError,
     attach_parameter_counts_to_config,
     resolve_run_config,
     resolve_training_length_for_world_size,
@@ -135,16 +136,7 @@ def run_training(
                 device,
                 distributed_context=distributed_context,
             )
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=training["learning_rate"],
-        )
-        scheduler = get_scheduler(
-            "cosine",
-            optimizer=optimizer,
-            num_warmup_steps=training.get("warmup_steps", 0),
-            num_training_steps=training["max_steps"],
-        )
+        optimizer, scheduler = build_optimizer_and_scheduler(model, training)
 
         checkpoint_state: dict[str, Any] = {}
         metrics_rows = train_for_steps(
@@ -745,6 +737,42 @@ def build_distributed_sampler(
         shuffle=shuffle,
         seed=0 if seed is None else int(seed),
     )
+
+
+def build_optimizer_and_scheduler(model, training: Mapping[str, Any]):
+    """Build the training optimizer and scheduler from resolved config fields."""
+    optimizer_name = str(training.get("optimizer_name", "adamw"))
+    optimizer_kwargs = dict(training.get("optimizer_kwargs", {}))
+    learning_rate = training.get("resolved_learning_rate", training.get("learning_rate"))
+    if learning_rate is None:
+        raise ConfigError(
+            "training must include learning_rate or resolved_learning_rate"
+        )
+
+    if optimizer_name == "adamw":
+        if "betas" in optimizer_kwargs and isinstance(optimizer_kwargs["betas"], list):
+            optimizer_kwargs["betas"] = tuple(optimizer_kwargs["betas"])
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=learning_rate,
+            **optimizer_kwargs,
+        )
+    elif optimizer_name == "sgd":
+        optimizer = torch.optim.SGD(
+            model.parameters(),
+            lr=learning_rate,
+            **optimizer_kwargs,
+        )
+    else:
+        raise ConfigError(f"Unsupported optimizer name: {optimizer_name}")
+
+    scheduler = get_scheduler(
+        "cosine",
+        optimizer=optimizer,
+        num_warmup_steps=int(training.get("resolved_warmup_steps", training.get("warmup_steps", 0) or 0)),
+        num_training_steps=int(training["max_steps"]),
+    )
+    return optimizer, scheduler
 
 
 def train_for_steps(

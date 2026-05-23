@@ -18,9 +18,15 @@ from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from transformers import AutoTokenizer, LlamaConfig
-from transformers import get_scheduler
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
-from utils.config import DEFAULT_MODEL_VARIANT, VALID_MODEL_VARIANTS
+import yaml
+
+from training.run import build_optimizer_and_scheduler
+from utils.config import (
+    DEFAULT_MODEL_VARIANT,
+    VALID_MODEL_VARIANTS,
+    VALID_OPTIMIZER_NAMES,
+)
 
 
 FLAGS = ['s', 'm', 'l', 'xl']
@@ -61,6 +67,17 @@ def parse_args(argv=None):
     parser.add_argument("--num-warmup-steps", type=int, default=200)
     parser.add_argument("--eval-interval", type=int, default=100)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument(
+        "--optimizer-name",
+        choices=sorted(VALID_OPTIMIZER_NAMES),
+        default="adamw",
+        help="Select the optimizer for the legacy direct path.",
+    )
+    parser.add_argument(
+        "--optimizer-kwargs",
+        default="{}",
+        help="YAML mapping of optimizer kwargs for the legacy direct path.",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--preprocess-num-proc", type=int, default=min(32, os.cpu_count() or 1))
     parser.add_argument("--dataloader-num-workers", type=int, default=0)
@@ -72,6 +89,15 @@ def parse_args(argv=None):
         help="Checkpoint Llama decoder layers when running under torchrun/FSDP.",
     )
     return parser.parse_args(argv)
+
+
+def parse_optimizer_kwargs(raw_value):
+    parsed = yaml.safe_load(raw_value)
+    if parsed in (None, ""):
+        return {}
+    if not isinstance(parsed, dict):
+        raise ValueError("--optimizer-kwargs must parse to a mapping")
+    return parsed
 
 
 def setup_distributed():
@@ -337,13 +363,17 @@ def main():
         pin_memory=pin_memory,
     )
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
-
-    scheduler = get_scheduler(
-        "cosine",
-        optimizer=optimizer,
-        num_warmup_steps=args.num_warmup_steps,
-        num_training_steps=args.num_training_steps,
+    optimizer, scheduler = build_optimizer_and_scheduler(
+        model,
+        {
+            "learning_rate": args.learning_rate,
+            "resolved_learning_rate": args.learning_rate,
+            "max_steps": args.num_training_steps,
+            "warmup_steps": args.num_warmup_steps,
+            "resolved_warmup_steps": args.num_warmup_steps,
+            "optimizer_name": args.optimizer_name,
+            "optimizer_kwargs": parse_optimizer_kwargs(args.optimizer_kwargs),
+        },
     )
     model.train()
 
