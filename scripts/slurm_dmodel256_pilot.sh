@@ -10,7 +10,7 @@
 #SBATCH --qos=cscc-gpu-qos
 #SBATCH --output=./logs/matformer_dmodel256_%j.out
 #SBATCH --error=./logs/matformer_dmodel256_%j.err
-#SBATCH --exclude=gpu-[51,56]
+#SBATCH --exclude=gpu-[50,51,56]
 
 set -euo pipefail
 

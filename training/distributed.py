@@ -81,8 +81,12 @@ def wrap_model_for_distributed(model, context: DistributedContext):
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
     if context.device is not None and torch.device(context.device).type == "cuda":
-        return FSDP(model, device_id=torch.device(context.device))
-    return FSDP(model)
+        return FSDP(
+            model,
+            device_id=torch.device(context.device),
+            use_orig_params=True,
+        )
+    return FSDP(model, use_orig_params=True)
 
 
 def rank_zero_only(
