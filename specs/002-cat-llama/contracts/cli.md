@@ -15,3 +15,7 @@ Required behavior:
   variant.
 - Leave the default behavior unchanged when the override is omitted.
 - Write the same run artifacts as the baseline path.
+- Accept training overrides for `training.learning_rate_scale_rule`,
+  `training.warmup_ratio`, `training.warmup_steps`, and
+  `training.optimizer.{name,kwargs}` on the same command path so schedule and
+  optimizer debugging do not require a separate script.

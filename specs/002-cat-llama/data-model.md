@@ -46,10 +46,17 @@ Represents the resolved experiment inputs for one run.
 - `phase_id`
 - `model_family` topology, such as `nested` or `standalone`
 - `model_variant`
+- `effective_world_size`
 - `granularities`
 - `output_root`
 - `seed`
 - `token_budget`
+- `max_steps`
+- `learning_rate`
+- `learning_rate_scale_rule`
+- `warmup_ratio`
+- `warmup_steps`
+- `optimizer`
 
 **Relationships**
 - Contains one `ModelVariant`.
@@ -61,6 +68,56 @@ Represents the resolved experiment inputs for one run.
 - `run.model_family` must remain the topology selector and must not be reused for variant selection.
 - The topology and variant must be consistent with the selected experiment.
 
+## TrainingSchedule
+
+Represents the resolved learning-rate and warmup policy for a run.
+
+**Fields**
+- `token_budget`
+- `batch_size_per_process`
+- `context_length`
+- `effective_world_size`
+- `expected_tokens_per_step`
+- `derived_max_steps`
+- `max_steps`
+- `base_learning_rate`
+- `learning_rate_scale_rule`
+- `learning_rate_scale_factor`
+- `resolved_learning_rate`
+- `warmup_ratio`
+- `warmup_steps`
+- `resolved_warmup_steps`
+
+**Relationships**
+- Selected by `RunConfiguration`.
+- Recorded in `RunSummary` and structured artifacts.
+
+**Validation Rules**
+- `learning_rate_scale_rule` must be one of `none`, `linear`, or `sqrt`.
+- The resolved learning rate must be derived from the base learning rate and
+  the resolved global batch size.
+- `resolved_warmup_steps` must be derived from `max_steps` when warmup is
+  configured as a ratio.
+- `learning_rate_scale_factor` must reflect the global-batch-size scaling that
+  was applied to `base_learning_rate`.
+
+## OptimizerConfig
+
+Represents the optimizer selected for the run.
+
+**Fields**
+- `name`
+- `kwargs`
+
+**Relationships**
+- Selected by `RunConfiguration`.
+- Recorded in `RunSummary` and structured artifacts.
+
+**Validation Rules**
+- `name` must be one of the supported optimizer names.
+- `kwargs` must accept the minimum supported parameter set for the selected
+  optimizer.
+
 ## RunSummary
 
 Represents the saved record of what ran and what artifacts were produced.
@@ -69,6 +126,14 @@ Represents the saved record of what ran and what artifacts were produced.
 - `run_id`
 - `model_family`
 - `model_variant`
+- `base_learning_rate`
+- `learning_rate_scale_rule`
+- `learning_rate_scale_factor`
+- `resolved_learning_rate`
+- `warmup_ratio`
+- `resolved_warmup_steps`
+- `optimizer_name`
+- `optimizer_kwargs`
 - `status`
 - `output_dir`
 - `metrics_path`

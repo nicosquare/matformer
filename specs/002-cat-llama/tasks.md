@@ -80,6 +80,21 @@
 - [X] T012 [P] Update `specs/002-cat-llama/quickstart.md`, `specs/002-cat-llama/contracts/cli.md`, `specs/002-cat-llama/contracts/experiment-config.md`, and `specs/002-cat-llama/contracts/run-artifacts.md` if any implemented field names or command examples need to be kept in sync
 - [X] T013 [P] Run the focused smoke checks documented in `specs/002-cat-llama/quickstart.md` against `tests/test_config.py`, `tests/test_training_smoke.py`, and `tests/test_artifacts.py` to confirm the variant-specific path works end to end
 
+## Phase 6.1: Training Schedule and Optimizer Controls
+
+**Purpose**: Make distributed training schedule and optimizer behavior config-driven so `cat_llama` and `matformer_llama` runs remain comparable while FSDP debugging can switch optimizer settings explicitly.
+
+**Independent Test**: Resolve a config with `training.learning_rate_scale_rule`, `training.warmup_ratio` or `training.warmup_steps`, and `training.optimizer.{name,kwargs}`, then confirm the resolved config and run summary persist the effective learning rate, warmup policy, and optimizer metadata.
+
+### Implementation for Phase 6.1
+
+- [ ] T014 [P] Add config resolution for `training.learning_rate_scale_rule`, `training.warmup_ratio`, `training.warmup_steps`, and `training.optimizer.{name,kwargs}` in `utils/config.py`, including derived `base_learning_rate`, `learning_rate_scale_factor`, `resolved_learning_rate`, `resolved_warmup_steps`, `optimizer_name`, and `optimizer_kwargs`
+- [ ] T015 Update `training/run.py` and `train.py` to build the optimizer from the resolved config, apply the resolved warmup schedule from `training.max_steps`, and keep `adamw` as the default while allowing `sgd` for debug runs
+- [ ] T016 Extend `utils/metrics.py` and the artifact-writing helpers used by `training/run.py` so `config.json` and `run_summary.json` persist `base_learning_rate`, `learning_rate_scale_rule`, `learning_rate_scale_factor`, `resolved_learning_rate`, `warmup_ratio`, `warmup_steps`, `resolved_warmup_steps`, `optimizer_name`, and `optimizer_kwargs`
+- [ ] T017 Add focused smoke coverage in `tests/test_config.py`, `tests/test_training_smoke.py`, and `tests/test_artifacts.py` for learning-rate scaling, warmup precedence, optimizer switching, and resolved artifact metadata
+
+**Checkpoint**: Phase 6.1 should now be independently verifiable with config, training, and artifact smoke checks.
+
 ---
 
 ## Dependencies & Execution Order

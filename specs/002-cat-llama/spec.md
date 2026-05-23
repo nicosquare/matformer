@@ -75,6 +75,7 @@ As a researcher, I want invalid model variants to fail early with a clear error 
 - **EX-003**: The completed run MUST save the resolved configuration used for the selected family.
 - **EX-004**: The completed run MUST label comparison outputs so a reviewer can tell which variant produced each result.
 - **EX-005**: The feature MUST preserve the existing baseline path so previous experiments remain reproducible.
+- **EX-006**: The resolved run configuration MUST record the learning-rate scale rule, resolved learning rate, warmup policy, and optimizer settings used for the run so distributed debugging remains auditable.
 
 ### Key Entities *(include if feature involves data)*
 
