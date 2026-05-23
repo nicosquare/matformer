@@ -116,6 +116,19 @@ def test_write_config_metrics_and_run_summary(tmp_path):
     saved_config = json.loads(config_path.read_text(encoding="utf-8"))
     assert saved_config["run"]["run_id"] == "debug-nested-001"
     assert saved_config["model"]["variant"] == "matformer_llama"
+    assert saved_config["training"]["base_learning_rate"] == 0.0003
+    assert saved_config["training"]["learning_rate_scale_rule"] == "none"
+    assert saved_config["training"]["learning_rate_scale_factor"] == 1.0
+    assert saved_config["training"]["resolved_learning_rate"] == 0.0003
+    assert saved_config["training"]["warmup_ratio"] == 0.0
+    assert saved_config["training"]["warmup_steps"] == 0
+    assert saved_config["training"]["resolved_warmup_steps"] == 0
+    assert saved_config["training"]["optimizer_name"] == "adamw"
+    assert saved_config["training"]["optimizer_kwargs"] == {
+        "betas": [0.9, 0.999],
+        "eps": 1e-08,
+        "weight_decay": 0.0,
+    }
 
     with metrics_path.open("r", encoding="utf-8", newline="") as metrics_file:
         metric_rows = list(csv.DictReader(metrics_file))
@@ -126,6 +139,19 @@ def test_write_config_metrics_and_run_summary(tmp_path):
     assert saved_summary["status"] == "completed"
     assert saved_summary["tokens_seen"] == 128
     assert saved_summary["model_variant"] == "matformer_llama"
+    assert saved_summary["base_learning_rate"] == 0.0003
+    assert saved_summary["learning_rate_scale_rule"] == "none"
+    assert saved_summary["learning_rate_scale_factor"] == 1.0
+    assert saved_summary["resolved_learning_rate"] == 0.0003
+    assert saved_summary["warmup_ratio"] == 0.0
+    assert saved_summary["warmup_steps"] == 0
+    assert saved_summary["resolved_warmup_steps"] == 0
+    assert saved_summary["optimizer_name"] == "adamw"
+    assert saved_summary["optimizer_kwargs"] == {
+        "betas": [0.9, 0.999],
+        "eps": 1e-08,
+        "weight_decay": 0.0,
+    }
     assert saved_summary["notes"] == ["smoke test"]
 
 
