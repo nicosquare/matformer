@@ -239,6 +239,41 @@ def test_run_summary_includes_budget_derived_fields(tmp_path):
     assert summary["stop_reason"] == "not_started"
 
 
+def test_run_summary_records_resolved_schedule_and_optimizer_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "4")
+    output_dir = tmp_path / "dmodel256-pilot-comparison-001"
+    config = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        output_dir=output_dir,
+        overrides=[
+            "training.warmup_ratio=0.9",
+            "training.warmup_steps=7",
+            "training.optimizer.name=sgd",
+            "training.optimizer.kwargs.momentum=0.8",
+            "training.optimizer.kwargs.nesterov=true",
+        ],
+    )
+
+    summary = build_run_summary(config, tokens_seen=128, notes=["schedule smoke"])
+    summary_path = write_run_summary(output_dir, summary)
+
+    saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert saved_summary["base_learning_rate"] == 0.0001
+    assert saved_summary["learning_rate_scale_rule"] == "linear"
+    assert saved_summary["learning_rate_scale_factor"] == 4.0
+    assert saved_summary["resolved_learning_rate"] == 0.0004
+    assert saved_summary["warmup_ratio"] == 0.9
+    assert saved_summary["warmup_steps"] == 7
+    assert saved_summary["resolved_warmup_steps"] == 7
+    assert saved_summary["optimizer_name"] == "sgd"
+    assert saved_summary["optimizer_kwargs"] == {
+        "momentum": 0.8,
+        "dampening": 0.0,
+        "nesterov": True,
+        "weight_decay": 0.0,
+    }
+
+
 def test_run_summary_schema_requires_budget_derived_fields(tmp_path):
     output_dir = tmp_path / "dmodel256-pilot-comparison-001"
     config = resolve_run_config(

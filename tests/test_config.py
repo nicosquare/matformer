@@ -466,7 +466,7 @@ def test_dmodel256_pilot_derives_training_length_from_distributed_world_size(
     monkeypatch,
 ):
     monkeypatch.setenv("WORLD_SIZE", "4")
-    output_root = tmp_path / "pilot-output"
+    output_root = tmp_path / "dmodel256-pilot-comparison-001"
 
     resolved = resolve_run_config(
         "configs/dmodel256_pilot_comparison.yaml",
@@ -491,6 +491,42 @@ def test_dmodel256_pilot_derives_training_length_from_distributed_world_size(
     assert training["expected_tokens_per_step"] == expected_tokens_per_step
     assert training["derived_max_steps"] == expected_steps
     assert training["max_steps"] == expected_steps
+
+
+def test_dmodel256_pilot_resolves_scaled_learning_rate_warmup_precedence_and_optimizer_controls(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("WORLD_SIZE", "4")
+    output_root = tmp_path / "dmodel256-pilot-comparison-001"
+
+    resolved = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        output_dir=output_root,
+        overrides=[
+            "training.warmup_ratio=0.9",
+            "training.warmup_steps=7",
+            "training.optimizer.name=sgd",
+            "training.optimizer.kwargs.momentum=0.8",
+            "training.optimizer.kwargs.dampening=0.1",
+            "training.optimizer.kwargs.nesterov=true",
+        ],
+    )
+
+    training = resolved["training"]
+    assert training["learning_rate_scale_rule"] == "linear"
+    assert training["learning_rate_scale_factor"] == 4.0
+    assert training["resolved_learning_rate"] == 0.0004
+    assert training["warmup_ratio"] == 0.9
+    assert training["warmup_steps"] == 7
+    assert training["resolved_warmup_steps"] == 7
+    assert training["optimizer_name"] == "sgd"
+    assert training["optimizer_kwargs"] == {
+        "momentum": 0.8,
+        "dampening": 0.1,
+        "nesterov": True,
+        "weight_decay": 0.0,
+    }
 
 
 def test_dmodel256_pilot_resolves_schedule_and_optimizer_defaults(

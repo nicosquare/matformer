@@ -219,6 +219,71 @@ def test_config_driven_nested_training_records_cat_llama_variant_in_summary(tmp_
     assert summary["model_variant"] == "cat_llama"
 
 
+def test_config_driven_nested_training_uses_resolved_sgd_optimizer(tmp_path, monkeypatch):
+    import training.run as training_run
+
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "training.max_steps=1",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.02",
+            "training.warmup_steps=0",
+            "training.optimizer.name=sgd",
+            "training.optimizer.kwargs.momentum=0.8",
+            "training.optimizer.kwargs.nesterov=true",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+    captured = {}
+    original_helper = training_run.build_optimizer_and_scheduler
+
+    def capturing_build_optimizer_and_scheduler(model, training):
+        captured["optimizer_name"] = training["optimizer_name"]
+        captured["resolved_learning_rate"] = training["resolved_learning_rate"]
+        captured["resolved_warmup_steps"] = training["resolved_warmup_steps"]
+        captured["optimizer_kwargs"] = training["optimizer_kwargs"]
+        optimizer, scheduler = original_helper(model, training)
+        captured["optimizer_type"] = type(optimizer).__name__
+        return optimizer, scheduler
+
+    monkeypatch.setattr(
+        training_run,
+        "build_optimizer_and_scheduler",
+        capturing_build_optimizer_and_scheduler,
+    )
+
+    result = run_training(
+        config,
+        model=TinyNestedTrainingModel(),
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    assert captured["optimizer_name"] == "sgd"
+    assert captured["optimizer_type"] == "SGD"
+    assert captured["resolved_learning_rate"] == 0.02
+    assert captured["resolved_warmup_steps"] == 0
+    assert captured["optimizer_kwargs"] == {
+        "momentum": 0.8,
+        "dampening": 0.0,
+        "nesterov": True,
+        "weight_decay": 0.0,
+    }
+    assert summary["optimizer_name"] == "sgd"
+    assert summary["resolved_warmup_steps"] == 0
+
+
 def test_external_output_root_keeps_required_artifacts_outside_repo_outputs(tmp_path):
     output_root = tmp_path / "external-output-root"
     config = resolve_run_config(
