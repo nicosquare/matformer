@@ -168,7 +168,7 @@ def test_cat_llama_build_passes_configured_granularities_to_membership_correctio
     assert isinstance(layer_mlp, CatLlamaMLP)
     assert layer_mlp.trained_granularities == ("m", "xl")
     assert layer_mlp.gradient_membership_correction_enabled is False
-    assert layer_mlp.gradient_membership_counts == [2, 2, 1, 1, 1, 1, 1, 1]
+    assert layer_mlp.gradient_membership_counts == [2, 2, 1, 1]
 
 
 def test_modified_llama_build_passes_membership_correction_configuration():

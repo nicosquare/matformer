@@ -101,25 +101,44 @@ def get_concat_block_metadata(intermediate_size):
         intermediate_size,
         MATFORMER_GRANULARITY_ORDER[0],
     )
-    total_blocks = granularity_block_count(MATFORMER_GRANULARITY_ORDER[-1])
+    cumulative_block_counts = [
+        granularity_block_count(granularity)
+        for granularity in MATFORMER_GRANULARITY_ORDER
+    ]
     block_metadata = []
-    for block_index in range(total_blocks):
-        prefix_width = (block_index + 1) * base_block_width
+    previous_block_count = 0
+
+    for block_index, cumulative_block_count in enumerate(cumulative_block_counts):
+        block_count = cumulative_block_count - previous_block_count
+        if block_count <= 0:
+            raise ValueError(
+                "Granularity order must expand to strictly larger prefix blocks"
+            )
+
+        block_width = block_count * base_block_width
+        prefix_width = cumulative_block_count * base_block_width
         block_metadata.append(
             {
                 "name": f"block_{block_index + 1}",
                 "display_name": f"B{block_index + 1}",
-                "ffn_ratio": MATFORMER_GRANULARITIES[MATFORMER_GRANULARITY_ORDER[0]][
+                "ffn_ratio": block_count
+                * MATFORMER_GRANULARITIES[MATFORMER_GRANULARITY_ORDER[0]][
                     "ffn_ratio"
                 ],
                 "full_intermediate_fraction": prefix_width / intermediate_size,
                 "prefix_width": prefix_width,
-                "block_width": base_block_width,
+                "block_width": block_width,
                 "cumulative_prefix_width": prefix_width,
             }
         )
+        previous_block_count = cumulative_block_count
 
     return block_metadata
+
+
+def granularity_concat_block_count(granularity):
+    get_granularity_metadata(granularity)
+    return MATFORMER_GRANULARITY_ORDER.index(granularity) + 1
 
 
 def get_block_membership_counts(granularities, total_blocks=None):
@@ -154,6 +173,79 @@ def get_gradient_membership_correction_scales(granularities, total_blocks=None):
             continue
         scales.append(total_losses / membership_count)
     return scales
+
+
+def get_concat_block_membership_counts(intermediate_size, granularities):
+    if not granularities:
+        raise ValueError("granularities must be a non-empty sequence")
+
+    return get_concat_block_membership_counts_from_metadata(
+        get_concat_block_metadata(intermediate_size),
+        granularities,
+    )
+
+
+def get_concat_block_membership_counts_from_metadata(block_metadata, granularities):
+    if not block_metadata:
+        raise ValueError("block_metadata must be a non-empty sequence")
+    if not granularities:
+        raise ValueError("granularities must be a non-empty sequence")
+
+    prefix_widths = [
+        granularity_prefix_width(block_metadata[-1]["prefix_width"], granularity)
+        for granularity in granularities
+    ]
+    return [
+        sum(
+            1
+            for prefix_width in prefix_widths
+            if prefix_width >= block["cumulative_prefix_width"]
+        )
+        for block in block_metadata
+    ]
+
+
+def get_concat_gradient_membership_correction_scales_from_metadata(
+    block_metadata,
+    granularities,
+):
+    membership_counts = get_concat_block_membership_counts_from_metadata(
+        block_metadata,
+        granularities,
+    )
+    total_losses = len(granularities)
+    scales = []
+    for membership_count in membership_counts:
+        if membership_count == 0:
+            scales.append(1.0)
+            continue
+        scales.append(total_losses / membership_count)
+    return scales
+
+
+def get_concat_gradient_membership_correction_scales(intermediate_size, granularities):
+    return get_concat_gradient_membership_correction_scales_from_metadata(
+        get_concat_block_metadata(intermediate_size),
+        granularities,
+    )
+
+
+def get_concat_layout_diagnostic(intermediate_size, granularities):
+    block_metadata = get_concat_block_metadata(intermediate_size)
+    return {
+        "intermediate_size": intermediate_size,
+        "granularities": list(granularities),
+        "block_widths": [block["block_width"] for block in block_metadata],
+        "prefix_widths": [block["prefix_width"] for block in block_metadata],
+        "gradient_membership_counts": get_concat_block_membership_counts_from_metadata(
+            block_metadata,
+            granularities,
+        ),
+        "gradient_membership_correction_scales": get_concat_gradient_membership_correction_scales_from_metadata(
+            block_metadata,
+            granularities,
+        ),
+    }
 
 
 def get_prefix_membership_segment_metadata(intermediate_size, granularities):
@@ -203,7 +295,7 @@ class ModifiedLlamaMLP(LlamaMLP):
         self,
         config,
         trained_granularities=None,
-        gradient_membership_correction_enabled=False,
+        gradient_membership_correction_enabled=True,
     ):
         super().__init__(config)
         self.intermediate_size = config.intermediate_size
@@ -393,14 +485,14 @@ class CatLlamaMLP(LlamaMLP):
             offset = next_offset
 
         self.down_bias = None if down_bias is None else nn.Parameter(down_bias.contiguous())
-        self.gradient_membership_counts = get_block_membership_counts(
+        self.gradient_membership_counts = get_concat_block_membership_counts_from_metadata(
+            self.ffn_concat_block_metadata,
             self.trained_granularities,
-            total_blocks=len(self.gate_weight_blocks),
         )
         self.gradient_membership_correction_scales = (
-            get_gradient_membership_correction_scales(
+            get_concat_gradient_membership_correction_scales_from_metadata(
+                self.ffn_concat_block_metadata,
                 self.trained_granularities,
-                total_blocks=len(self.gate_weight_blocks),
             )
         )
         if self.gradient_membership_correction_enabled:
@@ -428,11 +520,11 @@ class CatLlamaMLP(LlamaMLP):
 
     def configure_subnetwork(self, flag):
         self.current_granularity = flag
-        self.current_subset_blocks = granularity_block_count(flag)
+        self.current_subset_blocks = granularity_concat_block_count(flag)
         self.current_subset_hd = granularity_prefix_width(self.intermediate_size, flag)
 
     def prefix_parameter_count(self, flag, trainable_only=False):
-        block_count = granularity_block_count(flag)
+        block_count = granularity_concat_block_count(flag)
         parameter_count = 0
 
         for block_index in range(block_count):

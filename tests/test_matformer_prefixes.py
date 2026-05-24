@@ -9,6 +9,12 @@ from modified_llama import (
     ModifiedLlamaMLP,
     expand_layer_granularity_pattern,
     get_block_membership_counts,
+    get_concat_block_metadata,
+    get_concat_block_membership_counts,
+    get_concat_gradient_membership_correction_scales,
+    get_concat_block_membership_counts_from_metadata,
+    get_concat_gradient_membership_correction_scales_from_metadata,
+    get_concat_layout_diagnostic,
     get_ffn_prefix_metadata,
     get_gradient_membership_correction_scales,
     get_prefix_membership_segment_metadata,
@@ -42,6 +48,56 @@ def test_granularity_metadata_matches_paper_ratios_and_prefix_widths():
         1.0,
     ]
     assert [entry["prefix_width"] for entry in metadata] == [8, 16, 32, 64]
+
+
+def test_concat_block_metadata_preserves_granularity_boundaries():
+    metadata = get_concat_block_metadata(intermediate_size=64)
+
+    assert [entry["block_width"] for entry in metadata] == [8, 8, 16, 32]
+    assert [entry["prefix_width"] for entry in metadata] == [8, 16, 32, 64]
+    assert [entry["cumulative_prefix_width"] for entry in metadata] == [
+        8,
+        16,
+        32,
+        64,
+    ]
+
+
+def test_concat_membership_counts_follow_concat_boundaries():
+    metadata = get_concat_block_metadata(64)
+
+    assert get_concat_block_membership_counts(
+        64,
+        ["s", "m", "l", "xl"],
+    ) == [4, 3, 2, 1]
+    assert get_concat_block_membership_counts_from_metadata(
+        metadata,
+        ["s", "m", "l", "xl"],
+    ) == [4, 3, 2, 1]
+    assert get_concat_gradient_membership_correction_scales(
+        64,
+        ["s", "m", "l", "xl"],
+    ) == [1.0, 4 / 3, 2.0, 4.0]
+    assert get_concat_gradient_membership_correction_scales_from_metadata(
+        metadata,
+        ["s", "m", "l", "xl"],
+    ) == [1.0, 4 / 3, 2.0, 4.0]
+
+
+def test_concat_layout_diagnostic_matches_instantiated_blocks():
+    diagnostic = get_concat_layout_diagnostic(64, ["s", "m", "l", "xl"])
+
+    assert diagnostic["intermediate_size"] == 64
+    assert diagnostic["granularities"] == ["s", "m", "l", "xl"]
+    assert diagnostic["block_widths"] == [8, 8, 16, 32]
+    assert diagnostic["prefix_widths"] == [8, 16, 32, 64]
+    assert diagnostic["gradient_membership_counts"] == [4, 3, 2, 1]
+    assert diagnostic["gradient_membership_correction_scales"] == [
+        1.0,
+        4 / 3,
+        2.0,
+        4.0,
+    ]
 
 
 def test_prefix_widths_are_strictly_ordered():
@@ -81,6 +137,23 @@ def test_mlp_configures_prefix_tensor_shapes_and_forward_output():
             prefix_width,
         )
         assert mlp(x).shape == x.shape
+
+
+def test_cat_mlp_uses_concat_block_counts_for_subnetwork_configuration():
+    config = tiny_llama_config(num_hidden_layers=1)
+    mlp = CatLlamaMLP(config)
+
+    for granularity, expected_blocks in [("s", 1), ("m", 2), ("l", 3), ("xl", 4)]:
+        mlp.configure_subnetwork(granularity)
+        assert mlp.current_subset_blocks == expected_blocks
+    assert mlp.gradient_membership_counts == [4, 3, 2, 1]
+    assert mlp.gradient_membership_correction_scales == [1.0, 4 / 3, 2.0, 4.0]
+
+
+def test_modified_mlp_defaults_to_gradient_membership_correction_enabled():
+    mlp = ModifiedLlamaMLP(tiny_llama_config(num_hidden_layers=1))
+
+    assert mlp.gradient_membership_correction_enabled is True
 
 
 def test_invalid_granularity_is_rejected():

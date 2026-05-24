@@ -22,6 +22,7 @@ from evaluation.validation import (
 from modified_llama import (
     CatLlamaMLP,
     ModifiedLlamaForCausalLM,
+    get_concat_layout_diagnostic,
     get_ffn_prefix_metadata,
 )
 from training.data import (
@@ -99,6 +100,15 @@ def run_training(
         with heartbeat_stage(heartbeat_writer, "model_initialization"):
             if model is None:
                 model = build_model(config)
+            if (
+                distributed_context.is_rank_zero
+                and config["model"]["variant"] == "cat_llama"
+            ):
+                diagnostic = get_concat_layout_diagnostic(
+                    config["model"]["intermediate_size"],
+                    config["model"]["granularities"],
+                )
+                print(f"[cat-llama-diagnostic] {diagnostic}", flush=True)
             parameter_counts_by_granularity = build_artifact_parameter_counts(
                 config,
                 model,
