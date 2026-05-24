@@ -247,6 +247,7 @@ def test_single_run_defaults_to_outputs_root(tmp_path):
     resolved = resolve_run_config(config_path)
 
     assert resolved["model"]["variant"] == "matformer_llama"
+    assert resolved["model"]["gradient_membership_correction"] is True
     assert resolved["run"]["output_root"] == "outputs"
     assert resolved["run"]["output_dir"] == (
         f"outputs/{resolved['run']['output_group']}/single-output-root-001"
@@ -261,9 +262,9 @@ def test_shared_configs_resolve_default_model_variant():
     pilot_resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
 
     assert debug_resolved["model"]["variant"] == "matformer_llama"
-    assert debug_resolved["model"]["gradient_membership_correction"] is False
+    assert debug_resolved["model"]["gradient_membership_correction"] is True
     assert pilot_resolved["model"]["variant"] == "matformer_llama"
-    assert pilot_resolved["model"]["gradient_membership_correction"] is False
+    assert pilot_resolved["model"]["gradient_membership_correction"] is True
 
 
 def test_cat_llama_defaults_gradient_membership_correction_on():
@@ -277,15 +278,15 @@ def test_cat_llama_defaults_gradient_membership_correction_on():
     assert resolved["model"]["gradient_membership_correction"] is True
 
 
-def test_matformer_llama_allows_enabling_gradient_membership_correction():
+def test_matformer_llama_allows_disabling_gradient_membership_correction():
     resolved = resolve_run_config(
         "configs/debug_matrix.yaml",
         run_id="debug-nested-001",
-        overrides=["model.gradient_membership_correction=true"],
+        overrides=["model.gradient_membership_correction=false"],
     )
 
     assert resolved["model"]["variant"] == "matformer_llama"
-    assert resolved["model"]["gradient_membership_correction"] is True
+    assert resolved["model"]["gradient_membership_correction"] is False
 
 
 def test_invalid_model_variant_override_fails_fast_before_output_setup(tmp_path):

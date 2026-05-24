@@ -443,7 +443,7 @@ def _resolve_model_variant_defaults(config: dict[str, Any]) -> None:
     model["gradient_membership_correction"] = _normalize_bool(
         model.get(
             "gradient_membership_correction",
-            model["variant"] == "cat_llama",
+            True,
         ),
         "model.gradient_membership_correction",
     )
