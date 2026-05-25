@@ -433,58 +433,79 @@ class CatLlamaMLP(LlamaMLP):
         self.current_subset_hd = None
         self.current_subset_blocks = None
 
-        gate_weight = self.gate_proj.weight.detach().clone()
-        gate_bias = (
-            None
-            if self.gate_proj.bias is None
-            else self.gate_proj.bias.detach().clone()
-        )
-        up_weight = self.up_proj.weight.detach().clone()
-        up_bias = None if self.up_proj.bias is None else self.up_proj.bias.detach().clone()
-        down_weight = self.down_proj.weight.detach().clone()
-        down_bias = (
-            None
-            if self.down_proj.bias is None
-            else self.down_proj.bias.detach().clone()
-        )
-
-        del self.gate_proj
-        del self.up_proj
-        del self.down_proj
-
         self.gate_weight_blocks = nn.ParameterList()
         self.up_weight_blocks = nn.ParameterList()
         self.down_weight_blocks = nn.ParameterList()
         self.gate_bias_blocks = nn.ParameterList()
         self.up_bias_blocks = nn.ParameterList()
 
+        # Copy each dense projection into block parameters independently so we
+        # can drop the source tensor before materializing the next one.
         offset = 0
+        gate_weight = self.gate_proj.weight
+        gate_bias = self.gate_proj.bias
         for block_metadata in self.ffn_concat_block_metadata:
             block_width = block_metadata["block_width"]
             next_offset = offset + block_width
 
             self.gate_weight_blocks.append(
-                nn.Parameter(gate_weight[offset:next_offset].contiguous())
+                nn.Parameter(gate_weight[offset:next_offset].detach().clone())
             )
-            self.up_weight_blocks.append(
-                nn.Parameter(up_weight[offset:next_offset].contiguous())
-            )
-            self.down_weight_blocks.append(
-                nn.Parameter(down_weight[:, offset:next_offset].contiguous())
-            )
-
             if gate_bias is not None:
                 self.gate_bias_blocks.append(
-                    nn.Parameter(gate_bias[offset:next_offset].contiguous())
-                )
+                    nn.Parameter(gate_bias[offset:next_offset].detach().clone())
+            )
+
+            offset = next_offset
+        # Release the dense gate projection before moving on to the next tensor.
+        del self.gate_proj
+        del gate_weight
+        del gate_bias
+
+        # Repeat the same pattern for the up projection to keep peak overlap low.
+        offset = 0
+        up_weight = self.up_proj.weight
+        up_bias = self.up_proj.bias
+        for block_metadata in self.ffn_concat_block_metadata:
+            block_width = block_metadata["block_width"]
+            next_offset = offset + block_width
+
+            self.up_weight_blocks.append(
+                nn.Parameter(up_weight[offset:next_offset].detach().clone())
+            )
             if up_bias is not None:
                 self.up_bias_blocks.append(
-                    nn.Parameter(up_bias[offset:next_offset].contiguous())
-                )
+                    nn.Parameter(up_bias[offset:next_offset].detach().clone())
+            )
+
+            offset = next_offset
+        # Release the dense up projection before building the down blocks.
+        del self.up_proj
+        del up_weight
+        del up_bias
+
+        # The down projection is split across input columns, so copy its blocks
+        # last and then discard the dense tensor.
+        offset = 0
+        down_weight = self.down_proj.weight
+        down_bias = self.down_proj.bias
+        for block_metadata in self.ffn_concat_block_metadata:
+            block_width = block_metadata["block_width"]
+            next_offset = offset + block_width
+
+            self.down_weight_blocks.append(
+                nn.Parameter(down_weight[:, offset:next_offset].detach().clone())
+            )
 
             offset = next_offset
 
-        self.down_bias = None if down_bias is None else nn.Parameter(down_bias.contiguous())
+        self.down_bias = (
+            None if down_bias is None else nn.Parameter(down_bias.detach().clone())
+        )
+        # Drop the dense projections once their block parameters are in place.
+        del self.down_proj
+        del down_weight
+        del down_bias
         self.gradient_membership_counts = get_concat_block_membership_counts_from_metadata(
             self.ffn_concat_block_metadata,
             self.trained_granularities,
