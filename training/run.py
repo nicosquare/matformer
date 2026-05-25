@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from contextlib import contextmanager
 import random
 import time
@@ -329,6 +330,7 @@ def load_tokenizer(config: dict[str, Any]):
 
 
 def sync_config_with_distributed_context(config: dict[str, Any], context) -> None:
+    fsdp_config = copy.deepcopy(getattr(context, "fsdp_config", {}) or {})
     resolve_training_length_for_world_size(
         config,
         effective_world_size=context.world_size,
@@ -342,16 +344,19 @@ def sync_config_with_distributed_context(config: dict[str, Any], context) -> Non
             "rank": context.rank,
             "local_rank": context.local_rank,
             "world_size": context.world_size,
+            "fsdp": fsdp_config,
         }
     )
 
 
 def distributed_summary_fields(context) -> dict[str, Any]:
+    fsdp_config = copy.deepcopy(getattr(context, "fsdp_config", {}) or {})
     return {
         "distributed_strategy": context.strategy,
         "distributed_rank": context.rank,
         "distributed_local_rank": context.local_rank,
         "distributed_world_size": context.world_size,
+        "distributed_fsdp_config": fsdp_config,
     }
 
 

@@ -36,6 +36,17 @@ training:
   eval_interval: 500
   mixed_precision: bf16
   activation_checkpointing: true
+  distributed:
+    strategy: fsdp
+    fsdp:
+      sharding_strategy: full_shard
+      auto_wrap_policy: transformer_based_wrap
+      transformer_layer_cls_to_wrap:
+        - LlamaDecoderLayer
+      backward_prefetch: backward_pre
+      use_orig_params: true
+      sync_module_states: true
+      forward_prefetch: false
 
 dataset:
   dataset_name: HuggingFaceFW/fineweb

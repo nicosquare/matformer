@@ -59,6 +59,10 @@ dataset:
 - Resolved configs must persist the selected variant in `config.json`.
 - Config overrides must be sufficient to switch variants without changing the
   command path.
+- Single-process runs must use CUDA automatically when a GPU is available and
+  fall back to CPU otherwise.
+- Distributed FSDP mode must be determined by the launch context
+  (`torchrun`/`WORLD_SIZE`), not by a YAML on/off flag.
 - `training.learning_rate` is the author-written base learning rate and
   `training.learning_rate_scale_rule` must be one of `none`, `linear`, or
   `sqrt`.

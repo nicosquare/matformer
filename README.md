@@ -27,14 +27,17 @@ To run the training script, execute:
 python train.py
 ```
 
-For multi-GPU training with FSDP memory sharding, launch with one process per GPU:
+If CUDA GPUs are available, the script uses them by default in single-process
+mode. For multi-GPU training with FSDP memory sharding, launch one process per
+GPU with `torchrun`:
 
 ```bash
 python -m torch.distributed.run --standalone --nproc_per_node=4 train.py
 ```
 
 `--batch-size` is per process/GPU. The script automatically enables FSDP when
-launched with `torch.distributed.run`.
+launched with `torch.distributed.run`; the distributed launch context, not a
+config toggle, decides whether the run is sharded.
 
 ## Config-Driven Experiment Outputs
 

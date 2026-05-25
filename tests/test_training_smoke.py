@@ -419,7 +419,6 @@ def test_config_driven_training_uses_distributed_fsdp_path_when_enabled(
             "training.batch_size_per_process=1",
             "training.learning_rate=0.01",
             "training.warmup_steps=0",
-            "training.distributed.enabled=true",
             "training.distributed.strategy=fsdp",
             "evaluation.validation=false",
         ],
@@ -482,3 +481,4 @@ def test_config_driven_training_uses_distributed_fsdp_path_when_enabled(
     assert summary["distributed_rank"] == 0
     assert summary["distributed_local_rank"] == 0
     assert summary["distributed_world_size"] == 2
+    assert summary["distributed_fsdp_config"] == {}
