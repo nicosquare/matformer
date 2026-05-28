@@ -60,7 +60,7 @@ def test_configured_training_writes_metrics_config_and_summary(tmp_path):
             "training.eval_interval=1",
             "training.batch_size_per_process=1",
             "training.learning_rate=0.01",
-            "training.warmup_steps=0",
+            "training.scheduler.kwargs.warmup_steps=0",
         ],
     )
     tokenized_dataset = Dataset.from_dict(

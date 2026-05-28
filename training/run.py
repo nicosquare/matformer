@@ -758,6 +758,9 @@ def build_optimizer_and_scheduler(model, training: Mapping[str, Any]):
     """Build the training optimizer and scheduler from resolved config fields."""
     optimizer_name = str(training.get("optimizer_name", "adamw"))
     optimizer_kwargs = dict(training.get("optimizer_kwargs", {}))
+    scheduler_name = str(training.get("scheduler_name", "cosine"))
+    scheduler_kwargs = dict(training.get("scheduler_kwargs", {}))
+    resolved_warmup_steps = int(training["scheduler"]["resolved_warmup_steps"])
     learning_rate = training.get("resolved_learning_rate", training.get("learning_rate"))
     if learning_rate is None:
         raise ConfigError(
@@ -782,10 +785,11 @@ def build_optimizer_and_scheduler(model, training: Mapping[str, Any]):
         raise ConfigError(f"Unsupported optimizer name: {optimizer_name}")
 
     scheduler = get_scheduler(
-        "cosine",
+        scheduler_name,
         optimizer=optimizer,
-        num_warmup_steps=int(training.get("resolved_warmup_steps", training.get("warmup_steps", 0) or 0)),
+        num_warmup_steps=resolved_warmup_steps,
         num_training_steps=int(training["max_steps"]),
+        **scheduler_kwargs,
     )
     return optimizer, scheduler
 

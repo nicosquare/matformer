@@ -22,7 +22,6 @@ training:
   max_steps: 4
   batch_size_per_process: 2
   learning_rate: 0.0003
-  warmup_steps: 0
   eval_interval: 2
   eval_batches: 1
   mixed_precision: none
@@ -30,6 +29,10 @@ training:
   granularity_sampling: all
   preprocess_num_proc: 1
   dataloader_num_workers: 0
+  scheduler:
+    name: cosine
+    kwargs:
+      warmup_steps: 0
 
 dataset:
   dataset_name: roneneldan/TinyStories

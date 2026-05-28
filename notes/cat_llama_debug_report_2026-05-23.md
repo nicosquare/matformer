@@ -10,9 +10,11 @@ was being applied.
 
 ## Main Findings
 
-1. `cat_llama` and `matformer_llama` are effectively equivalent on 1 GPU.
-2. The large degradation appears in 4-GPU FSDP runs, not in the plain
-   non-distributed path.
+1. `cat_llama` and `matformer_llama` are effectively equivalent on 1 GPU at
+   baseline settings, and `cat_llama` can outperform the slicing version at a
+   higher learning rate.
+2. The large degradation appears when moving to 4-GPU FSDP runs, not in the
+   plain non-distributed path.
 3. GMC is present in resolved configs and saved run configs, but it has almost
    no practical effect under AdamW.
 4. `use_orig_params=True` in FSDP did not resolve the cat vs dense gap.
@@ -192,6 +194,36 @@ showed:
 
 This strongly localized the main issue to the distributed/FSDP path.
 
+## Experiment 4.5: 1-GPU learning-rate sweep at 2e-4
+
+Location:
+`/nfs-stor/nicolas.avila/results/matformer/matformer_llama_148m_100m_tokens_lr_exps/matformer_llama_148m_100m_tokens_lr_0.0002`
+
+These runs keep the single-GPU setup but raise the learning rate from the
+baseline 1e-4 to 2e-4.
+
+### Results
+
+`matformer_llama`
+
+- best validation loss: `2.0664424896`
+- best checkpoint granularity: `l`
+
+`cat_llama`
+
+- best validation loss: `2.0389015675`
+- best checkpoint granularity: `xl`
+
+### Conclusion
+
+- At `lr=2e-4`, `cat_llama` outperformed `matformer_llama` in the single-GPU
+  run.
+- This makes the earlier cat-vs-slice gap look more hyperparameter-sensitive
+  than architectural.
+- The open question is therefore not whether cat can work, but why it degrades
+  much more sharply than the slicing version when moving from single GPU to
+  FSDP.
+
 ## Experiment 5: FSDP equivalence diagnostic
 
 Script:
@@ -322,19 +354,22 @@ From `logs/diag_mlp_fsdp_flat_sgd_78001.out`
 The collected evidence points to:
 
 - `cat_llama` forward semantics are correct.
+- `cat_llama` can match or exceed `matformer_llama` on 1 GPU once the
+  learning rate is adjusted.
 - GMC is not the main issue.
 - `use_orig_params=True` is not the main issue.
-- The main confound is AdamW sensitivity to parameterization under FSDP.
+- The main confound is the single-GPU to FSDP degradation, especially under
+  AdamW.
 
 This means the concat factorization is not a neutral refactor from the point of
 view of AdamW in distributed training. Even when the function class and forward
-outputs match, the optimizer-state dynamics differ enough to produce the
-observed training gap.
+outputs match, the optimizer-state dynamics and/or FSDP interaction differ
+enough to produce the observed distributed training gap.
 
 ## Practical Conclusions
 
-1. If the goal is to isolate zero-grad vs `grad=None` semantics, `cat_llama`
-   currently changes more than that under AdamW+FSDP.
+1. The remaining comparison to explain is not cat vs slice in the abstract, but
+   single-GPU versus FSDP behavior for `cat_llama`.
 
 2. If the goal is to compare functionally equivalent models, 1-GPU results show
    that the implementation is basically fine outside the distributed optimizer
@@ -344,11 +379,14 @@ observed training gap.
    - short distributed training with SGD instead of AdamW
    - short distributed training with different optimizer settings
    - inspect AdamW state evolution on corresponding dense vs cat parameters
+   - compare the same cat run at 1 GPU and 4 GPU with identical seeds and
+     learning rate
 
 ## Bottom Line
 
 The investigation does not support “cat_llama is fundamentally wrong.”
 Instead, it supports:
 
-`cat_llama` + AdamW + FSDP -> materially different optimization dynamics from
-`matformer_llama`, despite matching forward behavior.
+`cat_llama` can be competitive or better on 1 GPU at a tuned learning rate, but
+it degrades much more sharply than `matformer_llama` when moved into FSDP,
+especially under AdamW.

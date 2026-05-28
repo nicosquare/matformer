@@ -50,6 +50,7 @@ OPTIMIZER_ALLOWED_KWARGS = {
     "adamw": {"betas", "eps", "weight_decay"},
     "sgd": {"momentum", "dampening", "nesterov", "weight_decay"},
 }
+SCHEDULER_RESERVED_KWARGS = {"num_warmup_steps", "num_training_steps", "optimizer"}
 
 
 class ConfigError(ValueError):
@@ -171,7 +172,7 @@ def resolve_run_config(
             "training.granularity_sampling" in explicit_override_keys
         ),
     )
-    _resolve_training_length(resolved)
+    _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
     _resolve_parameter_reporting_defaults(resolved)
     validate_run_config(resolved)
     return resolved
@@ -196,7 +197,7 @@ def resolve_all_run_configs(
                 "training.granularity_sampling" in explicit_override_keys
             ),
         )
-        _resolve_training_length(resolved)
+        _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
         _resolve_parameter_reporting_defaults(resolved)
         validate_run_config(resolved)
         return [resolved]
@@ -219,7 +220,7 @@ def resolve_all_run_configs(
                 "training.granularity_sampling" in explicit_override_keys
             ),
         )
-        _resolve_training_length(resolved)
+        _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
         _resolve_parameter_reporting_defaults(resolved)
         validate_run_config(resolved)
         resolved_runs.append(resolved)
@@ -328,11 +329,24 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "learning_rate_scale_factor",
             "resolved_learning_rate",
             "warmup_ratio",
-            "warmup_steps",
-            "resolved_warmup_steps",
+            "scheduler",
+            "scheduler_name",
+            "scheduler_kwargs",
             "optimizer",
             "optimizer_name",
             "optimizer_kwargs",
+        ],
+    )
+    scheduler = training.get("scheduler")
+    if not isinstance(scheduler, Mapping):
+        raise ConfigError("Missing mapping section: training.scheduler")
+    _require_fields(
+        scheduler,
+        "training.scheduler",
+        [
+            "name",
+            "kwargs",
+            "resolved_warmup_steps",
         ],
     )
     _require_fields(
@@ -691,8 +705,14 @@ def _resolve_output_paths(config: dict[str, Any]) -> None:
         _ensure_writable_directory(output_dir.parent, "output directory parent")
 
 
-def _resolve_training_length(config: dict[str, Any]) -> None:
-    resolve_training_length_for_world_size(config)
+def _resolve_training_length(
+    config: dict[str, Any],
+    explicit_override_keys: set[str] | None = None,
+) -> None:
+    resolve_training_length_for_world_size(
+        config,
+        explicit_override_keys=explicit_override_keys,
+    )
 
 
 def _resolve_parameter_reporting_defaults(config: dict[str, Any]) -> None:
@@ -728,6 +748,7 @@ def resolve_training_length_for_world_size(
     config: dict[str, Any],
     effective_world_size: int | None = None,
     world_size_source: str | None = None,
+    explicit_override_keys: set[str] | None = None,
 ) -> None:
     _resolve_sampling_mode_defaults(config)
 
@@ -787,7 +808,11 @@ def resolve_training_length_for_world_size(
         else derived_max_steps
     )
 
-    _resolve_training_schedule_defaults(training, effective_world_size)
+    _resolve_training_schedule_defaults(
+        training,
+        effective_world_size,
+        explicit_override_keys=explicit_override_keys,
+    )
 
 
 def _resolve_effective_world_size() -> int:
@@ -800,6 +825,7 @@ def _resolve_effective_world_size() -> int:
 def _resolve_training_schedule_defaults(
     training: dict[str, Any],
     effective_world_size: int,
+    explicit_override_keys: set[str] | None = None,
 ) -> None:
     base_learning_rate = _positive_float(
         training.get("learning_rate"),
@@ -828,15 +854,6 @@ def _resolve_training_schedule_defaults(
     )
     training["warmup_ratio"] = warmup_ratio
 
-    warmup_steps = training.get("warmup_steps")
-    if warmup_steps is None:
-        resolved_warmup_steps = math.ceil(int(training["max_steps"]) * warmup_ratio)
-    else:
-        warmup_steps = _nonnegative_int(warmup_steps, "training.warmup_steps")
-        resolved_warmup_steps = warmup_steps
-    training["warmup_steps"] = warmup_steps
-    training["resolved_warmup_steps"] = resolved_warmup_steps
-
     optimizer = training.get("optimizer")
     if optimizer is None:
         optimizer = {}
@@ -846,7 +863,11 @@ def _resolve_training_schedule_defaults(
     optimizer_name = _normalize_optimizer_name(optimizer.get("name", "adamw"))
     optimizer_kwargs = _resolve_optimizer_kwargs(
         optimizer_name,
-        optimizer.get("kwargs", {}),
+        _resolve_component_kwargs(
+            component=optimizer,
+            component_path="training.optimizer",
+            explicit_override_keys=explicit_override_keys,
+        ),
     )
     training["optimizer"] = {
         "name": optimizer_name,
@@ -854,6 +875,34 @@ def _resolve_training_schedule_defaults(
     }
     training["optimizer_name"] = optimizer_name
     training["optimizer_kwargs"] = optimizer_kwargs
+
+    scheduler = training.get("scheduler")
+    if scheduler is None:
+        scheduler = {}
+    if not isinstance(scheduler, dict):
+        raise ConfigError("training.scheduler must be a mapping when provided")
+
+    scheduler_name = _normalize_scheduler_name(scheduler.get("name", "cosine"))
+    scheduler_input_kwargs = _resolve_scheduler_input_kwargs(
+        scheduler,
+        warmup_ratio=warmup_ratio,
+        max_steps=int(training["max_steps"]),
+    )
+    scheduler_kwargs = _resolve_scheduler_kwargs(
+        scheduler_name,
+        {
+            key: value
+            for key, value in scheduler_input_kwargs.items()
+            if key != "warmup_steps"
+        },
+    )
+    training["scheduler"] = {
+        "name": scheduler_name,
+        "kwargs": copy.deepcopy(scheduler_input_kwargs),
+        "resolved_warmup_steps": int(scheduler_input_kwargs["warmup_steps"]),
+    }
+    training["scheduler_name"] = scheduler_name
+    training["scheduler_kwargs"] = scheduler_kwargs
 
 
 def _normalize_learning_rate_scale_rule(
@@ -907,6 +956,16 @@ def _normalize_optimizer_name(raw_name: Any) -> str:
     return optimizer_name
 
 
+def _normalize_scheduler_name(raw_name: Any) -> str:
+    if not isinstance(raw_name, str):
+        raise ConfigError("training.scheduler.name must be a string")
+
+    scheduler_name = raw_name.strip()
+    if not scheduler_name:
+        raise ConfigError("training.scheduler.name must be a non-empty string")
+    return scheduler_name
+
+
 def _resolve_optimizer_kwargs(
     optimizer_name: str,
     raw_kwargs: Any,
@@ -926,6 +985,85 @@ def _resolve_optimizer_kwargs(
         resolved_kwargs[key] = _normalize_optimizer_kwarg(optimizer_name, key, value)
 
     return resolved_kwargs
+
+
+def _resolve_scheduler_kwargs(
+    scheduler_name: str,
+    raw_kwargs: Any,
+) -> dict[str, Any]:
+    if raw_kwargs is None:
+        raw_kwargs = {}
+    if not isinstance(raw_kwargs, dict):
+        raise ConfigError("training.scheduler.kwargs must be a mapping when provided")
+
+    forbidden_keys = sorted(
+        key for key in raw_kwargs if str(key) in SCHEDULER_RESERVED_KWARGS
+    )
+    if forbidden_keys:
+        raise ConfigError(
+            "training.scheduler.kwargs must not define reserved keys: "
+            f"{forbidden_keys}"
+        )
+
+    return copy.deepcopy(raw_kwargs)
+
+
+def _resolve_scheduler_input_kwargs(
+    scheduler: Mapping[str, Any],
+    warmup_ratio: float,
+    max_steps: int,
+) -> dict[str, Any]:
+    raw_kwargs = scheduler.get("kwargs", {})
+    if raw_kwargs is None:
+        raw_kwargs = {}
+    if not isinstance(raw_kwargs, dict):
+        raise ConfigError("training.scheduler.kwargs must be a mapping when provided")
+
+    scheduler_input_kwargs = copy.deepcopy(raw_kwargs)
+    warmup_steps = scheduler_input_kwargs.get("warmup_steps")
+    if warmup_steps is None:
+        warmup_steps = math.ceil(max_steps * warmup_ratio)
+    else:
+        warmup_steps = _nonnegative_int(
+            warmup_steps,
+            "training.scheduler.kwargs.warmup_steps",
+        )
+    scheduler_input_kwargs["warmup_steps"] = warmup_steps
+    return scheduler_input_kwargs
+
+
+def _resolve_component_kwargs(
+    component: Mapping[str, Any],
+    component_path: str,
+    explicit_override_keys: set[str] | None,
+) -> dict[str, Any]:
+    raw_kwargs = component.get("kwargs", {})
+    if raw_kwargs is None:
+        raw_kwargs = {}
+    if not isinstance(raw_kwargs, dict):
+        raise ConfigError(f"{component_path}.kwargs must be a mapping when provided")
+
+    if explicit_override_keys is None:
+        return copy.deepcopy(raw_kwargs)
+
+    if f"{component_path}.kwargs" in explicit_override_keys:
+        return copy.deepcopy(raw_kwargs)
+
+    if f"{component_path}.name" not in explicit_override_keys:
+        return copy.deepcopy(raw_kwargs)
+
+    explicit_kwargs: dict[str, Any] = {}
+    prefix = f"{component_path}.kwargs."
+    for override_key in explicit_override_keys:
+        if not override_key.startswith(prefix):
+            continue
+        kwarg_name = override_key[len(prefix) :]
+        if not kwarg_name or "." in kwarg_name:
+            continue
+        if kwarg_name in raw_kwargs:
+            explicit_kwargs[kwarg_name] = copy.deepcopy(raw_kwargs[kwarg_name])
+
+    return explicit_kwargs
 
 
 def _normalize_optimizer_kwarg(

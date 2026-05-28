@@ -59,7 +59,7 @@ def test_tiny_nested_training_accumulates_all_granularities_per_batch(tmp_path):
             "training.eval_interval=0",
             "training.batch_size_per_process=1",
             "training.learning_rate=0.01",
-            "training.warmup_steps=0",
+            "training.scheduler.kwargs.warmup_steps=0",
         ],
     )
     tokenized_dataset = Dataset.from_dict(
@@ -103,7 +103,7 @@ def test_training_counts_parameters_before_runtime_wrapping(tmp_path, monkeypatc
             "training.eval_interval=0",
             "training.batch_size_per_process=1",
             "training.learning_rate=0.01",
-            "training.warmup_steps=0",
+            "training.scheduler.kwargs.warmup_steps=0",
             "evaluation.validation=false",
         ],
     )
@@ -154,7 +154,7 @@ def test_tiny_nested_training_can_sample_one_random_granularity_per_batch(
             "training.eval_interval=0",
             "training.batch_size_per_process=1",
             "training.learning_rate=0.01",
-            "training.warmup_steps=0",
+            "training.scheduler.kwargs.warmup_steps=0",
             "training.granularity_sampling=random",
             "evaluation.validation=false",
         ],
@@ -197,7 +197,7 @@ def test_config_driven_nested_training_records_cat_llama_variant_in_summary(tmp_
             "training.eval_interval=0",
             "training.batch_size_per_process=1",
             "training.learning_rate=0.01",
-            "training.warmup_steps=0",
+            "training.scheduler.kwargs.warmup_steps=0",
         ],
     )
     tokenized_dataset = Dataset.from_dict(
@@ -232,10 +232,11 @@ def test_config_driven_nested_training_uses_resolved_sgd_optimizer(tmp_path, mon
             "training.eval_interval=0",
             "training.batch_size_per_process=1",
             "training.learning_rate=0.02",
-            "training.warmup_steps=0",
+            "training.scheduler.kwargs.warmup_steps=0",
             "training.optimizer.name=sgd",
             "training.optimizer.kwargs.momentum=0.8",
             "training.optimizer.kwargs.nesterov=true",
+            "training.scheduler.name=constant",
         ],
     )
     tokenized_dataset = Dataset.from_dict(
@@ -250,8 +251,11 @@ def test_config_driven_nested_training_uses_resolved_sgd_optimizer(tmp_path, mon
     def capturing_build_optimizer_and_scheduler(model, training):
         captured["optimizer_name"] = training["optimizer_name"]
         captured["resolved_learning_rate"] = training["resolved_learning_rate"]
-        captured["resolved_warmup_steps"] = training["resolved_warmup_steps"]
+        captured["scheduler_warmup_steps"] = training["scheduler"]["kwargs"]["warmup_steps"]
+        captured["scheduler_resolved_warmup_steps"] = training["scheduler"]["resolved_warmup_steps"]
         captured["optimizer_kwargs"] = training["optimizer_kwargs"]
+        captured["scheduler_name"] = training["scheduler_name"]
+        captured["scheduler_kwargs"] = training["scheduler_kwargs"]
         optimizer, scheduler = original_helper(model, training)
         captured["optimizer_type"] = type(optimizer).__name__
         return optimizer, scheduler
@@ -273,15 +277,20 @@ def test_config_driven_nested_training_uses_resolved_sgd_optimizer(tmp_path, mon
     assert captured["optimizer_name"] == "sgd"
     assert captured["optimizer_type"] == "SGD"
     assert captured["resolved_learning_rate"] == 0.02
-    assert captured["resolved_warmup_steps"] == 0
+    assert captured["scheduler_warmup_steps"] == 0
+    assert captured["scheduler_resolved_warmup_steps"] == 0
     assert captured["optimizer_kwargs"] == {
         "momentum": 0.8,
         "dampening": 0.0,
         "nesterov": True,
         "weight_decay": 0.0,
     }
+    assert captured["scheduler_name"] == "constant"
+    assert captured["scheduler_kwargs"] == {}
     assert summary["optimizer_name"] == "sgd"
-    assert summary["resolved_warmup_steps"] == 0
+    assert summary["scheduler_name"] == "constant"
+    assert summary["scheduler_warmup_steps"] == 0
+    assert summary["scheduler_resolved_warmup_steps"] == 0
 
 
 def test_external_output_root_keeps_required_artifacts_outside_repo_outputs(tmp_path):
@@ -295,7 +304,7 @@ def test_external_output_root_keeps_required_artifacts_outside_repo_outputs(tmp_
             "training.eval_interval=0",
             "training.batch_size_per_process=1",
             "training.learning_rate=0.01",
-            "training.warmup_steps=0",
+            "training.scheduler.kwargs.warmup_steps=0",
         ],
     )
     tokenized_dataset = Dataset.from_dict(
@@ -353,7 +362,7 @@ def test_budgeted_training_stops_at_token_budget_before_manual_step_cap(
             "training.eval_interval=0",
             "training.batch_size_per_process=1",
             "training.learning_rate=0.01",
-            "training.warmup_steps=0",
+            "training.scheduler.kwargs.warmup_steps=0",
             "evaluation.validation=false",
         ],
     )
@@ -418,7 +427,7 @@ def test_config_driven_training_uses_distributed_fsdp_path_when_enabled(
             "training.eval_interval=0",
             "training.batch_size_per_process=1",
             "training.learning_rate=0.01",
-            "training.warmup_steps=0",
+            "training.scheduler.kwargs.warmup_steps=0",
             "training.distributed.strategy=fsdp",
             "evaluation.validation=false",
         ],

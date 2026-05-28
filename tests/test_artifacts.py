@@ -121,8 +121,10 @@ def test_write_config_metrics_and_run_summary(tmp_path):
     assert saved_config["training"]["learning_rate_scale_factor"] == 1.0
     assert saved_config["training"]["resolved_learning_rate"] == 0.0003
     assert saved_config["training"]["warmup_ratio"] == 0.0
-    assert saved_config["training"]["warmup_steps"] == 0
-    assert saved_config["training"]["resolved_warmup_steps"] == 0
+    assert saved_config["training"]["scheduler_name"] == "cosine"
+    assert saved_config["training"]["scheduler"]["kwargs"]["warmup_steps"] == 0
+    assert saved_config["training"]["scheduler"]["resolved_warmup_steps"] == 0
+    assert saved_config["training"]["scheduler_kwargs"] == {}
     assert saved_config["training"]["optimizer_name"] == "adamw"
     assert saved_config["training"]["optimizer_kwargs"] == {
         "betas": [0.9, 0.999],
@@ -144,8 +146,10 @@ def test_write_config_metrics_and_run_summary(tmp_path):
     assert saved_summary["learning_rate_scale_factor"] == 1.0
     assert saved_summary["resolved_learning_rate"] == 0.0003
     assert saved_summary["warmup_ratio"] == 0.0
-    assert saved_summary["warmup_steps"] == 0
-    assert saved_summary["resolved_warmup_steps"] == 0
+    assert saved_summary["scheduler_name"] == "cosine"
+    assert saved_summary["scheduler_warmup_steps"] == 0
+    assert saved_summary["scheduler_resolved_warmup_steps"] == 0
+    assert saved_summary["scheduler_kwargs"] == {}
     assert saved_summary["optimizer_name"] == "adamw"
     assert saved_summary["optimizer_kwargs"] == {
         "betas": [0.9, 0.999],
@@ -247,7 +251,7 @@ def test_run_summary_records_resolved_schedule_and_optimizer_metadata(tmp_path, 
         output_dir=output_dir,
         overrides=[
             "training.warmup_ratio=0.9",
-            "training.warmup_steps=7",
+            "training.scheduler.kwargs.warmup_steps=7",
             "training.optimizer.name=sgd",
             "training.optimizer.kwargs.momentum=0.8",
             "training.optimizer.kwargs.nesterov=true",
@@ -263,8 +267,8 @@ def test_run_summary_records_resolved_schedule_and_optimizer_metadata(tmp_path, 
     assert saved_summary["learning_rate_scale_factor"] == 4.0
     assert saved_summary["resolved_learning_rate"] == 0.0004
     assert saved_summary["warmup_ratio"] == 0.9
-    assert saved_summary["warmup_steps"] == 7
-    assert saved_summary["resolved_warmup_steps"] == 7
+    assert saved_summary["scheduler_warmup_steps"] == 7
+    assert saved_summary["scheduler_resolved_warmup_steps"] == 7
     assert saved_summary["optimizer_name"] == "sgd"
     assert saved_summary["optimizer_kwargs"] == {
         "momentum": 0.8,
@@ -828,7 +832,7 @@ def test_nested_run_writes_extraction_metadata_artifact(tmp_path):
             "training.eval_interval=0",
             "training.batch_size_per_process=1",
             "training.learning_rate=0.01",
-            "training.warmup_steps=0",
+            "training.scheduler.kwargs.warmup_steps=0",
         ],
     )
     tokenized_dataset = Dataset.from_dict(

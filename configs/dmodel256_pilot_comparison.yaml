@@ -32,10 +32,20 @@ training:
   max_steps_cap: null
   batch_size_per_process: 8
   learning_rate: 0.0001
-  warmup_steps: 200
+  learning_rate_scale_rule: linear
   eval_interval: 500
   mixed_precision: bf16
   activation_checkpointing: true
+  optimizer:
+    name: adamw
+    kwargs:
+      betas: [0.9, 0.999]
+      eps: 1.0e-8
+      weight_decay: 0.0
+  scheduler:
+    name: cosine
+    kwargs:
+      warmup_steps: 200
   distributed:
     strategy: fsdp
     fsdp:
