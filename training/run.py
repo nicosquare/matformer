@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import torch
+from torch.nn.utils import clip_grad_norm_
 from torch.utils.data.distributed import DistributedSampler
 from transformers import AutoTokenizer, LlamaConfig, LlamaForCausalLM, get_scheduler
 
@@ -43,6 +44,7 @@ from utils.config import (
     ConfigError,
     attach_parameter_counts_to_config,
     resolve_run_config,
+    resolve_optimizer_kwargs,
     resolve_training_length_for_world_size,
 )
 from utils.heartbeats import HeartbeatCadence, HeartbeatWriter
@@ -757,10 +759,18 @@ def build_distributed_sampler(
 def build_optimizer_and_scheduler(model, training: Mapping[str, Any]):
     """Build the training optimizer and scheduler from resolved config fields."""
     optimizer_name = str(training.get("optimizer_name", "adamw"))
-    optimizer_kwargs = dict(training.get("optimizer_kwargs", {}))
+    optimizer_kwargs = resolve_optimizer_kwargs(
+        optimizer_name,
+        training.get("optimizer_kwargs", {}),
+    )
     scheduler_name = str(training.get("scheduler_name", "cosine"))
     scheduler_kwargs = dict(training.get("scheduler_kwargs", {}))
-    resolved_warmup_steps = int(training["scheduler"]["resolved_warmup_steps"])
+    resolved_warmup_steps = int(
+        training.get(
+            "resolved_warmup_steps",
+            training.get("scheduler", {}).get("resolved_warmup_steps", 0),
+        )
+    )
     learning_rate = training.get("resolved_learning_rate", training.get("learning_rate"))
     if learning_rate is None:
         raise ConfigError(
@@ -863,6 +873,10 @@ def train_for_steps(
                     [loss for _, loss in granularity_losses]
                 ).mean()
                 combined_loss.backward()
+
+                gradient_clip_norm = training.get("gradient_clip_norm")
+                if gradient_clip_norm is not None:
+                    clip_grad_norm_(model.parameters(), float(gradient_clip_norm))
 
                 optimizer.step()
                 scheduler.step()

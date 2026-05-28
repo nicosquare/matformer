@@ -48,7 +48,12 @@ class FlatParameterRuntimeWrapper(torch.nn.Module):
         yield "flat_param", self.flat_param
 
 
-def test_tiny_nested_training_accumulates_all_granularities_per_batch(tmp_path):
+def test_tiny_nested_training_accumulates_all_granularities_per_batch(
+    tmp_path,
+    monkeypatch,
+):
+    import training.run as training_run
+
     output_dir = tmp_path / "debug-nested-001"
     config = resolve_run_config(
         "configs/debug_matrix.yaml",
@@ -59,7 +64,7 @@ def test_tiny_nested_training_accumulates_all_granularities_per_batch(tmp_path):
             "training.eval_interval=0",
             "training.batch_size_per_process=1",
             "training.learning_rate=0.01",
-            "training.scheduler.kwargs.warmup_steps=0",
+            "training.warmup_steps=0",
         ],
     )
     tokenized_dataset = Dataset.from_dict(
@@ -69,6 +74,13 @@ def test_tiny_nested_training_accumulates_all_granularities_per_batch(tmp_path):
         }
     )
     model = TinyNestedTrainingModel()
+    clip_calls = []
+
+    def fake_clip_grad_norm_(parameters, max_norm, *args, **kwargs):
+        clip_calls.append(max_norm)
+        return torch.tensor(0.0)
+
+    monkeypatch.setattr(training_run, "clip_grad_norm_", fake_clip_grad_norm_)
 
     result = run_training(
         config,
@@ -78,6 +90,7 @@ def test_tiny_nested_training_accumulates_all_granularities_per_batch(tmp_path):
     )
 
     assert model.train_forward_granularities == ["s", "m", "l", "xl"]
+    assert clip_calls == [1.0]
     assert result["metrics_path"] == output_dir / "metrics.csv"
 
     with result["metrics_path"].open("r", encoding="utf-8", newline="") as metrics_file:

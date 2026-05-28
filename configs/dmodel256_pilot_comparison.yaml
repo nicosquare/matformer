@@ -33,19 +33,19 @@ training:
   batch_size_per_process: 8
   learning_rate: 0.0001
   learning_rate_scale_rule: linear
+  warmup_ratio: 0.01635
+  gradient_clip_norm: 1.0
   eval_interval: 500
   mixed_precision: bf16
   activation_checkpointing: true
   optimizer:
     name: adamw
     kwargs:
-      betas: [0.9, 0.999]
+      betas: [0.9, 0.95]
       eps: 1.0e-8
-      weight_decay: 0.0
+      weight_decay: 0.1
   scheduler:
     name: cosine
-    kwargs:
-      warmup_steps: 200
   distributed:
     strategy: fsdp
     fsdp:

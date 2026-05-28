@@ -162,10 +162,19 @@ def test_write_resolved_config(tmp_path):
         f"matformer_llama_{saved['run']['model_size_slug']}"
         f"_{saved['run']['token_budget_slug']}"
     )
+    assert saved["training"]["warmup_ratio"] == 0.01635
+    assert saved["training"]["warmup_steps"] is None
+    assert saved["training"]["resolved_warmup_steps"] == 200
+    assert saved["training"]["gradient_clip_norm"] == 1.0
     assert saved["training"]["scheduler"]["kwargs"]["warmup_steps"] == 200
     assert saved["training"]["scheduler_name"] == "cosine"
     assert saved["training"]["scheduler"]["resolved_warmup_steps"] == 200
     assert saved["training"]["optimizer_name"] == "adamw"
+    assert saved["training"]["optimizer_kwargs"] == {
+        "betas": [0.9, 0.95],
+        "eps": 1e-08,
+        "weight_decay": 0.1,
+    }
     assert config_path == output_dir / "config.json"
 
 def test_dmodel256_completion_label_validation():
@@ -258,6 +267,12 @@ def test_single_run_defaults_to_outputs_root(tmp_path):
     assert resolved["model"]["variant"] == "matformer_llama"
     assert resolved["model"]["gradient_membership_correction"] is True
     assert resolved["run"]["output_root"] == "outputs"
+    assert resolved["training"]["gradient_clip_norm"] == 1.0
+    assert resolved["training"]["optimizer_kwargs"] == {
+        "betas": [0.9, 0.95],
+        "eps": 1e-08,
+        "weight_decay": 0.1,
+    }
     assert resolved["run"]["output_dir"] == (
         f"outputs/{resolved['run']['output_group']}/single-output-root-001"
     )
@@ -515,7 +530,7 @@ def test_dmodel256_pilot_resolves_scaled_learning_rate_warmup_precedence_and_opt
         output_dir=output_root,
         overrides=[
             "training.warmup_ratio=0.9",
-            "training.scheduler.kwargs.warmup_steps=7",
+            "training.warmup_steps=7",
             "training.optimizer.name=sgd",
             "training.optimizer.kwargs.momentum=0.8",
             "training.optimizer.kwargs.dampening=0.1",
@@ -528,8 +543,11 @@ def test_dmodel256_pilot_resolves_scaled_learning_rate_warmup_precedence_and_opt
     assert training["learning_rate_scale_factor"] == 4.0
     assert training["resolved_learning_rate"] == 0.0004
     assert training["warmup_ratio"] == 0.9
+    assert training["warmup_steps"] == 7
+    assert training["resolved_warmup_steps"] == 7
     assert training["scheduler"]["kwargs"]["warmup_steps"] == 7
     assert training["scheduler"]["resolved_warmup_steps"] == 7
+    assert training["gradient_clip_norm"] == 1.0
     assert training["optimizer_name"] == "sgd"
     assert training["optimizer_kwargs"] == {
         "momentum": 0.8,
@@ -556,21 +574,24 @@ def test_dmodel256_pilot_resolves_schedule_and_optimizer_defaults(
     assert training["learning_rate_scale_rule"] == "linear"
     assert training["learning_rate_scale_factor"] == 4.0
     assert training["resolved_learning_rate"] == 0.0004
-    assert training["warmup_ratio"] == 0.0
-    assert training["scheduler"]["kwargs"]["warmup_steps"] == 200
-    assert training["scheduler"]["resolved_warmup_steps"] == 200
+    assert training["warmup_ratio"] == 0.01635
+    assert training["warmup_steps"] is None
+    assert training["resolved_warmup_steps"] == 50
+    assert training["scheduler"]["kwargs"]["warmup_steps"] == 50
+    assert training["scheduler"]["resolved_warmup_steps"] == 50
+    assert training["gradient_clip_norm"] == 1.0
     assert training["optimizer_name"] == "adamw"
     assert training["optimizer_kwargs"] == {
-        "betas": [0.9, 0.999],
+        "betas": [0.9, 0.95],
         "eps": 1e-08,
-        "weight_decay": 0.0,
+        "weight_decay": 0.1,
     }
     assert training["optimizer"] == {
         "name": "adamw",
         "kwargs": {
-            "betas": [0.9, 0.999],
+            "betas": [0.9, 0.95],
             "eps": 1e-08,
-            "weight_decay": 0.0,
+            "weight_decay": 0.1,
         },
     }
 
@@ -585,6 +606,7 @@ def test_single_run_resolves_explicit_schedule_and_optimizer_overrides(tmp_path)
             "training.optimizer.name=sgd",
             "training.optimizer.kwargs.momentum=0.9",
             "training.optimizer.kwargs.nesterov=true",
+            "training.warmup_steps=null",
             "training.scheduler.kwargs.warmup_steps=null",
         ],
     )
@@ -594,8 +616,11 @@ def test_single_run_resolves_explicit_schedule_and_optimizer_overrides(tmp_path)
     assert training["learning_rate_scale_factor"] == 1.0
     assert training["resolved_learning_rate"] == 0.0003
     assert training["warmup_ratio"] == 0.25
+    assert training["warmup_steps"] is None
+    assert training["resolved_warmup_steps"] == 1
     assert training["scheduler"]["kwargs"]["warmup_steps"] == 1
     assert training["scheduler"]["resolved_warmup_steps"] == 1
+    assert training["gradient_clip_norm"] == 1.0
     assert training["optimizer_name"] == "sgd"
     assert training["optimizer_kwargs"] == {
         "momentum": 0.9,

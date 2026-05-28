@@ -55,6 +55,7 @@ python train.py --config configs/debug_matrix.yaml --run-id debug-nested-001 --o
   --override model.variant=cat_llama \
   --override training.learning_rate_scale_rule=linear \
   --override training.warmup_ratio=0.03 \
+  --override training.gradient_clip_norm=1.0 \
   --override training.optimizer.name=sgd \
   --override training.optimizer.kwargs.momentum=0.9 \
   --override training.optimizer.kwargs.weight_decay=0.0
@@ -62,7 +63,8 @@ python train.py --config configs/debug_matrix.yaml --run-id debug-nested-001 --o
 
 Expected result:
 - The resolved config records the base learning rate, scale rule, resolved
-  learning rate, warmup ratio or warmup steps, and optimizer settings.
+  learning rate, warmup ratio or warmup steps, gradient clip norm, and
+  optimizer settings.
 - `run_summary.json` echoes the same resolved schedule and optimizer metadata.
 - `sgd` runs remain available for the distributed debugging path while the
   default `adamw` path stays available for baseline comparisons.

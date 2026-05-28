@@ -1,10 +1,12 @@
 import argparse
+import math
 import os
 import random
 import functools
 
 import torch
 import torch.distributed as dist
+from torch.nn.utils import clip_grad_norm_
 from datasets import load_dataset
 from modified_llama import ModifiedLlamaForCausalLM, CatLlamaMLP
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
@@ -64,9 +66,17 @@ def parse_args(argv=None):
     parser.add_argument("--batch-size", type=int, default=8, help="Per-process batch size.")
     parser.add_argument("--eval-batches", type=int, default=20)
     parser.add_argument("--num-training-steps", type=int, default=10000)
-    parser.add_argument("--num-warmup-steps", type=int, default=200)
+    parser.add_argument(
+        "--warmup-steps",
+        "--num-warmup-steps",
+        dest="warmup_steps",
+        type=int,
+        default=None,
+    )
+    parser.add_argument("--warmup-ratio", type=float, default=None)
     parser.add_argument("--eval-interval", type=int, default=100)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument("--gradient-clip-norm", type=float, default=1.0)
     parser.add_argument(
         "--optimizer-name",
         choices=sorted(VALID_OPTIMIZER_NAMES),
@@ -363,14 +373,32 @@ def main():
         pin_memory=pin_memory,
     )
 
+    warmup_steps = args.warmup_steps
+    if warmup_steps is None and args.warmup_ratio is not None:
+        warmup_steps = math.ceil(args.num_training_steps * args.warmup_ratio)
+    if warmup_steps is None:
+        warmup_steps = 200
+
     optimizer, scheduler = build_optimizer_and_scheduler(
         model,
         {
             "learning_rate": args.learning_rate,
+            "base_learning_rate": args.learning_rate,
+            "learning_rate_scale_rule": "none",
+            "learning_rate_scale_factor": 1.0,
             "resolved_learning_rate": args.learning_rate,
             "max_steps": args.num_training_steps,
-            "warmup_steps": args.num_warmup_steps,
-            "resolved_warmup_steps": args.num_warmup_steps,
+            "warmup_ratio": args.warmup_ratio if args.warmup_ratio is not None else 0.0,
+            "warmup_steps": args.warmup_steps,
+            "resolved_warmup_steps": warmup_steps,
+            "gradient_clip_norm": args.gradient_clip_norm,
+            "scheduler": {
+                "name": "cosine",
+                "kwargs": {"warmup_steps": warmup_steps},
+                "resolved_warmup_steps": warmup_steps,
+            },
+            "scheduler_name": "cosine",
+            "scheduler_kwargs": {},
             "optimizer_name": args.optimizer_name,
             "optimizer_kwargs": parse_optimizer_kwargs(args.optimizer_kwargs),
         },
@@ -399,6 +427,7 @@ def main():
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
+            clip_grad_norm_(model.parameters(), args.gradient_clip_norm)
             optimizer.step()
             scheduler.step()
 

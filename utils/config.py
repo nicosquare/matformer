@@ -35,9 +35,9 @@ GRANULARITY_INTERMEDIATE_FRACTIONS = {
 }
 OPTIMIZER_DEFAULT_KWARGS = {
     "adamw": {
-        "betas": [0.9, 0.999],
+        "betas": [0.9, 0.95],
         "eps": 1e-8,
-        "weight_decay": 0.0,
+        "weight_decay": 0.1,
     },
     "sgd": {
         "momentum": 0.0,
@@ -78,6 +78,14 @@ def parse_override(raw_override: str) -> tuple[str, Any]:
         raise ConfigError(f"Override has an invalid dotted path: {raw_override}")
 
     return key, yaml.safe_load(raw_value)
+
+
+def resolve_optimizer_kwargs(
+    optimizer_name: str,
+    raw_kwargs: Any | None,
+) -> dict[str, Any]:
+    normalized_name = _normalize_optimizer_name(optimizer_name)
+    return _resolve_optimizer_kwargs(normalized_name, raw_kwargs)
 
 
 def apply_overrides(
@@ -329,6 +337,9 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "learning_rate_scale_factor",
             "resolved_learning_rate",
             "warmup_ratio",
+            "warmup_steps",
+            "resolved_warmup_steps",
+            "gradient_clip_norm",
             "scheduler",
             "scheduler_name",
             "scheduler_kwargs",
@@ -882,12 +893,35 @@ def _resolve_training_schedule_defaults(
     if not isinstance(scheduler, dict):
         raise ConfigError("training.scheduler must be a mapping when provided")
 
-    scheduler_name = _normalize_scheduler_name(scheduler.get("name", "cosine"))
-    scheduler_input_kwargs = _resolve_scheduler_input_kwargs(
-        scheduler,
-        warmup_ratio=warmup_ratio,
-        max_steps=int(training["max_steps"]),
+    scheduler_raw_kwargs = scheduler.get("kwargs", {})
+    if scheduler_raw_kwargs is None:
+        scheduler_raw_kwargs = {}
+    if not isinstance(scheduler_raw_kwargs, dict):
+        raise ConfigError("training.scheduler.kwargs must be a mapping when provided")
+
+    source_warmup_steps = training.get("warmup_steps")
+    if source_warmup_steps is None and "warmup_steps" in scheduler_raw_kwargs:
+        source_warmup_steps = scheduler_raw_kwargs["warmup_steps"]
+    if source_warmup_steps is not None:
+        source_warmup_steps = _nonnegative_int(
+            source_warmup_steps,
+            "training.warmup_steps",
+        )
+    training["warmup_steps"] = source_warmup_steps
+
+    if source_warmup_steps is not None:
+        resolved_warmup_steps = source_warmup_steps
+    else:
+        resolved_warmup_steps = math.ceil(int(training["max_steps"]) * warmup_ratio)
+    training["resolved_warmup_steps"] = resolved_warmup_steps
+    training["gradient_clip_norm"] = _positive_float(
+        training.get("gradient_clip_norm", 1.0),
+        "training.gradient_clip_norm",
     )
+
+    scheduler_name = _normalize_scheduler_name(scheduler.get("name", "cosine"))
+    scheduler_input_kwargs = copy.deepcopy(scheduler_raw_kwargs)
+    scheduler_input_kwargs["warmup_steps"] = resolved_warmup_steps
     scheduler_kwargs = _resolve_scheduler_kwargs(
         scheduler_name,
         {
@@ -899,7 +933,7 @@ def _resolve_training_schedule_defaults(
     training["scheduler"] = {
         "name": scheduler_name,
         "kwargs": copy.deepcopy(scheduler_input_kwargs),
-        "resolved_warmup_steps": int(scheduler_input_kwargs["warmup_steps"]),
+        "resolved_warmup_steps": int(resolved_warmup_steps),
     }
     training["scheduler_name"] = scheduler_name
     training["scheduler_kwargs"] = scheduler_kwargs
@@ -1006,30 +1040,6 @@ def _resolve_scheduler_kwargs(
         )
 
     return copy.deepcopy(raw_kwargs)
-
-
-def _resolve_scheduler_input_kwargs(
-    scheduler: Mapping[str, Any],
-    warmup_ratio: float,
-    max_steps: int,
-) -> dict[str, Any]:
-    raw_kwargs = scheduler.get("kwargs", {})
-    if raw_kwargs is None:
-        raw_kwargs = {}
-    if not isinstance(raw_kwargs, dict):
-        raise ConfigError("training.scheduler.kwargs must be a mapping when provided")
-
-    scheduler_input_kwargs = copy.deepcopy(raw_kwargs)
-    warmup_steps = scheduler_input_kwargs.get("warmup_steps")
-    if warmup_steps is None:
-        warmup_steps = math.ceil(max_steps * warmup_ratio)
-    else:
-        warmup_steps = _nonnegative_int(
-            warmup_steps,
-            "training.scheduler.kwargs.warmup_steps",
-        )
-    scheduler_input_kwargs["warmup_steps"] = warmup_steps
-    return scheduler_input_kwargs
 
 
 def _resolve_component_kwargs(

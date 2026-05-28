@@ -31,6 +31,7 @@ training:
   learning_rate: 0.0003
   learning_rate_scale_rule: linear
   warmup_ratio: 0.03
+  gradient_clip_norm: 1.0
   optimizer:
     name: adamw
     kwargs:
@@ -73,6 +74,8 @@ dataset:
   `training.warmup_steps`; if both are present, `warmup_steps` takes precedence.
 - Warmup must be resolved against `training.max_steps`, not manually derived
   from `token_budget`.
+- `training.gradient_clip_norm` defaults to `1.0` and must be positive when
+  provided.
 - `training.optimizer.name` must be `adamw` or `sgd`.
 - `training.optimizer.kwargs` must support at minimum AdamW `betas`, `eps`,
   and `weight_decay`, and SGD `momentum`, `dampening`, `nesterov`, and
