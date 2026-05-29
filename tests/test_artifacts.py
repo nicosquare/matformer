@@ -268,10 +268,10 @@ def test_run_summary_records_resolved_schedule_and_optimizer_metadata(tmp_path, 
     summary_path = write_run_summary(output_dir, summary)
 
     saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    assert saved_summary["base_learning_rate"] == 0.0001
+    assert saved_summary["base_learning_rate"] == 0.0003
     assert saved_summary["learning_rate_scale_rule"] == "linear"
     assert saved_summary["learning_rate_scale_factor"] == 4.0
-    assert saved_summary["resolved_learning_rate"] == 0.0004
+    assert saved_summary["resolved_learning_rate"] == 0.0012
     assert saved_summary["warmup_ratio"] == 0.9
     assert saved_summary["warmup_steps"] == 7
     assert saved_summary["resolved_warmup_steps"] == 7

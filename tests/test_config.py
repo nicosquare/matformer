@@ -163,12 +163,12 @@ def test_write_resolved_config(tmp_path):
         f"_{saved['run']['token_budget_slug']}"
     )
     assert saved["training"]["warmup_ratio"] == 0.01635
-    assert saved["training"]["warmup_steps"] is None
-    assert saved["training"]["resolved_warmup_steps"] == 200
+    assert saved["training"]["warmup_steps"] == 2000
+    assert saved["training"]["resolved_warmup_steps"] == 2000
     assert saved["training"]["gradient_clip_norm"] == 1.0
-    assert saved["training"]["scheduler"]["kwargs"]["warmup_steps"] == 200
+    assert saved["training"]["scheduler"]["kwargs"]["warmup_steps"] == 2000
     assert saved["training"]["scheduler_name"] == "cosine"
-    assert saved["training"]["scheduler"]["resolved_warmup_steps"] == 200
+    assert saved["training"]["scheduler"]["resolved_warmup_steps"] == 2000
     assert saved["training"]["optimizer_name"] == "adamw"
     assert saved["training"]["optimizer_kwargs"] == {
         "betas": [0.9, 0.95],
@@ -541,7 +541,7 @@ def test_dmodel256_pilot_resolves_scaled_learning_rate_warmup_precedence_and_opt
     training = resolved["training"]
     assert training["learning_rate_scale_rule"] == "linear"
     assert training["learning_rate_scale_factor"] == 4.0
-    assert training["resolved_learning_rate"] == 0.0004
+    assert training["resolved_learning_rate"] == 0.0012
     assert training["warmup_ratio"] == 0.9
     assert training["warmup_steps"] == 7
     assert training["resolved_warmup_steps"] == 7
@@ -570,15 +570,15 @@ def test_dmodel256_pilot_resolves_schedule_and_optimizer_defaults(
     )
 
     training = resolved["training"]
-    assert training["base_learning_rate"] == 0.0001
+    assert training["base_learning_rate"] == 0.0003
     assert training["learning_rate_scale_rule"] == "linear"
     assert training["learning_rate_scale_factor"] == 4.0
-    assert training["resolved_learning_rate"] == 0.0004
+    assert training["resolved_learning_rate"] == 0.0012
     assert training["warmup_ratio"] == 0.01635
-    assert training["warmup_steps"] is None
-    assert training["resolved_warmup_steps"] == 50
-    assert training["scheduler"]["kwargs"]["warmup_steps"] == 50
-    assert training["scheduler"]["resolved_warmup_steps"] == 50
+    assert training["warmup_steps"] == 2000
+    assert training["resolved_warmup_steps"] == 2000
+    assert training["scheduler"]["kwargs"]["warmup_steps"] == 2000
+    assert training["scheduler"]["resolved_warmup_steps"] == 2000
     assert training["gradient_clip_norm"] == 1.0
     assert training["optimizer_name"] == "adamw"
     assert training["optimizer_kwargs"] == {

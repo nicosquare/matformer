@@ -43,7 +43,7 @@ training:
   token_budget: 1000000
   batch_size_per_process: 8
   max_steps_cap: null
-  learning_rate: 0.0001
+  learning_rate: 0.0003
   warmup_steps: 50
   eval_interval: 100
   mixed_precision: bf16
