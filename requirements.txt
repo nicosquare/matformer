@@ -7,3 +7,4 @@ matplotlib
 pytest
 lm-eval
 ipykernel
+python-dotenv
