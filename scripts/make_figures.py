@@ -191,6 +191,15 @@ def enrich_scaling_metadata_from_run_config(
             model_variant = model_variant_from_saved_config(config_cache[config_path])
             if model_variant not in (None, ""):
                 enriched_row["model_variant"] = str(model_variant)
+            gradient_membership_correction = (
+                gradient_membership_correction_from_saved_config(
+                    config_cache[config_path]
+                )
+            )
+            if gradient_membership_correction is not None:
+                enriched_row["gradient_membership_correction"] = (
+                    gradient_membership_correction
+                )
         enriched_rows.append(enriched_row)
 
     return enriched_rows
@@ -243,6 +252,26 @@ def model_variant_from_saved_config(config: dict[str, Any]) -> str | None:
     return str(variant)
 
 
+def gradient_membership_correction_from_saved_config(
+    config: dict[str, Any]
+) -> bool | None:
+    model = config.get("model")
+    if not isinstance(model, dict):
+        return None
+    value = model.get("gradient_membership_correction")
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    return bool(value)
+
+
 def with_default_model_variant(config: dict[str, Any]) -> dict[str, Any]:
     normalized_config = json.loads(json.dumps(config))
     model = normalized_config.setdefault("model", {})
@@ -261,6 +290,7 @@ def plot_metric_vs_size(
     grouped = group_scaling_rows(rows)
 
     for label, group_rows_for_label in grouped.items():
+        style = scaling_curve_style(group_rows_for_label)
         points = [
             (to_float(row["non_embedding_parameters"]), to_float(row[metric_name]))
             for row in group_rows_for_label
@@ -271,7 +301,7 @@ def plot_metric_vs_size(
             continue
         points.sort(key=lambda point: point[0])
         xs, ys = zip(*points)
-        axis.plot(xs, ys, marker="o", label=label)
+        axis.plot(xs, ys, label=label, **style)
 
     axis.set_xlabel("Non-embedding parameters")
     axis.set_ylabel(ylabel)
@@ -726,14 +756,53 @@ def safe_filename_fragment(value: str) -> str:
 def scaling_curve_label(row: dict[str, str]) -> str:
     sampling_mode = row.get("sampling_mode")
     model_variant = row.get("model_variant")
+    gmc_label = scaling_curve_gmc_label(row)
     if sampling_mode and model_variant:
-        return f"{sampling_mode} / {model_variant}"
+        parts = [sampling_mode, model_variant]
+        if gmc_label is not None:
+            parts.append(gmc_label)
+        return " / ".join(parts)
     if sampling_mode:
-        return sampling_mode
+        parts = [sampling_mode]
+        if gmc_label is not None:
+            parts.append(gmc_label)
+        return " / ".join(parts)
     model_family = row.get("model_family")
     if model_family and model_variant:
-        return f"{model_family} / {model_variant}"
+        parts = [model_family, model_variant]
+        if gmc_label is not None:
+            parts.append(gmc_label)
+        return " / ".join(parts)
     return model_family or "unknown"
+
+
+def scaling_curve_gmc_label(row: dict[str, str]) -> str | None:
+    if row.get("model_family") == "standalone" or row.get("sampling_mode") == "standalone":
+        return None
+    raw_value = row.get("gradient_membership_correction")
+    if raw_value in (None, ""):
+        return None
+    if isinstance(raw_value, bool):
+        enabled = raw_value
+    else:
+        normalized = str(raw_value).strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            enabled = True
+        elif normalized in {"false", "0", "no", "off"}:
+            enabled = False
+        else:
+            enabled = bool(raw_value)
+    return "gmc=on" if enabled else "gmc=off"
+
+
+def scaling_curve_style(rows: list[dict[str, str]]) -> dict[str, Any]:
+    for row in rows:
+        gmc_label = scaling_curve_gmc_label(row)
+        if gmc_label == "gmc=off":
+            return {"marker": "s", "linestyle": "--", "linewidth": 1.2}
+        if gmc_label == "gmc=on":
+            return {"marker": "o", "linestyle": "-", "linewidth": 1.4}
+    return {"marker": "o", "linestyle": "-", "linewidth": 1.4}
 
 
 def place_legend_outside(axis) -> None:

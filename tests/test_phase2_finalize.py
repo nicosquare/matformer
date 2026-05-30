@@ -12,6 +12,7 @@ from scripts.make_figures import (
     group_scaling_rows,
     loss_moving_average_window_size,
     refresh_scaling_parameter_counts,
+    scaling_curve_style,
     with_default_model_variant,
 )
 from train import parse_args
@@ -709,7 +710,10 @@ def test_make_figures_enriches_model_variant_from_run_config(tmp_path):
         "configs/debug_matrix.yaml",
         run_id="debug-nested-001",
         output_dir=output_dir / "debug-nested-001",
-        overrides=["model.variant=cat_llama"],
+        overrides=[
+            "model.variant=cat_llama",
+            "model.gradient_membership_correction=false",
+        ],
     )
     write_run_summary(
         config["run"]["output_dir"],
@@ -731,6 +735,7 @@ def test_make_figures_enriches_model_variant_from_run_config(tmp_path):
     enriched_rows = enrich_scaling_metadata_from_run_config(output_dir, rows)
 
     assert enriched_rows[0]["model_variant"] == "cat_llama"
+    assert enriched_rows[0]["gradient_membership_correction"] is False
 
 
 def test_make_figures_defaults_missing_model_variant_for_legacy_configs(tmp_path):
@@ -828,6 +833,56 @@ def test_make_figures_groups_scaling_curves_by_sampling_mode_and_variant():
         "s",
         "xl",
     ]
+
+
+def test_make_figures_groups_scaling_curves_by_sampling_mode_variant_and_gmc():
+    rows = [
+        {
+            "model_family": "nested",
+            "sampling_mode": "nested-random",
+            "model_variant": "matformer_llama",
+            "gradient_membership_correction": True,
+            "granularity": "s",
+        },
+        {
+            "model_family": "nested",
+            "sampling_mode": "nested-random",
+            "model_variant": "matformer_llama",
+            "gradient_membership_correction": True,
+            "granularity": "xl",
+        },
+        {
+            "model_family": "nested",
+            "sampling_mode": "nested-random",
+            "model_variant": "cat_llama",
+            "gradient_membership_correction": False,
+            "granularity": "s",
+        },
+        {
+            "model_family": "nested",
+            "sampling_mode": "nested-random",
+            "model_variant": "cat_llama",
+            "gradient_membership_correction": False,
+            "granularity": "xl",
+        },
+    ]
+
+    grouped = group_scaling_rows(rows)
+
+    assert set(grouped) == {
+        "nested-random / matformer_llama / gmc=on",
+        "nested-random / cat_llama / gmc=off",
+    }
+    assert scaling_curve_style(grouped["nested-random / matformer_llama / gmc=on"]) == {
+        "marker": "o",
+        "linestyle": "-",
+        "linewidth": 1.4,
+    }
+    assert scaling_curve_style(grouped["nested-random / cat_llama / gmc=off"]) == {
+        "marker": "s",
+        "linestyle": "--",
+        "linewidth": 1.2,
+    }
 
 
 def test_loss_moving_average_window_size_scales_with_point_count():
