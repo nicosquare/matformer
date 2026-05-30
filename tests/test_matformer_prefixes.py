@@ -3,11 +3,21 @@ import torch
 from transformers import LlamaConfig
 
 from modified_llama import (
+    CatLlamaMLP,
     MATFORMER_GRANULARITY_ORDER,
     ModifiedLlamaForCausalLM,
     ModifiedLlamaMLP,
     expand_layer_granularity_pattern,
+    get_block_membership_counts,
+    get_concat_block_metadata,
+    get_concat_block_membership_counts,
+    get_concat_gradient_membership_correction_scales,
+    get_concat_block_membership_counts_from_metadata,
+    get_concat_gradient_membership_correction_scales_from_metadata,
+    get_concat_layout_diagnostic,
     get_ffn_prefix_metadata,
+    get_gradient_membership_correction_scales,
+    get_prefix_membership_segment_metadata,
     granularity_prefix_width,
 )
 
@@ -38,6 +48,56 @@ def test_granularity_metadata_matches_paper_ratios_and_prefix_widths():
         1.0,
     ]
     assert [entry["prefix_width"] for entry in metadata] == [8, 16, 32, 64]
+
+
+def test_concat_block_metadata_preserves_granularity_boundaries():
+    metadata = get_concat_block_metadata(intermediate_size=64)
+
+    assert [entry["block_width"] for entry in metadata] == [8, 8, 16, 32]
+    assert [entry["prefix_width"] for entry in metadata] == [8, 16, 32, 64]
+    assert [entry["cumulative_prefix_width"] for entry in metadata] == [
+        8,
+        16,
+        32,
+        64,
+    ]
+
+
+def test_concat_membership_counts_follow_concat_boundaries():
+    metadata = get_concat_block_metadata(64)
+
+    assert get_concat_block_membership_counts(
+        64,
+        ["s", "m", "l", "xl"],
+    ) == [4, 3, 2, 1]
+    assert get_concat_block_membership_counts_from_metadata(
+        metadata,
+        ["s", "m", "l", "xl"],
+    ) == [4, 3, 2, 1]
+    assert get_concat_gradient_membership_correction_scales(
+        64,
+        ["s", "m", "l", "xl"],
+    ) == [1.0, 4 / 3, 2.0, 4.0]
+    assert get_concat_gradient_membership_correction_scales_from_metadata(
+        metadata,
+        ["s", "m", "l", "xl"],
+    ) == [1.0, 4 / 3, 2.0, 4.0]
+
+
+def test_concat_layout_diagnostic_matches_instantiated_blocks():
+    diagnostic = get_concat_layout_diagnostic(64, ["s", "m", "l", "xl"])
+
+    assert diagnostic["intermediate_size"] == 64
+    assert diagnostic["granularities"] == ["s", "m", "l", "xl"]
+    assert diagnostic["block_widths"] == [8, 8, 16, 32]
+    assert diagnostic["prefix_widths"] == [8, 16, 32, 64]
+    assert diagnostic["gradient_membership_counts"] == [4, 3, 2, 1]
+    assert diagnostic["gradient_membership_correction_scales"] == [
+        1.0,
+        4 / 3,
+        2.0,
+        4.0,
+    ]
 
 
 def test_prefix_widths_are_strictly_ordered():
@@ -77,6 +137,23 @@ def test_mlp_configures_prefix_tensor_shapes_and_forward_output():
             prefix_width,
         )
         assert mlp(x).shape == x.shape
+
+
+def test_cat_mlp_uses_concat_block_counts_for_subnetwork_configuration():
+    config = tiny_llama_config(num_hidden_layers=1)
+    mlp = CatLlamaMLP(config)
+
+    for granularity, expected_blocks in [("s", 1), ("m", 2), ("l", 3), ("xl", 4)]:
+        mlp.configure_subnetwork(granularity)
+        assert mlp.current_subset_blocks == expected_blocks
+    assert mlp.gradient_membership_counts == [4, 3, 2, 1]
+    assert mlp.gradient_membership_correction_scales == [1.0, 4 / 3, 2.0, 4.0]
+
+
+def test_modified_mlp_defaults_to_gradient_membership_correction_enabled():
+    mlp = ModifiedLlamaMLP(tiny_llama_config(num_hidden_layers=1))
+
+    assert mlp.gradient_membership_correction_enabled is True
 
 
 def test_invalid_granularity_is_rejected():
@@ -124,3 +201,134 @@ def test_layer_granularity_pattern_rejects_unknown_granularity():
 def test_layer_granularity_pattern_must_be_non_empty():
     with pytest.raises(ValueError, match="non-empty"):
         expand_layer_granularity_pattern([], num_layers=4)
+
+
+def test_gradient_membership_correction_scales_match_configured_granularities():
+    total_blocks = 8
+
+    assert get_block_membership_counts(
+        ["s", "m", "l", "xl"],
+        total_blocks=total_blocks,
+    ) == [4, 3, 2, 2, 1, 1, 1, 1]
+    assert get_gradient_membership_correction_scales(
+        ["s", "m", "l", "xl"],
+        total_blocks=total_blocks,
+    ) == [1.0, 4 / 3, 2.0, 2.0, 4.0, 4.0, 4.0, 4.0]
+
+    assert get_block_membership_counts(
+        ["m", "xl"],
+        total_blocks=total_blocks,
+    ) == [2, 2, 1, 1, 1, 1, 1, 1]
+    assert get_gradient_membership_correction_scales(
+        ["m", "xl"],
+        total_blocks=total_blocks,
+    ) == [1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]
+
+
+def test_prefix_membership_segment_metadata_matches_sliced_prefix_boundaries():
+    metadata = get_prefix_membership_segment_metadata(64, ["s", "m", "l", "xl"])
+
+    assert [(segment["start"], segment["end"]) for segment in metadata] == [
+        (0, 8),
+        (8, 16),
+        (16, 32),
+        (32, 64),
+    ]
+    assert [segment["membership_count"] for segment in metadata] == [4, 3, 2, 1]
+    assert [segment["scale"] for segment in metadata] == [1.0, 4 / 3, 2.0, 4.0]
+
+
+def test_cat_llama_scales_active_block_gradients_by_inverse_membership():
+    torch.manual_seed(0)
+    config = tiny_llama_config(num_hidden_layers=1)
+    corrected = CatLlamaMLP(
+        config,
+        trained_granularities=["s", "m", "l", "xl"],
+    )
+    baseline = CatLlamaMLP(config, trained_granularities=["xl"])
+    baseline.load_state_dict(corrected.state_dict())
+
+    x = torch.randn(2, 3, config.hidden_size)
+    corrected.configure_subnetwork("m")
+    baseline.configure_subnetwork("m")
+
+    corrected(x).sum().backward()
+    baseline(x).sum().backward()
+
+    assert torch.allclose(
+        corrected.gate_weight_blocks[0].grad,
+        baseline.gate_weight_blocks[0].grad,
+    )
+    assert torch.allclose(
+        corrected.gate_weight_blocks[1].grad,
+        baseline.gate_weight_blocks[1].grad * (4 / 3),
+    )
+    assert corrected.gate_weight_blocks[2].grad is None
+    assert baseline.gate_weight_blocks[2].grad is None
+
+
+def test_cat_llama_can_disable_gradient_membership_correction():
+    torch.manual_seed(0)
+    config = tiny_llama_config(num_hidden_layers=1)
+    corrected = CatLlamaMLP(
+        config,
+        trained_granularities=["s", "m", "l", "xl"],
+        gradient_membership_correction_enabled=True,
+    )
+    uncorrected = CatLlamaMLP(
+        config,
+        trained_granularities=["s", "m", "l", "xl"],
+        gradient_membership_correction_enabled=False,
+    )
+    uncorrected.load_state_dict(corrected.state_dict())
+
+    x = torch.randn(2, 3, config.hidden_size)
+    corrected.configure_subnetwork("m")
+    uncorrected.configure_subnetwork("m")
+
+    corrected(x).sum().backward()
+    uncorrected(x).sum().backward()
+
+    assert uncorrected.gradient_membership_correction_enabled is False
+    assert torch.allclose(
+        corrected.gate_weight_blocks[1].grad,
+        uncorrected.gate_weight_blocks[1].grad * (4 / 3),
+    )
+
+
+def test_modified_llama_scales_active_prefix_gradients_by_inverse_membership():
+    torch.manual_seed(0)
+    config = tiny_llama_config(num_hidden_layers=1)
+    corrected = ModifiedLlamaMLP(
+        config,
+        trained_granularities=["s", "m", "l", "xl"],
+        gradient_membership_correction_enabled=True,
+    )
+    baseline = ModifiedLlamaMLP(
+        config,
+        trained_granularities=["s", "m", "l", "xl"],
+        gradient_membership_correction_enabled=False,
+    )
+    baseline.load_state_dict(corrected.state_dict())
+
+    x = torch.randn(2, 3, config.hidden_size)
+    corrected.configure_subnetwork("m")
+    baseline.configure_subnetwork("m")
+
+    corrected(x).sum().backward()
+    baseline(x).sum().backward()
+
+    assert torch.allclose(
+        corrected.gate_proj.weight.grad[:8],
+        baseline.gate_proj.weight.grad[:8],
+    )
+    assert torch.allclose(
+        corrected.gate_proj.weight.grad[8:16],
+        baseline.gate_proj.weight.grad[8:16] * (4 / 3),
+    )
+    assert torch.allclose(
+        corrected.down_proj.weight.grad[:, 8:16],
+        baseline.down_proj.weight.grad[:, 8:16] * (4 / 3),
+    )
+    assert torch.count_nonzero(corrected.gate_proj.weight.grad[16:]) == 0
+    assert torch.count_nonzero(baseline.gate_proj.weight.grad[16:]) == 0

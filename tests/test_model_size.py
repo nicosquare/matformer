@@ -1,7 +1,7 @@
 import torch.nn as nn
 from transformers import LlamaConfig, LlamaForCausalLM
 
-from modified_llama import ModifiedLlamaForCausalLM
+from modified_llama import CatLlamaMLP, ModifiedLlamaForCausalLM, ModifiedLlamaMLP
 from training.run import build_model
 from utils.config import resolve_run_config
 from utils.model_size import (
@@ -144,3 +144,57 @@ def test_standalone_model_builds_fixed_width_llama_baseline():
     assert not isinstance(model, ModifiedLlamaForCausalLM)
     assert model.config.intermediate_size == 64
     assert not hasattr(model, "configure_subnetwork")
+
+
+def test_cat_llama_build_passes_configured_granularities_to_membership_correction():
+    config = {
+        "run": {"model_family": "nested"},
+        "model": {
+            "variant": "cat_llama",
+            "granularities": ["m", "xl"],
+            "gradient_membership_correction": False,
+            "vocab_size_assumption": 32,
+            "hidden_size": 16,
+            "intermediate_size": 64,
+            "num_layers": 1,
+            "num_attention_heads": 4,
+            "context_length": 16,
+        },
+    }
+
+    model = build_model(config)
+    layer_mlp = model.model.layers[0].mlp
+
+    assert isinstance(layer_mlp, CatLlamaMLP)
+    assert layer_mlp.trained_granularities == ("m", "xl")
+    assert layer_mlp.gradient_membership_correction_enabled is False
+    assert layer_mlp.gradient_membership_counts == [2, 2, 1, 1]
+
+
+def test_modified_llama_build_passes_membership_correction_configuration():
+    config = {
+        "run": {"model_family": "nested"},
+        "model": {
+            "variant": "matformer_llama",
+            "granularities": ["m", "xl"],
+            "gradient_membership_correction": True,
+            "vocab_size_assumption": 32,
+            "hidden_size": 16,
+            "intermediate_size": 64,
+            "num_layers": 1,
+            "num_attention_heads": 4,
+            "context_length": 16,
+        },
+    }
+
+    model = build_model(config)
+    layer_mlp = model.model.layers[0].mlp
+
+    assert isinstance(layer_mlp, ModifiedLlamaMLP)
+    assert layer_mlp.trained_granularities == ("m", "xl")
+    assert layer_mlp.gradient_membership_correction_enabled is True
+    assert layer_mlp.gradient_membership_counts == [2, 1]
+    assert [
+        (segment["start"], segment["end"])
+        for segment in layer_mlp.gradient_membership_segment_metadata
+    ] == [(0, 16), (16, 64)]

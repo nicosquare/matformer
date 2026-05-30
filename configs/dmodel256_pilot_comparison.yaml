@@ -11,6 +11,8 @@ run:
 
 model:
   base_model_name: dmodel256-matformer-llama-swiglu
+  variant: matformer_llama
+  gradient_membership_correction: true
   tokenizer_name: hf-internal-testing/llama-tokenizer
   d_model: 256
   num_layers: 16
@@ -28,12 +30,34 @@ model:
 training:
   token_budget: 100000000
   max_steps_cap: null
-  batch_size_per_process: 8
-  learning_rate: 0.0001
-  warmup_steps: 200
+  batch_size_per_process: 4
+  learning_rate: 0.0003
+  learning_rate_scale_rule: linear
+  warmup_steps: 2000 # This flag overrules ratio. We set this for small experiments (e.g. up to 100M tokens), for larger experiments we set warmup_ratio instead (comment this)
+  warmup_ratio: 0.01635
+  gradient_clip_norm: 1.0
   eval_interval: 500
   mixed_precision: bf16
   activation_checkpointing: true
+  optimizer:
+    name: adamw
+    kwargs:
+      betas: [0.9, 0.95]
+      eps: 1.0e-8
+      weight_decay: 0.1
+  scheduler:
+    name: cosine
+  distributed:
+    strategy: fsdp
+    fsdp:
+      sharding_strategy: full_shard
+      auto_wrap_policy: transformer_based_wrap
+      transformer_layer_cls_to_wrap:
+        - LlamaDecoderLayer
+      backward_prefetch: backward_pre
+      use_orig_params: true
+      sync_module_states: true
+      forward_prefetch: false
 
 dataset:
   dataset_name: HuggingFaceFW/fineweb

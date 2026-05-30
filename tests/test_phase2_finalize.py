@@ -1,14 +1,19 @@
 import csv
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import torch
 from datasets import Dataset
 
 from scripts.make_figures import (
+    enrich_scaling_metadata_from_run_config,
     generate_figures,
     group_scaling_rows,
+    loss_moving_average_window_size,
     refresh_scaling_parameter_counts,
+    scaling_curve_style,
+    with_default_model_variant,
 )
 from train import parse_args
 from training.baselines import (
@@ -23,6 +28,7 @@ from utils.config import resolve_run_config
 from utils.metrics import (
     build_run_summary,
     write_consistency_results_csv,
+    write_metrics_csv,
     write_run_summary,
     write_scaling_results_csv,
     write_task_results_csv,
@@ -55,7 +61,7 @@ def test_configured_training_writes_metrics_config_and_summary(tmp_path):
             "training.eval_interval=1",
             "training.batch_size_per_process=1",
             "training.learning_rate=0.01",
-            "training.warmup_steps=0",
+            "training.scheduler.kwargs.warmup_steps=0",
         ],
     )
     tokenized_dataset = Dataset.from_dict(
@@ -315,6 +321,180 @@ def test_make_figures_reads_csv_artifacts(tmp_path):
         assert path.stat().st_size > 0
 
 
+def test_make_figures_writes_one_loss_figure_per_experiment_group(tmp_path):
+    first_run_dir = tmp_path / "debug-nested-001"
+    second_run_dir = tmp_path / "debug-standalone-s-001"
+    third_run_dir = tmp_path / "debug-standalone-m-001"
+
+    write_metrics_csv(
+        first_run_dir,
+        [
+            {
+                "run_id": "debug-nested-001",
+                "step": 1,
+                "split": "validation",
+                "model_family": "nested",
+                "model_size_label": "debug",
+                "model_shape_label": "debug-shape",
+                "sampling_mode": "nested-random",
+                "granularity": "s",
+                "loss": 2.1,
+                "perplexity": 8.2,
+                "tokens_seen": 128,
+                "content_tokens_seen": 128,
+                "wall_clock_seconds": 1.0,
+                "tokens_per_second": 128.0,
+                "peak_memory_bytes": 2048,
+            },
+            {
+                "run_id": "debug-nested-001",
+                "step": 2,
+                "split": "validation",
+                "model_family": "nested",
+                "model_size_label": "debug",
+                "model_shape_label": "debug-shape",
+                "sampling_mode": "nested-random",
+                "granularity": "s",
+                "loss": 1.9,
+                "perplexity": 6.7,
+                "tokens_seen": 256,
+                "content_tokens_seen": 256,
+                "wall_clock_seconds": 2.0,
+                "tokens_per_second": 128.0,
+                "peak_memory_bytes": 2048,
+            },
+            {
+                "run_id": "debug-nested-001",
+                "step": 1,
+                "split": "validation",
+                "model_family": "nested",
+                "model_size_label": "debug",
+                "model_shape_label": "debug-shape",
+                "sampling_mode": "nested-random",
+                "granularity": "m",
+                "loss": 2.3,
+                "perplexity": 10.0,
+                "tokens_seen": 128,
+                "content_tokens_seen": 128,
+                "wall_clock_seconds": 1.0,
+                "tokens_per_second": 128.0,
+                "peak_memory_bytes": 2048,
+            },
+            {
+                "run_id": "debug-nested-001",
+                "step": 2,
+                "split": "validation",
+                "model_family": "nested",
+                "model_size_label": "debug",
+                "model_shape_label": "debug-shape",
+                "sampling_mode": "nested-random",
+                "granularity": "m",
+                "loss": 2.0,
+                "perplexity": 6.7,
+                "tokens_seen": 256,
+                "content_tokens_seen": 256,
+                "wall_clock_seconds": 2.0,
+                "tokens_per_second": 128.0,
+                "peak_memory_bytes": 2048,
+            },
+        ],
+    )
+    write_metrics_csv(
+        second_run_dir,
+        [
+            {
+                "run_id": "debug-standalone-s-001",
+                "step": 1,
+                "split": "validation",
+                "model_family": "standalone",
+                "model_size_label": "debug",
+                "model_shape_label": "debug-shape",
+                "sampling_mode": "standalone",
+                "granularity": "s",
+                "loss": 2.4,
+                "perplexity": 11.0,
+                "tokens_seen": 128,
+                "content_tokens_seen": 128,
+                "wall_clock_seconds": 1.0,
+                "tokens_per_second": 128.0,
+                "peak_memory_bytes": 2048,
+            },
+            {
+                "run_id": "debug-standalone-s-001",
+                "step": 2,
+                "split": "validation",
+                "model_family": "standalone",
+                "model_size_label": "debug",
+                "model_shape_label": "debug-shape",
+                "sampling_mode": "standalone",
+                "granularity": "s",
+                "loss": 2.0,
+                "perplexity": 7.4,
+                "tokens_seen": 256,
+                "content_tokens_seen": 256,
+                "wall_clock_seconds": 2.0,
+                "tokens_per_second": 128.0,
+                "peak_memory_bytes": 2048,
+            },
+        ],
+    )
+    write_metrics_csv(
+        third_run_dir,
+        [
+            {
+                "run_id": "debug-standalone-m-001",
+                "step": 1,
+                "split": "validation",
+                "model_family": "standalone",
+                "model_size_label": "debug",
+                "model_shape_label": "debug-shape",
+                "sampling_mode": "standalone",
+                "granularity": "m",
+                "loss": 2.6,
+                "perplexity": 13.5,
+                "tokens_seen": 128,
+                "content_tokens_seen": 128,
+                "wall_clock_seconds": 1.0,
+                "tokens_per_second": 128.0,
+                "peak_memory_bytes": 2048,
+            },
+            {
+                "run_id": "debug-standalone-m-001",
+                "step": 2,
+                "split": "validation",
+                "model_family": "standalone",
+                "model_size_label": "debug",
+                "model_shape_label": "debug-shape",
+                "sampling_mode": "standalone",
+                "granularity": "m",
+                "loss": 2.2,
+                "perplexity": 9.0,
+                "tokens_seen": 256,
+                "content_tokens_seen": 256,
+                "wall_clock_seconds": 2.0,
+                "tokens_per_second": 128.0,
+                "peak_memory_bytes": 2048,
+            },
+        ],
+    )
+
+    figure_paths = generate_figures(tmp_path, tmp_path / "figures")
+
+    figure_names = {path.name for path in figure_paths}
+    assert "loss_over_steps_debug_nested_001.png" in figure_names
+    assert "loss_over_steps_debug_standalone_001.png" in figure_names
+    assert "loss_over_steps.png" not in figure_names
+    assert "loss_over_steps_grid.png" not in figure_names
+    assert "ppl_over_steps.png" in figure_names
+
+    nested_path = tmp_path / "figures" / "loss_over_steps_debug_nested_001.png"
+    standalone_path = tmp_path / "figures" / "loss_over_steps_debug_standalone_001.png"
+    assert nested_path.exists()
+    assert nested_path.stat().st_size > 0
+    assert standalone_path.exists()
+    assert standalone_path.stat().st_size > 0
+
+
 def test_make_figures_plots_grouped_consistency_metrics_and_skips_deferred_rows(tmp_path):
     run_dir = tmp_path / "consistency-001"
     write_consistency_results_csv(
@@ -524,6 +704,80 @@ def test_make_figures_refreshes_parameter_counts_from_run_config(tmp_path):
     assert refreshed_row["total_parameters"] != stale_row["total_parameters"]
 
 
+def test_make_figures_enriches_model_variant_from_run_config(tmp_path):
+    output_dir = tmp_path / "outputs"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir / "debug-nested-001",
+        overrides=[
+            "model.variant=cat_llama",
+            "model.gradient_membership_correction=false",
+        ],
+    )
+    write_run_summary(
+        config["run"]["output_dir"],
+        build_run_summary(config, tokens_seen=128),
+    )
+    config_path = Path(config["run"]["output_dir"]) / "config.json"
+    config_path.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    rows = [
+        {
+            "run_id": "debug-nested-001",
+            "model_family": "nested",
+            "sampling_mode": "nested-random",
+            "granularity": "s",
+            "_source_csv": str(Path(config["run"]["output_dir"]) / "scaling_results.csv"),
+        }
+    ]
+
+    enriched_rows = enrich_scaling_metadata_from_run_config(output_dir, rows)
+
+    assert enriched_rows[0]["model_variant"] == "cat_llama"
+    assert enriched_rows[0]["gradient_membership_correction"] is False
+
+
+def test_make_figures_defaults_missing_model_variant_for_legacy_configs(tmp_path):
+    output_dir = tmp_path / "outputs"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir / "debug-nested-001",
+    )
+    legacy_config = with_default_model_variant(config)
+    legacy_config["model"].pop("variant")
+
+    config_path = Path(config["run"]["output_dir"]) / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(legacy_config, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    stale_row = {
+        "run_id": "debug-nested-001",
+        "model_family": "nested",
+        "sampling_mode": "nested-random",
+        "granularity": "s",
+        "total_parameters": "999",
+        "embedding_parameters": "0",
+        "lm_head_parameters": "0",
+        "non_embedding_parameters": "999",
+        "ffn_parameters": "",
+        "attention_parameters": "",
+        "other_non_embedding_parameters": "",
+        "lm_head_counting": "",
+        "_source_csv": str(Path(config["run"]["output_dir"]) / "scaling_results.csv"),
+    }
+
+    enriched_rows = enrich_scaling_metadata_from_run_config(output_dir, [stale_row])
+    refreshed_rows = refresh_scaling_parameter_counts(output_dir, [stale_row])
+
+    assert enriched_rows[0]["model_variant"] == "matformer_llama"
+    assert refreshed_rows[0]["total_parameters"] != stale_row["total_parameters"]
+
+
 def test_make_figures_groups_scaling_curves_by_sampling_mode():
     rows = [
         {"model_family": "nested", "sampling_mode": "nested-random", "granularity": "s"},
@@ -539,6 +793,104 @@ def test_make_figures_groups_scaling_curves_by_sampling_mode():
     assert set(grouped) == {"nested-random", "nested-all", "standalone"}
     assert [row["granularity"] for row in grouped["nested-random"]] == ["s", "xl"]
     assert [row["granularity"] for row in grouped["standalone"]] == ["s", "xl"]
+
+
+def test_make_figures_groups_scaling_curves_by_sampling_mode_and_variant():
+    rows = [
+        {
+            "model_family": "nested",
+            "sampling_mode": "nested-random",
+            "model_variant": "matformer_llama",
+            "granularity": "s",
+        },
+        {
+            "model_family": "nested",
+            "sampling_mode": "nested-random",
+            "model_variant": "matformer_llama",
+            "granularity": "xl",
+        },
+        {
+            "model_family": "nested",
+            "sampling_mode": "nested-random",
+            "model_variant": "cat_llama",
+            "granularity": "s",
+        },
+        {
+            "model_family": "nested",
+            "sampling_mode": "nested-random",
+            "model_variant": "cat_llama",
+            "granularity": "xl",
+        },
+    ]
+
+    grouped = group_scaling_rows(rows)
+
+    assert set(grouped) == {
+        "nested-random / matformer_llama",
+        "nested-random / cat_llama",
+    }
+    assert [row["granularity"] for row in grouped["nested-random / cat_llama"]] == [
+        "s",
+        "xl",
+    ]
+
+
+def test_make_figures_groups_scaling_curves_by_sampling_mode_variant_and_gmc():
+    rows = [
+        {
+            "model_family": "nested",
+            "sampling_mode": "nested-random",
+            "model_variant": "matformer_llama",
+            "gradient_membership_correction": True,
+            "granularity": "s",
+        },
+        {
+            "model_family": "nested",
+            "sampling_mode": "nested-random",
+            "model_variant": "matformer_llama",
+            "gradient_membership_correction": True,
+            "granularity": "xl",
+        },
+        {
+            "model_family": "nested",
+            "sampling_mode": "nested-random",
+            "model_variant": "cat_llama",
+            "gradient_membership_correction": False,
+            "granularity": "s",
+        },
+        {
+            "model_family": "nested",
+            "sampling_mode": "nested-random",
+            "model_variant": "cat_llama",
+            "gradient_membership_correction": False,
+            "granularity": "xl",
+        },
+    ]
+
+    grouped = group_scaling_rows(rows)
+
+    assert set(grouped) == {
+        "nested-random / matformer_llama / gmc=on",
+        "nested-random / cat_llama / gmc=off",
+    }
+    assert scaling_curve_style(grouped["nested-random / matformer_llama / gmc=on"]) == {
+        "marker": "o",
+        "linestyle": "-",
+        "linewidth": 1.4,
+    }
+    assert scaling_curve_style(grouped["nested-random / cat_llama / gmc=off"]) == {
+        "marker": "s",
+        "linestyle": "--",
+        "linewidth": 1.2,
+    }
+
+
+def test_loss_moving_average_window_size_scales_with_point_count():
+    assert loss_moving_average_window_size(1) == 1
+    assert loss_moving_average_window_size(5) == 3
+    assert loss_moving_average_window_size(20) == 3
+    assert loss_moving_average_window_size(50) == 5
+    assert loss_moving_average_window_size(100) == 11
 
 
 def test_train_cli_accepts_config_run_id_and_overrides():

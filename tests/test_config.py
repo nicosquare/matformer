@@ -41,8 +41,11 @@ def _write_single_run_config(tmp_path):
               max_steps: 1
               batch_size_per_process: 1
               learning_rate: 0.0003
-              warmup_steps: 0
               eval_interval: 0
+              scheduler:
+                name: cosine
+                kwargs:
+                  warmup_steps: 0
 
             dataset:
               dataset_name: roneneldan/TinyStories
@@ -110,12 +113,18 @@ def test_cli_overrides_are_parsed_and_applied():
             "training.max_steps=7",
             "run.seed=123",
             "outputs.save_checkpoints=false",
+            "model.variant=cat_llama",
+            "model.gradient_membership_correction=false",
+            "training.scheduler.name=constant",
         ],
     )
 
     assert resolved["training"]["max_steps"] == 7
     assert resolved["run"]["seed"] == 123
     assert resolved["outputs"]["save_checkpoints"] is False
+    assert resolved["model"]["variant"] == "cat_llama"
+    assert resolved["model"]["gradient_membership_correction"] is False
+    assert resolved["training"]["scheduler_name"] == "constant"
 
 
 def test_granularity_sampling_mode_validation():
@@ -153,6 +162,19 @@ def test_write_resolved_config(tmp_path):
         f"matformer_llama_{saved['run']['model_size_slug']}"
         f"_{saved['run']['token_budget_slug']}"
     )
+    assert saved["training"]["warmup_ratio"] == 0.01635
+    assert saved["training"]["warmup_steps"] == 2000
+    assert saved["training"]["resolved_warmup_steps"] == 2000
+    assert saved["training"]["gradient_clip_norm"] == 1.0
+    assert saved["training"]["scheduler"]["kwargs"]["warmup_steps"] == 2000
+    assert saved["training"]["scheduler_name"] == "cosine"
+    assert saved["training"]["scheduler"]["resolved_warmup_steps"] == 2000
+    assert saved["training"]["optimizer_name"] == "adamw"
+    assert saved["training"]["optimizer_kwargs"] == {
+        "betas": [0.9, 0.95],
+        "eps": 1e-08,
+        "weight_decay": 0.1,
+    }
     assert config_path == output_dir / "config.json"
 
 def test_dmodel256_completion_label_validation():
@@ -242,10 +264,72 @@ def test_single_run_defaults_to_outputs_root(tmp_path):
 
     resolved = resolve_run_config(config_path)
 
+    assert resolved["model"]["variant"] == "matformer_llama"
+    assert resolved["model"]["gradient_membership_correction"] is True
     assert resolved["run"]["output_root"] == "outputs"
+    assert resolved["training"]["gradient_clip_norm"] == 1.0
+    assert resolved["training"]["optimizer_kwargs"] == {
+        "betas": [0.9, 0.95],
+        "eps": 1e-08,
+        "weight_decay": 0.1,
+    }
     assert resolved["run"]["output_dir"] == (
         f"outputs/{resolved['run']['output_group']}/single-output-root-001"
     )
+
+
+def test_shared_configs_resolve_default_model_variant():
+    debug_resolved = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+    )
+    pilot_resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
+
+    assert debug_resolved["model"]["variant"] == "matformer_llama"
+    assert debug_resolved["model"]["gradient_membership_correction"] is True
+    assert pilot_resolved["model"]["variant"] == "matformer_llama"
+    assert pilot_resolved["model"]["gradient_membership_correction"] is True
+
+
+def test_cat_llama_defaults_gradient_membership_correction_on():
+    resolved = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        overrides=["model.variant=cat_llama"],
+    )
+
+    assert resolved["model"]["variant"] == "cat_llama"
+    assert resolved["model"]["gradient_membership_correction"] is True
+
+
+def test_matformer_llama_allows_disabling_gradient_membership_correction():
+    resolved = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        overrides=["model.gradient_membership_correction=false"],
+    )
+
+    assert resolved["model"]["variant"] == "matformer_llama"
+    assert resolved["model"]["gradient_membership_correction"] is False
+
+
+def test_invalid_model_variant_override_fails_fast_before_output_setup(tmp_path):
+    output_root = tmp_path / "should-not-exist"
+
+    with pytest.raises(
+        ConfigError,
+        match=r"Unsupported model\.variant='dog_llama'",
+    ):
+        resolve_run_config(
+            "configs/debug_matrix.yaml",
+            run_id="debug-nested-001",
+            overrides=[
+                f"run.output_root={output_root}",
+                "model.variant=dog_llama",
+            ],
+        )
+
+    assert not output_root.exists()
 
 
 def test_single_run_output_root_override_derives_output_dir(tmp_path):
@@ -407,7 +491,7 @@ def test_dmodel256_pilot_derives_training_length_from_distributed_world_size(
     monkeypatch,
 ):
     monkeypatch.setenv("WORLD_SIZE", "4")
-    output_root = tmp_path / "pilot-output"
+    output_root = tmp_path / "dmodel256-pilot-comparison-001"
 
     resolved = resolve_run_config(
         "configs/dmodel256_pilot_comparison.yaml",
@@ -432,3 +516,124 @@ def test_dmodel256_pilot_derives_training_length_from_distributed_world_size(
     assert training["expected_tokens_per_step"] == expected_tokens_per_step
     assert training["derived_max_steps"] == expected_steps
     assert training["max_steps"] == expected_steps
+
+
+def test_dmodel256_pilot_resolves_scaled_learning_rate_warmup_precedence_and_optimizer_controls(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("WORLD_SIZE", "4")
+    output_root = tmp_path / "dmodel256-pilot-comparison-001"
+
+    resolved = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        output_dir=output_root,
+        overrides=[
+            "training.warmup_ratio=0.9",
+            "training.warmup_steps=7",
+            "training.optimizer.name=sgd",
+            "training.optimizer.kwargs.momentum=0.8",
+            "training.optimizer.kwargs.dampening=0.1",
+            "training.optimizer.kwargs.nesterov=true",
+        ],
+    )
+
+    training = resolved["training"]
+    assert training["learning_rate_scale_rule"] == "linear"
+    assert training["learning_rate_scale_factor"] == 4.0
+    assert training["resolved_learning_rate"] == 0.0012
+    assert training["warmup_ratio"] == 0.9
+    assert training["warmup_steps"] == 7
+    assert training["resolved_warmup_steps"] == 7
+    assert training["scheduler"]["kwargs"]["warmup_steps"] == 7
+    assert training["scheduler"]["resolved_warmup_steps"] == 7
+    assert training["gradient_clip_norm"] == 1.0
+    assert training["optimizer_name"] == "sgd"
+    assert training["optimizer_kwargs"] == {
+        "momentum": 0.8,
+        "dampening": 0.1,
+        "nesterov": True,
+        "weight_decay": 0.0,
+    }
+
+
+def test_dmodel256_pilot_resolves_schedule_and_optimizer_defaults(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("WORLD_SIZE", "4")
+    output_root = tmp_path / "pilot-output"
+
+    resolved = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        overrides=[f"run.output_root={output_root}"],
+    )
+
+    training = resolved["training"]
+    assert training["base_learning_rate"] == 0.0003
+    assert training["learning_rate_scale_rule"] == "linear"
+    assert training["learning_rate_scale_factor"] == 4.0
+    assert training["resolved_learning_rate"] == 0.0012
+    assert training["warmup_ratio"] == 0.01635
+    assert training["warmup_steps"] == 2000
+    assert training["resolved_warmup_steps"] == 2000
+    assert training["scheduler"]["kwargs"]["warmup_steps"] == 2000
+    assert training["scheduler"]["resolved_warmup_steps"] == 2000
+    assert training["gradient_clip_norm"] == 1.0
+    assert training["optimizer_name"] == "adamw"
+    assert training["optimizer_kwargs"] == {
+        "betas": [0.9, 0.95],
+        "eps": 1e-08,
+        "weight_decay": 0.1,
+    }
+    assert training["optimizer"] == {
+        "name": "adamw",
+        "kwargs": {
+            "betas": [0.9, 0.95],
+            "eps": 1e-08,
+            "weight_decay": 0.1,
+        },
+    }
+
+
+def test_single_run_resolves_explicit_schedule_and_optimizer_overrides(tmp_path):
+    config_path = _write_single_run_config(tmp_path)
+
+    resolved = resolve_run_config(
+        config_path,
+        overrides=[
+            "training.warmup_ratio=0.25",
+            "training.optimizer.name=sgd",
+            "training.optimizer.kwargs.momentum=0.9",
+            "training.optimizer.kwargs.nesterov=true",
+            "training.warmup_steps=null",
+            "training.scheduler.kwargs.warmup_steps=null",
+        ],
+    )
+
+    training = resolved["training"]
+    assert training["learning_rate_scale_rule"] == "none"
+    assert training["learning_rate_scale_factor"] == 1.0
+    assert training["resolved_learning_rate"] == 0.0003
+    assert training["warmup_ratio"] == 0.25
+    assert training["warmup_steps"] is None
+    assert training["resolved_warmup_steps"] == 1
+    assert training["scheduler"]["kwargs"]["warmup_steps"] == 1
+    assert training["scheduler"]["resolved_warmup_steps"] == 1
+    assert training["gradient_clip_norm"] == 1.0
+    assert training["optimizer_name"] == "sgd"
+    assert training["optimizer_kwargs"] == {
+        "momentum": 0.9,
+        "dampening": 0.0,
+        "nesterov": True,
+        "weight_decay": 0.0,
+    }
+    assert training["optimizer"] == {
+        "name": "sgd",
+        "kwargs": {
+            "momentum": 0.9,
+            "dampening": 0.0,
+            "nesterov": True,
+            "weight_decay": 0.0,
+        },
+    }

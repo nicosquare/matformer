@@ -115,6 +115,25 @@ def test_write_config_metrics_and_run_summary(tmp_path):
 
     saved_config = json.loads(config_path.read_text(encoding="utf-8"))
     assert saved_config["run"]["run_id"] == "debug-nested-001"
+    assert saved_config["model"]["variant"] == "matformer_llama"
+    assert saved_config["training"]["base_learning_rate"] == 0.0003
+    assert saved_config["training"]["learning_rate_scale_rule"] == "none"
+    assert saved_config["training"]["learning_rate_scale_factor"] == 1.0
+    assert saved_config["training"]["resolved_learning_rate"] == 0.0003
+    assert saved_config["training"]["warmup_ratio"] == 0.0
+    assert saved_config["training"]["warmup_steps"] == 0
+    assert saved_config["training"]["resolved_warmup_steps"] == 0
+    assert saved_config["training"]["gradient_clip_norm"] == 1.0
+    assert saved_config["training"]["scheduler_name"] == "cosine"
+    assert saved_config["training"]["scheduler"]["kwargs"]["warmup_steps"] == 0
+    assert saved_config["training"]["scheduler"]["resolved_warmup_steps"] == 0
+    assert saved_config["training"]["scheduler_kwargs"] == {}
+    assert saved_config["training"]["optimizer_name"] == "adamw"
+    assert saved_config["training"]["optimizer_kwargs"] == {
+        "betas": [0.9, 0.95],
+        "eps": 1e-08,
+        "weight_decay": 0.1,
+    }
 
     with metrics_path.open("r", encoding="utf-8", newline="") as metrics_file:
         metric_rows = list(csv.DictReader(metrics_file))
@@ -124,6 +143,25 @@ def test_write_config_metrics_and_run_summary(tmp_path):
     saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert saved_summary["status"] == "completed"
     assert saved_summary["tokens_seen"] == 128
+    assert saved_summary["model_variant"] == "matformer_llama"
+    assert saved_summary["base_learning_rate"] == 0.0003
+    assert saved_summary["learning_rate_scale_rule"] == "none"
+    assert saved_summary["learning_rate_scale_factor"] == 1.0
+    assert saved_summary["resolved_learning_rate"] == 0.0003
+    assert saved_summary["warmup_ratio"] == 0.0
+    assert saved_summary["warmup_steps"] == 0
+    assert saved_summary["resolved_warmup_steps"] == 0
+    assert saved_summary["gradient_clip_norm"] == 1.0
+    assert saved_summary["scheduler_name"] == "cosine"
+    assert saved_summary["scheduler_warmup_steps"] == 0
+    assert saved_summary["scheduler_resolved_warmup_steps"] == 0
+    assert saved_summary["scheduler_kwargs"] == {}
+    assert saved_summary["optimizer_name"] == "adamw"
+    assert saved_summary["optimizer_kwargs"] == {
+        "betas": [0.9, 0.95],
+        "eps": 1e-08,
+        "weight_decay": 0.1,
+    }
     assert saved_summary["notes"] == ["smoke test"]
 
 
@@ -144,7 +182,41 @@ def test_write_failed_run_summary_records_failure_note(tmp_path):
     saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert saved_summary["status"] == "failed"
     assert saved_summary["tokens_seen"] == 64
+    assert saved_summary["model_variant"] == "matformer_llama"
     assert saved_summary["notes"] == ["CUDA out of memory during debug smoke"]
+
+
+def test_baseline_and_cat_run_summaries_share_schema_and_differ_by_variant(tmp_path):
+    baseline_output_dir = tmp_path / "baseline" / "debug-nested-001"
+    cat_output_dir = tmp_path / "cat" / "debug-nested-001"
+
+    baseline_config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=baseline_output_dir,
+    )
+    cat_config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=cat_output_dir,
+        overrides=["model.variant=cat_llama"],
+    )
+
+    baseline_summary = build_run_summary(
+        baseline_config,
+        tokens_seen=128,
+        notes=["baseline comparison smoke"],
+    )
+    cat_summary = build_run_summary(
+        cat_config,
+        tokens_seen=128,
+        notes=["cat comparison smoke"],
+    )
+
+    assert set(baseline_summary) == set(cat_summary)
+    assert baseline_summary["model_variant"] == "matformer_llama"
+    assert cat_summary["model_variant"] == "cat_llama"
+    assert baseline_summary["model_family"] == cat_summary["model_family"] == "nested"
 
 
 def test_run_summary_includes_budget_derived_fields(tmp_path):
@@ -175,6 +247,44 @@ def test_run_summary_includes_budget_derived_fields(tmp_path):
         "effective_world_size"
     ]
     assert summary["stop_reason"] == "not_started"
+
+
+def test_run_summary_records_resolved_schedule_and_optimizer_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "4")
+    output_dir = tmp_path / "dmodel256-pilot-comparison-001"
+    config = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        output_dir=output_dir,
+        overrides=[
+            "training.warmup_ratio=0.9",
+            "training.warmup_steps=7",
+            "training.optimizer.name=sgd",
+            "training.optimizer.kwargs.momentum=0.8",
+            "training.optimizer.kwargs.nesterov=true",
+        ],
+    )
+
+    summary = build_run_summary(config, tokens_seen=128, notes=["schedule smoke"])
+    summary_path = write_run_summary(output_dir, summary)
+
+    saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert saved_summary["base_learning_rate"] == 0.0003
+    assert saved_summary["learning_rate_scale_rule"] == "linear"
+    assert saved_summary["learning_rate_scale_factor"] == 4.0
+    assert saved_summary["resolved_learning_rate"] == 0.0012
+    assert saved_summary["warmup_ratio"] == 0.9
+    assert saved_summary["warmup_steps"] == 7
+    assert saved_summary["resolved_warmup_steps"] == 7
+    assert saved_summary["scheduler_warmup_steps"] == 7
+    assert saved_summary["scheduler_resolved_warmup_steps"] == 7
+    assert saved_summary["gradient_clip_norm"] == 1.0
+    assert saved_summary["optimizer_name"] == "sgd"
+    assert saved_summary["optimizer_kwargs"] == {
+        "momentum": 0.8,
+        "dampening": 0.0,
+        "nesterov": True,
+        "weight_decay": 0.0,
+    }
 
 
 def test_run_summary_schema_requires_budget_derived_fields(tmp_path):
@@ -731,7 +841,7 @@ def test_nested_run_writes_extraction_metadata_artifact(tmp_path):
             "training.eval_interval=0",
             "training.batch_size_per_process=1",
             "training.learning_rate=0.01",
-            "training.warmup_steps=0",
+            "training.scheduler.kwargs.warmup_steps=0",
         ],
     )
     tokenized_dataset = Dataset.from_dict(

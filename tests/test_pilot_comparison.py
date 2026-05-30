@@ -16,6 +16,7 @@ def _pilot_summary(
     model_family,
     sampling_mode,
     *,
+    model_variant="matformer_llama",
     granularity=None,
     checkpoint_status="best_eval",
     checkpoint_path="/tmp/pilot/checkpoints/best_eval_step_10.pt",
@@ -25,6 +26,7 @@ def _pilot_summary(
         "run_id": run_id,
         "phase_id": "dmodel256_pilot_comparison",
         "model_family": model_family,
+        "model_variant": model_variant,
         "sampling_mode": sampling_mode,
         "model_shape_label": "dmodel256",
         "completion_label": "run",
@@ -111,6 +113,7 @@ def test_pilot_comparison_rows_cover_nested_and_standalone_modes(tmp_path):
                 "dmodel256-nested-all-001",
                 "nested",
                 "nested-all",
+                model_variant="cat_llama",
             ),
             _pilot_summary(
                 "dmodel256-standalone-s-001",
@@ -165,6 +168,7 @@ def test_pilot_comparison_rows_cover_nested_and_standalone_modes(tmp_path):
         if row["run_status"] == "omitted":
             assert row["model_family_slug"] is None
             assert row["output_group"] is None
+            assert row["model_variant"] is None
         else:
             assert row["model_family_slug"] == "matformer_llama"
             assert row["output_group"] == "matformer_llama_148m_100m_tokens"
@@ -177,6 +181,17 @@ def test_pilot_comparison_rows_cover_nested_and_standalone_modes(tmp_path):
         Path(tmp_path) / "standalone-s" / "checkpoints" / "final.pt"
     )
     assert standalone["effective_world_size"] == 2
+    assert standalone["model_variant"] == "matformer_llama"
+
+    nested_random = by_key[
+        ("dmodel256-nested-random-001", "nested-random", "s")
+    ]
+    nested_all = by_key[
+        ("dmodel256-nested-all-001", "nested-all", "s")
+    ]
+    assert nested_random["model_variant"] == "matformer_llama"
+    assert nested_all["model_variant"] == "cat_llama"
+    assert set(nested_random) == set(nested_all)
 
     assert omitted["run_status"] == "omitted"
     assert omitted["omit_reason"] == "not scheduled for capped pilot smoke"

@@ -20,8 +20,12 @@ from utils.model_size import (
 
 VALID_GRANULARITIES = {"s", "m", "l", "xl"}
 VALID_MODEL_TOPOLOGIES = {"nested", "standalone"}
+VALID_MODEL_VARIANTS = {"matformer_llama", "cat_llama"}
+VALID_LEARNING_RATE_SCALE_RULES = {"none", "linear", "sqrt"}
+VALID_OPTIMIZER_NAMES = {"adamw", "sgd"}
 VALID_COMPLETION_LABELS = {"debug", "run"}
 VALID_GRANULARITY_SAMPLING = {"all", "random"}
+DEFAULT_MODEL_VARIANT = "matformer_llama"
 VALID_SAMPLING_MODES = {"nested-random", "nested-all", "standalone"}
 GRANULARITY_INTERMEDIATE_FRACTIONS = {
     "s": (1, 8),
@@ -29,6 +33,24 @@ GRANULARITY_INTERMEDIATE_FRACTIONS = {
     "l": (1, 2),
     "xl": (1, 1),
 }
+OPTIMIZER_DEFAULT_KWARGS = {
+    "adamw": {
+        "betas": [0.9, 0.95],
+        "eps": 1e-8,
+        "weight_decay": 0.1,
+    },
+    "sgd": {
+        "momentum": 0.0,
+        "dampening": 0.0,
+        "nesterov": False,
+        "weight_decay": 0.0,
+    },
+}
+OPTIMIZER_ALLOWED_KWARGS = {
+    "adamw": {"betas", "eps", "weight_decay"},
+    "sgd": {"momentum", "dampening", "nesterov", "weight_decay"},
+}
+SCHEDULER_RESERVED_KWARGS = {"num_warmup_steps", "num_training_steps", "optimizer"}
 
 
 class ConfigError(ValueError):
@@ -56,6 +78,14 @@ def parse_override(raw_override: str) -> tuple[str, Any]:
         raise ConfigError(f"Override has an invalid dotted path: {raw_override}")
 
     return key, yaml.safe_load(raw_value)
+
+
+def resolve_optimizer_kwargs(
+    optimizer_name: str,
+    raw_kwargs: Any | None,
+) -> dict[str, Any]:
+    normalized_name = _normalize_optimizer_name(optimizer_name)
+    return _resolve_optimizer_kwargs(normalized_name, raw_kwargs)
 
 
 def apply_overrides(
@@ -141,6 +171,7 @@ def resolve_run_config(
     if output_dir is not None:
         resolved["run"]["output_dir"] = str(output_dir)
 
+    _resolve_model_variant_defaults(resolved)
     _resolve_naming_defaults(resolved)
     _resolve_output_paths(resolved)
     _resolve_sampling_mode_defaults(
@@ -149,7 +180,7 @@ def resolve_run_config(
             "training.granularity_sampling" in explicit_override_keys
         ),
     )
-    _resolve_training_length(resolved)
+    _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
     _resolve_parameter_reporting_defaults(resolved)
     validate_run_config(resolved)
     return resolved
@@ -165,6 +196,7 @@ def resolve_all_run_configs(
 
     if "matrix" not in config:
         resolved = _compose_single_run(config)
+        _resolve_model_variant_defaults(resolved)
         _resolve_naming_defaults(resolved)
         _resolve_output_paths(resolved)
         _resolve_sampling_mode_defaults(
@@ -173,7 +205,7 @@ def resolve_all_run_configs(
                 "training.granularity_sampling" in explicit_override_keys
             ),
         )
-        _resolve_training_length(resolved)
+        _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
         _resolve_parameter_reporting_defaults(resolved)
         validate_run_config(resolved)
         return [resolved]
@@ -187,6 +219,7 @@ def resolve_all_run_configs(
     resolved_runs = []
     for run_entry in runs:
         resolved = _compose_matrix_run(config, run_entry)
+        _resolve_model_variant_defaults(resolved)
         _resolve_naming_defaults(resolved)
         _resolve_output_paths(resolved)
         _resolve_sampling_mode_defaults(
@@ -195,7 +228,7 @@ def resolve_all_run_configs(
                 "training.granularity_sampling" in explicit_override_keys
             ),
         )
-        _resolve_training_length(resolved)
+        _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
         _resolve_parameter_reporting_defaults(resolved)
         validate_run_config(resolved)
         resolved_runs.append(resolved)
@@ -276,6 +309,7 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         "model",
         [
             "base_model_name",
+            "variant",
             "num_layers",
             "num_attention_heads",
             "intermediate_size",
@@ -298,6 +332,32 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "expected_tokens_per_step",
             "derived_max_steps",
             "max_steps",
+            "base_learning_rate",
+            "learning_rate_scale_rule",
+            "learning_rate_scale_factor",
+            "resolved_learning_rate",
+            "warmup_ratio",
+            "warmup_steps",
+            "resolved_warmup_steps",
+            "gradient_clip_norm",
+            "scheduler",
+            "scheduler_name",
+            "scheduler_kwargs",
+            "optimizer",
+            "optimizer_name",
+            "optimizer_kwargs",
+        ],
+    )
+    scheduler = training.get("scheduler")
+    if not isinstance(scheduler, Mapping):
+        raise ConfigError("Missing mapping section: training.scheduler")
+    _require_fields(
+        scheduler,
+        "training.scheduler",
+        [
+            "name",
+            "kwargs",
+            "resolved_warmup_steps",
         ],
     )
     _require_fields(
@@ -349,6 +409,12 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
     if unknown_granularities:
         raise ConfigError(f"Unknown granularities: {unknown_granularities}")
 
+    if model["variant"] not in VALID_MODEL_VARIANTS:
+        raise ConfigError(
+            "model.variant must be one of "
+            f"{sorted(VALID_MODEL_VARIANTS)}"
+        )
+
     if model_topology == "standalone":
         granularity = run.get("granularity")
         if granularity not in VALID_GRANULARITIES:
@@ -392,6 +458,36 @@ def _compose_matrix_run(
     resolved["run"] = run
     _apply_run_granularities(resolved)
     return resolved
+
+
+def _resolve_model_variant_defaults(config: dict[str, Any]) -> None:
+    model = config.setdefault("model", {})
+    model["variant"] = _normalize_model_variant(
+        model.get("variant", DEFAULT_MODEL_VARIANT)
+    )
+    model["gradient_membership_correction"] = _normalize_bool(
+        model.get(
+            "gradient_membership_correction",
+            True,
+        ),
+        "model.gradient_membership_correction",
+    )
+
+
+def _normalize_model_variant(raw_variant: Any) -> str:
+    if not isinstance(raw_variant, str):
+        raise ConfigError("model.variant must be a string")
+
+    variant = raw_variant.strip()
+    if not variant:
+        raise ConfigError("model.variant must be a non-empty string")
+    if variant not in VALID_MODEL_VARIANTS:
+        raise ConfigError(
+            f"Unsupported model.variant={variant!r}; expected one of "
+            f"{sorted(VALID_MODEL_VARIANTS)}"
+        )
+
+    return variant
 
 
 def _select_matrix_run(
@@ -620,8 +716,14 @@ def _resolve_output_paths(config: dict[str, Any]) -> None:
         _ensure_writable_directory(output_dir.parent, "output directory parent")
 
 
-def _resolve_training_length(config: dict[str, Any]) -> None:
-    resolve_training_length_for_world_size(config)
+def _resolve_training_length(
+    config: dict[str, Any],
+    explicit_override_keys: set[str] | None = None,
+) -> None:
+    resolve_training_length_for_world_size(
+        config,
+        explicit_override_keys=explicit_override_keys,
+    )
 
 
 def _resolve_parameter_reporting_defaults(config: dict[str, Any]) -> None:
@@ -657,6 +759,7 @@ def resolve_training_length_for_world_size(
     config: dict[str, Any],
     effective_world_size: int | None = None,
     world_size_source: str | None = None,
+    explicit_override_keys: set[str] | None = None,
 ) -> None:
     _resolve_sampling_mode_defaults(config)
 
@@ -716,12 +819,320 @@ def resolve_training_length_for_world_size(
         else derived_max_steps
     )
 
+    _resolve_training_schedule_defaults(
+        training,
+        effective_world_size,
+        explicit_override_keys=explicit_override_keys,
+    )
+
 
 def _resolve_effective_world_size() -> int:
     raw_world_size = os.environ.get("WORLD_SIZE")
     if raw_world_size in (None, ""):
         return 1
     return _positive_int(raw_world_size, "WORLD_SIZE")
+
+
+def _resolve_training_schedule_defaults(
+    training: dict[str, Any],
+    effective_world_size: int,
+    explicit_override_keys: set[str] | None = None,
+) -> None:
+    base_learning_rate = _positive_float(
+        training.get("learning_rate"),
+        "training.learning_rate",
+    )
+    training["base_learning_rate"] = base_learning_rate
+
+    scale_rule = _normalize_learning_rate_scale_rule(
+        training.get("learning_rate_scale_rule"),
+        effective_world_size,
+    )
+    training["learning_rate_scale_rule"] = scale_rule
+    learning_rate_scale_factor = _compute_learning_rate_scale_factor(
+        scale_rule,
+        effective_world_size,
+    )
+    training["learning_rate_scale_factor"] = learning_rate_scale_factor
+    training["resolved_learning_rate"] = base_learning_rate * learning_rate_scale_factor
+
+    warmup_ratio = training.get("warmup_ratio")
+    if warmup_ratio is None:
+        warmup_ratio = 0.0
+    warmup_ratio = _nonnegative_float(
+        warmup_ratio,
+        "training.warmup_ratio",
+    )
+    training["warmup_ratio"] = warmup_ratio
+
+    optimizer = training.get("optimizer")
+    if optimizer is None:
+        optimizer = {}
+    if not isinstance(optimizer, dict):
+        raise ConfigError("training.optimizer must be a mapping when provided")
+
+    optimizer_name = _normalize_optimizer_name(optimizer.get("name", "adamw"))
+    optimizer_kwargs = _resolve_optimizer_kwargs(
+        optimizer_name,
+        _resolve_component_kwargs(
+            component=optimizer,
+            component_path="training.optimizer",
+            explicit_override_keys=explicit_override_keys,
+        ),
+    )
+    training["optimizer"] = {
+        "name": optimizer_name,
+        "kwargs": copy.deepcopy(optimizer_kwargs),
+    }
+    training["optimizer_name"] = optimizer_name
+    training["optimizer_kwargs"] = optimizer_kwargs
+
+    scheduler = training.get("scheduler")
+    if scheduler is None:
+        scheduler = {}
+    if not isinstance(scheduler, dict):
+        raise ConfigError("training.scheduler must be a mapping when provided")
+
+    scheduler_raw_kwargs = scheduler.get("kwargs", {})
+    if scheduler_raw_kwargs is None:
+        scheduler_raw_kwargs = {}
+    if not isinstance(scheduler_raw_kwargs, dict):
+        raise ConfigError("training.scheduler.kwargs must be a mapping when provided")
+
+    source_warmup_steps = training.get("warmup_steps")
+    if source_warmup_steps is None and "warmup_steps" in scheduler_raw_kwargs:
+        source_warmup_steps = scheduler_raw_kwargs["warmup_steps"]
+    if source_warmup_steps is not None:
+        source_warmup_steps = _nonnegative_int(
+            source_warmup_steps,
+            "training.warmup_steps",
+        )
+    training["warmup_steps"] = source_warmup_steps
+
+    if source_warmup_steps is not None:
+        resolved_warmup_steps = source_warmup_steps
+    else:
+        resolved_warmup_steps = math.ceil(int(training["max_steps"]) * warmup_ratio)
+    training["resolved_warmup_steps"] = resolved_warmup_steps
+    training["gradient_clip_norm"] = _positive_float(
+        training.get("gradient_clip_norm", 1.0),
+        "training.gradient_clip_norm",
+    )
+
+    scheduler_name = _normalize_scheduler_name(scheduler.get("name", "cosine"))
+    scheduler_input_kwargs = copy.deepcopy(scheduler_raw_kwargs)
+    scheduler_input_kwargs["warmup_steps"] = resolved_warmup_steps
+    scheduler_kwargs = _resolve_scheduler_kwargs(
+        scheduler_name,
+        {
+            key: value
+            for key, value in scheduler_input_kwargs.items()
+            if key != "warmup_steps"
+        },
+    )
+    training["scheduler"] = {
+        "name": scheduler_name,
+        "kwargs": copy.deepcopy(scheduler_input_kwargs),
+        "resolved_warmup_steps": int(resolved_warmup_steps),
+    }
+    training["scheduler_name"] = scheduler_name
+    training["scheduler_kwargs"] = scheduler_kwargs
+
+
+def _normalize_learning_rate_scale_rule(
+    raw_scale_rule: Any,
+    effective_world_size: int,
+) -> str:
+    if raw_scale_rule is None or raw_scale_rule == "":
+        return "linear" if effective_world_size > 1 else "none"
+    if not isinstance(raw_scale_rule, str):
+        raise ConfigError("training.learning_rate_scale_rule must be a string")
+
+    scale_rule = raw_scale_rule.strip()
+    if not scale_rule:
+        return "linear" if effective_world_size > 1 else "none"
+    if scale_rule not in VALID_LEARNING_RATE_SCALE_RULES:
+        raise ConfigError(
+            "training.learning_rate_scale_rule must be one of "
+            f"{sorted(VALID_LEARNING_RATE_SCALE_RULES)}"
+        )
+    return scale_rule
+
+
+def _compute_learning_rate_scale_factor(
+    scale_rule: str,
+    effective_world_size: int,
+) -> float:
+    if scale_rule == "none":
+        return 1.0
+    if scale_rule == "linear":
+        return float(effective_world_size)
+    if scale_rule == "sqrt":
+        return math.sqrt(effective_world_size)
+    raise ConfigError(
+        "training.learning_rate_scale_rule must be one of "
+        f"{sorted(VALID_LEARNING_RATE_SCALE_RULES)}"
+    )
+
+
+def _normalize_optimizer_name(raw_name: Any) -> str:
+    if not isinstance(raw_name, str):
+        raise ConfigError("training.optimizer.name must be a string")
+
+    optimizer_name = raw_name.strip()
+    if not optimizer_name:
+        raise ConfigError("training.optimizer.name must be a non-empty string")
+    if optimizer_name not in VALID_OPTIMIZER_NAMES:
+        raise ConfigError(
+            "training.optimizer.name must be one of "
+            f"{sorted(VALID_OPTIMIZER_NAMES)}"
+        )
+    return optimizer_name
+
+
+def _normalize_scheduler_name(raw_name: Any) -> str:
+    if not isinstance(raw_name, str):
+        raise ConfigError("training.scheduler.name must be a string")
+
+    scheduler_name = raw_name.strip()
+    if not scheduler_name:
+        raise ConfigError("training.scheduler.name must be a non-empty string")
+    return scheduler_name
+
+
+def _resolve_optimizer_kwargs(
+    optimizer_name: str,
+    raw_kwargs: Any,
+) -> dict[str, Any]:
+    if raw_kwargs is None:
+        raw_kwargs = {}
+    if not isinstance(raw_kwargs, dict):
+        raise ConfigError("training.optimizer.kwargs must be a mapping when provided")
+
+    allowed_kwargs = OPTIMIZER_ALLOWED_KWARGS[optimizer_name]
+    resolved_kwargs = copy.deepcopy(OPTIMIZER_DEFAULT_KWARGS[optimizer_name])
+    for key, value in raw_kwargs.items():
+        if key not in allowed_kwargs:
+            raise ConfigError(
+                f"training.optimizer.kwargs.{key} is not supported for {optimizer_name}"
+            )
+        resolved_kwargs[key] = _normalize_optimizer_kwarg(optimizer_name, key, value)
+
+    return resolved_kwargs
+
+
+def _resolve_scheduler_kwargs(
+    scheduler_name: str,
+    raw_kwargs: Any,
+) -> dict[str, Any]:
+    if raw_kwargs is None:
+        raw_kwargs = {}
+    if not isinstance(raw_kwargs, dict):
+        raise ConfigError("training.scheduler.kwargs must be a mapping when provided")
+
+    forbidden_keys = sorted(
+        key for key in raw_kwargs if str(key) in SCHEDULER_RESERVED_KWARGS
+    )
+    if forbidden_keys:
+        raise ConfigError(
+            "training.scheduler.kwargs must not define reserved keys: "
+            f"{forbidden_keys}"
+        )
+
+    return copy.deepcopy(raw_kwargs)
+
+
+def _resolve_component_kwargs(
+    component: Mapping[str, Any],
+    component_path: str,
+    explicit_override_keys: set[str] | None,
+) -> dict[str, Any]:
+    raw_kwargs = component.get("kwargs", {})
+    if raw_kwargs is None:
+        raw_kwargs = {}
+    if not isinstance(raw_kwargs, dict):
+        raise ConfigError(f"{component_path}.kwargs must be a mapping when provided")
+
+    if explicit_override_keys is None:
+        return copy.deepcopy(raw_kwargs)
+
+    if f"{component_path}.kwargs" in explicit_override_keys:
+        return copy.deepcopy(raw_kwargs)
+
+    if f"{component_path}.name" not in explicit_override_keys:
+        return copy.deepcopy(raw_kwargs)
+
+    explicit_kwargs: dict[str, Any] = {}
+    prefix = f"{component_path}.kwargs."
+    for override_key in explicit_override_keys:
+        if not override_key.startswith(prefix):
+            continue
+        kwarg_name = override_key[len(prefix) :]
+        if not kwarg_name or "." in kwarg_name:
+            continue
+        if kwarg_name in raw_kwargs:
+            explicit_kwargs[kwarg_name] = copy.deepcopy(raw_kwargs[kwarg_name])
+
+    return explicit_kwargs
+
+
+def _normalize_optimizer_kwarg(
+    optimizer_name: str,
+    key: str,
+    value: Any,
+) -> Any:
+    if optimizer_name == "adamw" and key == "betas":
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            raise ConfigError("training.optimizer.kwargs.betas must be a pair of floats")
+        return [
+            _nonnegative_float(value[0], "training.optimizer.kwargs.betas[0]"),
+            _nonnegative_float(value[1], "training.optimizer.kwargs.betas[1]"),
+        ]
+
+    if key in {"eps", "weight_decay", "momentum", "dampening"}:
+        return _nonnegative_float(value, f"training.optimizer.kwargs.{key}")
+
+    if key == "nesterov":
+        if isinstance(value, bool):
+            return value
+        raise ConfigError("training.optimizer.kwargs.nesterov must be a boolean")
+
+    raise ConfigError(f"Unsupported optimizer kwarg: {key}")
+
+
+def _positive_float(value: Any, field_name: str) -> float:
+    number = _coerce_float(value, field_name)
+    if number <= 0:
+        raise ConfigError(f"{field_name} must be a positive number")
+    return number
+
+
+def _nonnegative_float(value: Any, field_name: str) -> float:
+    number = _coerce_float(value, field_name)
+    if number < 0:
+        raise ConfigError(f"{field_name} must be a non-negative number")
+    return number
+
+
+def _nonnegative_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise ConfigError(f"{field_name} must be a non-negative integer")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as error:
+        raise ConfigError(f"{field_name} must be a non-negative integer") from error
+    if parsed < 0:
+        raise ConfigError(f"{field_name} must be a non-negative integer")
+    return parsed
+
+
+def _coerce_float(value: Any, field_name: str) -> float:
+    if isinstance(value, bool):
+        raise ConfigError(f"{field_name} must be a number")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as error:
+        raise ConfigError(f"{field_name} must be a number") from error
 
 
 def _validate_derived_training_length(
@@ -775,6 +1186,12 @@ def _positive_int(value: Any, field_name: str) -> int:
     if parsed <= 0:
         raise ConfigError(f"{field_name} must be a positive integer")
     return parsed
+
+
+def _normalize_bool(value: Any, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise ConfigError(f"{field_name} must be a boolean")
 
 
 def _ensure_writable_directory(path: Path, label: str) -> None:

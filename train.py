@@ -1,10 +1,12 @@
 import argparse
+import math
 import os
 import random
 import functools
 
 import torch
 import torch.distributed as dist
+from torch.nn.utils import clip_grad_norm_
 from datasets import load_dataset
 from modified_llama import ModifiedLlamaForCausalLM, CatLlamaMLP
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
@@ -18,8 +20,15 @@ from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from transformers import AutoTokenizer, LlamaConfig
-from transformers import get_scheduler
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
+import yaml
+
+from training.run import build_optimizer_and_scheduler
+from utils.config import (
+    DEFAULT_MODEL_VARIANT,
+    VALID_MODEL_VARIANTS,
+    VALID_OPTIMIZER_NAMES,
+)
 
 
 FLAGS = ['s', 'm', 'l', 'xl']
@@ -44,6 +53,12 @@ def parse_args(argv=None):
         help="Dotted config override, for example training.max_steps=10.",
     )
     parser.add_argument("--model-name", default="NousResearch/Llama-3.2-1B")
+    parser.add_argument(
+        "--model-variant",
+        choices=sorted(VALID_MODEL_VARIANTS),
+        default=DEFAULT_MODEL_VARIANT,
+        help="Select the MatFormer family variant for the legacy direct path.",
+    )
     parser.add_argument("--dataset-name", default="vilm/RedPajama-v2-small")
     parser.add_argument("--dataset-split", default="train")
     parser.add_argument("--dataset-size", type=int, default=10000)
@@ -51,9 +66,28 @@ def parse_args(argv=None):
     parser.add_argument("--batch-size", type=int, default=8, help="Per-process batch size.")
     parser.add_argument("--eval-batches", type=int, default=20)
     parser.add_argument("--num-training-steps", type=int, default=10000)
-    parser.add_argument("--num-warmup-steps", type=int, default=200)
+    parser.add_argument(
+        "--warmup-steps",
+        "--num-warmup-steps",
+        dest="warmup_steps",
+        type=int,
+        default=None,
+    )
+    parser.add_argument("--warmup-ratio", type=float, default=None)
     parser.add_argument("--eval-interval", type=int, default=100)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument("--gradient-clip-norm", type=float, default=1.0)
+    parser.add_argument(
+        "--optimizer-name",
+        choices=sorted(VALID_OPTIMIZER_NAMES),
+        default="adamw",
+        help="Select the optimizer for the legacy direct path.",
+    )
+    parser.add_argument(
+        "--optimizer-kwargs",
+        default="{}",
+        help="YAML mapping of optimizer kwargs for the legacy direct path.",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--preprocess-num-proc", type=int, default=min(32, os.cpu_count() or 1))
     parser.add_argument("--dataloader-num-workers", type=int, default=0)
@@ -65,6 +99,15 @@ def parse_args(argv=None):
         help="Checkpoint Llama decoder layers when running under torchrun/FSDP.",
     )
     return parser.parse_args(argv)
+
+
+def parse_optimizer_kwargs(raw_value):
+    parsed = yaml.safe_load(raw_value)
+    if parsed in (None, ""):
+        return {}
+    if not isinstance(parsed, dict):
+        raise ValueError("--optimizer-kwargs must parse to a mapping")
+    return parsed
 
 
 def setup_distributed():
@@ -247,6 +290,12 @@ def evaluate_model(model, eval_dataloader, flags, device, distributed):
     return eval_losses
 
 
+def build_legacy_model(config, model_variant):
+    if model_variant == "cat_llama":
+        return ModifiedLlamaForCausalLM(config=config, mlp_cls=CatLlamaMLP)
+    return ModifiedLlamaForCausalLM(config=config)
+
+
 def main():
     args = parse_args()
     if args.config:
@@ -284,8 +333,13 @@ def main():
     config = LlamaConfig.from_pretrained(args.model_name)
     config.use_cache = False
 
-    print_rank0(rank, "initializing model. This may take a while... ", end="", flush=True)
-    model = ModifiedLlamaForCausalLM(config=config, mlp_cls=CatLlamaMLP)
+    print_rank0(
+        rank,
+        f"initializing model for variant={args.model_variant}. This may take a while... ",
+        end="",
+        flush=True,
+    )
+    model = build_legacy_model(config=config, model_variant=args.model_variant)
     if distributed:
         model = wrap_with_fsdp(model, args, device, rank)
     else:
@@ -319,13 +373,35 @@ def main():
         pin_memory=pin_memory,
     )
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
+    warmup_steps = args.warmup_steps
+    if warmup_steps is None and args.warmup_ratio is not None:
+        warmup_steps = math.ceil(args.num_training_steps * args.warmup_ratio)
+    if warmup_steps is None:
+        warmup_steps = 200
 
-    scheduler = get_scheduler(
-        "cosine",
-        optimizer=optimizer,
-        num_warmup_steps=args.num_warmup_steps,
-        num_training_steps=args.num_training_steps,
+    optimizer, scheduler = build_optimizer_and_scheduler(
+        model,
+        {
+            "learning_rate": args.learning_rate,
+            "base_learning_rate": args.learning_rate,
+            "learning_rate_scale_rule": "none",
+            "learning_rate_scale_factor": 1.0,
+            "resolved_learning_rate": args.learning_rate,
+            "max_steps": args.num_training_steps,
+            "warmup_ratio": args.warmup_ratio if args.warmup_ratio is not None else 0.0,
+            "warmup_steps": args.warmup_steps,
+            "resolved_warmup_steps": warmup_steps,
+            "gradient_clip_norm": args.gradient_clip_norm,
+            "scheduler": {
+                "name": "cosine",
+                "kwargs": {"warmup_steps": warmup_steps},
+                "resolved_warmup_steps": warmup_steps,
+            },
+            "scheduler_name": "cosine",
+            "scheduler_kwargs": {},
+            "optimizer_name": args.optimizer_name,
+            "optimizer_kwargs": parse_optimizer_kwargs(args.optimizer_kwargs),
+        },
     )
     model.train()
 
@@ -351,6 +427,7 @@ def main():
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
+            clip_grad_norm_(model.parameters(), args.gradient_clip_norm)
             optimizer.step()
             scheduler.step()
 

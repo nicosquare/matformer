@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import copy
 from contextlib import contextmanager
 import random
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import torch
+from torch.nn.utils import clip_grad_norm_
 from torch.utils.data.distributed import DistributedSampler
 from transformers import AutoTokenizer, LlamaConfig, LlamaForCausalLM, get_scheduler
 
@@ -19,7 +21,12 @@ from evaluation.validation import (
     perplexity_from_loss,
     validation_results_to_metric_rows,
 )
-from modified_llama import ModifiedLlamaForCausalLM, get_ffn_prefix_metadata
+from modified_llama import (
+    CatLlamaMLP,
+    ModifiedLlamaForCausalLM,
+    get_concat_layout_diagnostic,
+    get_ffn_prefix_metadata,
+)
 from training.data import (
     build_language_model_dataloader,
     load_and_tokenize_dataset,
@@ -34,8 +41,10 @@ from training.distributed import (
     wrap_model_for_distributed,
 )
 from utils.config import (
+    ConfigError,
     attach_parameter_counts_to_config,
     resolve_run_config,
+    resolve_optimizer_kwargs,
     resolve_training_length_for_world_size,
 )
 from utils.heartbeats import HeartbeatCadence, HeartbeatWriter
@@ -94,6 +103,15 @@ def run_training(
         with heartbeat_stage(heartbeat_writer, "model_initialization"):
             if model is None:
                 model = build_model(config)
+            if (
+                distributed_context.is_rank_zero
+                and config["model"]["variant"] == "cat_llama"
+            ):
+                diagnostic = get_concat_layout_diagnostic(
+                    config["model"]["intermediate_size"],
+                    config["model"]["granularities"],
+                )
+                print(f"[cat-llama-diagnostic] {diagnostic}", flush=True)
             parameter_counts_by_granularity = build_artifact_parameter_counts(
                 config,
                 model,
@@ -131,16 +149,7 @@ def run_training(
                 device,
                 distributed_context=distributed_context,
             )
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=training["learning_rate"],
-        )
-        scheduler = get_scheduler(
-            "cosine",
-            optimizer=optimizer,
-            num_warmup_steps=training.get("warmup_steps", 0),
-            num_training_steps=training["max_steps"],
-        )
+        optimizer, scheduler = build_optimizer_and_scheduler(model, training)
 
         checkpoint_state: dict[str, Any] = {}
         metrics_rows = train_for_steps(
@@ -203,6 +212,7 @@ def run_training(
             "steps_completed": training_outcome["steps_completed"],
             "stop_reason": training_outcome["stop_reason"],
             "content_tokens_seen": training_outcome["content_tokens_seen"],
+            "model_variant": config["model"]["variant"],
             "granularities": config["model"]["granularities"],
             "granularity_sampling": training.get("granularity_sampling", "all"),
             "parameter_counts_by_granularity": parameter_counts_by_granularity,
@@ -275,9 +285,24 @@ def build_artifact_parameter_counts(
 
 def build_model(config: dict[str, Any]):
     llama_config = build_llama_config(config)
+    mlp_kwargs = {
+        "trained_granularities": tuple(config["model"]["granularities"]),
+        "gradient_membership_correction_enabled": config["model"].get(
+            "gradient_membership_correction",
+            config["model"]["variant"] == "cat_llama",
+        ),
+    }
     if config["run"]["model_family"] == "standalone":
         return LlamaForCausalLM(llama_config)
-    return ModifiedLlamaForCausalLM(llama_config)
+
+    if config["model"]["variant"] == "cat_llama":
+        return ModifiedLlamaForCausalLM(
+            llama_config,
+            mlp_cls=CatLlamaMLP,
+            mlp_kwargs=mlp_kwargs,
+        )
+
+    return ModifiedLlamaForCausalLM(llama_config, mlp_kwargs=mlp_kwargs)
 
 
 def build_llama_config(config: dict[str, Any]) -> LlamaConfig:
@@ -307,6 +332,7 @@ def load_tokenizer(config: dict[str, Any]):
 
 
 def sync_config_with_distributed_context(config: dict[str, Any], context) -> None:
+    fsdp_config = copy.deepcopy(getattr(context, "fsdp_config", {}) or {})
     resolve_training_length_for_world_size(
         config,
         effective_world_size=context.world_size,
@@ -320,16 +346,19 @@ def sync_config_with_distributed_context(config: dict[str, Any], context) -> Non
             "rank": context.rank,
             "local_rank": context.local_rank,
             "world_size": context.world_size,
+            "fsdp": fsdp_config,
         }
     )
 
 
 def distributed_summary_fields(context) -> dict[str, Any]:
+    fsdp_config = copy.deepcopy(getattr(context, "fsdp_config", {}) or {})
     return {
         "distributed_strategy": context.strategy,
         "distributed_rank": context.rank,
         "distributed_local_rank": context.local_rank,
         "distributed_world_size": context.world_size,
+        "distributed_fsdp_config": fsdp_config,
     }
 
 
@@ -727,6 +756,54 @@ def build_distributed_sampler(
     )
 
 
+def build_optimizer_and_scheduler(model, training: Mapping[str, Any]):
+    """Build the training optimizer and scheduler from resolved config fields."""
+    optimizer_name = str(training.get("optimizer_name", "adamw"))
+    optimizer_kwargs = resolve_optimizer_kwargs(
+        optimizer_name,
+        training.get("optimizer_kwargs", {}),
+    )
+    scheduler_name = str(training.get("scheduler_name", "cosine"))
+    scheduler_kwargs = dict(training.get("scheduler_kwargs", {}))
+    resolved_warmup_steps = int(
+        training.get(
+            "resolved_warmup_steps",
+            training.get("scheduler", {}).get("resolved_warmup_steps", 0),
+        )
+    )
+    learning_rate = training.get("resolved_learning_rate", training.get("learning_rate"))
+    if learning_rate is None:
+        raise ConfigError(
+            "training must include learning_rate or resolved_learning_rate"
+        )
+
+    if optimizer_name == "adamw":
+        if "betas" in optimizer_kwargs and isinstance(optimizer_kwargs["betas"], list):
+            optimizer_kwargs["betas"] = tuple(optimizer_kwargs["betas"])
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=learning_rate,
+            **optimizer_kwargs,
+        )
+    elif optimizer_name == "sgd":
+        optimizer = torch.optim.SGD(
+            model.parameters(),
+            lr=learning_rate,
+            **optimizer_kwargs,
+        )
+    else:
+        raise ConfigError(f"Unsupported optimizer name: {optimizer_name}")
+
+    scheduler = get_scheduler(
+        scheduler_name,
+        optimizer=optimizer,
+        num_warmup_steps=resolved_warmup_steps,
+        num_training_steps=int(training["max_steps"]),
+        **scheduler_kwargs,
+    )
+    return optimizer, scheduler
+
+
 def train_for_steps(
     config: dict[str, Any],
     model,
@@ -796,6 +873,11 @@ def train_for_steps(
                     [loss for _, loss in granularity_losses]
                 ).mean()
                 combined_loss.backward()
+
+                gradient_clip_norm = training.get("gradient_clip_norm")
+                if gradient_clip_norm is not None:
+                    clip_grad_norm_(model.parameters(), float(gradient_clip_norm))
+
                 optimizer.step()
                 scheduler.step()
 

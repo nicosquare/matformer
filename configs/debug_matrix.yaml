@@ -6,6 +6,8 @@ run:
 
 model:
   base_model_name: debug-llama
+  variant: matformer_llama
+  gradient_membership_correction: true
   tokenizer_name: hf-internal-testing/llama-tokenizer
   num_layers: 2
   num_attention_heads: 4
@@ -21,6 +23,13 @@ training:
   batch_size_per_process: 2
   learning_rate: 0.0003
   warmup_steps: 0
+  gradient_clip_norm: 1.0
+  optimizer:
+    name: adamw
+    kwargs:
+      betas: [0.9, 0.95]
+      eps: 1.0e-8
+      weight_decay: 0.1
   eval_interval: 2
   eval_batches: 1
   mixed_precision: none
@@ -28,6 +37,8 @@ training:
   granularity_sampling: all
   preprocess_num_proc: 1
   dataloader_num_workers: 0
+  scheduler:
+    name: cosine
 
 dataset:
   dataset_name: roneneldan/TinyStories

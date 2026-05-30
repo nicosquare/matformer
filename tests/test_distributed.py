@@ -65,6 +65,35 @@ def test_prepare_distributed_context_uses_gloo_without_device_id_on_cpu(
     assert context.device == torch.device("cpu")
 
 
+def test_prepare_distributed_context_ignores_config_enabled_flag(monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setenv("LOCAL_RANK", "0")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    init_calls = []
+    monkeypatch.setattr(
+        torch.distributed,
+        "init_process_group",
+        lambda **kwargs: init_calls.append(kwargs),
+    )
+
+    context = prepare_distributed_context(
+        {
+            "training": {
+                "distributed": {
+                    "enabled": False,
+                    "strategy": "fsdp",
+                }
+            }
+        },
+    )
+
+    assert init_calls == [{"backend": "gloo"}]
+    assert context.enabled is True
+    assert context.strategy == "fsdp"
+
+
 def test_broadcast_object_receives_rank_zero_payload(monkeypatch):
     context = DistributedContext(enabled=True, rank=1, world_size=2)
 
@@ -153,3 +182,83 @@ def test_checkpoint_state_dict_uses_distributed_checkpoint_api_for_fsdp(
     assert calls[0]["optimizers"] == []
     assert calls[0]["options"].full_state_dict is True
     assert calls[0]["options"].cpu_offload is True
+
+
+def test_wrap_model_for_distributed_uses_hf_style_fsdp_recipe(monkeypatch):
+    import training.distributed as distributed
+
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
+
+    context = DistributedContext(
+        enabled=True,
+        rank=0,
+        local_rank=0,
+        world_size=2,
+        strategy="fsdp",
+        device="cuda:0",
+        mixed_precision="bf16",
+        activation_checkpointing=True,
+        fsdp_config={
+            "sharding_strategy": "full_shard",
+            "auto_wrap_policy": "transformer_based_wrap",
+            "transformer_layer_cls_to_wrap": ["LlamaDecoderLayer"],
+            "backward_prefetch": "backward_pre",
+            "use_orig_params": True,
+            "sync_module_states": True,
+            "forward_prefetch": False,
+            "limit_all_gathers": False,
+        },
+    )
+
+    model = torch.nn.Linear(2, 2)
+    activation_calls = []
+    fsdp_calls = []
+
+    def fake_apply_activation_checkpointing(
+        model_arg,
+        *,
+        checkpoint_wrapper_fn,
+        check_fn,
+    ):
+        activation_calls.append(
+            {
+                "model": model_arg,
+                "checkpoint_wrapper_fn": checkpoint_wrapper_fn,
+                "check_fn": check_fn,
+            }
+        )
+
+    def fake_fsdp(model_arg, **kwargs):
+        fsdp_calls.append({"model": model_arg, "kwargs": kwargs})
+        return model_arg
+
+    monkeypatch.setattr(
+        distributed,
+        "apply_activation_checkpointing",
+        fake_apply_activation_checkpointing,
+    )
+    monkeypatch.setattr(distributed, "FSDP", fake_fsdp)
+
+    wrapped = distributed.wrap_model_for_distributed(model, context)
+
+    assert wrapped is model
+    assert len(activation_calls) == 1
+    assert activation_calls[0]["model"] is model
+    llama_layer = distributed.LlamaDecoderLayer.__new__(
+        distributed.LlamaDecoderLayer
+    )
+    assert activation_calls[0]["check_fn"](llama_layer)
+    assert len(fsdp_calls) == 1
+    fsdp_kwargs = fsdp_calls[0]["kwargs"]
+    assert fsdp_kwargs["device_id"] == torch.device("cuda:0")
+    assert fsdp_kwargs["use_orig_params"] is True
+    assert fsdp_kwargs["sync_module_states"] is True
+    assert fsdp_kwargs["forward_prefetch"] is False
+    assert fsdp_kwargs["limit_all_gathers"] is False
+    assert fsdp_kwargs["sharding_strategy"].name == "FULL_SHARD"
+    assert fsdp_kwargs["backward_prefetch"].name == "BACKWARD_PRE"
+    assert fsdp_kwargs["mixed_precision"].param_dtype == torch.bfloat16
+    assert (
+        fsdp_kwargs["auto_wrap_policy"].keywords["transformer_layer_cls"]
+        == {distributed.LlamaDecoderLayer}
+    )
