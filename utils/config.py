@@ -16,6 +16,7 @@ from utils.model_size import (
     derive_model_size_slug,
     derive_token_budget_slug,
 )
+from utils.monitoring import DEFAULT_MONITORING_BACKEND, VALID_MONITORING_BACKENDS
 
 
 VALID_GRANULARITIES = {"s", "m", "l", "xl"}
@@ -25,6 +26,7 @@ VALID_LEARNING_RATE_SCALE_RULES = {"none", "linear", "sqrt"}
 VALID_OPTIMIZER_NAMES = {"adamw", "sgd"}
 VALID_COMPLETION_LABELS = {"debug", "run"}
 VALID_GRANULARITY_SAMPLING = {"all", "random"}
+VALID_PRE_NESTED_WARMUP_UNITS = {"epochs", "steps"}
 DEFAULT_MODEL_VARIANT = "matformer_llama"
 VALID_SAMPLING_MODES = {"nested-random", "nested-all", "standalone"}
 GRANULARITY_INTERMEDIATE_FRACTIONS = {
@@ -182,6 +184,7 @@ def resolve_run_config(
     )
     _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
     _resolve_parameter_reporting_defaults(resolved)
+    _resolve_long_run_defaults(resolved)
     validate_run_config(resolved)
     return resolved
 
@@ -207,6 +210,7 @@ def resolve_all_run_configs(
         )
         _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
         _resolve_parameter_reporting_defaults(resolved)
+        _resolve_long_run_defaults(resolved)
         validate_run_config(resolved)
         return [resolved]
 
@@ -230,6 +234,7 @@ def resolve_all_run_configs(
         )
         _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
         _resolve_parameter_reporting_defaults(resolved)
+        _resolve_long_run_defaults(resolved)
         validate_run_config(resolved)
         resolved_runs.append(resolved)
 
@@ -280,6 +285,13 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
     model = _require_mapping(config, "model")
     training = _require_mapping(config, "training")
     dataset = _require_mapping(config, "dataset")
+    continuation = run.get("continuation")
+    if not isinstance(continuation, Mapping):
+        raise ConfigError("Missing mapping section: run.continuation")
+    monitoring = _require_mapping(config, "monitoring")
+    warmup = training.get("pre_nested_warmup")
+    if not isinstance(warmup, Mapping):
+        raise ConfigError("Missing mapping section: training.pre_nested_warmup")
     _require_mapping(config, "outputs")
     _require_mapping(config, "evaluation")
 
@@ -348,6 +360,23 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "optimizer_kwargs",
         ],
     )
+    _require_fields(continuation, "run.continuation", ["enabled"])
+    _require_fields(
+        monitoring,
+        "monitoring",
+        [
+            "enabled",
+            "backend",
+            "log_loss_by_granularity",
+            "log_validation_loss",
+            "log_stage_events",
+        ],
+    )
+    _require_fields(
+        warmup,
+        "training.pre_nested_warmup",
+        ["enabled", "duration", "unit"],
+    )
     scheduler = training.get("scheduler")
     if not isinstance(scheduler, Mapping):
         raise ConfigError("Missing mapping section: training.scheduler")
@@ -413,6 +442,44 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         raise ConfigError(
             "model.variant must be one of "
             f"{sorted(VALID_MODEL_VARIANTS)}"
+        )
+
+    if not isinstance(continuation.get("enabled"), bool):
+        raise ConfigError("run.continuation.enabled must be a boolean")
+
+    if not isinstance(monitoring.get("enabled"), bool):
+        raise ConfigError("monitoring.enabled must be a boolean")
+    if not isinstance(monitoring.get("log_loss_by_granularity"), bool):
+        raise ConfigError("monitoring.log_loss_by_granularity must be a boolean")
+    if not isinstance(monitoring.get("log_validation_loss"), bool):
+        raise ConfigError("monitoring.log_validation_loss must be a boolean")
+    if not isinstance(monitoring.get("log_stage_events"), bool):
+        raise ConfigError("monitoring.log_stage_events must be a boolean")
+    if monitoring.get("backend") not in VALID_MONITORING_BACKENDS:
+        raise ConfigError(
+            "monitoring.backend must be one of "
+            f"{sorted(VALID_MONITORING_BACKENDS)}"
+        )
+
+    warmup_enabled = warmup.get("enabled")
+    if not isinstance(warmup_enabled, bool):
+        raise ConfigError("training.pre_nested_warmup.enabled must be a boolean")
+    warmup_duration = _nonnegative_int(
+        warmup["duration"],
+        "training.pre_nested_warmup.duration",
+    )
+    warmup_unit = warmup.get("unit")
+    if not isinstance(warmup_unit, str):
+        raise ConfigError("training.pre_nested_warmup.unit must be a string")
+    warmup_unit = warmup_unit.strip()
+    if warmup_unit not in VALID_PRE_NESTED_WARMUP_UNITS:
+        raise ConfigError(
+            "training.pre_nested_warmup.unit must be one of "
+            f"{sorted(VALID_PRE_NESTED_WARMUP_UNITS)}"
+        )
+    if warmup_enabled and warmup_duration <= 0:
+        raise ConfigError(
+            "training.pre_nested_warmup.duration must be positive when enabled"
         )
 
     if model_topology == "standalone":
@@ -734,6 +801,12 @@ def _resolve_parameter_reporting_defaults(config: dict[str, Any]) -> None:
     reporting.setdefault("lm_head_counting", "separately_counted")
 
 
+def _resolve_long_run_defaults(config: dict[str, Any]) -> None:
+    _resolve_continuation_defaults(config)
+    _resolve_monitoring_defaults(config)
+    _resolve_pre_nested_warmup_defaults(config)
+
+
 def _select_representative_parameter_counts(
     config: Mapping[str, Any],
     counts_by_granularity: Mapping[str, Mapping[str, Any]],
@@ -937,6 +1010,88 @@ def _resolve_training_schedule_defaults(
     }
     training["scheduler_name"] = scheduler_name
     training["scheduler_kwargs"] = scheduler_kwargs
+
+
+def _resolve_continuation_defaults(config: dict[str, Any]) -> None:
+    run = config.setdefault("run", {})
+    continuation = run.get("continuation")
+    if continuation is None:
+        continuation = {}
+    if not isinstance(continuation, dict):
+        raise ConfigError("run.continuation must be a mapping when provided")
+
+    continuation["enabled"] = _normalize_bool(
+        continuation.get("enabled", False),
+        "run.continuation.enabled",
+    )
+    run["continuation"] = continuation
+
+
+def _resolve_monitoring_defaults(config: dict[str, Any]) -> None:
+    monitoring = config.get("monitoring")
+    if monitoring is None:
+        monitoring = {}
+    if not isinstance(monitoring, dict):
+        raise ConfigError("monitoring must be a mapping when provided")
+
+    monitoring["enabled"] = _normalize_bool(
+        monitoring.get("enabled", False),
+        "monitoring.enabled",
+    )
+    backend = monitoring.get("backend", DEFAULT_MONITORING_BACKEND)
+    if not isinstance(backend, str):
+        raise ConfigError("monitoring.backend must be a string")
+    backend = backend.strip()
+    if backend not in VALID_MONITORING_BACKENDS:
+        raise ConfigError(
+            "monitoring.backend must be one of "
+            f"{sorted(VALID_MONITORING_BACKENDS)}"
+        )
+    monitoring["backend"] = backend
+    monitoring["log_loss_by_granularity"] = _normalize_bool(
+        monitoring.get("log_loss_by_granularity", True),
+        "monitoring.log_loss_by_granularity",
+    )
+    monitoring["log_validation_loss"] = _normalize_bool(
+        monitoring.get("log_validation_loss", True),
+        "monitoring.log_validation_loss",
+    )
+    monitoring["log_stage_events"] = _normalize_bool(
+        monitoring.get("log_stage_events", True),
+        "monitoring.log_stage_events",
+    )
+    config["monitoring"] = monitoring
+
+
+def _resolve_pre_nested_warmup_defaults(config: dict[str, Any]) -> None:
+    training = config.setdefault("training", {})
+    warmup = training.get("pre_nested_warmup")
+    if warmup is None:
+        warmup = {}
+    if not isinstance(warmup, dict):
+        raise ConfigError(
+            "training.pre_nested_warmup must be a mapping when provided"
+        )
+
+    warmup["enabled"] = _normalize_bool(
+        warmup.get("enabled", False),
+        "training.pre_nested_warmup.enabled",
+    )
+    warmup["duration"] = _nonnegative_int(
+        warmup.get("duration", 0),
+        "training.pre_nested_warmup.duration",
+    )
+    warmup_unit = warmup.get("unit", "epochs")
+    if not isinstance(warmup_unit, str):
+        raise ConfigError("training.pre_nested_warmup.unit must be a string")
+    warmup_unit = warmup_unit.strip()
+    if warmup_unit not in VALID_PRE_NESTED_WARMUP_UNITS:
+        raise ConfigError(
+            "training.pre_nested_warmup.unit must be one of "
+            f"{sorted(VALID_PRE_NESTED_WARMUP_UNITS)}"
+        )
+    warmup["unit"] = warmup_unit
+    training["pre_nested_warmup"] = warmup
 
 
 def _normalize_learning_rate_scale_rule(

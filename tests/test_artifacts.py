@@ -165,6 +165,41 @@ def test_write_config_metrics_and_run_summary(tmp_path):
     assert saved_summary["notes"] == ["smoke test"]
 
 
+def test_run_summary_includes_default_long_run_metadata(tmp_path):
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+    )
+
+    summary = build_run_summary(config, tokens_seen=0)
+    summary_path = write_run_summary(output_dir, summary)
+
+    saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert saved_summary["monitoring_enabled"] is False
+    assert saved_summary["latest_checkpoint_path"] is None
+    assert saved_summary["continuation_state"] == {
+        "run_id": "debug-nested-001",
+        "output_dir": str(output_dir),
+        "latest_checkpoint_path": None,
+        "last_completed_step": 0,
+        "tokens_seen": 0,
+        "status": "fresh",
+        "resume_count": 0,
+    }
+    assert saved_summary["warmup_policy"] == {
+        "enabled": False,
+        "duration": 0,
+        "unit": "epochs",
+        "completed": False,
+        "completion_step": None,
+        "transition_reason": None,
+    }
+    assert saved_summary["warmup_completion_step"] is None
+    assert saved_summary["warmup_completed"] is False
+
+
 def test_write_failed_run_summary_records_failure_note(tmp_path):
     output_dir = tmp_path / "debug-standalone-s-001"
     config = resolve_run_config(

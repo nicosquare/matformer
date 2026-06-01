@@ -177,6 +177,28 @@ def test_write_resolved_config(tmp_path):
     }
     assert config_path == output_dir / "config.json"
 
+
+def test_resolve_minimal_config_includes_long_run_defaults(tmp_path):
+    config_path = _write_single_run_config(tmp_path)
+    output_dir = tmp_path / "single-output-root-001"
+
+    resolved = resolve_run_config(config_path, output_dir=output_dir)
+
+    assert resolved["run"]["continuation"] == {"enabled": False}
+    assert resolved["monitoring"] == {
+        "enabled": False,
+        "backend": "wandb",
+        "log_loss_by_granularity": True,
+        "log_validation_loss": True,
+        "log_stage_events": True,
+    }
+    assert resolved["training"]["pre_nested_warmup"] == {
+        "enabled": False,
+        "duration": 0,
+        "unit": "epochs",
+    }
+
+
 def test_dmodel256_completion_label_validation():
     resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
     validate_run_config(resolved)

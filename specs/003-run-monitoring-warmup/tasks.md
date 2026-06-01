@@ -29,9 +29,9 @@
 
 **Checkpoint**: Foundation ready - user story implementation can now begin.
 
-- [ ] T004 Add continuation, monitoring, and warmup resolution plus validation to `utils/config.py`
-- [ ] T005 Extend resolved config and run-summary field handling for continuation and warmup metadata in `utils/metrics.py`
-- [ ] T006 [P] Add baseline smoke coverage for default-off continuation, monitoring, and warmup behavior in `tests/test_config.py` and `tests/test_artifacts.py`
+- [X] T004 Add continuation, monitoring, and warmup resolution plus validation to `utils/config.py`
+- [X] T005 Extend resolved config and run-summary field handling for continuation and warmup metadata in `utils/metrics.py`
+- [X] T006 [P] Add baseline smoke coverage for default-off continuation, monitoring, and warmup behavior in `tests/test_config.py` and `tests/test_artifacts.py`
 
 ---
 
