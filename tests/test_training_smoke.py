@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import torch
 from datasets import Dataset
 
@@ -46,6 +47,79 @@ class FlatParameterRuntimeWrapper(torch.nn.Module):
 
     def named_parameters(self, prefix="", recurse=True, remove_duplicate=True):
         yield "flat_param", self.flat_param
+
+
+@pytest.mark.xfail(
+    reason="Run resumption wiring is implemented in T009/T010, not yet here",
+    strict=False,
+)
+def test_interrupted_and_relaunched_run_preserves_the_same_output_dir(
+    tmp_path,
+    monkeypatch,
+):
+    import training.run as training_run
+
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "run.continuation.enabled=true",
+            "training.max_steps=1",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "evaluation.validation=false",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+    original_train_for_steps = training_run.train_for_steps
+    train_invocations = {"count": 0}
+
+    def interrupting_train_for_steps(*args, **kwargs):
+        train_invocations["count"] += 1
+        if train_invocations["count"] == 1:
+            raise RuntimeError("simulated scheduler preemption")
+        return original_train_for_steps(*args, **kwargs)
+
+    monkeypatch.setattr(
+        training_run,
+        "train_for_steps",
+        interrupting_train_for_steps,
+    )
+
+    with pytest.raises(RuntimeError, match="simulated scheduler preemption"):
+        run_training(
+            config,
+            model=TinyNestedTrainingModel(),
+            tokenized_dataset=tokenized_dataset,
+            device="cpu",
+        )
+
+    result = run_training(
+        config,
+        model=TinyNestedTrainingModel(),
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    assert result["summary_path"] == output_dir / "run_summary.json"
+    assert summary["run_id"] == "debug-nested-001"
+    assert summary["output_dir"] == str(output_dir)
+    assert summary["continuation_state"]["status"] == "resumed"
+    assert summary["continuation_state"]["resume_count"] == 1
+    assert summary["continuation_state"]["last_completed_step"] == 1
+    assert summary["latest_checkpoint_path"] == str(
+        output_dir / "checkpoints" / "latest.pt"
+    )
 
 
 def test_tiny_nested_training_accumulates_all_granularities_per_batch(

@@ -43,8 +43,8 @@
 
 ### Verification for User Story 1
 
-- [ ] T007 [P] [US1] Add interrupted-and-relaunched resume smoke coverage in `tests/test_training_smoke.py`
-- [ ] T008 [P] [US1] Add continuation-state assertions for fresh, resumed, and completed runs in `tests/test_artifacts.py`
+- [X] T007 [P] [US1] Add interrupted-and-relaunched resume smoke coverage in `tests/test_training_smoke.py`
+- [X] T008 [P] [US1] Add continuation-state assertions for fresh, resumed, and completed runs in `tests/test_artifacts.py`
 
 ### Implementation for User Story 1
 
