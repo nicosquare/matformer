@@ -91,6 +91,8 @@ def run_training(
     run = config["run"]
     training = config["training"]
     output_dir = Path(run["output_dir"])
+    run_state = build_initial_continuation_state(config)
+    checkpoint_state: dict[str, Any] = {}
 
     distributed_context = prepare_distributed_context(config, device=device)
     sync_config_with_distributed_context(config, distributed_context)
@@ -154,8 +156,16 @@ def run_training(
                 distributed_context=distributed_context,
             )
         optimizer, scheduler = build_optimizer_and_scheduler(model, training)
-
-        checkpoint_state: dict[str, Any] = {}
+        if run["continuation"]["enabled"]:
+            run_state = load_run_continuation_state(
+                config,
+                model,
+                optimizer,
+                scheduler,
+                distributed_context=distributed_context,
+            )
+        checkpoint_state.update(run_state)
+        update_run_continuation_state(config, run_state)
         metrics_rows = train_for_steps(
             config,
             model,
@@ -167,6 +177,7 @@ def run_training(
             heartbeat_writer=heartbeat_writer,
             distributed_context=distributed_context,
             checkpoint_state=checkpoint_state,
+            run_state=run_state,
         )
         extraction_metadata_path = None
         metrics_path = None
@@ -177,13 +188,26 @@ def run_training(
             metrics_rows,
         )
 
+        completed_run_state = dict(run_state)
+        completed_run_state["status"] = "completed"
+        if run["continuation"]["enabled"]:
+            completed_run_state["latest_checkpoint_path"] = completed_run_state.get(
+                "latest_checkpoint_path"
+            ) or str(output_dir / "checkpoints" / "latest.pt")
         checkpoint_summary_fields = write_checkpoint_if_needed(
             config,
             model,
+            optimizer,
+            scheduler,
             metrics_rows,
             heartbeat_writer,
+            completed_run_state,
             distributed_context=distributed_context,
         )
+
+        if run["continuation"]["enabled"]:
+            run_state.update(completed_run_state)
+            update_run_continuation_state(config, run_state)
 
         if should_write_shared_artifact(distributed_context):
             with heartbeat_stage(heartbeat_writer, "artifact_writing"):
@@ -256,11 +280,18 @@ def run_training(
         }
     except Exception as error:
         try:
+            run_state["status"] = "failed"
+            if run["continuation"]["enabled"]:
+                update_run_continuation_state(config, run_state)
             with heartbeat_stage(heartbeat_writer, "artifact_writing"):
                 write_failed_run_summary(
                     config,
                     str(error),
                     output_dir=output_dir,
+                    tokens_seen=int(run_state.get("tokens_seen", 0)),
+                    content_tokens_seen=int(
+                        run_state.get("content_tokens_seen", 0)
+                    ),
                     distributed_context=distributed_context,
                 )
         except Exception as summary_error:
@@ -484,8 +515,11 @@ def estimate_eta_seconds(
 def write_checkpoint_if_needed(
     config: dict[str, Any],
     model,
+    optimizer,
+    scheduler,
     metrics_rows: list[dict[str, Any]],
     heartbeat_writer,
+    run_state: dict[str, Any],
     distributed_context=None,
 ) -> dict[str, Any]:
     if should_write_shared_artifact(distributed_context):
@@ -526,8 +560,11 @@ def write_checkpoint_if_needed(
         save_model_checkpoint(
             config,
             model,
+            optimizer,
+            scheduler,
             output_path,
             checkpoint_fields,
+            run_state,
             distributed_context=distributed_context,
         )
 
@@ -541,6 +578,7 @@ def maybe_write_best_eval_checkpoint(
     step: int,
     heartbeat_writer,
     checkpoint_state: dict[str, Any],
+    run_state: dict[str, Any],
     distributed_context=None,
 ) -> None:
     if not config.get("outputs", {}).get("save_checkpoints", False):
@@ -573,12 +611,14 @@ def maybe_write_best_eval_checkpoint(
         save_model_checkpoint(
             config,
             model,
+            None,
+            None,
             checkpoint_path,
             checkpoint_fields,
+            run_state,
             distributed_context=distributed_context,
         )
 
-    checkpoint_state.clear()
     checkpoint_state.update(checkpoint_fields)
 
 
@@ -623,13 +663,21 @@ def build_best_eval_checkpoint_payload(
 def save_model_checkpoint(
     config: dict[str, Any],
     model,
+    optimizer,
+    scheduler,
     output_path: Path,
     checkpoint_fields: dict[str, Any],
+    run_state: dict[str, Any],
     distributed_context=None,
 ) -> None:
-    model_state_dict = checkpoint_state_dict(model, distributed_context)
     if not should_write_shared_artifact(distributed_context):
         return
+
+    model_state_dict, optimizer_state_dict = checkpoint_state_dicts(
+        model,
+        optimizer,
+        distributed_context,
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -643,31 +691,214 @@ def save_model_checkpoint(
             "checkpoint_selection_step": checkpoint_fields[
                 "checkpoint_selection_step"
             ],
+            "step": run_state.get("step", run_state.get("last_completed_step", 0)),
+            "epoch": run_state.get("epoch", 0),
+            "batch_index": run_state.get("batch_index", 0),
+            "tokens_seen": run_state.get("tokens_seen", 0),
+            "content_tokens_seen": run_state.get("content_tokens_seen", 0),
+            "resume_count": run_state.get("resume_count", 0),
+            "latest_checkpoint_path": run_state.get("latest_checkpoint_path"),
             "model_state_dict": model_state_dict,
+            "optimizer_state_dict": optimizer_state_dict,
+            "scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
         },
         output_path,
     )
 
 
-def checkpoint_state_dict(model, distributed_context=None) -> dict[str, Any]:
+def checkpoint_state_dicts(
+    model,
+    optimizer=None,
+    distributed_context=None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
     if (
         distributed_context is None
         or not distributed_context.enabled
         or distributed_context.strategy != "fsdp"
     ):
-        return model.state_dict()
+        model_state_dict = model.state_dict()
+        optimizer_state_dict = optimizer.state_dict() if optimizer is not None else None
+        return model_state_dict, optimizer_state_dict
 
-    from torch.distributed.checkpoint.state_dict import (
-        StateDictOptions,
-        get_state_dict,
-    )
+    from torch.distributed.checkpoint.state_dict import StateDictOptions, get_state_dict
 
-    model_state_dict, _ = get_state_dict(
+    model_state_dict, optimizer_state_dict = get_state_dict(
         model,
-        [],
+        optimizer if optimizer is not None else [],
         options=StateDictOptions(full_state_dict=True, cpu_offload=True),
     )
+    return model_state_dict, optimizer_state_dict
+
+
+def checkpoint_state_dict(model, distributed_context=None) -> dict[str, Any]:
+    model_state_dict, _ = checkpoint_state_dicts(model, distributed_context=distributed_context)
     return model_state_dict
+
+
+def build_initial_continuation_state(config: dict[str, Any]) -> dict[str, Any]:
+    output_dir = Path(config["run"]["output_dir"])
+    return {
+        "status": "fresh",
+        "latest_checkpoint_path": None,
+        "last_completed_step": 0,
+        "resume_count": 0,
+        "tokens_seen": 0,
+        "content_tokens_seen": 0,
+        "step": 0,
+        "epoch": 0,
+        "batch_index": 0,
+        "output_dir": str(output_dir),
+    }
+
+
+def load_run_continuation_state(
+    config: dict[str, Any],
+    model,
+    optimizer,
+    scheduler,
+    distributed_context=None,
+) -> dict[str, Any]:
+    checkpoint_path = Path(config["run"]["output_dir"]) / "checkpoints" / "latest.pt"
+    return load_checkpoint_state(
+        checkpoint_path,
+        model,
+        optimizer,
+        scheduler,
+        fallback_tokens_per_step=int(config["training"]["expected_tokens_per_step"]),
+        distributed_context=distributed_context,
+        output_dir=config["run"]["output_dir"],
+        run_id=config["run"]["run_id"],
+    )
+
+
+def load_checkpoint_state(
+    checkpoint_path: str | Path,
+    model,
+    optimizer,
+    scheduler,
+    fallback_tokens_per_step: int | None = None,
+    distributed_context=None,
+    output_dir: str | Path | None = None,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    checkpoint_path = Path(checkpoint_path)
+    if not checkpoint_path.exists():
+        state = {
+            "status": "fresh",
+            "latest_checkpoint_path": None,
+            "last_completed_step": 0,
+            "resume_count": 0,
+            "tokens_seen": 0,
+            "content_tokens_seen": 0,
+            "step": 0,
+            "epoch": 0,
+            "batch_index": 0,
+        }
+        if output_dir is not None:
+            state["output_dir"] = str(output_dir)
+        if run_id is not None:
+            state["run_id"] = str(run_id)
+        return state
+
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    model_state_dict = checkpoint.get("model_state_dict")
+    if model_state_dict is None:
+        raise ConfigError(f"Checkpoint missing model_state_dict: {checkpoint_path}")
+
+    optimizer_state_dict = checkpoint.get("optimizer_state_dict")
+    scheduler_state_dict = checkpoint.get("scheduler_state_dict")
+    load_model_and_optimizer_state(
+        model,
+        optimizer,
+        model_state_dict,
+        optimizer_state_dict,
+        distributed_context=distributed_context,
+    )
+    if scheduler is not None and scheduler_state_dict is not None:
+        scheduler.load_state_dict(scheduler_state_dict)
+
+    last_completed_step = int(
+        checkpoint.get("step", checkpoint.get("last_completed_step", 0))
+    )
+    tokens_seen = int(
+        checkpoint.get(
+            "tokens_seen",
+            fallback_tokens_per_step * last_completed_step
+            if fallback_tokens_per_step is not None
+            else 0,
+        )
+    )
+    content_tokens_seen = int(checkpoint.get("content_tokens_seen", 0))
+    resume_count = int(checkpoint.get("resume_count", 0)) + 1
+    state = {
+        "status": "resumed",
+        "latest_checkpoint_path": str(checkpoint_path),
+        "last_completed_step": last_completed_step,
+        "resume_count": resume_count,
+        "tokens_seen": tokens_seen,
+        "content_tokens_seen": content_tokens_seen,
+        "step": last_completed_step,
+        "epoch": int(checkpoint.get("epoch", 0)),
+        "batch_index": int(checkpoint.get("batch_index", 0)),
+    }
+    if output_dir is not None:
+        state["output_dir"] = str(output_dir)
+    if run_id is not None:
+        state["run_id"] = str(run_id)
+    return state
+
+
+def update_run_continuation_state(
+    config: dict[str, Any],
+    state: Mapping[str, Any],
+) -> None:
+    continuation = config["run"].setdefault("continuation", {})
+    if not isinstance(continuation, dict):
+        raise ConfigError("run.continuation must be a mapping when provided")
+    for key in [
+        "status",
+        "latest_checkpoint_path",
+        "last_completed_step",
+        "resume_count",
+        "tokens_seen",
+        "content_tokens_seen",
+        "step",
+        "epoch",
+        "batch_index",
+    ]:
+        if key in state and state[key] is not None:
+            continuation[key] = state[key]
+
+
+def load_model_and_optimizer_state(
+    model,
+    optimizer,
+    model_state_dict: Mapping[str, Any],
+    optimizer_state_dict: Mapping[str, Any] | None,
+    distributed_context=None,
+) -> None:
+    if (
+        distributed_context is not None
+        and distributed_context.enabled
+        and distributed_context.strategy == "fsdp"
+    ):
+        from torch.distributed.checkpoint.state_dict import (
+            StateDictOptions,
+            set_state_dict,
+        )
+
+        set_state_dict(
+            model,
+            optimizer if optimizer is not None else [],
+            model_state_dict=model_state_dict,
+            optim_state_dict=optimizer_state_dict or {},
+            options=StateDictOptions(full_state_dict=True, cpu_offload=True),
+        )
+        return
+
+    model.load_state_dict(dict(model_state_dict))
+    if optimizer is not None and optimizer_state_dict is not None:
+        optimizer.load_state_dict(dict(optimizer_state_dict))
 
 
 def best_validation_metric_value(
@@ -819,6 +1050,7 @@ def train_for_steps(
     heartbeat_writer=None,
     distributed_context=None,
     checkpoint_state: dict[str, Any] | None = None,
+    run_state: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     training = config["training"]
     granularities = config["model"]["granularities"]
@@ -827,22 +1059,48 @@ def train_for_steps(
     eval_interval = training.get("eval_interval", 0)
 
     metrics_rows = []
-    tokens_seen = 0
-    content_tokens_seen = 0
     start_time = time.time()
-    step = 0
-    epoch = 0
+    run_state = run_state if run_state is not None else build_initial_continuation_state(config)
+    step = int(run_state.get("last_completed_step", 0))
+    epoch = int(run_state.get("epoch", 0))
+    resume_batch_index = int(run_state.get("batch_index", 0))
+    tokens_seen = int(
+        run_state.get("tokens_seen", budget_tokens_seen_for_step(config, step))
+    )
+    content_tokens_seen = int(run_state.get("content_tokens_seen", 0))
     heartbeat_writer = heartbeat_writer or NoopHeartbeatWriter()
     heartbeat_cadence = build_heartbeat_cadence(config)
     checkpoint_state = checkpoint_state if checkpoint_state is not None else {}
+    latest_checkpoint_path = Path(
+        run_state.get("latest_checkpoint_path")
+        or Path(config["run"]["output_dir"]) / "checkpoints" / "latest.pt"
+    )
+    save_latest_checkpoints = bool(config["run"].get("continuation", {}).get("enabled", False))
+    resume_epoch = epoch
+    resume_batch_index = max(0, resume_batch_index)
+    if len(train_dataloader) > 0:
+        while resume_batch_index >= len(train_dataloader):
+            resume_batch_index -= len(train_dataloader)
+            resume_epoch += 1
+    else:
+        resume_batch_index = 0
+    run_state["epoch"] = resume_epoch
+    run_state["batch_index"] = resume_batch_index
+    run_state["content_tokens_seen"] = content_tokens_seen
+    run_state.setdefault("status", "fresh")
+    if save_latest_checkpoints and not run_state.get("latest_checkpoint_path"):
+        run_state["latest_checkpoint_path"] = str(latest_checkpoint_path)
 
     model.train()
     with heartbeat_stage(heartbeat_writer, "training"):
         while step < max_steps and tokens_seen < token_budget:
             set_dataloader_epoch(train_dataloader, epoch)
-            epoch += 1
             made_progress = False
-            for batch in train_dataloader:
+            current_epoch = epoch
+            epoch += 1
+            for batch_index_in_epoch, batch in enumerate(train_dataloader):
+                if current_epoch == resume_epoch and batch_index_in_epoch < resume_batch_index:
+                    continue
                 if step >= max_steps or tokens_seen >= token_budget:
                     break
 
@@ -889,6 +1147,40 @@ def train_for_steps(
                 peak_memory_bytes = current_peak_memory_bytes(device)
                 latest_loss = float(combined_loss.detach().cpu().item())
                 tokens_per_second = tokens_seen / elapsed if elapsed > 0 else None
+                run_state.update(
+                    {
+                        "status": "resumed" if int(run_state.get("resume_count", 0)) > 0 else "fresh",
+                        "last_completed_step": step,
+                        "step": step,
+                        "epoch": current_epoch,
+                        "batch_index": batch_index_in_epoch + 1,
+                        "tokens_seen": tokens_seen,
+                        "content_tokens_seen": content_tokens_seen,
+                    }
+                )
+                if save_latest_checkpoints:
+                    with heartbeat_stage(
+                        heartbeat_writer,
+                        "checkpointing",
+                        checkpoint_status="latest",
+                    ):
+                        save_model_checkpoint(
+                            config,
+                            model,
+                            optimizer,
+                            scheduler,
+                            latest_checkpoint_path,
+                            {
+                                "checkpoint_status": "latest",
+                                "checkpoint_metric": None,
+                                "checkpoint_metric_value": None,
+                                "checkpoint_selection_step": None,
+                                "checkpoint_unavailable_reason": None,
+                            },
+                            run_state,
+                            distributed_context=distributed_context,
+                        )
+                    run_state["latest_checkpoint_path"] = str(latest_checkpoint_path)
                 maybe_emit_training_heartbeat(
                     heartbeat_writer,
                     heartbeat_cadence,
@@ -943,6 +1235,7 @@ def train_for_steps(
                         step,
                         heartbeat_writer,
                         checkpoint_state,
+                        run_state,
                         distributed_context=distributed_context,
                     )
                     metrics_rows.extend(
@@ -977,6 +1270,7 @@ def train_for_steps(
         heartbeat_writer=heartbeat_writer,
         distributed_context=distributed_context,
         checkpoint_state=checkpoint_state,
+        run_state=run_state,
     )
 
     return metrics_rows
@@ -1080,6 +1374,7 @@ def append_final_validation_if_needed(
     heartbeat_writer=None,
     distributed_context=None,
     checkpoint_state: dict[str, Any] | None = None,
+    run_state: dict[str, Any] | None = None,
 ) -> None:
     if not config.get("evaluation", {}).get("validation", False):
         return
@@ -1118,6 +1413,7 @@ def append_final_validation_if_needed(
         step,
         heartbeat_writer,
         checkpoint_state if checkpoint_state is not None else {},
+        run_state if run_state is not None else build_initial_continuation_state(config),
         distributed_context=distributed_context,
     )
     metrics_rows.extend(

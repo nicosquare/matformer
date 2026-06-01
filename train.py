@@ -7,6 +7,7 @@ import math
 import os
 import random
 import functools
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
@@ -28,6 +29,8 @@ from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 import yaml
 
 from training.run import build_optimizer_and_scheduler
+from training.run import load_checkpoint_state
+from training.run import save_model_checkpoint
 from utils.config import (
     DEFAULT_MODEL_VARIANT,
     VALID_MODEL_VARIANTS,
@@ -407,16 +410,64 @@ def main():
             "optimizer_kwargs": parse_optimizer_kwargs(args.optimizer_kwargs),
         },
     )
+    legacy_output_dir = Path(args.output_dir) if args.output_dir else None
+    legacy_run_id = legacy_output_dir.name if legacy_output_dir is not None else "legacy-run"
+    checkpoint_path = (
+        legacy_output_dir / "checkpoints" / "latest.pt"
+        if legacy_output_dir is not None
+        else None
+    )
+    if checkpoint_path is not None:
+        run_state = load_checkpoint_state(
+            checkpoint_path,
+            model,
+            optimizer,
+            scheduler,
+            fallback_tokens_per_step=args.batch_size * args.max_length,
+            output_dir=legacy_output_dir,
+            run_id=legacy_run_id,
+        )
+        if run_state.get("status") == "resumed":
+            print_rank0(
+                rank,
+                f"resuming legacy run from {checkpoint_path} at step {run_state.get('step', 0)}",
+                flush=True,
+            )
+    else:
+        run_state = {
+            "status": "fresh",
+            "latest_checkpoint_path": None,
+            "last_completed_step": 0,
+            "resume_count": 0,
+            "tokens_seen": 0,
+            "content_tokens_seen": 0,
+            "step": 0,
+            "epoch": 0,
+            "batch_index": 0,
+            "run_id": legacy_run_id,
+        }
     model.train()
 
-    step = 0
-    epoch = 0
+    step = int(run_state.get("step", 0))
+    epoch = int(run_state.get("epoch", 0))
+    resume_batch_index = int(run_state.get("batch_index", 0))
+    content_tokens_seen = int(run_state.get("content_tokens_seen", 0))
+    if len(train_dataloader) > 0:
+        while resume_batch_index >= len(train_dataloader):
+            resume_batch_index -= len(train_dataloader)
+            epoch += 1
+    else:
+        resume_batch_index = 0
 
     while step < args.num_training_steps:
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
 
-        for batch in train_dataloader:
+        current_epoch = epoch
+        epoch += 1
+        for batch_index_in_epoch, batch in enumerate(train_dataloader):
+            if current_epoch == int(run_state.get("epoch", 0)) and batch_index_in_epoch < resume_batch_index:
+                continue
             batch = move_batch_to_device(batch, device)
             flag = select_training_flag(device, distributed)
 
@@ -436,8 +487,42 @@ def main():
             scheduler.step()
 
             step += 1
+            content_tokens_seen += count_content_tokens(batch)
             loss_value = reduce_mean(loss, distributed)
             print_rank0(rank, f"Step {step}, Flag: {flag}, Loss: {loss_value}", flush=True)
+
+            if checkpoint_path is not None:
+                run_state.update(
+                    {
+                        "status": "resumed"
+                        if int(run_state.get("resume_count", 0)) > 0
+                        else "fresh",
+                        "last_completed_step": step,
+                        "step": step,
+                        "epoch": current_epoch,
+                        "batch_index": batch_index_in_epoch + 1,
+                        "tokens_seen": step * args.batch_size * args.max_length,
+                        "content_tokens_seen": content_tokens_seen,
+                        "resume_count": int(run_state.get("resume_count", 0)),
+                        "latest_checkpoint_path": str(checkpoint_path),
+                        "run_id": legacy_run_id,
+                    }
+                )
+                save_model_checkpoint(
+                    {"run": {"run_id": legacy_run_id}},
+                    model,
+                    optimizer,
+                    scheduler,
+                    checkpoint_path,
+                    {
+                        "checkpoint_status": "latest",
+                        "checkpoint_metric": None,
+                        "checkpoint_metric_value": None,
+                        "checkpoint_selection_step": None,
+                        "checkpoint_unavailable_reason": None,
+                    },
+                    run_state,
+                )
 
             if args.eval_interval > 0 and step % args.eval_interval == 0:
                 eval_losses = evaluate_model(model, eval_dataloader, FLAGS, device, distributed)
@@ -446,7 +531,23 @@ def main():
             if step >= args.num_training_steps:
                 break
 
-        epoch += 1
+    if checkpoint_path is not None:
+        final_checkpoint_path = legacy_output_dir / "checkpoints" / "final.pt"
+        save_model_checkpoint(
+            {"run": {"run_id": legacy_run_id}},
+            model,
+            optimizer,
+            scheduler,
+            final_checkpoint_path,
+            {
+                "checkpoint_status": "final",
+                "checkpoint_metric": None,
+                "checkpoint_metric_value": None,
+                "checkpoint_selection_step": None,
+                "checkpoint_unavailable_reason": None,
+            },
+            run_state,
+        )
 
 
 if __name__ == "__main__":

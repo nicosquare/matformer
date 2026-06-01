@@ -48,8 +48,8 @@
 
 ### Implementation for User Story 1
 
-- [ ] T009 [US1] Implement checkpoint discovery, model restore, optimizer restore, scheduler restore, and step counter restore for resumed runs in `training/run.py`
-- [ ] T010 [US1] Reuse the same continuation behavior in the legacy direct execution path in `train.py`
+- [X] T009 [US1] Implement checkpoint discovery, model restore, optimizer restore, scheduler restore, and step counter restore for resumed runs in `training/run.py`
+- [X] T010 [US1] Reuse the same continuation behavior in the legacy direct execution path in `train.py`
 
 **Checkpoint**: User Story 1 should now resume long runs independently of the other stories.
 
