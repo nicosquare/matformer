@@ -8,3 +8,4 @@ pytest
 lm-eval
 ipykernel
 python-dotenv
+wandb
