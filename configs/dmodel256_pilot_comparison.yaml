@@ -8,6 +8,8 @@ run:
   model_shape_label: dmodel256
   seed: 42
   output_root: outputs
+  continuation:
+    enabled: false
 
 model:
   base_model_name: dmodel256-matformer-llama-swiglu
@@ -35,6 +37,10 @@ training:
   learning_rate_scale_rule: linear
   warmup_steps: 2000 # This flag overrules ratio. We set this for small experiments (e.g. up to 100M tokens), for larger experiments we set warmup_ratio instead (comment this)
   warmup_ratio: 0.01635
+  pre_nested_warmup:
+    enabled: false
+    duration: 0
+    unit: epochs
   gradient_clip_norm: 1.0
   eval_interval: 500
   mixed_precision: bf16
@@ -73,6 +79,13 @@ outputs:
   save_run_summary_json: true
   save_checkpoints: true
   make_plots: true
+
+monitoring:
+  enabled: false
+  backend: wandb
+  log_loss_by_granularity: true
+  log_validation_loss: true
+  log_stage_events: true
 
 evaluation:
   validation: true

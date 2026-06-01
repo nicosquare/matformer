@@ -17,9 +17,9 @@
 
 **Purpose**: Make the long-run feature visible in source configs, add the W&B dependency, and create the shared monitoring helper used by later phases.
 
-- [ ] T001 [P] Add explicit continuation, monitoring, and pre-nested warmup defaults to `configs/debug_matrix.yaml` and `configs/dmodel256_pilot_comparison.yaml`
-- [ ] T002 [P] Create per-run granularity-series labeling helpers in `utils/monitoring.py` for W&B loss traces
-- [ ] T003 [P] Add `wandb` to `requirements.txt` so optional monitoring is installable in the default environment
+- [X] T001 [P] Add explicit continuation, monitoring, and pre-nested warmup defaults to `configs/debug_matrix.yaml` and `configs/dmodel256_pilot_comparison.yaml`
+- [X] T002 [P] Create per-run granularity-series labeling helpers in `utils/monitoring.py` for W&B loss traces
+- [X] T003 [P] Add `wandb` to `requirements.txt` so optional monitoring is installable in the default environment
 
 ---
 
