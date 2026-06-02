@@ -88,6 +88,10 @@ def test_resolve_debug_matrix_expands_nested_and_standalone_runs():
     nested = resolved_runs[0]
     assert nested["run"]["completion_label"] == "debug"
     assert nested["run"]["model_family_slug"] == "matformer_llama"
+    assert nested["monitoring"]["project"] == "debug_matrix"
+    assert nested["monitoring"]["job_type"] == "train"
+    assert nested["monitoring"]["tags"] == ["debug", "matrix"]
+    assert nested["monitoring"]["notes"] == "debug matrix smoke and warmup validation"
     assert nested["run"]["output_dir"] == (
         f"outputs/{nested['run']['output_group']}/debug-nested-001"
     )
@@ -175,6 +179,10 @@ def test_write_resolved_config(tmp_path):
         "latest_checkpoint_save_on_validation": True,
         "latest_checkpoint_save_on_completion": True,
     }
+    assert saved["monitoring"]["project"] == "dmodel256_pilot_comparison"
+    assert saved["monitoring"]["job_type"] == "train"
+    assert saved["monitoring"]["tags"] == ["pilot", "dmodel256"]
+    assert saved["monitoring"]["notes"] == "d_model=256 pilot comparison"
     assert saved["training"]["optimizer_name"] == "adamw"
     assert saved["training"]["optimizer_kwargs"] == {
         "betas": [0.9, 0.95],
@@ -194,6 +202,14 @@ def test_resolve_minimal_config_includes_long_run_defaults(tmp_path):
     assert resolved["monitoring"] == {
         "enabled": False,
         "backend": "wandb",
+        "project": "debug_matrix",
+        "entity": None,
+        "group": resolved["run"]["output_group"],
+        "job_type": "train",
+        "name": "single-output-root-001",
+        "tags": [],
+        "notes": None,
+        "mode": None,
         "log_loss_by_granularity": True,
         "log_validation_loss": True,
         "log_stage_events": True,

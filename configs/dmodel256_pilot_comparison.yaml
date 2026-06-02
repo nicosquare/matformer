@@ -86,6 +86,10 @@ outputs:
 monitoring:
   enabled: false
   backend: wandb
+  project: dmodel256_pilot_comparison
+  job_type: train
+  tags: [pilot, dmodel256]
+  notes: d_model=256 pilot comparison
   log_loss_by_granularity: true
   log_validation_loss: true
   log_stage_events: true

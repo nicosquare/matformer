@@ -367,6 +367,14 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         [
             "enabled",
             "backend",
+            "project",
+            "entity",
+            "group",
+            "job_type",
+            "name",
+            "tags",
+            "notes",
+            "mode",
             "log_loss_by_granularity",
             "log_validation_loss",
             "log_stage_events",
@@ -449,6 +457,45 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
 
     if not isinstance(monitoring.get("enabled"), bool):
         raise ConfigError("monitoring.enabled must be a boolean")
+    if monitoring.get("project") is not None and not isinstance(
+        monitoring.get("project"),
+        str,
+    ):
+        raise ConfigError("monitoring.project must be a string or null")
+    if monitoring.get("entity") is not None and not isinstance(
+        monitoring.get("entity"),
+        str,
+    ):
+        raise ConfigError("monitoring.entity must be a string or null")
+    if monitoring.get("group") is not None and not isinstance(
+        monitoring.get("group"),
+        str,
+    ):
+        raise ConfigError("monitoring.group must be a string or null")
+    if monitoring.get("job_type") is not None and not isinstance(
+        monitoring.get("job_type"),
+        str,
+    ):
+        raise ConfigError("monitoring.job_type must be a string or null")
+    if monitoring.get("name") is not None and not isinstance(
+        monitoring.get("name"),
+        str,
+    ):
+        raise ConfigError("monitoring.name must be a string or null")
+    if monitoring.get("mode") is not None and not isinstance(
+        monitoring.get("mode"),
+        str,
+    ):
+        raise ConfigError("monitoring.mode must be a string or null")
+    if not isinstance(monitoring.get("tags"), list):
+        raise ConfigError("monitoring.tags must be a list")
+    if any(not isinstance(tag, str) for tag in monitoring.get("tags", [])):
+        raise ConfigError("monitoring.tags must contain only strings")
+    if monitoring.get("notes") is not None and not isinstance(
+        monitoring.get("notes"),
+        str,
+    ):
+        raise ConfigError("monitoring.notes must be a string or null")
     if not isinstance(monitoring.get("log_loss_by_granularity"), bool):
         raise ConfigError("monitoring.log_loss_by_granularity must be a boolean")
     if not isinstance(monitoring.get("log_validation_loss"), bool):
@@ -516,7 +563,14 @@ def _compose_matrix_run(
     run_entry: Mapping[str, Any],
 ) -> dict[str, Any]:
     resolved: dict[str, Any] = {}
-    for section_name in ["model", "training", "dataset", "outputs", "evaluation"]:
+    for section_name in [
+        "model",
+        "training",
+        "dataset",
+        "outputs",
+        "evaluation",
+        "monitoring",
+    ]:
         if section_name in config:
             resolved[section_name] = copy.deepcopy(config[section_name])
 
@@ -1048,6 +1102,23 @@ def _resolve_monitoring_defaults(config: dict[str, Any]) -> None:
             f"{sorted(VALID_MONITORING_BACKENDS)}"
         )
     monitoring["backend"] = backend
+    run = config.get("run", {})
+    monitoring["project"] = _normalize_optional_string(
+        monitoring.get("project", run.get("phase_id") or run.get("output_group"))
+    )
+    monitoring["entity"] = _normalize_optional_string(monitoring.get("entity"))
+    monitoring["group"] = _normalize_optional_string(
+        monitoring.get("group", run.get("output_group"))
+    )
+    monitoring["job_type"] = _normalize_optional_string(
+        monitoring.get("job_type", "train")
+    )
+    monitoring["name"] = _normalize_optional_string(
+        monitoring.get("name", run.get("run_id"))
+    )
+    monitoring["tags"] = _normalize_string_list(monitoring.get("tags", []))
+    monitoring["notes"] = _normalize_optional_string(monitoring.get("notes"))
+    monitoring["mode"] = _normalize_optional_string(monitoring.get("mode"))
     monitoring["log_loss_by_granularity"] = _normalize_bool(
         monitoring.get("log_loss_by_granularity", True),
         "monitoring.log_loss_by_granularity",
@@ -1347,6 +1418,30 @@ def _normalize_bool(value: Any, field_name: str) -> bool:
     if isinstance(value, bool):
         return value
     raise ConfigError(f"{field_name} must be a boolean")
+
+
+def _normalize_optional_string(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise ConfigError("Expected a string or null")
+    normalized = value.strip()
+    return normalized or None
+
+
+def _normalize_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ConfigError("Expected a list of strings")
+    normalized = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ConfigError("Expected a list of strings")
+        item = item.strip()
+        if item:
+            normalized.append(item)
+    return normalized
 
 
 def _ensure_writable_directory(path: Path, label: str) -> None:

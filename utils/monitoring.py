@@ -86,6 +86,42 @@ def group_loss_rows_by_series(
     return grouped
 
 
+def build_monitoring_series_metadata(
+    config: Mapping[str, Any],
+    rows: Mapping[str, Any] | Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return the unique series metadata that was actually emitted for a run."""
+
+    monitoring = config.get("monitoring", {})
+    if not isinstance(monitoring, Mapping) or not monitoring.get("enabled", False):
+        return []
+
+    run = config.get("run", {})
+    topology = _normalize_label(run.get("model_family"), default="unknown-topology")
+    backend = _normalize_backend(monitoring.get("backend", DEFAULT_MONITORING_BACKEND))
+    filtered_rows = [
+        row
+        for row in _normalize_rows(rows)
+        if _should_log_monitoring_row(row, monitoring)
+    ]
+
+    metadata = []
+    for series_name, series_rows in group_loss_rows_by_series(filtered_rows).items():
+        sample = series_rows[0]
+        metadata.append(
+            build_loss_series_metadata(
+                run_id=str(run.get("run_id", "unknown-run")),
+                topology=topology,
+                split=str(sample.get("split") or "unknown-split"),
+                granularity=sample.get("granularity"),
+                metric_name=sample.get("metric_name") or DEFAULT_LOSS_METRIC_NAME,
+                stage=sample.get("stage"),
+                backend=backend,
+            )
+        )
+    return metadata
+
+
 def _normalize_backend(raw_backend: Any) -> str:
     backend = _normalize_label(raw_backend, default=DEFAULT_MONITORING_BACKEND)
     if backend not in VALID_MONITORING_BACKENDS:
@@ -101,6 +137,24 @@ def _normalize_metric_name(raw_metric_name: Any) -> str:
     if metric_name in {"train_loss", "validation_loss"}:
         return DEFAULT_LOSS_METRIC_NAME
     return metric_name
+
+
+def _should_log_monitoring_row(
+    row: Mapping[str, Any],
+    monitoring: Mapping[str, Any],
+) -> bool:
+    split = str(row.get("split") or "unknown-split")
+    if split == "validation":
+        return bool(monitoring.get("log_validation_loss", True))
+    return bool(monitoring.get("log_loss_by_granularity", True))
+
+
+def _normalize_rows(
+    rows: Mapping[str, Any] | Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    if isinstance(rows, Mapping):
+        return [dict(rows)]
+    return [dict(row) for row in rows]
 
 
 def _normalize_label(raw_value: Any, default: str) -> str:

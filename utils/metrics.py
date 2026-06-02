@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from utils.config import write_resolved_config
+from utils.monitoring import (
+    DEFAULT_MONITORING_BACKEND,
+    build_monitoring_series_metadata,
+)
 
 
 METRICS_COLUMNS = [
@@ -93,6 +97,8 @@ RUN_SUMMARY_FIELDS = [
     "model_variant",
     "continuation_state",
     "monitoring_enabled",
+    "monitoring_backend",
+    "monitoring_series_metadata",
     "warmup_policy",
     "warmup_completion_step",
     "warmup_completed",
@@ -213,6 +219,11 @@ def build_run_summary(
         "model_variant": model["variant"],
         "continuation_state": continuation_state,
         "monitoring_enabled": bool(config.get("monitoring", {}).get("enabled", False)),
+        "monitoring_backend": config.get("monitoring", {}).get(
+            "backend",
+            DEFAULT_MONITORING_BACKEND,
+        ),
+        "monitoring_series_metadata": [],
         "warmup_policy": warmup_policy,
         "warmup_completion_step": warmup_policy.get("completion_step"),
         "warmup_completed": warmup_policy.get("completed", False),
@@ -284,6 +295,34 @@ def build_run_summary(
 
     _require_fields(summary, RUN_SUMMARY_FIELDS, "run_summary.json")
     return summary
+
+
+def build_monitoring_summary_fields(
+    config: Mapping[str, Any],
+    metrics_rows: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    monitoring = config.get("monitoring", {})
+    if not isinstance(monitoring, Mapping) or not monitoring.get("enabled", False):
+        return {
+            "monitoring_backend": monitoring.get(
+                "backend",
+                DEFAULT_MONITORING_BACKEND,
+            )
+            if isinstance(monitoring, Mapping)
+            else DEFAULT_MONITORING_BACKEND,
+            "monitoring_series_metadata": [],
+        }
+
+    return {
+        "monitoring_backend": monitoring.get(
+            "backend",
+            DEFAULT_MONITORING_BACKEND,
+        ),
+        "monitoring_series_metadata": build_monitoring_series_metadata(
+            config,
+            metrics_rows,
+        ),
+    }
 
 
 def _build_continuation_state(

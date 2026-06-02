@@ -178,6 +178,8 @@ def test_run_summary_includes_default_long_run_metadata(tmp_path):
 
     saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert saved_summary["monitoring_enabled"] is False
+    assert saved_summary["monitoring_backend"] == "wandb"
+    assert saved_summary["monitoring_series_metadata"] == []
     assert saved_summary["latest_checkpoint_path"] is None
     assert saved_summary["continuation_state"] == {
         "run_id": "debug-nested-001",

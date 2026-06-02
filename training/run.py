@@ -54,6 +54,7 @@ from utils.config import (
 from utils.heartbeats import HeartbeatCadence, HeartbeatWriter
 from utils.metrics import (
     build_checkpoint_summary_fields,
+    build_monitoring_summary_fields,
     build_parameter_counts_by_granularity,
     build_run_summary,
     build_scaling_result_rows,
@@ -64,6 +65,7 @@ from utils.metrics import (
     write_run_summary,
     write_scaling_results_csv,
 )
+from utils.monitoring import group_loss_rows_by_series
 
 
 def run_from_config_path(
@@ -95,9 +97,9 @@ def run_training(
     checkpoint_state: dict[str, Any] = {}
     optimizer = None
     scheduler = None
-
     distributed_context = prepare_distributed_context(config, device=device)
     sync_config_with_distributed_context(config, distributed_context)
+    monitoring_session = create_monitoring_session(config, distributed_context)
     heartbeat_writer = build_heartbeat_writer(config, distributed_context)
     parameter_counts_by_granularity = {}
 
@@ -181,6 +183,7 @@ def run_training(
             distributed_context=distributed_context,
             checkpoint_state=checkpoint_state,
             run_state=run_state,
+            monitoring_session=monitoring_session,
         )
         extraction_metadata_path = None
         metrics_path = None
@@ -247,6 +250,7 @@ def run_training(
             "granularities": config["model"]["granularities"],
             "granularity_sampling": training.get("granularity_sampling", "all"),
             "parameter_counts_by_granularity": parameter_counts_by_granularity,
+            **build_monitoring_summary_fields(config, metrics_rows),
             **checkpoint_summary_fields,
             **distributed_summary_fields(distributed_context),
         }
@@ -323,6 +327,7 @@ def run_training(
             )
         raise
     finally:
+        monitoring_session.close()
         destroy_distributed_process_group(distributed_context)
 
 
@@ -429,6 +434,206 @@ class NoopHeartbeatWriter:
 
     def heartbeat(self, stage: str, **fields: Any):
         return None
+
+
+class NoopMonitoringSession:
+    def __init__(self, distributed_context=None):
+        self.distributed_context = distributed_context
+        self.enabled = False
+
+    def log_rows(self, rows) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+class WandbMonitoringSession(NoopMonitoringSession):
+    def __init__(self, config: dict[str, Any], distributed_context=None):
+        super().__init__(distributed_context=distributed_context)
+        self._config = config
+        self._wandb = None
+        self._defined_series: set[str] = set()
+        self._step_metric_defined = False
+        self._logged_rows: list[dict[str, Any]] = []
+        self.run = None
+
+        if not config.get("monitoring", {}).get("enabled", False):
+            return
+        if not should_write_shared_artifact(distributed_context):
+            return
+        if config.get("monitoring", {}).get("backend") != "wandb":
+            return
+
+        try:
+            import wandb
+        except Exception:
+            return
+
+        init_kwargs: dict[str, Any] = {
+            "id": str(config["run"]["run_id"]),
+            "resume": "allow",
+            "reinit": True,
+            "dir": str(Path(config["run"]["output_dir"])),
+        }
+        monitoring = config.get("monitoring", {})
+        project = monitoring.get("project") or config["run"].get("phase_id")
+        if project is None:
+            project = config["run"].get("output_group")
+        entity = monitoring.get("entity")
+        group = monitoring.get("group") or config["run"].get("output_group")
+        job_type = monitoring.get("job_type")
+        name = monitoring.get("name") or config["run"]["run_id"]
+        tags = monitoring.get("tags") or []
+        notes = monitoring.get("notes")
+        mode = monitoring.get("mode")
+
+        if project:
+            init_kwargs["project"] = str(project)
+        if entity:
+            init_kwargs["entity"] = str(entity)
+        if group:
+            init_kwargs["group"] = str(group)
+        if job_type:
+            init_kwargs["job_type"] = str(job_type)
+        if name:
+            init_kwargs["name"] = str(name)
+        if tags:
+            init_kwargs["tags"] = list(tags)
+        if notes:
+            init_kwargs["notes"] = str(notes)
+        if mode:
+            init_kwargs["mode"] = str(mode)
+
+        try:
+            self.run = wandb.init(**init_kwargs)
+        except Exception:
+            return
+
+        self._wandb = wandb
+        self.enabled = True
+        try:
+            self._configure_run_metadata(config)
+            self._define_expected_series(config)
+        except Exception:
+            self.enabled = False
+
+    def _configure_run_metadata(self, config: dict[str, Any]) -> None:
+        if self.run is None:
+            return
+
+        run = config["run"]
+        training = config["training"]
+        monitoring = config.get("monitoring", {})
+        metadata = {
+            "run_id": run["run_id"],
+            "model_family": run["model_family"],
+            "model_variant": config["model"]["variant"],
+            "model_shape_label": run.get("model_shape_label"),
+            "output_group": run.get("output_group"),
+            "monitoring_project": monitoring.get("project"),
+            "monitoring_entity": monitoring.get("entity"),
+            "monitoring_group": monitoring.get("group"),
+            "monitoring_job_type": monitoring.get("job_type"),
+            "monitoring_name": monitoring.get("name"),
+            "monitoring_tags": list(monitoring.get("tags", [])),
+            "monitoring_notes": monitoring.get("notes"),
+            "monitoring_mode": monitoring.get("mode"),
+            "granularities": list(config["model"]["granularities"]),
+            "granularity_sampling": training.get("granularity_sampling", "all"),
+            "continuation_enabled": bool(run.get("continuation", {}).get("enabled", False)),
+            "continuation_status": run.get("continuation", {}).get("status", "fresh"),
+            "warmup_enabled": bool(
+                training.get("pre_nested_warmup", {}).get("enabled", False)
+            ),
+            "warmup_duration": training.get("pre_nested_warmup", {}).get("duration", 0),
+            "warmup_unit": training.get("pre_nested_warmup", {}).get("unit", "epochs"),
+            "monitoring_enabled": bool(monitoring.get("enabled", False)),
+            "monitoring_backend": monitoring.get("backend", "wandb"),
+            "log_loss_by_granularity": monitoring.get("log_loss_by_granularity", True),
+            "log_validation_loss": monitoring.get("log_validation_loss", True),
+            "log_stage_events": monitoring.get("log_stage_events", True),
+        }
+        self.run.config.update(metadata, allow_val_change=True)
+        self.run.summary.update(
+            {
+                "monitoring_enabled": metadata["monitoring_enabled"],
+                "monitoring_backend": metadata["monitoring_backend"],
+            }
+        )
+
+    def _define_expected_series(self, config: dict[str, Any]) -> None:
+        if self._wandb is None:
+            return
+
+        monitoring = config.get("monitoring", {})
+        if not monitoring.get("enabled", False):
+            return
+
+        metric_split_flags = {
+            "train": bool(monitoring.get("log_loss_by_granularity", True)),
+            "validation": bool(monitoring.get("log_validation_loss", True)),
+        }
+        for split, enabled in metric_split_flags.items():
+            if not enabled:
+                continue
+            for granularity in config["model"]["granularities"]:
+                series_name = f"{split}/loss/{granularity}"
+                if series_name in self._defined_series:
+                    continue
+                if not self._step_metric_defined:
+                    self._wandb.define_metric("step")
+                    self._step_metric_defined = True
+                self._wandb.define_metric(series_name, step_metric="step")
+                self._defined_series.add(series_name)
+
+    def log_rows(self, rows) -> None:
+        if not self.enabled or self._wandb is None:
+            return
+
+        try:
+            grouped_rows = group_loss_rows_by_series(rows)
+            for series_name, series_rows in grouped_rows.items():
+                if series_name not in self._defined_series:
+                    if not self._step_metric_defined:
+                        self._wandb.define_metric("step")
+                        self._step_metric_defined = True
+                    self._wandb.define_metric(series_name, step_metric="step")
+                    self._defined_series.add(series_name)
+                for row in series_rows:
+                    step = int(row["step"])
+                    value = row.get("loss")
+                    if value is None:
+                        continue
+                    self._wandb.log({series_name: value}, step=step)
+                    self._logged_rows.append(dict(row))
+        except Exception:
+            self.enabled = False
+
+    def close(self) -> None:
+        if self._wandb is None or self.run is None:
+            return
+
+        try:
+            if self.enabled:
+                self.run.summary.update(
+                    {
+                        "monitoring_series_metadata": build_monitoring_summary_fields(
+                            self._config,
+                            self._logged_rows,
+                        )["monitoring_series_metadata"],
+                    }
+                )
+            self._wandb.finish()
+        except Exception:
+            self.enabled = False
+
+
+def create_monitoring_session(
+    config: dict[str, Any],
+    distributed_context=None,
+):
+    return WandbMonitoringSession(config, distributed_context=distributed_context)
 
 
 def build_heartbeat_writer(config: dict[str, Any], distributed_context):
@@ -1203,6 +1408,7 @@ def train_for_steps(
     distributed_context=None,
     checkpoint_state: dict[str, Any] | None = None,
     run_state: dict[str, Any] | None = None,
+    monitoring_session=None,
 ) -> list[dict[str, Any]]:
     training = config["training"]
     granularities = config["model"]["granularities"]
@@ -1299,6 +1505,7 @@ def train_for_steps(
                 peak_memory_bytes = current_peak_memory_bytes(device)
                 latest_loss = float(combined_loss.detach().cpu().item())
                 tokens_per_second = tokens_seen / elapsed if elapsed > 0 else None
+                step_metric_rows = []
                 run_state.update(
                     {
                         "status": "resumed" if int(run_state.get("resume_count", 0)) > 0 else "fresh",
@@ -1334,7 +1541,7 @@ def train_for_steps(
                 )
 
                 for granularity, loss in granularity_losses:
-                    metrics_rows.append(
+                    step_metric_rows.append(
                         build_training_metric_row(
                             config,
                             step=step,
@@ -1346,6 +1553,9 @@ def train_for_steps(
                             peak_memory_bytes=peak_memory_bytes,
                         )
                     )
+                metrics_rows.extend(step_metric_rows)
+                if monitoring_session is not None:
+                    monitoring_session.log_rows(step_metric_rows)
 
                 if eval_interval > 0 and step % eval_interval == 0:
                     with heartbeat_stage(
@@ -1389,18 +1599,19 @@ def train_for_steps(
                         step=step,
                         distributed_context=distributed_context,
                     )
-                    metrics_rows.extend(
-                        validation_results_to_metric_rows(
-                            validation_results,
-                            config,
-                            step=step,
-                            wall_clock_seconds=elapsed,
-                            tokens_per_second=tokens_per_second,
-                            peak_memory_bytes=peak_memory_bytes,
-                            tokens_seen=tokens_seen,
-                            content_tokens_seen=content_tokens_seen,
-                        )
+                    validation_metric_rows = validation_results_to_metric_rows(
+                        validation_results,
+                        config,
+                        step=step,
+                        wall_clock_seconds=elapsed,
+                        tokens_per_second=tokens_per_second,
+                        peak_memory_bytes=peak_memory_bytes,
+                        tokens_seen=tokens_seen,
+                        content_tokens_seen=content_tokens_seen,
                     )
+                    metrics_rows.extend(validation_metric_rows)
+                    if monitoring_session is not None:
+                        monitoring_session.log_rows(validation_metric_rows)
 
                 if step >= max_steps or tokens_seen >= token_budget:
                     break
@@ -1422,6 +1633,7 @@ def train_for_steps(
         distributed_context=distributed_context,
         checkpoint_state=checkpoint_state,
         run_state=run_state,
+        monitoring_session=monitoring_session,
     )
     maybe_write_latest_checkpoint(
         config,
@@ -1537,6 +1749,7 @@ def append_final_validation_if_needed(
     distributed_context=None,
     checkpoint_state: dict[str, Any] | None = None,
     run_state: dict[str, Any] | None = None,
+    monitoring_session=None,
 ) -> None:
     if not config.get("evaluation", {}).get("validation", False):
         return
@@ -1578,18 +1791,19 @@ def append_final_validation_if_needed(
         run_state if run_state is not None else build_initial_continuation_state(config),
         distributed_context=distributed_context,
     )
-    metrics_rows.extend(
-        validation_results_to_metric_rows(
-            validation_results,
-            config,
-            step=step,
-            wall_clock_seconds=elapsed,
-            tokens_per_second=tokens_seen / elapsed if elapsed > 0 else None,
-            peak_memory_bytes=current_peak_memory_bytes(device),
-            tokens_seen=tokens_seen,
-            content_tokens_seen=content_tokens_seen,
-        )
+    validation_metric_rows = validation_results_to_metric_rows(
+        validation_results,
+        config,
+        step=step,
+        wall_clock_seconds=elapsed,
+        tokens_per_second=tokens_seen / elapsed if elapsed > 0 else None,
+        peak_memory_bytes=current_peak_memory_bytes(device),
+        tokens_seen=tokens_seen,
+        content_tokens_seen=content_tokens_seen,
     )
+    metrics_rows.extend(validation_metric_rows)
+    if monitoring_session is not None:
+        monitoring_session.log_rows(validation_metric_rows)
 
 
 def write_extraction_metadata_if_nested(

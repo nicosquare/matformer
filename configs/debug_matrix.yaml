@@ -87,6 +87,10 @@ outputs:
 monitoring:
   enabled: false
   backend: wandb
+  project: debug_matrix
+  job_type: train
+  tags: [debug, matrix]
+  notes: debug matrix smoke and warmup validation
   log_loss_by_granularity: true
   log_validation_loss: true
   log_stage_events: true

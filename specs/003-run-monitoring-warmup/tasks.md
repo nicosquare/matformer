@@ -68,8 +68,8 @@
 
 ### Implementation for User Story 2
 
-- [ ] T013 [US2] Wire W&B logging into the shared training loop so per-step loss rows are emitted as granularity-aligned series in `training/run.py`
-- [ ] T014 [US2] Persist monitoring enablement and series-label metadata in saved artifacts through `utils/metrics.py`
+- [X] T013 [US2] Wire W&B logging into the shared training loop so per-step loss rows are emitted as granularity-aligned series in `training/run.py`
+- [X] T014 [US2] Persist monitoring enablement and series-label metadata in saved artifacts through `utils/metrics.py`
 
 **Checkpoint**: User Story 2 should now expose the monitored loss-by-granularity view independently of warmup changes.
 

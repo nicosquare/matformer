@@ -51,6 +51,14 @@ training:
 monitoring:
   enabled: true
   backend: wandb
+  project: debug-matrix
+  entity: research-team
+  group: debug-nested-001
+  job_type: train
+  name: debug-nested-001
+  tags: [debug, nested]
+  notes: long-run smoke
+  mode: online
   log_loss_by_granularity: true
   log_validation_loss: true
   log_stage_events: true
@@ -71,6 +79,10 @@ dataset:
   directory.
 - `monitoring.enabled` must be optional; disabling it must not change the saved
   CSV/JSON artifact schema.
+- `monitoring.project`, `monitoring.entity`, `monitoring.group`,
+  `monitoring.job_type`, `monitoring.name`, `monitoring.tags`, `monitoring.notes`,
+  and `monitoring.mode` must be optional and may default from the resolved run
+  metadata when omitted.
 - `training.pre_nested_warmup.enabled` must be optional and default to `false`
   when omitted.
 - `training.pre_nested_warmup.duration` must be positive when warmup is

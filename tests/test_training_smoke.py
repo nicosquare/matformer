@@ -1,5 +1,7 @@
 import csv
 import json
+import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -50,6 +52,49 @@ class FlatParameterRuntimeWrapper(torch.nn.Module):
         yield "flat_param", self.flat_param
 
 
+class RecordingMonitoringSession:
+    def __init__(self, distributed_context=None):
+        self.distributed_context = distributed_context
+        self.logged_rows = []
+        self.closed = False
+
+    def log_rows(self, rows):
+        self.logged_rows.extend(dict(row) for row in rows)
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeWandbRun:
+    def __init__(self):
+        self.config = _FakeWandbConfig()
+        self.summary = {}
+
+
+class _FakeWandbConfig(dict):
+    def update(self, *args, **kwargs):
+        return super().update(*args)
+
+
+class _FakeWandbModule:
+    def __init__(self):
+        self.init_kwargs = None
+        self.finish_calls = 0
+
+    def init(self, **kwargs):
+        self.init_kwargs = kwargs
+        return _FakeWandbRun()
+
+    def define_metric(self, *args, **kwargs):
+        return None
+
+    def log(self, *args, **kwargs):
+        return None
+
+    def finish(self):
+        self.finish_calls += 1
+
+
 def _run_monitoring_smoke_case(tmp_path, run_id: str):
     output_dir = tmp_path / run_id
     config = resolve_run_config(
@@ -57,6 +102,7 @@ def _run_monitoring_smoke_case(tmp_path, run_id: str):
         run_id=run_id,
         output_dir=output_dir,
         overrides=[
+            "monitoring.enabled=true",
             "training.max_steps=1",
             "training.eval_interval=0",
             "training.batch_size_per_process=1",
@@ -65,7 +111,6 @@ def _run_monitoring_smoke_case(tmp_path, run_id: str):
             "evaluation.validation=false",
         ],
     )
-    config["monitoring"]["enabled"] = True
     tokenized_dataset = Dataset.from_dict(
         {
             "input_ids": [[1, 2, 0], [3, 4, 5]],
@@ -624,7 +669,23 @@ def test_config_driven_training_uses_distributed_fsdp_path_when_enabled(
 
 def test_monitoring_smoke_groups_nested_and_standalone_runs_by_series(
     tmp_path,
+    monkeypatch,
 ):
+    import training.run as training_run
+
+    created_sessions = []
+
+    def fake_create_monitoring_session(config, distributed_context=None):
+        session = RecordingMonitoringSession(distributed_context=distributed_context)
+        created_sessions.append(session)
+        return session
+
+    monkeypatch.setattr(
+        training_run,
+        "create_monitoring_session",
+        fake_create_monitoring_session,
+    )
+
     nested_summary, nested_series = _run_monitoring_smoke_case(
         tmp_path,
         "debug-nested-001",
@@ -645,3 +706,91 @@ def test_monitoring_smoke_groups_nested_and_standalone_runs_by_series(
     assert set(standalone_series) == {"train/loss/s"}
     assert all(len(rows) == 1 for rows in nested_series.values())
     assert len(standalone_series["train/loss/s"]) == 1
+    assert len(created_sessions) == 2
+    assert created_sessions[0].closed is True
+    assert created_sessions[1].closed is True
+    assert set(group_loss_rows_by_series(created_sessions[0].logged_rows)) == {
+        "train/loss/s",
+        "train/loss/m",
+        "train/loss/l",
+        "train/loss/xl",
+    }
+    assert set(group_loss_rows_by_series(created_sessions[1].logged_rows)) == {
+        "train/loss/s",
+    }
+    assert nested_summary["monitoring_backend"] == "wandb"
+    assert standalone_summary["monitoring_backend"] == "wandb"
+    assert [entry["series_name"] for entry in nested_summary["monitoring_series_metadata"]] == [
+        "train/loss/s",
+        "train/loss/m",
+        "train/loss/l",
+        "train/loss/xl",
+    ]
+    assert [entry["series_name"] for entry in standalone_summary["monitoring_series_metadata"]] == [
+        "train/loss/s",
+    ]
+
+
+def test_wandb_session_uses_explicit_project_and_entity_settings(
+    tmp_path,
+    monkeypatch,
+):
+    import training.run as training_run
+
+    fake_wandb = types.ModuleType("wandb")
+    fake_wandb.init_kwargs = None
+    fake_wandb.finish_calls = 0
+
+    def fake_init(**kwargs):
+        fake_wandb.init_kwargs = kwargs
+        return _FakeWandbRun()
+
+    def fake_define_metric(*args, **kwargs):
+        return None
+
+    def fake_log(*args, **kwargs):
+        return None
+
+    def fake_finish():
+        fake_wandb.finish_calls += 1
+
+    fake_wandb.init = fake_init
+    fake_wandb.define_metric = fake_define_metric
+    fake_wandb.log = fake_log
+    fake_wandb.finish = fake_finish
+    monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
+
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=tmp_path / "debug-nested-001",
+        overrides=[
+            "monitoring.enabled=true",
+            "monitoring.project=custom-project",
+            "monitoring.entity=research-team",
+            "monitoring.group=shared-group",
+            "monitoring.job_type=evaluation",
+            "monitoring.name=custom-run-name",
+            "monitoring.tags=[alpha,beta]",
+            "monitoring.notes=long run smoke",
+            "monitoring.mode=offline",
+        ],
+    )
+
+    session = training_run.WandbMonitoringSession(
+        config,
+        distributed_context=SimpleNamespace(enabled=False),
+    )
+
+    assert fake_wandb.init_kwargs is not None
+    assert fake_wandb.init_kwargs["project"] == "custom-project"
+    assert fake_wandb.init_kwargs["entity"] == "research-team"
+    assert fake_wandb.init_kwargs["group"] == "shared-group"
+    assert fake_wandb.init_kwargs["job_type"] == "evaluation"
+    assert fake_wandb.init_kwargs["name"] == "custom-run-name"
+    assert fake_wandb.init_kwargs["tags"] == ["alpha", "beta"]
+    assert fake_wandb.init_kwargs["notes"] == "long run smoke"
+    assert fake_wandb.init_kwargs["mode"] == "offline"
+    assert fake_wandb.init_kwargs["id"] == "debug-nested-001"
+    session.close()
+    assert fake_wandb.finish_calls == 1
