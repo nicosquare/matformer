@@ -9,6 +9,7 @@ from datasets import Dataset
 
 from training.run import run_training
 from utils.config import resolve_run_config
+from utils.monitoring import group_loss_rows_by_series
 
 
 class TinyNestedTrainingModel(torch.nn.Module):
@@ -47,6 +48,47 @@ class FlatParameterRuntimeWrapper(torch.nn.Module):
 
     def named_parameters(self, prefix="", recurse=True, remove_duplicate=True):
         yield "flat_param", self.flat_param
+
+
+def _run_monitoring_smoke_case(tmp_path, run_id: str):
+    output_dir = tmp_path / run_id
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id=run_id,
+        output_dir=output_dir,
+        overrides=[
+            "training.max_steps=1",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "evaluation.validation=false",
+        ],
+    )
+    config["monitoring"]["enabled"] = True
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+
+    result = run_training(
+        config,
+        model=TinyNestedTrainingModel(),
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    with result["metrics_path"].open("r", encoding="utf-8", newline="") as metrics_file:
+        train_rows = [
+            row
+            for row in csv.DictReader(metrics_file)
+            if row["split"] == "train" and row["step"] == "1"
+        ]
+
+    return summary, group_loss_rows_by_series(train_rows)
 
 
 @pytest.mark.xfail(
@@ -578,3 +620,28 @@ def test_config_driven_training_uses_distributed_fsdp_path_when_enabled(
     assert summary["distributed_local_rank"] == 0
     assert summary["distributed_world_size"] == 2
     assert summary["distributed_fsdp_config"] == {}
+
+
+def test_monitoring_smoke_groups_nested_and_standalone_runs_by_series(
+    tmp_path,
+):
+    nested_summary, nested_series = _run_monitoring_smoke_case(
+        tmp_path,
+        "debug-nested-001",
+    )
+    standalone_summary, standalone_series = _run_monitoring_smoke_case(
+        tmp_path,
+        "debug-standalone-s-001",
+    )
+
+    assert nested_summary["monitoring_enabled"] is True
+    assert standalone_summary["monitoring_enabled"] is True
+    assert set(nested_series) == {
+        "train/loss/s",
+        "train/loss/m",
+        "train/loss/l",
+        "train/loss/xl",
+    }
+    assert set(standalone_series) == {"train/loss/s"}
+    assert all(len(rows) == 1 for rows in nested_series.values())
+    assert len(standalone_series["train/loss/s"]) == 1

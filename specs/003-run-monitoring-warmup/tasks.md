@@ -63,8 +63,8 @@
 
 ### Verification for User Story 2
 
-- [ ] T011 [P] [US2] Add nested-versus-standalone monitoring smoke coverage in `tests/test_training_smoke.py`
-- [ ] T012 [P] [US2] Add a focused series-label/unit test for the per-run grouping helper in `tests/test_monitoring.py`
+- [X] T011 [P] [US2] Add nested-versus-standalone monitoring smoke coverage in `tests/test_training_smoke.py`
+- [X] T012 [P] [US2] Add a focused series-label/unit test for the per-run grouping helper in `tests/test_monitoring.py`
 
 ### Implementation for User Story 2
 
