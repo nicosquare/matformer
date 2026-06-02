@@ -166,6 +166,7 @@ def run_training(
                 scheduler,
                 distributed_context=distributed_context,
             )
+        emit_run_start_continuation_state(heartbeat_writer, run_state)
         checkpoint_state.update(run_state)
         update_run_continuation_state(config, run_state)
         metrics_rows = train_for_steps(
@@ -519,6 +520,33 @@ def maybe_emit_training_heartbeat(
         ),
     )
     heartbeat_cadence.mark_emitted(step=step, now=now)
+
+
+def emit_run_start_continuation_state(
+    heartbeat_writer,
+    run_state: Mapping[str, Any],
+) -> None:
+    status = str(run_state.get("status", "fresh"))
+    latest_checkpoint_path = run_state.get("latest_checkpoint_path")
+    last_completed_step = int(run_state.get("last_completed_step", 0))
+    resume_count = int(run_state.get("resume_count", 0))
+    if status == "resumed":
+        message = (
+            f"Resuming run from {latest_checkpoint_path} "
+            f"at step {last_completed_step} (resume_count={resume_count})"
+        )
+    else:
+        message = "Starting fresh run"
+
+    heartbeat_writer.emit(
+        "run_state",
+        "continuation",
+        message=message,
+        continuation_status=status,
+        latest_checkpoint_path=latest_checkpoint_path,
+        last_completed_step=last_completed_step,
+        resume_count=resume_count,
+    )
 
 
 def estimate_eta_seconds(

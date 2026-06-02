@@ -110,6 +110,45 @@ def test_heartbeat_writer_accepts_extra_stage_fields(tmp_path):
     assert event["checkpoint_status"] == "best_eval"
 
 
+def test_heartbeat_writer_formats_resume_banner(tmp_path):
+    from utils.heartbeats import HeartbeatWriter
+
+    stdout = io.StringIO()
+    writer = HeartbeatWriter(
+        output_dir=tmp_path,
+        run_id="dmodel256-nested-random-001",
+        rank=0,
+        world_size=1,
+        stdout=stdout,
+        time_fn=FakeClock(1000.0),
+    )
+
+    writer.emit(
+        "run_state",
+        "continuation",
+        message="Resuming run from /tmp/checkpoints/latest.pt at step 12 (resume_count=1)",
+        continuation_status="resumed",
+        latest_checkpoint_path="/tmp/checkpoints/latest.pt",
+        last_completed_step=12,
+        resume_count=1,
+    )
+
+    event = json.loads((tmp_path / "heartbeats.jsonl").read_text(encoding="utf-8"))
+    assert event["event_type"] == "run_state"
+    assert event["stage"] == "continuation"
+    assert event["continuation_status"] == "resumed"
+    assert event["resume_count"] == 1
+
+    stdout_line = stdout.getvalue()
+    assert "run_state" in stdout_line
+    assert "stage=continuation" in stdout_line
+    assert "message=Resuming run from /tmp/checkpoints/latest.pt at step 12 (resume_count=1)" in stdout_line
+    assert "continuation_status=resumed" in stdout_line
+    assert "latest_checkpoint_path=/tmp/checkpoints/latest.pt" in stdout_line
+    assert "last_completed_step=12" in stdout_line
+    assert "resume_count=1" in stdout_line
+
+
 def test_heartbeat_cadence_emits_on_step_or_elapsed_interval():
     from utils.heartbeats import HeartbeatCadence
 
