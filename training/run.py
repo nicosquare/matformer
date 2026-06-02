@@ -93,6 +93,8 @@ def run_training(
     output_dir = Path(run["output_dir"])
     run_state = build_initial_continuation_state(config)
     checkpoint_state: dict[str, Any] = {}
+    optimizer = None
+    scheduler = None
 
     distributed_context = prepare_distributed_context(config, device=device)
     sync_config_with_distributed_context(config, distributed_context)
@@ -280,6 +282,24 @@ def run_training(
         }
     except Exception as error:
         try:
+            if (
+                run["continuation"]["enabled"]
+                and model is not None
+                and optimizer is not None
+                and scheduler is not None
+            ):
+                maybe_write_latest_checkpoint(
+                    config,
+                    model,
+                    optimizer,
+                    scheduler,
+                    heartbeat_writer,
+                    run_state,
+                    reason="failure",
+                    step=int(run_state.get("step", run_state.get("last_completed_step", 0))),
+                    distributed_context=distributed_context,
+                    force=True,
+                )
             run_state["status"] = "failed"
             if run["continuation"]["enabled"]:
                 update_run_continuation_state(config, run_state)
@@ -512,6 +532,106 @@ def estimate_eta_seconds(
     return remaining_tokens / tokens_per_second
 
 
+def continuation_latest_checkpoint_policy(
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    run = config.get("run", {})
+    continuation = run.get("continuation", {})
+    if not isinstance(continuation, Mapping):
+        continuation = {}
+
+    enabled = bool(continuation.get("enabled", False))
+    interval_steps = continuation.get("latest_checkpoint_save_interval_steps", 1)
+    if interval_steps is None:
+        interval_steps = 0
+    interval_steps = int(interval_steps)
+    if interval_steps < 0:
+        raise ConfigError(
+            "run.continuation.latest_checkpoint_save_interval_steps must be non-negative"
+        )
+
+    return {
+        "enabled": enabled,
+        "save_interval_steps": interval_steps,
+        "save_on_validation": bool(
+            continuation.get("latest_checkpoint_save_on_validation", False)
+        ),
+        "save_on_completion": bool(
+            continuation.get("latest_checkpoint_save_on_completion", True)
+        ),
+    }
+
+
+def should_save_latest_checkpoint(
+    config: Mapping[str, Any],
+    step: int,
+    reason: str,
+) -> bool:
+    policy = continuation_latest_checkpoint_policy(config)
+    if not policy["enabled"]:
+        return False
+
+    if reason == "validation":
+        return policy["save_on_validation"]
+    if reason == "completion":
+        return policy["save_on_completion"]
+    if reason == "failure":
+        return True
+
+    interval_steps = policy["save_interval_steps"]
+    return interval_steps > 0 and step > 0 and step % interval_steps == 0
+
+
+def maybe_write_latest_checkpoint(
+    config: dict[str, Any],
+    model,
+    optimizer,
+    scheduler,
+    heartbeat_writer,
+    run_state: dict[str, Any],
+    reason: str,
+    step: int,
+    distributed_context=None,
+    force: bool = False,
+) -> None:
+    if not force and not should_save_latest_checkpoint(config, step, reason):
+        return
+    if not force and int(run_state.get("latest_checkpoint_step", 0)) == int(step):
+        return
+
+    latest_checkpoint_path = Path(
+        run_state.get("latest_checkpoint_path")
+        or Path(config["run"]["output_dir"]) / "checkpoints" / "latest.pt"
+    )
+    checkpoint_fields = {
+        "checkpoint_status": "latest",
+        "checkpoint_metric": None,
+        "checkpoint_metric_value": None,
+        "checkpoint_selection_step": None,
+        "checkpoint_unavailable_reason": None,
+    }
+
+    with heartbeat_stage(
+        heartbeat_writer,
+        "checkpointing",
+        checkpoint_status="latest",
+        checkpoint_reason=reason,
+    ):
+        save_model_checkpoint(
+            config,
+            model,
+            optimizer,
+            scheduler,
+            latest_checkpoint_path,
+            checkpoint_fields,
+            run_state,
+            distributed_context=distributed_context,
+        )
+
+    run_state["latest_checkpoint_path"] = str(latest_checkpoint_path)
+    run_state["latest_checkpoint_step"] = step
+
+
 def write_checkpoint_if_needed(
     config: dict[str, Any],
     model,
@@ -740,6 +860,7 @@ def build_initial_continuation_state(config: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": "fresh",
         "latest_checkpoint_path": None,
+        "latest_checkpoint_step": 0,
         "last_completed_step": 0,
         "resume_count": 0,
         "tokens_seen": 0,
@@ -786,6 +907,7 @@ def load_checkpoint_state(
         state = {
             "status": "fresh",
             "latest_checkpoint_path": None,
+            "latest_checkpoint_step": 0,
             "last_completed_step": 0,
             "resume_count": 0,
             "tokens_seen": 0,
@@ -833,6 +955,7 @@ def load_checkpoint_state(
     state = {
         "status": "resumed",
         "latest_checkpoint_path": str(checkpoint_path),
+        "latest_checkpoint_step": last_completed_step,
         "last_completed_step": last_completed_step,
         "resume_count": resume_count,
         "tokens_seen": tokens_seen,
@@ -858,6 +981,7 @@ def update_run_continuation_state(
     for key in [
         "status",
         "latest_checkpoint_path",
+        "latest_checkpoint_step",
         "last_completed_step",
         "resume_count",
         "tokens_seen",
@@ -1075,7 +1199,6 @@ def train_for_steps(
         run_state.get("latest_checkpoint_path")
         or Path(config["run"]["output_dir"]) / "checkpoints" / "latest.pt"
     )
-    save_latest_checkpoints = bool(config["run"].get("continuation", {}).get("enabled", False))
     resume_epoch = epoch
     resume_batch_index = max(0, resume_batch_index)
     if len(train_dataloader) > 0:
@@ -1087,8 +1210,9 @@ def train_for_steps(
     run_state["epoch"] = resume_epoch
     run_state["batch_index"] = resume_batch_index
     run_state["content_tokens_seen"] = content_tokens_seen
+    run_state.setdefault("latest_checkpoint_step", int(run_state.get("last_completed_step", 0)))
     run_state.setdefault("status", "fresh")
-    if save_latest_checkpoints and not run_state.get("latest_checkpoint_path"):
+    if continuation_latest_checkpoint_policy(config)["enabled"] and not run_state.get("latest_checkpoint_path"):
         run_state["latest_checkpoint_path"] = str(latest_checkpoint_path)
 
     model.train()
@@ -1158,29 +1282,17 @@ def train_for_steps(
                         "content_tokens_seen": content_tokens_seen,
                     }
                 )
-                if save_latest_checkpoints:
-                    with heartbeat_stage(
-                        heartbeat_writer,
-                        "checkpointing",
-                        checkpoint_status="latest",
-                    ):
-                        save_model_checkpoint(
-                            config,
-                            model,
-                            optimizer,
-                            scheduler,
-                            latest_checkpoint_path,
-                            {
-                                "checkpoint_status": "latest",
-                                "checkpoint_metric": None,
-                                "checkpoint_metric_value": None,
-                                "checkpoint_selection_step": None,
-                                "checkpoint_unavailable_reason": None,
-                            },
-                            run_state,
-                            distributed_context=distributed_context,
-                        )
-                    run_state["latest_checkpoint_path"] = str(latest_checkpoint_path)
+                maybe_write_latest_checkpoint(
+                    config,
+                    model,
+                    optimizer,
+                    scheduler,
+                    heartbeat_writer,
+                    run_state,
+                    reason="step",
+                    step=step,
+                    distributed_context=distributed_context,
+                )
                 maybe_emit_training_heartbeat(
                     heartbeat_writer,
                     heartbeat_cadence,
@@ -1238,6 +1350,17 @@ def train_for_steps(
                         run_state,
                         distributed_context=distributed_context,
                     )
+                    maybe_write_latest_checkpoint(
+                        config,
+                        model,
+                        optimizer,
+                        scheduler,
+                        heartbeat_writer,
+                        run_state,
+                        reason="validation",
+                        step=step,
+                        distributed_context=distributed_context,
+                    )
                     metrics_rows.extend(
                         validation_results_to_metric_rows(
                             validation_results,
@@ -1271,6 +1394,17 @@ def train_for_steps(
         distributed_context=distributed_context,
         checkpoint_state=checkpoint_state,
         run_state=run_state,
+    )
+    maybe_write_latest_checkpoint(
+        config,
+        model,
+        optimizer,
+        scheduler,
+        heartbeat_writer,
+        run_state,
+        reason="completion",
+        step=step,
+        distributed_context=distributed_context,
     )
 
     return metrics_rows

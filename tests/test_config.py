@@ -169,6 +169,12 @@ def test_write_resolved_config(tmp_path):
     assert saved["training"]["scheduler"]["kwargs"]["warmup_steps"] == 2000
     assert saved["training"]["scheduler_name"] == "cosine"
     assert saved["training"]["scheduler"]["resolved_warmup_steps"] == 2000
+    assert saved["run"]["continuation"] == {
+        "enabled": True,
+        "latest_checkpoint_save_interval_steps": 0,
+        "latest_checkpoint_save_on_validation": True,
+        "latest_checkpoint_save_on_completion": True,
+    }
     assert saved["training"]["optimizer_name"] == "adamw"
     assert saved["training"]["optimizer_kwargs"] == {
         "betas": [0.9, 0.95],
