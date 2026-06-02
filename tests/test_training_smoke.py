@@ -136,6 +136,15 @@ def _run_monitoring_smoke_case(tmp_path, run_id: str):
     return summary, group_loss_rows_by_series(train_rows)
 
 
+def _read_heartbeat_events(path: Path) -> list[dict[str, object]]:
+    with path.open("r", encoding="utf-8") as heartbeat_file:
+        return [
+            json.loads(line)
+            for line in heartbeat_file
+            if line.strip()
+        ]
+
+
 @pytest.mark.xfail(
     reason="Run resumption wiring is implemented in T009/T010, not yet here",
     strict=False,
@@ -207,6 +216,109 @@ def test_interrupted_and_relaunched_run_preserves_the_same_output_dir(
     assert summary["latest_checkpoint_path"] == str(
         output_dir / "checkpoints" / "latest.pt"
     )
+
+
+def test_pre_nested_warmup_disabled_path_keeps_the_run_in_the_standard_flow(
+    tmp_path,
+):
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "training.max_steps=1",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "training.pre_nested_warmup.enabled=false",
+            "evaluation.validation=false",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+
+    result = run_training(
+        config,
+        model=TinyNestedTrainingModel(),
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    heartbeat_events = _read_heartbeat_events(output_dir / "heartbeats.jsonl")
+
+    assert summary["warmup_policy"] == {
+        "enabled": False,
+        "duration": 0,
+        "unit": "epochs",
+        "completed": False,
+        "completion_step": None,
+        "transition_reason": None,
+    }
+    assert summary["warmup_completion_step"] is None
+    assert summary["warmup_completed"] is False
+    assert all("warmup" not in str(event["stage"]) for event in heartbeat_events)
+
+
+@pytest.mark.xfail(
+    reason="Pre-nested warmup stage wiring is implemented in T018, not yet here",
+    strict=False,
+)
+def test_pre_nested_warmup_transition_records_a_warmup_stage_before_training(
+    tmp_path,
+):
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "training.max_steps=2",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "training.pre_nested_warmup.enabled=true",
+            "training.pre_nested_warmup.duration=1",
+            "training.pre_nested_warmup.unit=steps",
+            "evaluation.validation=false",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+
+    result = run_training(
+        config,
+        model=TinyNestedTrainingModel(),
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    heartbeat_events = _read_heartbeat_events(output_dir / "heartbeats.jsonl")
+    stage_names = [str(event["stage"]) for event in heartbeat_events]
+    warmup_stage_index = next(
+        index for index, stage_name in enumerate(stage_names) if "warmup" in stage_name
+    )
+    training_stage_index = stage_names.index("training")
+
+    assert summary["warmup_policy"]["enabled"] is True
+    assert summary["warmup_policy"]["duration"] == 1
+    assert summary["warmup_policy"]["unit"] == "steps"
+    assert summary["warmup_policy"]["completed"] is True
+    assert summary["warmup_completion_step"] == 1
+    assert summary["warmup_completed"] is True
+    assert warmup_stage_index < training_stage_index
 
 
 def test_tiny_nested_training_accumulates_all_granularities_per_batch(

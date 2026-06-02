@@ -83,8 +83,8 @@
 
 ### Verification for User Story 3
 
-- [ ] T015 [P] [US3] Add warmup configuration validation coverage in `tests/test_config.py`
-- [ ] T016 [P] [US3] Add warmup transition and disabled-path smoke coverage in `tests/test_training_smoke.py`
+- [X] T015 [P] [US3] Add warmup configuration validation coverage in `tests/test_config.py`
+- [X] T016 [P] [US3] Add warmup transition and disabled-path smoke coverage in `tests/test_training_smoke.py`
 
 ### Implementation for User Story 3
 

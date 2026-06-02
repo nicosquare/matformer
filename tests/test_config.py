@@ -221,6 +221,50 @@ def test_resolve_minimal_config_includes_long_run_defaults(tmp_path):
     }
 
 
+def test_pre_nested_warmup_validation_rules(tmp_path):
+    config_path = _write_single_run_config(tmp_path)
+
+    resolved = resolve_run_config(
+        config_path,
+        overrides=[
+            "training.pre_nested_warmup.enabled=true",
+            "training.pre_nested_warmup.duration=3",
+            "training.pre_nested_warmup.unit=steps",
+        ],
+    )
+    assert resolved["training"]["pre_nested_warmup"] == {
+        "enabled": True,
+        "duration": 3,
+        "unit": "steps",
+    }
+
+    with pytest.raises(
+        ConfigError,
+        match="training.pre_nested_warmup.duration must be positive",
+    ):
+        resolve_run_config(
+            config_path,
+            overrides=[
+                "training.pre_nested_warmup.enabled=true",
+                "training.pre_nested_warmup.duration=0",
+                "training.pre_nested_warmup.unit=steps",
+            ],
+        )
+
+    with pytest.raises(
+        ConfigError,
+        match="training.pre_nested_warmup.unit must be one of",
+    ):
+        resolve_run_config(
+            config_path,
+            overrides=[
+                "training.pre_nested_warmup.enabled=true",
+                "training.pre_nested_warmup.duration=1",
+                "training.pre_nested_warmup.unit=minutes",
+            ],
+        )
+
+
 def test_dmodel256_completion_label_validation():
     resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
     validate_run_config(resolved)
