@@ -100,8 +100,8 @@
 
 **Purpose**: Align docs and run the focused validation path after implementation.
 
-- [ ] T020 [P] Update `specs/003-run-monitoring-warmup/quickstart.md` and `README.md` with the final continuation, monitoring, and warmup usage examples
-- [ ] T021 Run the focused smoke checks from `specs/003-run-monitoring-warmup/quickstart.md` and fix any drift in `tests/test_config.py`, `tests/test_training_smoke.py`, `tests/test_artifacts.py`, and `tests/test_monitoring.py`
+- [X] T020 [P] Update `specs/003-run-monitoring-warmup/quickstart.md` and `README.md` with the final continuation, monitoring, and warmup usage examples
+- [X] T021 Run the focused smoke checks from `specs/003-run-monitoring-warmup/quickstart.md` and fix any drift in `tests/test_config.py`, `tests/test_training_smoke.py`, `tests/test_artifacts.py`, and `tests/test_monitoring.py`
 
 ---
 

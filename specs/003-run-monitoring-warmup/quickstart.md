@@ -59,10 +59,11 @@ python train.py \
 
 Expected result:
 - The same run can be relaunched after interruption without changing the
-  command path.
+  command path or `run-id`.
 - `run_summary.json` records the continuation state, warmup state, and
-  monitoring enablement.
-- W&B shows the loss series grouped by granularity for the single run.
+  monitoring enablement for the reused output directory.
+- W&B shows the loss series grouped by granularity for the single run when
+  `monitoring.enabled=true` and `monitoring.backend=wandb`.
 
 ### Warmup-Only Nested Example
 
