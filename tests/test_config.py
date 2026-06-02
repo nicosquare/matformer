@@ -28,10 +28,9 @@ def _write_single_run_config(tmp_path):
 
             model:
               base_model_name: debug-llama
+              d_model: 128
               num_layers: 2
               num_attention_heads: 4
-              hidden_size: 128
-              intermediate_size: 512
               context_length: 64
               vocab_size_assumption: 32000
               granularities: [s, m, l, xl]
@@ -95,7 +94,21 @@ def test_resolve_debug_matrix_expands_nested_and_standalone_runs():
     assert nested["run"]["output_dir"] == (
         f"outputs/{nested['run']['output_group']}/debug-nested-001"
     )
+    assert nested["model"]["d_model"] == 128
+    assert nested["model"]["intermediate_size"] == 512
     assert nested["model"]["granularities"] == ["s", "m", "l", "xl"]
+    assert nested["model"]["granularity_prefixes"] == {
+        "s": 0.125,
+        "m": 0.25,
+        "l": 0.5,
+        "xl": 1.0,
+    }
+    assert [entry["prefix_width"] for entry in nested["model"]["ffn_prefix_metadata"]] == [
+        64,
+        128,
+        256,
+        512,
+    ]
     assert nested["training"]["granularity_sampling"] == "all"
 
     standalone_s = resolved_runs[1]
@@ -104,6 +117,11 @@ def test_resolve_debug_matrix_expands_nested_and_standalone_runs():
     assert standalone_s["run"]["completion_label"] == "debug"
     assert standalone_s["run"]["output_group"].startswith("matformer_llama_")
     assert standalone_s["model"]["granularities"] == ["s"]
+    assert standalone_s["model"]["granularity_prefixes"] == {"s": 1.0}
+    assert standalone_s["model"]["matformer_source_intermediate_size"] == 512
+    assert [entry["prefix_width"] for entry in standalone_s["model"]["ffn_prefix_metadata"]] == [
+        64,
+    ]
 
     for resolved in resolved_runs:
         validate_run_config(resolved)
@@ -198,6 +216,7 @@ def test_resolve_minimal_config_includes_long_run_defaults(tmp_path):
 
     resolved = resolve_run_config(config_path, output_dir=output_dir)
 
+    assert resolved["model"]["d_model"] == 128
     assert resolved["run"]["continuation"] == {"enabled": False}
     assert resolved["monitoring"] == {
         "enabled": False,
@@ -510,10 +529,46 @@ def test_dmodel256_pilot_config_preserves_clarified_terms_and_shape_fields():
         "l": 0.5,
         "xl": 1.0,
     }
+    assert [entry["prefix_width"] for entry in model["ffn_prefix_metadata"]] == [
+        128,
+        256,
+        512,
+        1024,
+    ]
 
     assert resolved["training"]["token_budget"] < 10_000_000_000
     assert resolved["training"]["granularity_sampling"] == "random"
     validate_run_config(resolved)
+
+
+def test_granularity_prefix_validation_rejects_non_monotonic_widths():
+    with pytest.raises(
+        ConfigError,
+        match="strictly nested|strictly increasing",
+    ):
+        resolve_run_config(
+            "configs/dmodel256_pilot_comparison.yaml",
+            overrides=["model.granularity_prefixes.m=0.1"],
+        )
+
+
+def test_granularity_prefix_validation_rejects_extra_keys():
+    with pytest.raises(ConfigError, match="must match model.granularities"):
+        resolve_run_config(
+            "configs/dmodel256_pilot_comparison.yaml",
+            overrides=["model.granularity_prefixes.extra=0.01"],
+        )
+
+
+def test_intermediate_size_is_derived_from_d_model_and_rejects_mismatch():
+    resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
+    assert resolved["model"]["intermediate_size"] == 1024
+
+    with pytest.raises(ConfigError, match="model.intermediate_size must equal"):
+        resolve_run_config(
+            "configs/dmodel256_pilot_comparison.yaml",
+            overrides=["model.intermediate_size=2048"],
+        )
 
 
 def test_dmodel256_rejects_old_completion_label_strings():

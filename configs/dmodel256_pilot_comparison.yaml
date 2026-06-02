@@ -22,7 +22,6 @@ model:
   d_model: 256
   num_layers: 16
   num_attention_heads: 16
-  intermediate_size: 1024
   context_length: 1024
   vocab_size_assumption: 256000
   granularities: [s, m, l, xl]

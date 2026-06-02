@@ -29,12 +29,14 @@ VALID_GRANULARITY_SAMPLING = {"all", "random"}
 VALID_PRE_NESTED_WARMUP_UNITS = {"epochs", "steps"}
 DEFAULT_MODEL_VARIANT = "matformer_llama"
 VALID_SAMPLING_MODES = {"nested-random", "nested-all", "standalone"}
-GRANULARITY_INTERMEDIATE_FRACTIONS = {
+CANONICAL_GRANULARITY_ORDER = ("s", "m", "l", "xl")
+CANONICAL_GRANULARITY_PREFIX_FRACTIONS = {
     "s": (1, 8),
     "m": (1, 4),
     "l": (1, 2),
     "xl": (1, 1),
 }
+DEFAULT_FFN_MULTIPLIER = 4
 OPTIMIZER_DEFAULT_KWARGS = {
     "adamw": {
         "betas": [0.9, 0.95],
@@ -174,6 +176,7 @@ def resolve_run_config(
         resolved["run"]["output_dir"] = str(output_dir)
 
     _resolve_model_variant_defaults(resolved)
+    _resolve_model_dimension_and_granularity_metadata(resolved)
     _resolve_naming_defaults(resolved)
     _resolve_output_paths(resolved)
     _resolve_sampling_mode_defaults(
@@ -200,6 +203,7 @@ def resolve_all_run_configs(
     if "matrix" not in config:
         resolved = _compose_single_run(config)
         _resolve_model_variant_defaults(resolved)
+        _resolve_model_dimension_and_granularity_metadata(resolved)
         _resolve_naming_defaults(resolved)
         _resolve_output_paths(resolved)
         _resolve_sampling_mode_defaults(
@@ -224,6 +228,7 @@ def resolve_all_run_configs(
     for run_entry in runs:
         resolved = _compose_matrix_run(config, run_entry)
         _resolve_model_variant_defaults(resolved)
+        _resolve_model_dimension_and_granularity_metadata(resolved)
         _resolve_naming_defaults(resolved)
         _resolve_output_paths(resolved)
         _resolve_sampling_mode_defaults(
@@ -452,6 +457,15 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             f"{sorted(VALID_MODEL_VARIANTS)}"
         )
 
+    if "d_model" in model and "hidden_size" in model:
+        if _positive_int(model["d_model"], "model.d_model") != _positive_int(
+            model["hidden_size"],
+            "model.hidden_size",
+        ):
+            raise ConfigError("model.d_model must match model.hidden_size when both are set")
+    if "d_model" in model:
+        _positive_int(model["d_model"], "model.d_model")
+
     if not isinstance(continuation.get("enabled"), bool):
         raise ConfigError("run.continuation.enabled must be a boolean")
 
@@ -546,6 +560,8 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         )
     _validate_sampling_mode(run, granularity_sampling)
 
+    _validate_granularity_prefix_layout(model)
+
     _validate_dmodel256_pilot_fields(run, model, training)
 
     _validate_derived_training_length(training, model)
@@ -593,6 +609,106 @@ def _resolve_model_variant_defaults(config: dict[str, Any]) -> None:
         ),
         "model.gradient_membership_correction",
     )
+
+
+def _resolve_model_dimension_and_granularity_metadata(config: dict[str, Any]) -> None:
+    model = config.setdefault("model", {})
+    run = config.get("run", {})
+
+    hidden_size = model.get("hidden_size")
+    d_model = model.get("d_model")
+    if d_model is None and hidden_size is not None:
+        model["d_model"] = hidden_size
+    elif d_model is not None and hidden_size is not None:
+        if _positive_int(d_model, "model.d_model") != _positive_int(
+            hidden_size,
+            "model.hidden_size",
+        ):
+            raise ConfigError("model.d_model must match model.hidden_size when both are set")
+
+    if run.get("model_family") == "standalone":
+        _resolve_source_intermediate_size_from_d_model(model)
+    else:
+        _resolve_intermediate_size_from_d_model(model)
+
+    granularities = model.get("granularities")
+    if not isinstance(granularities, list) or not granularities:
+        return
+
+    prefixes = model.get("granularity_prefixes")
+    if prefixes is None:
+        prefixes = {
+            granularity: (
+                CANONICAL_GRANULARITY_PREFIX_FRACTIONS[granularity][0]
+                / CANONICAL_GRANULARITY_PREFIX_FRACTIONS[granularity][1]
+            )
+            for granularity in granularities
+        }
+    elif not isinstance(prefixes, Mapping):
+        raise ConfigError("model.granularity_prefixes must be a mapping")
+
+    resolved_prefixes = _resolve_granularity_prefix_map(
+        prefixes,
+        granularities,
+        model["intermediate_size"],
+    )
+    model["granularity_prefixes"] = resolved_prefixes
+    model["ffn_prefix_metadata"] = _build_ffn_prefix_metadata(
+        model["intermediate_size"],
+        resolved_prefixes,
+        granularities,
+    )
+    if model.get("variant") == "cat_llama":
+        model["ffn_concat_block_metadata"] = _build_concat_block_metadata(
+            model["intermediate_size"],
+            resolved_prefixes,
+            granularities,
+        )
+
+
+def _resolve_intermediate_size_from_d_model(model: dict[str, Any]) -> None:
+    d_model = model.get("d_model")
+    if d_model is None:
+        return
+
+    resolved_d_model = _positive_int(d_model, "model.d_model")
+    expected_intermediate_size = resolved_d_model * DEFAULT_FFN_MULTIPLIER
+
+    if "intermediate_size" in model:
+        resolved_intermediate_size = _positive_int(
+            model["intermediate_size"],
+            "model.intermediate_size",
+        )
+        if resolved_intermediate_size != expected_intermediate_size:
+            raise ConfigError(
+                "model.intermediate_size must equal "
+                f"model.d_model * {DEFAULT_FFN_MULTIPLIER}"
+            )
+
+    model["intermediate_size"] = expected_intermediate_size
+
+
+def _resolve_source_intermediate_size_from_d_model(model: dict[str, Any]) -> None:
+    d_model = model.get("d_model")
+    if d_model is None:
+        return
+
+    resolved_d_model = _positive_int(d_model, "model.d_model")
+    expected_intermediate_size = resolved_d_model * DEFAULT_FFN_MULTIPLIER
+    source_intermediate_size = model.get("matformer_source_intermediate_size")
+    if source_intermediate_size is not None:
+        resolved_source_intermediate_size = _positive_int(
+            source_intermediate_size,
+            "model.matformer_source_intermediate_size",
+        )
+        if resolved_source_intermediate_size != expected_intermediate_size:
+            raise ConfigError(
+                "model.matformer_source_intermediate_size must equal "
+                f"model.d_model * {DEFAULT_FFN_MULTIPLIER}"
+            )
+        return
+
+    model["matformer_source_intermediate_size"] = expected_intermediate_size
 
 
 def _normalize_model_variant(raw_variant: Any) -> str:
@@ -766,41 +882,209 @@ def _validate_dmodel256_pilot_fields(
         )
         if _positive_int(model["d_model"], "model.d_model") != 256:
             raise ConfigError("model_shape_label=dmodel256 requires model.d_model=256")
-        _validate_granularity_prefixes(model["granularity_prefixes"])
 
 
-def _validate_granularity_prefixes(prefixes: Any) -> None:
+def _validate_granularity_prefix_layout(model: Mapping[str, Any]) -> None:
+    granularities = model.get("granularities")
+    if not isinstance(granularities, list) or not granularities:
+        return
+
+    prefixes = model.get("granularity_prefixes")
+    if prefixes is None:
+        raise ConfigError("model.granularity_prefixes must be a mapping")
+
+    _positive_int(model.get("intermediate_size"), "model.intermediate_size")
+    _resolve_granularity_prefix_map(
+        prefixes,
+        granularities,
+        model["intermediate_size"],
+    )
+
+
+def _resolve_granularity_prefix_map(
+    prefixes: Any,
+    granularities: list[str],
+    intermediate_size: Any,
+) -> dict[str, float]:
     if not isinstance(prefixes, Mapping):
         raise ConfigError("model.granularity_prefixes must be a mapping")
 
-    missing = sorted(VALID_GRANULARITIES - set(prefixes))
-    if missing:
-        raise ConfigError(f"model.granularity_prefixes missing keys: {missing}")
+    missing = [granularity for granularity in granularities if granularity not in prefixes]
+    extra = sorted(str(granularity) for granularity in prefixes if granularity not in granularities)
+    if missing or extra:
+        details = []
+        if missing:
+            details.append(f"missing keys: {missing}")
+        if extra:
+            details.append(f"extra keys: {extra}")
+        raise ConfigError(
+            "model.granularity_prefixes must match model.granularities; "
+            + ", ".join(details)
+        )
 
-    for granularity in VALID_GRANULARITIES:
+    resolved: dict[str, float] = {}
+    previous_width = 0
+    resolved_intermediate_size = _positive_int(
+        intermediate_size,
+        "model.intermediate_size",
+    )
+    for granularity in granularities:
         try:
-            value = float(prefixes[granularity])
+            fraction = float(prefixes[granularity])
         except (TypeError, ValueError) as error:
             raise ConfigError(
                 f"model.granularity_prefixes.{granularity} must be numeric"
             ) from error
-        if value <= 0:
+        if fraction <= 0:
             raise ConfigError(
                 f"model.granularity_prefixes.{granularity} must be positive"
             )
 
+        prefix_width = int(resolved_intermediate_size * fraction)
+        if prefix_width <= 0:
+            raise ConfigError(
+                f"model.granularity_prefixes.{granularity} resolved to an empty width"
+            )
+        if prefix_width > resolved_intermediate_size:
+            raise ConfigError(
+                f"model.granularity_prefixes.{granularity} exceeds "
+                f"model.intermediate_size={resolved_intermediate_size}"
+            )
+        if prefix_width <= previous_width:
+            raise ConfigError(
+                "model.granularity_prefixes must resolve to strictly nested widths "
+                "in model.granularities order"
+            )
+        resolved[granularity] = fraction
+        previous_width = prefix_width
+
+    if previous_width != resolved_intermediate_size:
+        last_granularity = granularities[-1]
+        raise ConfigError(
+            f"model.granularity_prefixes.{last_granularity} must resolve to "
+            f"model.intermediate_size={resolved_intermediate_size}"
+        )
+
+    return resolved
+
+
+def _build_ffn_prefix_metadata(
+    intermediate_size: Any,
+    granularity_prefixes: Mapping[str, Any],
+    granularities: list[str],
+) -> list[dict[str, Any]]:
+    resolved_intermediate_size = _positive_int(
+        intermediate_size,
+        "model.intermediate_size",
+    )
+    smallest_fraction = float(granularity_prefixes[granularities[0]])
+    metadata = []
+    previous_prefix_width = 0
+    for granularity in granularities:
+        fraction = float(granularity_prefixes[granularity])
+        prefix_width = int(resolved_intermediate_size * fraction)
+        if prefix_width <= previous_prefix_width:
+            raise ConfigError(
+                "model.granularity_prefixes must resolve to strictly increasing "
+                "FFN prefix widths"
+            )
+        metadata.append(
+            {
+                "name": granularity,
+                "display_name": granularity.upper(),
+                "ffn_ratio": fraction / smallest_fraction,
+                "full_intermediate_fraction": fraction,
+                "prefix_width": prefix_width,
+            }
+        )
+        previous_prefix_width = prefix_width
+    return metadata
+
+
+def _build_concat_block_metadata(
+    intermediate_size: Any,
+    granularity_prefixes: Mapping[str, Any],
+    granularities: list[str],
+) -> list[dict[str, Any]]:
+    prefix_metadata = _build_ffn_prefix_metadata(
+        intermediate_size,
+        granularity_prefixes,
+        granularities,
+    )
+    resolved_intermediate_size = _positive_int(
+        intermediate_size,
+        "model.intermediate_size",
+    )
+    base_block_width = prefix_metadata[0]["prefix_width"]
+    if base_block_width <= 0:
+        raise ConfigError("model.granularity_prefixes produced an empty base block")
+    if resolved_intermediate_size % base_block_width != 0:
+        raise ConfigError(
+            "model.intermediate_size must be divisible by the smallest FFN prefix "
+            "width to build CatLlama blocks"
+        )
+
+    block_metadata = []
+    previous_prefix_width = 0
+    for block_index, prefix_entry in enumerate(prefix_metadata):
+        prefix_width = prefix_entry["prefix_width"]
+        if prefix_width % base_block_width != 0:
+            raise ConfigError(
+                "model.granularity_prefixes must align with CatLlama block widths"
+            )
+        block_width = prefix_width - previous_prefix_width
+        if block_width <= 0:
+            raise ConfigError(
+                "model.granularity_prefixes must resolve to strictly increasing "
+                "CatLlama block widths"
+            )
+        block_metadata.append(
+            {
+                "name": f"block_{block_index + 1}",
+                "display_name": f"B{block_index + 1}",
+                "ffn_ratio": block_width / base_block_width,
+                "full_intermediate_fraction": prefix_width / resolved_intermediate_size,
+                "prefix_width": prefix_width,
+                "block_width": block_width,
+                "cumulative_prefix_width": prefix_width,
+            }
+        )
+        previous_prefix_width = prefix_width
+    return block_metadata
+
 
 def _apply_standalone_fixed_width(model: dict[str, Any], granularity: str) -> None:
-    if "intermediate_size" not in model:
-        return
+    source_intermediate_size = model.get("matformer_source_intermediate_size")
+    if source_intermediate_size is None:
+        source_intermediate_size = model.get("intermediate_size")
+    if source_intermediate_size is None:
+        source_d_model = model.get("d_model", model.get("hidden_size"))
+        if source_d_model is None:
+            return
+        source_intermediate_size = (
+            _positive_int(source_d_model, "model.d_model")
+            * DEFAULT_FFN_MULTIPLIER
+        )
+    else:
+        source_intermediate_size = _positive_int(
+            source_intermediate_size,
+            "model.intermediate_size",
+        )
 
-    source_intermediate_size = int(
-        model.get("matformer_source_intermediate_size", model["intermediate_size"])
-    )
-    if granularity not in GRANULARITY_INTERMEDIATE_FRACTIONS:
+    source_prefixes = model.get("granularity_prefixes")
+    if source_prefixes is None:
+        source_prefixes = {
+            granularity_name: numerator / denominator
+            for granularity_name, (numerator, denominator) in CANONICAL_GRANULARITY_PREFIX_FRACTIONS.items()
+        }
+    elif not isinstance(source_prefixes, Mapping):
+        raise ConfigError("model.granularity_prefixes must be a mapping")
+
+    if granularity not in source_prefixes:
         raise ConfigError(f"Unknown granularity for standalone run: {granularity}")
-    numerator, denominator = GRANULARITY_INTERMEDIATE_FRACTIONS[granularity]
-    intermediate_size = source_intermediate_size * numerator // denominator
+
+    source_fraction = float(source_prefixes[granularity])
+    intermediate_size = int(source_intermediate_size * source_fraction)
     if intermediate_size <= 0:
         raise ConfigError(
             f"Granularity {granularity} produced empty standalone FFN width for "
@@ -809,6 +1093,10 @@ def _apply_standalone_fixed_width(model: dict[str, Any], granularity: str) -> No
 
     model["matformer_source_intermediate_size"] = source_intermediate_size
     model["intermediate_size"] = intermediate_size
+    model["matformer_source_granularity_prefixes"] = copy.deepcopy(
+        dict(source_prefixes)
+    )
+    model["granularity_prefixes"] = {granularity: 1.0}
 
 
 def _resolve_output_paths(config: dict[str, Any]) -> None:

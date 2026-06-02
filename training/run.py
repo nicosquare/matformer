@@ -120,6 +120,7 @@ def run_training(
                 diagnostic = get_concat_layout_diagnostic(
                     config["model"]["intermediate_size"],
                     config["model"]["granularities"],
+                    granularity_prefixes=config["model"].get("granularity_prefixes"),
                 )
                 print(f"[cat-llama-diagnostic] {diagnostic}", flush=True)
             parameter_counts_by_granularity = build_artifact_parameter_counts(
@@ -420,7 +421,7 @@ def build_model(config: dict[str, Any]):
 
 def build_llama_config(config: dict[str, Any]) -> LlamaConfig:
     model = config["model"]
-    return LlamaConfig(
+    llama_config = LlamaConfig(
         vocab_size=model["vocab_size_assumption"],
         hidden_size=model.get("d_model", model.get("hidden_size")),
         intermediate_size=model["intermediate_size"],
@@ -431,6 +432,29 @@ def build_llama_config(config: dict[str, Any]) -> LlamaConfig:
         tie_word_embeddings=False,
         use_cache=False,
     )
+    if "d_model" in model or "hidden_size" in model:
+        llama_config.d_model = model.get("d_model", model.get("hidden_size"))
+    if "granularities" in model:
+        llama_config.granularities = list(model["granularities"])
+    if "granularity_prefixes" in model:
+        llama_config.granularity_prefixes = copy.deepcopy(
+            model["granularity_prefixes"]
+        )
+    if "matformer_source_granularity_prefixes" in model:
+        llama_config.matformer_source_granularity_prefixes = copy.deepcopy(
+            model["matformer_source_granularity_prefixes"]
+        )
+    if "ffn_prefix_metadata" in model:
+        llama_config.ffn_prefix_metadata = copy.deepcopy(model["ffn_prefix_metadata"])
+    if "ffn_concat_block_metadata" in model:
+        llama_config.ffn_concat_block_metadata = copy.deepcopy(
+            model["ffn_concat_block_metadata"]
+        )
+    if "matformer_source_intermediate_size" in model:
+        llama_config.matformer_source_intermediate_size = model[
+            "matformer_source_intermediate_size"
+        ]
+    return llama_config
 
 
 def load_tokenizer(config: dict[str, Any]):
@@ -2148,7 +2172,13 @@ def prefix_metadata_by_granularity(
     target = model.module if hasattr(model, "module") else model
     metadata = getattr(target, "ffn_prefix_metadata", None)
     if metadata is None:
-        metadata = get_ffn_prefix_metadata(model_config["intermediate_size"])
+        metadata = model_config.get("ffn_prefix_metadata")
+    if metadata is None:
+        metadata = get_ffn_prefix_metadata(
+            model_config["intermediate_size"],
+            granularity_prefixes=model_config.get("granularity_prefixes"),
+            granularities=model_config.get("granularities"),
+        )
 
     return {entry["name"]: dict(entry) for entry in metadata}
 

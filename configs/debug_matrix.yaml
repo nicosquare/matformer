@@ -11,13 +11,17 @@ model:
   variant: matformer_llama
   gradient_membership_correction: true
   tokenizer_name: hf-internal-testing/llama-tokenizer
+  d_model: 128
   num_layers: 2
   num_attention_heads: 4
-  hidden_size: 128
-  intermediate_size: 512
   context_length: 64
   vocab_size_assumption: 32000
   granularities: [s, m, l, xl]
+  granularity_prefixes:
+    s: 0.125
+    m: 0.25
+    l: 0.5
+    xl: 1.0
 
 training:
   token_budget: 8192
