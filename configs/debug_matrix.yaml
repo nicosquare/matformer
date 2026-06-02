@@ -3,19 +3,25 @@ run:
   phase_id: debug_matrix
   seed: 42
   output_root: outputs
+  continuation:
+    enabled: false
 
 model:
   base_model_name: debug-llama
   variant: matformer_llama
   gradient_membership_correction: true
   tokenizer_name: hf-internal-testing/llama-tokenizer
+  d_model: 128
   num_layers: 2
   num_attention_heads: 4
-  hidden_size: 128
-  intermediate_size: 512
   context_length: 64
   vocab_size_assumption: 32000
   granularities: [s, m, l, xl]
+  granularity_prefixes:
+    s: 0.125
+    m: 0.25
+    l: 0.5
+    xl: 1.0
 
 training:
   token_budget: 8192
@@ -23,6 +29,14 @@ training:
   batch_size_per_process: 2
   learning_rate: 0.0003
   warmup_steps: 0
+  # Pre-nested warmup is separate from scheduler warmup.
+  # Nested runs can use it to warm the model before block slicing/splitting.
+  pre_nested_warmup:
+    enabled: false
+    # Duration is applied only when warmup is enabled.
+    duration: 0
+    # Use epochs for longer runs or steps for short debug runs.
+    unit: epochs
   gradient_clip_norm: 1.0
   optimizer:
     name: adamw
@@ -77,6 +91,17 @@ outputs:
   save_run_summary_json: true
   save_checkpoints: false
   make_plots: false
+
+monitoring:
+  enabled: false
+  backend: wandb
+  project: debug_matrix
+  job_type: train
+  tags: [debug, matrix]
+  notes: debug matrix smoke and warmup validation
+  log_loss_by_granularity: true
+  log_validation_loss: true
+  log_stage_events: true
 
 evaluation:
   validation: true

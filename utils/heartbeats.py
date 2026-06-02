@@ -143,6 +143,8 @@ class HeartbeatWriter:
             f"rank={event['rank']}/{event['world_size']}",
             f"elapsed={event['elapsed_seconds']:.1f}s",
         ]
+        if event.get("message"):
+            parts.append(f"message={event['message']}")
         if event.get("step") is not None:
             if event.get("derived_max_steps") is not None:
                 parts.append(f"step={event['step']}/{event['derived_max_steps']}")
@@ -161,6 +163,14 @@ class HeartbeatWriter:
             parts.append(f"tok/s={event['tokens_per_second']}")
         if event.get("eta_seconds") is not None:
             parts.append(f"eta={event['eta_seconds']}s")
+        if event.get("continuation_status") is not None:
+            parts.append(f"continuation_status={event['continuation_status']}")
+        if event.get("latest_checkpoint_path") is not None:
+            parts.append(f"latest_checkpoint_path={event['latest_checkpoint_path']}")
+        if event.get("last_completed_step") is not None:
+            parts.append(f"last_completed_step={event['last_completed_step']}")
+        if event.get("resume_count") is not None:
+            parts.append(f"resume_count={event['resume_count']}")
         return " ".join(parts)
 
 

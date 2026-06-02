@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from utils.config import write_resolved_config
+from utils.monitoring import (
+    DEFAULT_MONITORING_BACKEND,
+    build_monitoring_series_metadata,
+)
 
 
 METRICS_COLUMNS = [
@@ -91,6 +95,14 @@ RUN_SUMMARY_FIELDS = [
     "phase_id",
     "model_family",
     "model_variant",
+    "continuation_state",
+    "monitoring_enabled",
+    "monitoring_backend",
+    "monitoring_series_metadata",
+    "warmup_policy",
+    "warmup_completion_step",
+    "warmup_completed",
+    "latest_checkpoint_path",
     "model_size_label",
     "model_shape_label",
     "sampling_mode",
@@ -197,12 +209,25 @@ def build_run_summary(
     if content_tokens_seen is None:
         content_tokens_seen = training.get("content_tokens_seen", tokens_seen)
     stop_reason = "failed" if status == "failed" else "not_started"
+    continuation_state = _build_continuation_state(config, tokens_seen, status)
+    warmup_policy = _build_warmup_policy(config)
 
     summary = {
         "run_id": run["run_id"],
         "phase_id": run["phase_id"],
         "model_family": run["model_family"],
         "model_variant": model["variant"],
+        "continuation_state": continuation_state,
+        "monitoring_enabled": bool(config.get("monitoring", {}).get("enabled", False)),
+        "monitoring_backend": config.get("monitoring", {}).get(
+            "backend",
+            DEFAULT_MONITORING_BACKEND,
+        ),
+        "monitoring_series_metadata": [],
+        "warmup_policy": warmup_policy,
+        "warmup_completion_step": warmup_policy.get("completion_step"),
+        "warmup_completed": warmup_policy.get("completed", False),
+        "latest_checkpoint_path": continuation_state.get("latest_checkpoint_path"),
         "model_size_label": _model_shape_label(run),
         "model_shape_label": _model_shape_label(run),
         "sampling_mode": _sampling_mode(run, training),
@@ -270,6 +295,81 @@ def build_run_summary(
 
     _require_fields(summary, RUN_SUMMARY_FIELDS, "run_summary.json")
     return summary
+
+
+def build_monitoring_summary_fields(
+    config: Mapping[str, Any],
+    metrics_rows: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    monitoring = config.get("monitoring", {})
+    if not isinstance(monitoring, Mapping) or not monitoring.get("enabled", False):
+        return {
+            "monitoring_backend": monitoring.get(
+                "backend",
+                DEFAULT_MONITORING_BACKEND,
+            )
+            if isinstance(monitoring, Mapping)
+            else DEFAULT_MONITORING_BACKEND,
+            "monitoring_series_metadata": [],
+        }
+
+    return {
+        "monitoring_backend": monitoring.get(
+            "backend",
+            DEFAULT_MONITORING_BACKEND,
+        ),
+        "monitoring_series_metadata": build_monitoring_series_metadata(
+            config,
+            metrics_rows,
+        ),
+    }
+
+
+def _build_continuation_state(
+    config: Mapping[str, Any],
+    tokens_seen: int,
+    status: str,
+) -> dict[str, Any]:
+    run = config["run"]
+    continuation = run.get("continuation", {})
+    if not isinstance(continuation, Mapping):
+        continuation = {}
+
+    continuation_enabled = bool(continuation.get("enabled", False))
+    continuation_status = continuation.get("status")
+    if continuation_status in (None, ""):
+        continuation_status = "fresh"
+        if continuation_enabled:
+            if status == "failed":
+                continuation_status = "failed"
+            elif status == "completed":
+                continuation_status = "completed"
+
+    return {
+        "run_id": run["run_id"],
+        "output_dir": run["output_dir"],
+        "latest_checkpoint_path": continuation.get("latest_checkpoint_path"),
+        "last_completed_step": continuation.get("last_completed_step", 0),
+        "tokens_seen": tokens_seen,
+        "status": continuation_status,
+        "resume_count": continuation.get("resume_count", 0),
+    }
+
+
+def _build_warmup_policy(config: Mapping[str, Any]) -> dict[str, Any]:
+    training = config.get("training", {})
+    warmup = training.get("pre_nested_warmup", {})
+    if not isinstance(warmup, Mapping):
+        warmup = {}
+
+    return {
+        "enabled": bool(warmup.get("enabled", False)),
+        "duration": warmup.get("duration", 0),
+        "unit": warmup.get("unit", "epochs"),
+        "completed": warmup.get("completed", False),
+        "completion_step": warmup.get("completion_step"),
+        "transition_reason": warmup.get("transition_reason"),
+    }
 
 
 def write_run_summary(

@@ -165,6 +165,182 @@ def test_write_config_metrics_and_run_summary(tmp_path):
     assert saved_summary["notes"] == ["smoke test"]
 
 
+def test_run_summary_includes_default_long_run_metadata(tmp_path):
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+    )
+
+    summary = build_run_summary(config, tokens_seen=0)
+    summary_path = write_run_summary(output_dir, summary)
+
+    saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert saved_summary["monitoring_enabled"] is False
+    assert saved_summary["monitoring_backend"] == "wandb"
+    assert saved_summary["monitoring_series_metadata"] == []
+    assert saved_summary["latest_checkpoint_path"] is None
+    assert saved_summary["continuation_state"] == {
+        "run_id": "debug-nested-001",
+        "output_dir": str(output_dir),
+        "latest_checkpoint_path": None,
+        "last_completed_step": 0,
+        "tokens_seen": 0,
+        "status": "fresh",
+        "resume_count": 0,
+    }
+    assert saved_summary["warmup_policy"] == {
+        "enabled": False,
+        "duration": 0,
+        "unit": "epochs",
+        "completed": False,
+        "completion_step": None,
+        "transition_reason": None,
+    }
+    assert saved_summary["warmup_completion_step"] is None
+    assert saved_summary["warmup_completed"] is False
+
+
+@pytest.mark.parametrize(
+    "continuation_overrides, expected_state",
+    [
+        (
+            [],
+            {
+                "status": "fresh",
+                "latest_checkpoint_path": None,
+                "last_completed_step": 0,
+                "resume_count": 0,
+            },
+        ),
+        (
+            [
+                "run.continuation.enabled=true",
+                "run.continuation.status=resumed",
+                "run.continuation.latest_checkpoint_path=/tmp/debug-nested-001/checkpoints/latest.pt",
+                "run.continuation.last_completed_step=8",
+                "run.continuation.resume_count=1",
+            ],
+            {
+                "status": "resumed",
+                "latest_checkpoint_path": "/tmp/debug-nested-001/checkpoints/latest.pt",
+                "last_completed_step": 8,
+                "resume_count": 1,
+            },
+        ),
+        (
+            [
+                "run.continuation.enabled=true",
+                "run.continuation.status=completed",
+                "run.continuation.latest_checkpoint_path=/tmp/debug-nested-001/checkpoints/final.pt",
+                "run.continuation.last_completed_step=16",
+                "run.continuation.resume_count=2",
+            ],
+            {
+                "status": "completed",
+                "latest_checkpoint_path": "/tmp/debug-nested-001/checkpoints/final.pt",
+                "last_completed_step": 16,
+                "resume_count": 2,
+            },
+        ),
+    ],
+)
+def test_run_summary_records_continuation_state_transitions(
+    tmp_path,
+    continuation_overrides,
+    expected_state,
+):
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=continuation_overrides,
+    )
+
+    summary = build_run_summary(config, tokens_seen=128)
+    summary_path = write_run_summary(output_dir, summary)
+
+    saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert saved_summary["continuation_state"]["run_id"] == "debug-nested-001"
+    assert saved_summary["continuation_state"]["output_dir"] == str(output_dir)
+    assert saved_summary["continuation_state"]["status"] == expected_state["status"]
+    assert (
+        saved_summary["continuation_state"]["latest_checkpoint_path"]
+        == expected_state["latest_checkpoint_path"]
+    )
+    assert (
+        saved_summary["continuation_state"]["last_completed_step"]
+        == expected_state["last_completed_step"]
+    )
+    assert (
+        saved_summary["continuation_state"]["resume_count"]
+        == expected_state["resume_count"]
+    )
+    assert saved_summary["latest_checkpoint_path"] == expected_state[
+        "latest_checkpoint_path"
+    ]
+
+
+def test_warmup_run_summary_records_completion_and_transition_fields(tmp_path):
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "training.max_steps=2",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "training.pre_nested_warmup.enabled=true",
+            "training.pre_nested_warmup.duration=1",
+            "training.pre_nested_warmup.unit=steps",
+            "evaluation.validation=false",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+
+    run_training(
+        config,
+        model=TinyExtractionModel(),
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    saved_config = json.loads((output_dir / "config.json").read_text(encoding="utf-8"))
+    saved_summary = json.loads(
+        (output_dir / "run_summary.json").read_text(encoding="utf-8")
+    )
+
+    assert saved_config["training"]["pre_nested_warmup"] == {
+        "enabled": True,
+        "duration": 1,
+        "unit": "steps",
+        "active": True,
+        "completed": True,
+        "completion_step": 1,
+        "transition_reason": "warmup_duration_reached",
+    }
+    assert saved_summary["warmup_policy"] == {
+        "enabled": True,
+        "duration": 1,
+        "unit": "steps",
+        "completed": True,
+        "completion_step": 1,
+        "transition_reason": "warmup_duration_reached",
+    }
+    assert saved_summary["warmup_completion_step"] == 1
+    assert saved_summary["warmup_completed"] is True
+
+
 def test_write_failed_run_summary_records_failure_note(tmp_path):
     output_dir = tmp_path / "debug-standalone-s-001"
     config = resolve_run_config(

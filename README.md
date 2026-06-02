@@ -60,6 +60,42 @@ The debug matrix runner also reads `OUTPUT_ROOT`:
 OUTPUT_ROOT=/mnt/experiments/matformer bash scripts/run_debug_matrix.sh
 ```
 
+To verify the pre-nested warmup path on a nested debug run, add the warmup
+overrides directly:
+
+```bash
+python train.py \
+  --config configs/debug_matrix.yaml \
+  --run-id debug-nested-001 \
+  --output-root "$OUTPUT_ROOT" \
+  --override training.pre_nested_warmup.enabled=true \
+  --override training.pre_nested_warmup.duration=1 \
+  --override training.pre_nested_warmup.unit=steps
+```
+
+That warmup phase is nested-only. Standalone runs bypass it even if the
+overrides are present.
+
+To relaunch a preempted nested run with W&B enabled, keep the same `run-id`
+and turn on continuation explicitly:
+
+```bash
+python train.py \
+  --config configs/debug_matrix.yaml \
+  --run-id debug-nested-001 \
+  --output-root "$OUTPUT_ROOT" \
+  --override run.continuation.enabled=true \
+  --override monitoring.enabled=true \
+  --override monitoring.backend=wandb \
+  --override training.pre_nested_warmup.enabled=true \
+  --override training.pre_nested_warmup.duration=2 \
+  --override training.pre_nested_warmup.unit=epochs
+```
+
+This path resumes from the latest checkpoint in the same output directory,
+publishes per-granularity loss series to W&B, and still keeps warmup
+nested-only.
+
 For GPU clusters, submit the same Phase 3 validation through Slurm from the
 repository root:
 

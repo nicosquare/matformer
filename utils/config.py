@@ -16,6 +16,7 @@ from utils.model_size import (
     derive_model_size_slug,
     derive_token_budget_slug,
 )
+from utils.monitoring import DEFAULT_MONITORING_BACKEND, VALID_MONITORING_BACKENDS
 
 
 VALID_GRANULARITIES = {"s", "m", "l", "xl"}
@@ -25,14 +26,17 @@ VALID_LEARNING_RATE_SCALE_RULES = {"none", "linear", "sqrt"}
 VALID_OPTIMIZER_NAMES = {"adamw", "sgd"}
 VALID_COMPLETION_LABELS = {"debug", "run"}
 VALID_GRANULARITY_SAMPLING = {"all", "random"}
+VALID_PRE_NESTED_WARMUP_UNITS = {"epochs", "steps"}
 DEFAULT_MODEL_VARIANT = "matformer_llama"
 VALID_SAMPLING_MODES = {"nested-random", "nested-all", "standalone"}
-GRANULARITY_INTERMEDIATE_FRACTIONS = {
+CANONICAL_GRANULARITY_ORDER = ("s", "m", "l", "xl")
+CANONICAL_GRANULARITY_PREFIX_FRACTIONS = {
     "s": (1, 8),
     "m": (1, 4),
     "l": (1, 2),
     "xl": (1, 1),
 }
+DEFAULT_FFN_MULTIPLIER = 4
 OPTIMIZER_DEFAULT_KWARGS = {
     "adamw": {
         "betas": [0.9, 0.95],
@@ -172,6 +176,7 @@ def resolve_run_config(
         resolved["run"]["output_dir"] = str(output_dir)
 
     _resolve_model_variant_defaults(resolved)
+    _resolve_model_dimension_and_granularity_metadata(resolved)
     _resolve_naming_defaults(resolved)
     _resolve_output_paths(resolved)
     _resolve_sampling_mode_defaults(
@@ -182,6 +187,7 @@ def resolve_run_config(
     )
     _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
     _resolve_parameter_reporting_defaults(resolved)
+    _resolve_long_run_defaults(resolved)
     validate_run_config(resolved)
     return resolved
 
@@ -197,6 +203,7 @@ def resolve_all_run_configs(
     if "matrix" not in config:
         resolved = _compose_single_run(config)
         _resolve_model_variant_defaults(resolved)
+        _resolve_model_dimension_and_granularity_metadata(resolved)
         _resolve_naming_defaults(resolved)
         _resolve_output_paths(resolved)
         _resolve_sampling_mode_defaults(
@@ -207,6 +214,7 @@ def resolve_all_run_configs(
         )
         _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
         _resolve_parameter_reporting_defaults(resolved)
+        _resolve_long_run_defaults(resolved)
         validate_run_config(resolved)
         return [resolved]
 
@@ -220,6 +228,7 @@ def resolve_all_run_configs(
     for run_entry in runs:
         resolved = _compose_matrix_run(config, run_entry)
         _resolve_model_variant_defaults(resolved)
+        _resolve_model_dimension_and_granularity_metadata(resolved)
         _resolve_naming_defaults(resolved)
         _resolve_output_paths(resolved)
         _resolve_sampling_mode_defaults(
@@ -230,6 +239,7 @@ def resolve_all_run_configs(
         )
         _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
         _resolve_parameter_reporting_defaults(resolved)
+        _resolve_long_run_defaults(resolved)
         validate_run_config(resolved)
         resolved_runs.append(resolved)
 
@@ -280,6 +290,13 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
     model = _require_mapping(config, "model")
     training = _require_mapping(config, "training")
     dataset = _require_mapping(config, "dataset")
+    continuation = run.get("continuation")
+    if not isinstance(continuation, Mapping):
+        raise ConfigError("Missing mapping section: run.continuation")
+    monitoring = _require_mapping(config, "monitoring")
+    warmup = training.get("pre_nested_warmup")
+    if not isinstance(warmup, Mapping):
+        raise ConfigError("Missing mapping section: training.pre_nested_warmup")
     _require_mapping(config, "outputs")
     _require_mapping(config, "evaluation")
 
@@ -348,6 +365,31 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "optimizer_kwargs",
         ],
     )
+    _require_fields(continuation, "run.continuation", ["enabled"])
+    _require_fields(
+        monitoring,
+        "monitoring",
+        [
+            "enabled",
+            "backend",
+            "project",
+            "entity",
+            "group",
+            "job_type",
+            "name",
+            "tags",
+            "notes",
+            "mode",
+            "log_loss_by_granularity",
+            "log_validation_loss",
+            "log_stage_events",
+        ],
+    )
+    _require_fields(
+        warmup,
+        "training.pre_nested_warmup",
+        ["enabled", "duration", "unit"],
+    )
     scheduler = training.get("scheduler")
     if not isinstance(scheduler, Mapping):
         raise ConfigError("Missing mapping section: training.scheduler")
@@ -415,6 +457,92 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             f"{sorted(VALID_MODEL_VARIANTS)}"
         )
 
+    if "d_model" in model and "hidden_size" in model:
+        if _positive_int(model["d_model"], "model.d_model") != _positive_int(
+            model["hidden_size"],
+            "model.hidden_size",
+        ):
+            raise ConfigError("model.d_model must match model.hidden_size when both are set")
+    if "d_model" in model:
+        _positive_int(model["d_model"], "model.d_model")
+
+    if not isinstance(continuation.get("enabled"), bool):
+        raise ConfigError("run.continuation.enabled must be a boolean")
+
+    if not isinstance(monitoring.get("enabled"), bool):
+        raise ConfigError("monitoring.enabled must be a boolean")
+    if monitoring.get("project") is not None and not isinstance(
+        monitoring.get("project"),
+        str,
+    ):
+        raise ConfigError("monitoring.project must be a string or null")
+    if monitoring.get("entity") is not None and not isinstance(
+        monitoring.get("entity"),
+        str,
+    ):
+        raise ConfigError("monitoring.entity must be a string or null")
+    if monitoring.get("group") is not None and not isinstance(
+        monitoring.get("group"),
+        str,
+    ):
+        raise ConfigError("monitoring.group must be a string or null")
+    if monitoring.get("job_type") is not None and not isinstance(
+        monitoring.get("job_type"),
+        str,
+    ):
+        raise ConfigError("monitoring.job_type must be a string or null")
+    if monitoring.get("name") is not None and not isinstance(
+        monitoring.get("name"),
+        str,
+    ):
+        raise ConfigError("monitoring.name must be a string or null")
+    if monitoring.get("mode") is not None and not isinstance(
+        monitoring.get("mode"),
+        str,
+    ):
+        raise ConfigError("monitoring.mode must be a string or null")
+    if not isinstance(monitoring.get("tags"), list):
+        raise ConfigError("monitoring.tags must be a list")
+    if any(not isinstance(tag, str) for tag in monitoring.get("tags", [])):
+        raise ConfigError("monitoring.tags must contain only strings")
+    if monitoring.get("notes") is not None and not isinstance(
+        monitoring.get("notes"),
+        str,
+    ):
+        raise ConfigError("monitoring.notes must be a string or null")
+    if not isinstance(monitoring.get("log_loss_by_granularity"), bool):
+        raise ConfigError("monitoring.log_loss_by_granularity must be a boolean")
+    if not isinstance(monitoring.get("log_validation_loss"), bool):
+        raise ConfigError("monitoring.log_validation_loss must be a boolean")
+    if not isinstance(monitoring.get("log_stage_events"), bool):
+        raise ConfigError("monitoring.log_stage_events must be a boolean")
+    if monitoring.get("backend") not in VALID_MONITORING_BACKENDS:
+        raise ConfigError(
+            "monitoring.backend must be one of "
+            f"{sorted(VALID_MONITORING_BACKENDS)}"
+        )
+
+    warmup_enabled = warmup.get("enabled")
+    if not isinstance(warmup_enabled, bool):
+        raise ConfigError("training.pre_nested_warmup.enabled must be a boolean")
+    warmup_duration = _nonnegative_int(
+        warmup["duration"],
+        "training.pre_nested_warmup.duration",
+    )
+    warmup_unit = warmup.get("unit")
+    if not isinstance(warmup_unit, str):
+        raise ConfigError("training.pre_nested_warmup.unit must be a string")
+    warmup_unit = warmup_unit.strip()
+    if warmup_unit not in VALID_PRE_NESTED_WARMUP_UNITS:
+        raise ConfigError(
+            "training.pre_nested_warmup.unit must be one of "
+            f"{sorted(VALID_PRE_NESTED_WARMUP_UNITS)}"
+        )
+    if warmup_enabled and warmup_duration <= 0:
+        raise ConfigError(
+            "training.pre_nested_warmup.duration must be positive when enabled"
+        )
+
     if model_topology == "standalone":
         granularity = run.get("granularity")
         if granularity not in VALID_GRANULARITIES:
@@ -431,6 +559,8 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             f"{sorted(VALID_GRANULARITY_SAMPLING)}"
         )
     _validate_sampling_mode(run, granularity_sampling)
+
+    _validate_granularity_prefix_layout(model)
 
     _validate_dmodel256_pilot_fields(run, model, training)
 
@@ -449,7 +579,14 @@ def _compose_matrix_run(
     run_entry: Mapping[str, Any],
 ) -> dict[str, Any]:
     resolved: dict[str, Any] = {}
-    for section_name in ["model", "training", "dataset", "outputs", "evaluation"]:
+    for section_name in [
+        "model",
+        "training",
+        "dataset",
+        "outputs",
+        "evaluation",
+        "monitoring",
+    ]:
         if section_name in config:
             resolved[section_name] = copy.deepcopy(config[section_name])
 
@@ -472,6 +609,106 @@ def _resolve_model_variant_defaults(config: dict[str, Any]) -> None:
         ),
         "model.gradient_membership_correction",
     )
+
+
+def _resolve_model_dimension_and_granularity_metadata(config: dict[str, Any]) -> None:
+    model = config.setdefault("model", {})
+    run = config.get("run", {})
+
+    hidden_size = model.get("hidden_size")
+    d_model = model.get("d_model")
+    if d_model is None and hidden_size is not None:
+        model["d_model"] = hidden_size
+    elif d_model is not None and hidden_size is not None:
+        if _positive_int(d_model, "model.d_model") != _positive_int(
+            hidden_size,
+            "model.hidden_size",
+        ):
+            raise ConfigError("model.d_model must match model.hidden_size when both are set")
+
+    if run.get("model_family") == "standalone":
+        _resolve_source_intermediate_size_from_d_model(model)
+    else:
+        _resolve_intermediate_size_from_d_model(model)
+
+    granularities = model.get("granularities")
+    if not isinstance(granularities, list) or not granularities:
+        return
+
+    prefixes = model.get("granularity_prefixes")
+    if prefixes is None:
+        prefixes = {
+            granularity: (
+                CANONICAL_GRANULARITY_PREFIX_FRACTIONS[granularity][0]
+                / CANONICAL_GRANULARITY_PREFIX_FRACTIONS[granularity][1]
+            )
+            for granularity in granularities
+        }
+    elif not isinstance(prefixes, Mapping):
+        raise ConfigError("model.granularity_prefixes must be a mapping")
+
+    resolved_prefixes = _resolve_granularity_prefix_map(
+        prefixes,
+        granularities,
+        model["intermediate_size"],
+    )
+    model["granularity_prefixes"] = resolved_prefixes
+    model["ffn_prefix_metadata"] = _build_ffn_prefix_metadata(
+        model["intermediate_size"],
+        resolved_prefixes,
+        granularities,
+    )
+    if model.get("variant") == "cat_llama":
+        model["ffn_concat_block_metadata"] = _build_concat_block_metadata(
+            model["intermediate_size"],
+            resolved_prefixes,
+            granularities,
+        )
+
+
+def _resolve_intermediate_size_from_d_model(model: dict[str, Any]) -> None:
+    d_model = model.get("d_model")
+    if d_model is None:
+        return
+
+    resolved_d_model = _positive_int(d_model, "model.d_model")
+    expected_intermediate_size = resolved_d_model * DEFAULT_FFN_MULTIPLIER
+
+    if "intermediate_size" in model:
+        resolved_intermediate_size = _positive_int(
+            model["intermediate_size"],
+            "model.intermediate_size",
+        )
+        if resolved_intermediate_size != expected_intermediate_size:
+            raise ConfigError(
+                "model.intermediate_size must equal "
+                f"model.d_model * {DEFAULT_FFN_MULTIPLIER}"
+            )
+
+    model["intermediate_size"] = expected_intermediate_size
+
+
+def _resolve_source_intermediate_size_from_d_model(model: dict[str, Any]) -> None:
+    d_model = model.get("d_model")
+    if d_model is None:
+        return
+
+    resolved_d_model = _positive_int(d_model, "model.d_model")
+    expected_intermediate_size = resolved_d_model * DEFAULT_FFN_MULTIPLIER
+    source_intermediate_size = model.get("matformer_source_intermediate_size")
+    if source_intermediate_size is not None:
+        resolved_source_intermediate_size = _positive_int(
+            source_intermediate_size,
+            "model.matformer_source_intermediate_size",
+        )
+        if resolved_source_intermediate_size != expected_intermediate_size:
+            raise ConfigError(
+                "model.matformer_source_intermediate_size must equal "
+                f"model.d_model * {DEFAULT_FFN_MULTIPLIER}"
+            )
+        return
+
+    model["matformer_source_intermediate_size"] = expected_intermediate_size
 
 
 def _normalize_model_variant(raw_variant: Any) -> str:
@@ -645,41 +882,209 @@ def _validate_dmodel256_pilot_fields(
         )
         if _positive_int(model["d_model"], "model.d_model") != 256:
             raise ConfigError("model_shape_label=dmodel256 requires model.d_model=256")
-        _validate_granularity_prefixes(model["granularity_prefixes"])
 
 
-def _validate_granularity_prefixes(prefixes: Any) -> None:
+def _validate_granularity_prefix_layout(model: Mapping[str, Any]) -> None:
+    granularities = model.get("granularities")
+    if not isinstance(granularities, list) or not granularities:
+        return
+
+    prefixes = model.get("granularity_prefixes")
+    if prefixes is None:
+        raise ConfigError("model.granularity_prefixes must be a mapping")
+
+    _positive_int(model.get("intermediate_size"), "model.intermediate_size")
+    _resolve_granularity_prefix_map(
+        prefixes,
+        granularities,
+        model["intermediate_size"],
+    )
+
+
+def _resolve_granularity_prefix_map(
+    prefixes: Any,
+    granularities: list[str],
+    intermediate_size: Any,
+) -> dict[str, float]:
     if not isinstance(prefixes, Mapping):
         raise ConfigError("model.granularity_prefixes must be a mapping")
 
-    missing = sorted(VALID_GRANULARITIES - set(prefixes))
-    if missing:
-        raise ConfigError(f"model.granularity_prefixes missing keys: {missing}")
+    missing = [granularity for granularity in granularities if granularity not in prefixes]
+    extra = sorted(str(granularity) for granularity in prefixes if granularity not in granularities)
+    if missing or extra:
+        details = []
+        if missing:
+            details.append(f"missing keys: {missing}")
+        if extra:
+            details.append(f"extra keys: {extra}")
+        raise ConfigError(
+            "model.granularity_prefixes must match model.granularities; "
+            + ", ".join(details)
+        )
 
-    for granularity in VALID_GRANULARITIES:
+    resolved: dict[str, float] = {}
+    previous_width = 0
+    resolved_intermediate_size = _positive_int(
+        intermediate_size,
+        "model.intermediate_size",
+    )
+    for granularity in granularities:
         try:
-            value = float(prefixes[granularity])
+            fraction = float(prefixes[granularity])
         except (TypeError, ValueError) as error:
             raise ConfigError(
                 f"model.granularity_prefixes.{granularity} must be numeric"
             ) from error
-        if value <= 0:
+        if fraction <= 0:
             raise ConfigError(
                 f"model.granularity_prefixes.{granularity} must be positive"
             )
 
+        prefix_width = int(resolved_intermediate_size * fraction)
+        if prefix_width <= 0:
+            raise ConfigError(
+                f"model.granularity_prefixes.{granularity} resolved to an empty width"
+            )
+        if prefix_width > resolved_intermediate_size:
+            raise ConfigError(
+                f"model.granularity_prefixes.{granularity} exceeds "
+                f"model.intermediate_size={resolved_intermediate_size}"
+            )
+        if prefix_width <= previous_width:
+            raise ConfigError(
+                "model.granularity_prefixes must resolve to strictly nested widths "
+                "in model.granularities order"
+            )
+        resolved[granularity] = fraction
+        previous_width = prefix_width
+
+    if previous_width != resolved_intermediate_size:
+        last_granularity = granularities[-1]
+        raise ConfigError(
+            f"model.granularity_prefixes.{last_granularity} must resolve to "
+            f"model.intermediate_size={resolved_intermediate_size}"
+        )
+
+    return resolved
+
+
+def _build_ffn_prefix_metadata(
+    intermediate_size: Any,
+    granularity_prefixes: Mapping[str, Any],
+    granularities: list[str],
+) -> list[dict[str, Any]]:
+    resolved_intermediate_size = _positive_int(
+        intermediate_size,
+        "model.intermediate_size",
+    )
+    smallest_fraction = float(granularity_prefixes[granularities[0]])
+    metadata = []
+    previous_prefix_width = 0
+    for granularity in granularities:
+        fraction = float(granularity_prefixes[granularity])
+        prefix_width = int(resolved_intermediate_size * fraction)
+        if prefix_width <= previous_prefix_width:
+            raise ConfigError(
+                "model.granularity_prefixes must resolve to strictly increasing "
+                "FFN prefix widths"
+            )
+        metadata.append(
+            {
+                "name": granularity,
+                "display_name": granularity.upper(),
+                "ffn_ratio": fraction / smallest_fraction,
+                "full_intermediate_fraction": fraction,
+                "prefix_width": prefix_width,
+            }
+        )
+        previous_prefix_width = prefix_width
+    return metadata
+
+
+def _build_concat_block_metadata(
+    intermediate_size: Any,
+    granularity_prefixes: Mapping[str, Any],
+    granularities: list[str],
+) -> list[dict[str, Any]]:
+    prefix_metadata = _build_ffn_prefix_metadata(
+        intermediate_size,
+        granularity_prefixes,
+        granularities,
+    )
+    resolved_intermediate_size = _positive_int(
+        intermediate_size,
+        "model.intermediate_size",
+    )
+    base_block_width = prefix_metadata[0]["prefix_width"]
+    if base_block_width <= 0:
+        raise ConfigError("model.granularity_prefixes produced an empty base block")
+    if resolved_intermediate_size % base_block_width != 0:
+        raise ConfigError(
+            "model.intermediate_size must be divisible by the smallest FFN prefix "
+            "width to build CatLlama blocks"
+        )
+
+    block_metadata = []
+    previous_prefix_width = 0
+    for block_index, prefix_entry in enumerate(prefix_metadata):
+        prefix_width = prefix_entry["prefix_width"]
+        if prefix_width % base_block_width != 0:
+            raise ConfigError(
+                "model.granularity_prefixes must align with CatLlama block widths"
+            )
+        block_width = prefix_width - previous_prefix_width
+        if block_width <= 0:
+            raise ConfigError(
+                "model.granularity_prefixes must resolve to strictly increasing "
+                "CatLlama block widths"
+            )
+        block_metadata.append(
+            {
+                "name": f"block_{block_index + 1}",
+                "display_name": f"B{block_index + 1}",
+                "ffn_ratio": block_width / base_block_width,
+                "full_intermediate_fraction": prefix_width / resolved_intermediate_size,
+                "prefix_width": prefix_width,
+                "block_width": block_width,
+                "cumulative_prefix_width": prefix_width,
+            }
+        )
+        previous_prefix_width = prefix_width
+    return block_metadata
+
 
 def _apply_standalone_fixed_width(model: dict[str, Any], granularity: str) -> None:
-    if "intermediate_size" not in model:
-        return
+    source_intermediate_size = model.get("matformer_source_intermediate_size")
+    if source_intermediate_size is None:
+        source_intermediate_size = model.get("intermediate_size")
+    if source_intermediate_size is None:
+        source_d_model = model.get("d_model", model.get("hidden_size"))
+        if source_d_model is None:
+            return
+        source_intermediate_size = (
+            _positive_int(source_d_model, "model.d_model")
+            * DEFAULT_FFN_MULTIPLIER
+        )
+    else:
+        source_intermediate_size = _positive_int(
+            source_intermediate_size,
+            "model.intermediate_size",
+        )
 
-    source_intermediate_size = int(
-        model.get("matformer_source_intermediate_size", model["intermediate_size"])
-    )
-    if granularity not in GRANULARITY_INTERMEDIATE_FRACTIONS:
+    source_prefixes = model.get("granularity_prefixes")
+    if source_prefixes is None:
+        source_prefixes = {
+            granularity_name: numerator / denominator
+            for granularity_name, (numerator, denominator) in CANONICAL_GRANULARITY_PREFIX_FRACTIONS.items()
+        }
+    elif not isinstance(source_prefixes, Mapping):
+        raise ConfigError("model.granularity_prefixes must be a mapping")
+
+    if granularity not in source_prefixes:
         raise ConfigError(f"Unknown granularity for standalone run: {granularity}")
-    numerator, denominator = GRANULARITY_INTERMEDIATE_FRACTIONS[granularity]
-    intermediate_size = source_intermediate_size * numerator // denominator
+
+    source_fraction = float(source_prefixes[granularity])
+    intermediate_size = int(source_intermediate_size * source_fraction)
     if intermediate_size <= 0:
         raise ConfigError(
             f"Granularity {granularity} produced empty standalone FFN width for "
@@ -688,6 +1093,10 @@ def _apply_standalone_fixed_width(model: dict[str, Any], granularity: str) -> No
 
     model["matformer_source_intermediate_size"] = source_intermediate_size
     model["intermediate_size"] = intermediate_size
+    model["matformer_source_granularity_prefixes"] = copy.deepcopy(
+        dict(source_prefixes)
+    )
+    model["granularity_prefixes"] = {granularity: 1.0}
 
 
 def _resolve_output_paths(config: dict[str, Any]) -> None:
@@ -732,6 +1141,12 @@ def _resolve_parameter_reporting_defaults(config: dict[str, Any]) -> None:
         raise ConfigError("parameter_reporting must be a mapping when provided")
 
     reporting.setdefault("lm_head_counting", "separately_counted")
+
+
+def _resolve_long_run_defaults(config: dict[str, Any]) -> None:
+    _resolve_continuation_defaults(config)
+    _resolve_monitoring_defaults(config)
+    _resolve_pre_nested_warmup_defaults(config)
 
 
 def _select_representative_parameter_counts(
@@ -937,6 +1352,110 @@ def _resolve_training_schedule_defaults(
     }
     training["scheduler_name"] = scheduler_name
     training["scheduler_kwargs"] = scheduler_kwargs
+
+
+def _resolve_continuation_defaults(config: dict[str, Any]) -> None:
+    run = config.setdefault("run", {})
+    continuation = run.get("continuation")
+    if continuation is None:
+        continuation = {}
+    if not isinstance(continuation, dict):
+        raise ConfigError("run.continuation must be a mapping when provided")
+
+    continuation["enabled"] = _normalize_bool(
+        continuation.get("enabled", False),
+        "run.continuation.enabled",
+    )
+    run["continuation"] = continuation
+
+
+def _resolve_monitoring_defaults(config: dict[str, Any]) -> None:
+    monitoring = config.get("monitoring")
+    if monitoring is None:
+        monitoring = {}
+    if not isinstance(monitoring, dict):
+        raise ConfigError("monitoring must be a mapping when provided")
+
+    monitoring["enabled"] = _normalize_bool(
+        monitoring.get("enabled", False),
+        "monitoring.enabled",
+    )
+    backend = monitoring.get("backend", DEFAULT_MONITORING_BACKEND)
+    if not isinstance(backend, str):
+        raise ConfigError("monitoring.backend must be a string")
+    backend = backend.strip()
+    if backend not in VALID_MONITORING_BACKENDS:
+        raise ConfigError(
+            "monitoring.backend must be one of "
+            f"{sorted(VALID_MONITORING_BACKENDS)}"
+        )
+    monitoring["backend"] = backend
+    run = config.get("run", {})
+    monitoring["project"] = _normalize_optional_string(
+        monitoring.get("project", run.get("phase_id") or run.get("output_group"))
+    )
+    monitoring["entity"] = _normalize_optional_string(monitoring.get("entity"))
+    monitoring["group"] = _normalize_optional_string(
+        monitoring.get("group", run.get("output_group"))
+    )
+    monitoring["job_type"] = _normalize_optional_string(
+        monitoring.get("job_type", "train")
+    )
+    monitoring["name"] = _normalize_optional_string(
+        monitoring.get("name", run.get("run_id"))
+    )
+    monitoring["tags"] = _normalize_string_list(monitoring.get("tags", []))
+    monitoring["notes"] = _normalize_optional_string(monitoring.get("notes"))
+    monitoring["mode"] = _normalize_optional_string(monitoring.get("mode"))
+    monitoring["log_loss_by_granularity"] = _normalize_bool(
+        monitoring.get("log_loss_by_granularity", True),
+        "monitoring.log_loss_by_granularity",
+    )
+    monitoring["log_validation_loss"] = _normalize_bool(
+        monitoring.get("log_validation_loss", True),
+        "monitoring.log_validation_loss",
+    )
+    monitoring["log_stage_events"] = _normalize_bool(
+        monitoring.get("log_stage_events", True),
+        "monitoring.log_stage_events",
+    )
+    config["monitoring"] = monitoring
+
+
+def _resolve_pre_nested_warmup_defaults(config: dict[str, Any]) -> None:
+    training = config.setdefault("training", {})
+    warmup = training.get("pre_nested_warmup")
+    if warmup is None:
+        warmup = {}
+    if not isinstance(warmup, dict):
+        raise ConfigError(
+            "training.pre_nested_warmup must be a mapping when provided"
+        )
+
+    warmup["enabled"] = _normalize_bool(
+        warmup.get("enabled", False),
+        "training.pre_nested_warmup.enabled",
+    )
+    warmup["duration"] = _nonnegative_int(
+        warmup.get("duration", 0),
+        "training.pre_nested_warmup.duration",
+    )
+    warmup_unit = warmup.get("unit", "epochs")
+    if not isinstance(warmup_unit, str):
+        raise ConfigError("training.pre_nested_warmup.unit must be a string")
+    warmup_unit = warmup_unit.strip()
+    if warmup_unit not in VALID_PRE_NESTED_WARMUP_UNITS:
+        raise ConfigError(
+            "training.pre_nested_warmup.unit must be one of "
+            f"{sorted(VALID_PRE_NESTED_WARMUP_UNITS)}"
+        )
+    warmup["unit"] = warmup_unit
+    run = config.get("run", {})
+    warmup["active"] = bool(warmup["enabled"]) and run.get("model_family") == "nested"
+    warmup["completed"] = bool(warmup.get("completed", False))
+    warmup["completion_step"] = warmup.get("completion_step")
+    warmup["transition_reason"] = warmup.get("transition_reason")
+    training["pre_nested_warmup"] = warmup
 
 
 def _normalize_learning_rate_scale_rule(
@@ -1192,6 +1711,30 @@ def _normalize_bool(value: Any, field_name: str) -> bool:
     if isinstance(value, bool):
         return value
     raise ConfigError(f"{field_name} must be a boolean")
+
+
+def _normalize_optional_string(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise ConfigError("Expected a string or null")
+    normalized = value.strip()
+    return normalized or None
+
+
+def _normalize_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ConfigError("Expected a list of strings")
+    normalized = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ConfigError("Expected a list of strings")
+        item = item.strip()
+        if item:
+            normalized.append(item)
+    return normalized
 
 
 def _ensure_writable_directory(path: Path, label: str) -> None:

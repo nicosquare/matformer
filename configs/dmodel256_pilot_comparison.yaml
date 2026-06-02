@@ -8,6 +8,11 @@ run:
   model_shape_label: dmodel256
   seed: 42
   output_root: outputs
+  continuation:
+    enabled: true
+    latest_checkpoint_save_interval_steps: 0
+    latest_checkpoint_save_on_validation: true
+    latest_checkpoint_save_on_completion: true
 
 model:
   base_model_name: dmodel256-matformer-llama-swiglu
@@ -17,7 +22,6 @@ model:
   d_model: 256
   num_layers: 16
   num_attention_heads: 16
-  intermediate_size: 1024
   context_length: 1024
   vocab_size_assumption: 256000
   granularities: [s, m, l, xl]
@@ -35,6 +39,14 @@ training:
   learning_rate_scale_rule: linear
   warmup_steps: 2000 # This flag overrules ratio. We set this for small experiments (e.g. up to 100M tokens), for larger experiments we set warmup_ratio instead (comment this)
   warmup_ratio: 0.01635
+  # Pre-nested warmup is separate from scheduler warmup.
+  # Nested runs can use it to warm the model before block slicing/splitting.
+  pre_nested_warmup:
+    enabled: false
+    # Duration is applied only when warmup is enabled.
+    duration: 0
+    # Use epochs for longer runs or steps for short debug runs.
+    unit: epochs
   gradient_clip_norm: 1.0
   eval_interval: 500
   mixed_precision: bf16
@@ -73,6 +85,17 @@ outputs:
   save_run_summary_json: true
   save_checkpoints: true
   make_plots: true
+
+monitoring:
+  enabled: false
+  backend: wandb
+  project: dmodel256_pilot_comparison
+  job_type: train
+  tags: [pilot, dmodel256]
+  notes: d_model=256 pilot comparison
+  log_loss_by_granularity: true
+  log_validation_loss: true
+  log_stage_events: true
 
 evaluation:
   validation: true

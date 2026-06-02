@@ -28,10 +28,9 @@ def _write_single_run_config(tmp_path):
 
             model:
               base_model_name: debug-llama
+              d_model: 128
               num_layers: 2
               num_attention_heads: 4
-              hidden_size: 128
-              intermediate_size: 512
               context_length: 64
               vocab_size_assumption: 32000
               granularities: [s, m, l, xl]
@@ -88,10 +87,28 @@ def test_resolve_debug_matrix_expands_nested_and_standalone_runs():
     nested = resolved_runs[0]
     assert nested["run"]["completion_label"] == "debug"
     assert nested["run"]["model_family_slug"] == "matformer_llama"
+    assert nested["monitoring"]["project"] == "debug_matrix"
+    assert nested["monitoring"]["job_type"] == "train"
+    assert nested["monitoring"]["tags"] == ["debug", "matrix"]
+    assert nested["monitoring"]["notes"] == "debug matrix smoke and warmup validation"
     assert nested["run"]["output_dir"] == (
         f"outputs/{nested['run']['output_group']}/debug-nested-001"
     )
+    assert nested["model"]["d_model"] == 128
+    assert nested["model"]["intermediate_size"] == 512
     assert nested["model"]["granularities"] == ["s", "m", "l", "xl"]
+    assert nested["model"]["granularity_prefixes"] == {
+        "s": 0.125,
+        "m": 0.25,
+        "l": 0.5,
+        "xl": 1.0,
+    }
+    assert [entry["prefix_width"] for entry in nested["model"]["ffn_prefix_metadata"]] == [
+        64,
+        128,
+        256,
+        512,
+    ]
     assert nested["training"]["granularity_sampling"] == "all"
 
     standalone_s = resolved_runs[1]
@@ -100,6 +117,11 @@ def test_resolve_debug_matrix_expands_nested_and_standalone_runs():
     assert standalone_s["run"]["completion_label"] == "debug"
     assert standalone_s["run"]["output_group"].startswith("matformer_llama_")
     assert standalone_s["model"]["granularities"] == ["s"]
+    assert standalone_s["model"]["granularity_prefixes"] == {"s": 1.0}
+    assert standalone_s["model"]["matformer_source_intermediate_size"] == 512
+    assert [entry["prefix_width"] for entry in standalone_s["model"]["ffn_prefix_metadata"]] == [
+        64,
+    ]
 
     for resolved in resolved_runs:
         validate_run_config(resolved)
@@ -169,6 +191,16 @@ def test_write_resolved_config(tmp_path):
     assert saved["training"]["scheduler"]["kwargs"]["warmup_steps"] == 2000
     assert saved["training"]["scheduler_name"] == "cosine"
     assert saved["training"]["scheduler"]["resolved_warmup_steps"] == 2000
+    assert saved["run"]["continuation"] == {
+        "enabled": True,
+        "latest_checkpoint_save_interval_steps": 0,
+        "latest_checkpoint_save_on_validation": True,
+        "latest_checkpoint_save_on_completion": True,
+    }
+    assert saved["monitoring"]["project"] == "dmodel256_pilot_comparison"
+    assert saved["monitoring"]["job_type"] == "train"
+    assert saved["monitoring"]["tags"] == ["pilot", "dmodel256"]
+    assert saved["monitoring"]["notes"] == "d_model=256 pilot comparison"
     assert saved["training"]["optimizer_name"] == "adamw"
     assert saved["training"]["optimizer_kwargs"] == {
         "betas": [0.9, 0.95],
@@ -176,6 +208,99 @@ def test_write_resolved_config(tmp_path):
         "weight_decay": 0.1,
     }
     assert config_path == output_dir / "config.json"
+
+
+def test_resolve_minimal_config_includes_long_run_defaults(tmp_path):
+    config_path = _write_single_run_config(tmp_path)
+    output_dir = tmp_path / "single-output-root-001"
+
+    resolved = resolve_run_config(config_path, output_dir=output_dir)
+
+    assert resolved["model"]["d_model"] == 128
+    assert resolved["run"]["continuation"] == {"enabled": False}
+    assert resolved["monitoring"] == {
+        "enabled": False,
+        "backend": "wandb",
+        "project": "debug_matrix",
+        "entity": None,
+        "group": resolved["run"]["output_group"],
+        "job_type": "train",
+        "name": "single-output-root-001",
+        "tags": [],
+        "notes": None,
+        "mode": None,
+        "log_loss_by_granularity": True,
+        "log_validation_loss": True,
+        "log_stage_events": True,
+    }
+    assert resolved["training"]["pre_nested_warmup"] == {
+        "enabled": False,
+        "duration": 0,
+        "unit": "epochs",
+        "active": False,
+        "completed": False,
+        "completion_step": None,
+        "transition_reason": None,
+    }
+
+
+def test_pre_nested_warmup_validation_rules(tmp_path):
+    config_path = _write_single_run_config(tmp_path)
+
+    resolved = resolve_run_config(
+        config_path,
+        overrides=[
+            "training.pre_nested_warmup.enabled=true",
+            "training.pre_nested_warmup.duration=3",
+            "training.pre_nested_warmup.unit=steps",
+        ],
+    )
+    assert resolved["training"]["pre_nested_warmup"] == {
+        "enabled": True,
+        "duration": 3,
+        "unit": "steps",
+        "active": True,
+        "completed": False,
+        "completion_step": None,
+        "transition_reason": None,
+    }
+
+    standalone_resolved = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-standalone-s-001",
+        overrides=[
+            "training.pre_nested_warmup.enabled=true",
+            "training.pre_nested_warmup.duration=1",
+        ],
+    )
+    assert standalone_resolved["training"]["pre_nested_warmup"]["active"] is False
+
+    with pytest.raises(
+        ConfigError,
+        match="training.pre_nested_warmup.duration must be positive",
+    ):
+        resolve_run_config(
+            config_path,
+            overrides=[
+                "training.pre_nested_warmup.enabled=true",
+                "training.pre_nested_warmup.duration=0",
+                "training.pre_nested_warmup.unit=steps",
+            ],
+        )
+
+    with pytest.raises(
+        ConfigError,
+        match="training.pre_nested_warmup.unit must be one of",
+    ):
+        resolve_run_config(
+            config_path,
+            overrides=[
+                "training.pre_nested_warmup.enabled=true",
+                "training.pre_nested_warmup.duration=1",
+                "training.pre_nested_warmup.unit=minutes",
+            ],
+        )
+
 
 def test_dmodel256_completion_label_validation():
     resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
@@ -404,10 +529,46 @@ def test_dmodel256_pilot_config_preserves_clarified_terms_and_shape_fields():
         "l": 0.5,
         "xl": 1.0,
     }
+    assert [entry["prefix_width"] for entry in model["ffn_prefix_metadata"]] == [
+        128,
+        256,
+        512,
+        1024,
+    ]
 
     assert resolved["training"]["token_budget"] < 10_000_000_000
     assert resolved["training"]["granularity_sampling"] == "random"
     validate_run_config(resolved)
+
+
+def test_granularity_prefix_validation_rejects_non_monotonic_widths():
+    with pytest.raises(
+        ConfigError,
+        match="strictly nested|strictly increasing",
+    ):
+        resolve_run_config(
+            "configs/dmodel256_pilot_comparison.yaml",
+            overrides=["model.granularity_prefixes.m=0.1"],
+        )
+
+
+def test_granularity_prefix_validation_rejects_extra_keys():
+    with pytest.raises(ConfigError, match="must match model.granularities"):
+        resolve_run_config(
+            "configs/dmodel256_pilot_comparison.yaml",
+            overrides=["model.granularity_prefixes.extra=0.01"],
+        )
+
+
+def test_intermediate_size_is_derived_from_d_model_and_rejects_mismatch():
+    resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
+    assert resolved["model"]["intermediate_size"] == 1024
+
+    with pytest.raises(ConfigError, match="model.intermediate_size must equal"):
+        resolve_run_config(
+            "configs/dmodel256_pilot_comparison.yaml",
+            overrides=["model.intermediate_size=2048"],
+        )
 
 
 def test_dmodel256_rejects_old_completion_label_strings():

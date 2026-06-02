@@ -1,13 +1,17 @@
 import csv
 import json
+import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import torch
 from datasets import Dataset
 
 from training.run import run_training
 from utils.config import resolve_run_config
+from utils.monitoring import group_loss_rows_by_series
 
 
 class TinyNestedTrainingModel(torch.nn.Module):
@@ -46,6 +50,271 @@ class FlatParameterRuntimeWrapper(torch.nn.Module):
 
     def named_parameters(self, prefix="", recurse=True, remove_duplicate=True):
         yield "flat_param", self.flat_param
+
+
+class RecordingMonitoringSession:
+    def __init__(self, distributed_context=None):
+        self.distributed_context = distributed_context
+        self.logged_rows = []
+        self.closed = False
+
+    def log_rows(self, rows):
+        self.logged_rows.extend(dict(row) for row in rows)
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeWandbRun:
+    def __init__(self):
+        self.config = _FakeWandbConfig()
+        self.summary = {}
+
+
+class _FakeWandbConfig(dict):
+    def update(self, *args, **kwargs):
+        return super().update(*args)
+
+
+class _FakeWandbModule:
+    def __init__(self):
+        self.init_kwargs = None
+        self.finish_calls = 0
+
+    def init(self, **kwargs):
+        self.init_kwargs = kwargs
+        return _FakeWandbRun()
+
+    def define_metric(self, *args, **kwargs):
+        return None
+
+    def log(self, *args, **kwargs):
+        return None
+
+    def finish(self):
+        self.finish_calls += 1
+
+
+def _run_monitoring_smoke_case(tmp_path, run_id: str):
+    output_dir = tmp_path / run_id
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id=run_id,
+        output_dir=output_dir,
+        overrides=[
+            "monitoring.enabled=true",
+            "training.max_steps=1",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "evaluation.validation=false",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+
+    result = run_training(
+        config,
+        model=TinyNestedTrainingModel(),
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    with result["metrics_path"].open("r", encoding="utf-8", newline="") as metrics_file:
+        train_rows = [
+            row
+            for row in csv.DictReader(metrics_file)
+            if row["split"] == "train" and row["step"] == "1"
+        ]
+
+    return summary, group_loss_rows_by_series(train_rows)
+
+
+def _read_heartbeat_events(path: Path) -> list[dict[str, object]]:
+    with path.open("r", encoding="utf-8") as heartbeat_file:
+        return [
+            json.loads(line)
+            for line in heartbeat_file
+            if line.strip()
+        ]
+
+
+@pytest.mark.xfail(
+    reason="Run resumption wiring is implemented in T009/T010, not yet here",
+    strict=False,
+)
+def test_interrupted_and_relaunched_run_preserves_the_same_output_dir(
+    tmp_path,
+    monkeypatch,
+):
+    import training.run as training_run
+
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "run.continuation.enabled=true",
+            "training.max_steps=1",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "evaluation.validation=false",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+    original_train_for_steps = training_run.train_for_steps
+    train_invocations = {"count": 0}
+
+    def interrupting_train_for_steps(*args, **kwargs):
+        train_invocations["count"] += 1
+        if train_invocations["count"] == 1:
+            raise RuntimeError("simulated scheduler preemption")
+        return original_train_for_steps(*args, **kwargs)
+
+    monkeypatch.setattr(
+        training_run,
+        "train_for_steps",
+        interrupting_train_for_steps,
+    )
+
+    with pytest.raises(RuntimeError, match="simulated scheduler preemption"):
+        run_training(
+            config,
+            model=TinyNestedTrainingModel(),
+            tokenized_dataset=tokenized_dataset,
+            device="cpu",
+        )
+
+    result = run_training(
+        config,
+        model=TinyNestedTrainingModel(),
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    assert result["summary_path"] == output_dir / "run_summary.json"
+    assert summary["run_id"] == "debug-nested-001"
+    assert summary["output_dir"] == str(output_dir)
+    assert summary["continuation_state"]["status"] == "resumed"
+    assert summary["continuation_state"]["resume_count"] == 1
+    assert summary["continuation_state"]["last_completed_step"] == 1
+    assert summary["latest_checkpoint_path"] == str(
+        output_dir / "checkpoints" / "latest.pt"
+    )
+
+
+def test_pre_nested_warmup_disabled_path_keeps_the_run_in_the_standard_flow(
+    tmp_path,
+):
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "training.max_steps=1",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "training.pre_nested_warmup.enabled=false",
+            "evaluation.validation=false",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+
+    result = run_training(
+        config,
+        model=TinyNestedTrainingModel(),
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    heartbeat_events = _read_heartbeat_events(output_dir / "heartbeats.jsonl")
+
+    assert summary["warmup_policy"] == {
+        "enabled": False,
+        "duration": 0,
+        "unit": "epochs",
+        "completed": False,
+        "completion_step": None,
+        "transition_reason": None,
+    }
+    assert summary["warmup_completion_step"] is None
+    assert summary["warmup_completed"] is False
+    assert all("warmup" not in str(event["stage"]) for event in heartbeat_events)
+
+
+def test_pre_nested_warmup_transition_records_a_warmup_stage_before_training(
+    tmp_path,
+):
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "training.max_steps=2",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "training.pre_nested_warmup.enabled=true",
+            "training.pre_nested_warmup.duration=1",
+            "training.pre_nested_warmup.unit=steps",
+            "evaluation.validation=false",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+
+    result = run_training(
+        config,
+        model=TinyNestedTrainingModel(),
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    heartbeat_events = _read_heartbeat_events(output_dir / "heartbeats.jsonl")
+    stage_names = [str(event["stage"]) for event in heartbeat_events]
+    warmup_stage_index = next(
+        index for index, stage_name in enumerate(stage_names) if "warmup" in stage_name
+    )
+    training_stage_index = stage_names.index("training")
+
+    assert summary["warmup_policy"]["enabled"] is True
+    assert summary["warmup_policy"]["duration"] == 1
+    assert summary["warmup_policy"]["unit"] == "steps"
+    assert summary["warmup_policy"]["completed"] is True
+    assert summary["warmup_completion_step"] == 1
+    assert summary["warmup_completed"] is True
+    assert warmup_stage_index < training_stage_index
 
 
 def test_tiny_nested_training_accumulates_all_granularities_per_batch(
@@ -504,3 +773,132 @@ def test_config_driven_training_uses_distributed_fsdp_path_when_enabled(
     assert summary["distributed_local_rank"] == 0
     assert summary["distributed_world_size"] == 2
     assert summary["distributed_fsdp_config"] == {}
+
+
+def test_monitoring_smoke_groups_nested_and_standalone_runs_by_series(
+    tmp_path,
+    monkeypatch,
+):
+    import training.run as training_run
+
+    created_sessions = []
+
+    def fake_create_monitoring_session(config, distributed_context=None):
+        session = RecordingMonitoringSession(distributed_context=distributed_context)
+        created_sessions.append(session)
+        return session
+
+    monkeypatch.setattr(
+        training_run,
+        "create_monitoring_session",
+        fake_create_monitoring_session,
+    )
+
+    nested_summary, nested_series = _run_monitoring_smoke_case(
+        tmp_path,
+        "debug-nested-001",
+    )
+    standalone_summary, standalone_series = _run_monitoring_smoke_case(
+        tmp_path,
+        "debug-standalone-s-001",
+    )
+
+    assert nested_summary["monitoring_enabled"] is True
+    assert standalone_summary["monitoring_enabled"] is True
+    assert set(nested_series) == {
+        "train/loss/s",
+        "train/loss/m",
+        "train/loss/l",
+        "train/loss/xl",
+    }
+    assert set(standalone_series) == {"train/loss/s"}
+    assert all(len(rows) == 1 for rows in nested_series.values())
+    assert len(standalone_series["train/loss/s"]) == 1
+    assert len(created_sessions) == 2
+    assert created_sessions[0].closed is True
+    assert created_sessions[1].closed is True
+    assert set(group_loss_rows_by_series(created_sessions[0].logged_rows)) == {
+        "train/loss/s",
+        "train/loss/m",
+        "train/loss/l",
+        "train/loss/xl",
+    }
+    assert set(group_loss_rows_by_series(created_sessions[1].logged_rows)) == {
+        "train/loss/s",
+    }
+    assert nested_summary["monitoring_backend"] == "wandb"
+    assert standalone_summary["monitoring_backend"] == "wandb"
+    assert [entry["series_name"] for entry in nested_summary["monitoring_series_metadata"]] == [
+        "train/loss/s",
+        "train/loss/m",
+        "train/loss/l",
+        "train/loss/xl",
+    ]
+    assert [entry["series_name"] for entry in standalone_summary["monitoring_series_metadata"]] == [
+        "train/loss/s",
+    ]
+
+
+def test_wandb_session_uses_explicit_project_and_entity_settings(
+    tmp_path,
+    monkeypatch,
+):
+    import training.run as training_run
+
+    fake_wandb = types.ModuleType("wandb")
+    fake_wandb.init_kwargs = None
+    fake_wandb.finish_calls = 0
+
+    def fake_init(**kwargs):
+        fake_wandb.init_kwargs = kwargs
+        return _FakeWandbRun()
+
+    def fake_define_metric(*args, **kwargs):
+        return None
+
+    def fake_log(*args, **kwargs):
+        return None
+
+    def fake_finish():
+        fake_wandb.finish_calls += 1
+
+    fake_wandb.init = fake_init
+    fake_wandb.define_metric = fake_define_metric
+    fake_wandb.log = fake_log
+    fake_wandb.finish = fake_finish
+    monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
+
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=tmp_path / "debug-nested-001",
+        overrides=[
+            "monitoring.enabled=true",
+            "monitoring.project=custom-project",
+            "monitoring.entity=research-team",
+            "monitoring.group=shared-group",
+            "monitoring.job_type=evaluation",
+            "monitoring.name=custom-run-name",
+            "monitoring.tags=[alpha,beta]",
+            "monitoring.notes=long run smoke",
+            "monitoring.mode=offline",
+        ],
+    )
+
+    session = training_run.WandbMonitoringSession(
+        config,
+        distributed_context=SimpleNamespace(enabled=False),
+    )
+
+    assert fake_wandb.init_kwargs is not None
+    assert fake_wandb.init_kwargs["project"] == "custom-project"
+    assert fake_wandb.init_kwargs["entity"] == "research-team"
+    assert fake_wandb.init_kwargs["group"] == "shared-group"
+    assert fake_wandb.init_kwargs["job_type"] == "evaluation"
+    assert fake_wandb.init_kwargs["name"] == "custom-run-name"
+    assert fake_wandb.init_kwargs["tags"] == ["alpha", "beta"]
+    assert fake_wandb.init_kwargs["notes"] == "long run smoke"
+    assert fake_wandb.init_kwargs["mode"] == "offline"
+    assert fake_wandb.init_kwargs["id"] == "debug-nested-001"
+    session.close()
+    assert fake_wandb.finish_calls == 1

@@ -54,6 +54,7 @@ from utils.config import (
 from utils.heartbeats import HeartbeatCadence, HeartbeatWriter
 from utils.metrics import (
     build_checkpoint_summary_fields,
+    build_monitoring_summary_fields,
     build_parameter_counts_by_granularity,
     build_run_summary,
     build_scaling_result_rows,
@@ -64,6 +65,7 @@ from utils.metrics import (
     write_run_summary,
     write_scaling_results_csv,
 )
+from utils.monitoring import group_loss_rows_by_series
 
 
 def run_from_config_path(
@@ -91,9 +93,13 @@ def run_training(
     run = config["run"]
     training = config["training"]
     output_dir = Path(run["output_dir"])
-
+    run_state = build_initial_continuation_state(config)
+    checkpoint_state: dict[str, Any] = {}
+    optimizer = None
+    scheduler = None
     distributed_context = prepare_distributed_context(config, device=device)
     sync_config_with_distributed_context(config, distributed_context)
+    monitoring_session = create_monitoring_session(config, distributed_context)
     heartbeat_writer = build_heartbeat_writer(config, distributed_context)
     parameter_counts_by_granularity = {}
 
@@ -114,6 +120,7 @@ def run_training(
                 diagnostic = get_concat_layout_diagnostic(
                     config["model"]["intermediate_size"],
                     config["model"]["granularities"],
+                    granularity_prefixes=config["model"].get("granularity_prefixes"),
                 )
                 print(f"[cat-llama-diagnostic] {diagnostic}", flush=True)
             parameter_counts_by_granularity = build_artifact_parameter_counts(
@@ -154,20 +161,83 @@ def run_training(
                 distributed_context=distributed_context,
             )
         optimizer, scheduler = build_optimizer_and_scheduler(model, training)
+        if run["continuation"]["enabled"]:
+            run_state = load_run_continuation_state(
+                config,
+                model,
+                optimizer,
+                scheduler,
+                distributed_context=distributed_context,
+            )
+        emit_run_start_continuation_state(heartbeat_writer, run_state)
+        checkpoint_state.update(run_state)
+        update_run_continuation_state(config, run_state)
+        metrics_rows = []
+        if should_run_pre_nested_warmup(config, run_state):
+            metrics_rows.extend(
+                run_pre_nested_warmup_phase(
+                    config,
+                    model,
+                    train_dataloader,
+                    eval_dataloader,
+                    optimizer,
+                    scheduler,
+                    device,
+                    heartbeat_writer=heartbeat_writer,
+                    distributed_context=distributed_context,
+                    checkpoint_state=checkpoint_state,
+                    run_state=run_state,
+                    monitoring_session=monitoring_session,
+                )
+            )
+        else:
+            update_pre_nested_warmup_state(
+                config,
+                build_pre_nested_warmup_state(
+                    config,
+                    completed=bool(run_state.get("warmup_completed", False)),
+                    completion_step=(
+                        int(run_state["warmup_completion_step"])
+                        if run_state.get("warmup_completion_step") is not None
+                        else None
+                    ),
+                    transition_reason=run_state.get("warmup_transition_reason"),
+                ),
+            )
 
-        checkpoint_state: dict[str, Any] = {}
-        metrics_rows = train_for_steps(
-            config,
-            model,
-            train_dataloader,
-            eval_dataloader,
-            optimizer,
-            scheduler,
-            device,
-            heartbeat_writer=heartbeat_writer,
-            distributed_context=distributed_context,
-            checkpoint_state=checkpoint_state,
+        warmup_config = config["training"].get("pre_nested_warmup", {})
+        warmup_active = bool(
+            isinstance(warmup_config, Mapping) and warmup_config.get("active", False)
         )
+        warmup_budget_exhausted = (
+            warmup_active
+            and not bool(run_state.get("warmup_completed", False))
+            and (
+                int(run_state.get("last_completed_step", 0))
+                >= int(config["training"]["max_steps"])
+                or int(run_state.get("tokens_seen", 0))
+                >= int(config["training"]["token_budget"])
+            )
+        )
+
+        if not warmup_budget_exhausted:
+            metrics_rows.extend(
+                train_for_steps(
+                    config,
+                    model,
+                    train_dataloader,
+                    eval_dataloader,
+                    optimizer,
+                    scheduler,
+                    device,
+                    heartbeat_writer=heartbeat_writer,
+                    distributed_context=distributed_context,
+                    checkpoint_state=checkpoint_state,
+                    run_state=run_state,
+                    monitoring_session=monitoring_session,
+                    stage_name="training",
+                )
+            )
         extraction_metadata_path = None
         metrics_path = None
         scaling_path = None
@@ -177,13 +247,26 @@ def run_training(
             metrics_rows,
         )
 
+        completed_run_state = dict(run_state)
+        completed_run_state["status"] = "completed"
+        if run["continuation"]["enabled"]:
+            completed_run_state["latest_checkpoint_path"] = completed_run_state.get(
+                "latest_checkpoint_path"
+            ) or str(output_dir / "checkpoints" / "latest.pt")
         checkpoint_summary_fields = write_checkpoint_if_needed(
             config,
             model,
+            optimizer,
+            scheduler,
             metrics_rows,
             heartbeat_writer,
+            completed_run_state,
             distributed_context=distributed_context,
         )
+
+        if run["continuation"]["enabled"]:
+            run_state.update(completed_run_state)
+            update_run_continuation_state(config, run_state)
 
         if should_write_shared_artifact(distributed_context):
             with heartbeat_stage(heartbeat_writer, "artifact_writing"):
@@ -220,6 +303,7 @@ def run_training(
             "granularities": config["model"]["granularities"],
             "granularity_sampling": training.get("granularity_sampling", "all"),
             "parameter_counts_by_granularity": parameter_counts_by_granularity,
+            **build_monitoring_summary_fields(config, metrics_rows),
             **checkpoint_summary_fields,
             **distributed_summary_fields(distributed_context),
         }
@@ -256,11 +340,36 @@ def run_training(
         }
     except Exception as error:
         try:
+            if (
+                run["continuation"]["enabled"]
+                and model is not None
+                and optimizer is not None
+                and scheduler is not None
+            ):
+                maybe_write_latest_checkpoint(
+                    config,
+                    model,
+                    optimizer,
+                    scheduler,
+                    heartbeat_writer,
+                    run_state,
+                    reason="failure",
+                    step=int(run_state.get("step", run_state.get("last_completed_step", 0))),
+                    distributed_context=distributed_context,
+                    force=True,
+                )
+            run_state["status"] = "failed"
+            if run["continuation"]["enabled"]:
+                update_run_continuation_state(config, run_state)
             with heartbeat_stage(heartbeat_writer, "artifact_writing"):
                 write_failed_run_summary(
                     config,
                     str(error),
                     output_dir=output_dir,
+                    tokens_seen=int(run_state.get("tokens_seen", 0)),
+                    content_tokens_seen=int(
+                        run_state.get("content_tokens_seen", 0)
+                    ),
                     distributed_context=distributed_context,
                 )
         except Exception as summary_error:
@@ -271,6 +380,7 @@ def run_training(
             )
         raise
     finally:
+        monitoring_session.close()
         destroy_distributed_process_group(distributed_context)
 
 
@@ -311,7 +421,7 @@ def build_model(config: dict[str, Any]):
 
 def build_llama_config(config: dict[str, Any]) -> LlamaConfig:
     model = config["model"]
-    return LlamaConfig(
+    llama_config = LlamaConfig(
         vocab_size=model["vocab_size_assumption"],
         hidden_size=model.get("d_model", model.get("hidden_size")),
         intermediate_size=model["intermediate_size"],
@@ -322,6 +432,29 @@ def build_llama_config(config: dict[str, Any]) -> LlamaConfig:
         tie_word_embeddings=False,
         use_cache=False,
     )
+    if "d_model" in model or "hidden_size" in model:
+        llama_config.d_model = model.get("d_model", model.get("hidden_size"))
+    if "granularities" in model:
+        llama_config.granularities = list(model["granularities"])
+    if "granularity_prefixes" in model:
+        llama_config.granularity_prefixes = copy.deepcopy(
+            model["granularity_prefixes"]
+        )
+    if "matformer_source_granularity_prefixes" in model:
+        llama_config.matformer_source_granularity_prefixes = copy.deepcopy(
+            model["matformer_source_granularity_prefixes"]
+        )
+    if "ffn_prefix_metadata" in model:
+        llama_config.ffn_prefix_metadata = copy.deepcopy(model["ffn_prefix_metadata"])
+    if "ffn_concat_block_metadata" in model:
+        llama_config.ffn_concat_block_metadata = copy.deepcopy(
+            model["ffn_concat_block_metadata"]
+        )
+    if "matformer_source_intermediate_size" in model:
+        llama_config.matformer_source_intermediate_size = model[
+            "matformer_source_intermediate_size"
+        ]
+    return llama_config
 
 
 def load_tokenizer(config: dict[str, Any]):
@@ -377,6 +510,206 @@ class NoopHeartbeatWriter:
 
     def heartbeat(self, stage: str, **fields: Any):
         return None
+
+
+class NoopMonitoringSession:
+    def __init__(self, distributed_context=None):
+        self.distributed_context = distributed_context
+        self.enabled = False
+
+    def log_rows(self, rows) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+class WandbMonitoringSession(NoopMonitoringSession):
+    def __init__(self, config: dict[str, Any], distributed_context=None):
+        super().__init__(distributed_context=distributed_context)
+        self._config = config
+        self._wandb = None
+        self._defined_series: set[str] = set()
+        self._step_metric_defined = False
+        self._logged_rows: list[dict[str, Any]] = []
+        self.run = None
+
+        if not config.get("monitoring", {}).get("enabled", False):
+            return
+        if not should_write_shared_artifact(distributed_context):
+            return
+        if config.get("monitoring", {}).get("backend") != "wandb":
+            return
+
+        try:
+            import wandb
+        except Exception:
+            return
+
+        init_kwargs: dict[str, Any] = {
+            "id": str(config["run"]["run_id"]),
+            "resume": "allow",
+            "reinit": True,
+            "dir": str(Path(config["run"]["output_dir"])),
+        }
+        monitoring = config.get("monitoring", {})
+        project = monitoring.get("project") or config["run"].get("phase_id")
+        if project is None:
+            project = config["run"].get("output_group")
+        entity = monitoring.get("entity")
+        group = monitoring.get("group") or config["run"].get("output_group")
+        job_type = monitoring.get("job_type")
+        name = monitoring.get("name") or config["run"]["run_id"]
+        tags = monitoring.get("tags") or []
+        notes = monitoring.get("notes")
+        mode = monitoring.get("mode")
+
+        if project:
+            init_kwargs["project"] = str(project)
+        if entity:
+            init_kwargs["entity"] = str(entity)
+        if group:
+            init_kwargs["group"] = str(group)
+        if job_type:
+            init_kwargs["job_type"] = str(job_type)
+        if name:
+            init_kwargs["name"] = str(name)
+        if tags:
+            init_kwargs["tags"] = list(tags)
+        if notes:
+            init_kwargs["notes"] = str(notes)
+        if mode:
+            init_kwargs["mode"] = str(mode)
+
+        try:
+            self.run = wandb.init(**init_kwargs)
+        except Exception:
+            return
+
+        self._wandb = wandb
+        self.enabled = True
+        try:
+            self._configure_run_metadata(config)
+            self._define_expected_series(config)
+        except Exception:
+            self.enabled = False
+
+    def _configure_run_metadata(self, config: dict[str, Any]) -> None:
+        if self.run is None:
+            return
+
+        run = config["run"]
+        training = config["training"]
+        monitoring = config.get("monitoring", {})
+        metadata = {
+            "run_id": run["run_id"],
+            "model_family": run["model_family"],
+            "model_variant": config["model"]["variant"],
+            "model_shape_label": run.get("model_shape_label"),
+            "output_group": run.get("output_group"),
+            "monitoring_project": monitoring.get("project"),
+            "monitoring_entity": monitoring.get("entity"),
+            "monitoring_group": monitoring.get("group"),
+            "monitoring_job_type": monitoring.get("job_type"),
+            "monitoring_name": monitoring.get("name"),
+            "monitoring_tags": list(monitoring.get("tags", [])),
+            "monitoring_notes": monitoring.get("notes"),
+            "monitoring_mode": monitoring.get("mode"),
+            "granularities": list(config["model"]["granularities"]),
+            "granularity_sampling": training.get("granularity_sampling", "all"),
+            "continuation_enabled": bool(run.get("continuation", {}).get("enabled", False)),
+            "continuation_status": run.get("continuation", {}).get("status", "fresh"),
+            "warmup_enabled": bool(
+                training.get("pre_nested_warmup", {}).get("enabled", False)
+            ),
+            "warmup_duration": training.get("pre_nested_warmup", {}).get("duration", 0),
+            "warmup_unit": training.get("pre_nested_warmup", {}).get("unit", "epochs"),
+            "monitoring_enabled": bool(monitoring.get("enabled", False)),
+            "monitoring_backend": monitoring.get("backend", "wandb"),
+            "log_loss_by_granularity": monitoring.get("log_loss_by_granularity", True),
+            "log_validation_loss": monitoring.get("log_validation_loss", True),
+            "log_stage_events": monitoring.get("log_stage_events", True),
+        }
+        self.run.config.update(metadata, allow_val_change=True)
+        self.run.summary.update(
+            {
+                "monitoring_enabled": metadata["monitoring_enabled"],
+                "monitoring_backend": metadata["monitoring_backend"],
+            }
+        )
+
+    def _define_expected_series(self, config: dict[str, Any]) -> None:
+        if self._wandb is None:
+            return
+
+        monitoring = config.get("monitoring", {})
+        if not monitoring.get("enabled", False):
+            return
+
+        metric_split_flags = {
+            "train": bool(monitoring.get("log_loss_by_granularity", True)),
+            "validation": bool(monitoring.get("log_validation_loss", True)),
+        }
+        for split, enabled in metric_split_flags.items():
+            if not enabled:
+                continue
+            for granularity in config["model"]["granularities"]:
+                series_name = f"{split}/loss/{granularity}"
+                if series_name in self._defined_series:
+                    continue
+                if not self._step_metric_defined:
+                    self._wandb.define_metric("step")
+                    self._step_metric_defined = True
+                self._wandb.define_metric(series_name, step_metric="step")
+                self._defined_series.add(series_name)
+
+    def log_rows(self, rows) -> None:
+        if not self.enabled or self._wandb is None:
+            return
+
+        try:
+            grouped_rows = group_loss_rows_by_series(rows)
+            for series_name, series_rows in grouped_rows.items():
+                if series_name not in self._defined_series:
+                    if not self._step_metric_defined:
+                        self._wandb.define_metric("step")
+                        self._step_metric_defined = True
+                    self._wandb.define_metric(series_name, step_metric="step")
+                    self._defined_series.add(series_name)
+                for row in series_rows:
+                    step = int(row["step"])
+                    value = row.get("loss")
+                    if value is None:
+                        continue
+                    self._wandb.log({series_name: value}, step=step)
+                    self._logged_rows.append(dict(row))
+        except Exception:
+            self.enabled = False
+
+    def close(self) -> None:
+        if self._wandb is None or self.run is None:
+            return
+
+        try:
+            if self.enabled:
+                self.run.summary.update(
+                    {
+                        "monitoring_series_metadata": build_monitoring_summary_fields(
+                            self._config,
+                            self._logged_rows,
+                        )["monitoring_series_metadata"],
+                    }
+                )
+            self._wandb.finish()
+        except Exception:
+            self.enabled = False
+
+
+def create_monitoring_session(
+    config: dict[str, Any],
+    distributed_context=None,
+):
+    return WandbMonitoringSession(config, distributed_context=distributed_context)
 
 
 def build_heartbeat_writer(config: dict[str, Any], distributed_context):
@@ -445,13 +778,14 @@ def maybe_emit_training_heartbeat(
     latest_loss: float,
     tokens_per_second: float | None,
     peak_gpu_memory_bytes: int,
+    stage_name: str = "training",
 ) -> None:
     now = time.time()
     if not heartbeat_cadence.should_emit(step=step, now=now):
         return
 
     heartbeat_writer.heartbeat(
-        "training",
+        stage_name,
         **heartbeat_training_fields(
             config,
             step=step,
@@ -470,6 +804,33 @@ def maybe_emit_training_heartbeat(
     heartbeat_cadence.mark_emitted(step=step, now=now)
 
 
+def emit_run_start_continuation_state(
+    heartbeat_writer,
+    run_state: Mapping[str, Any],
+) -> None:
+    status = str(run_state.get("status", "fresh"))
+    latest_checkpoint_path = run_state.get("latest_checkpoint_path")
+    last_completed_step = int(run_state.get("last_completed_step", 0))
+    resume_count = int(run_state.get("resume_count", 0))
+    if status == "resumed":
+        message = (
+            f"Resuming run from {latest_checkpoint_path} "
+            f"at step {last_completed_step} (resume_count={resume_count})"
+        )
+    else:
+        message = "Starting fresh run"
+
+    heartbeat_writer.emit(
+        "run_state",
+        "continuation",
+        message=message,
+        continuation_status=status,
+        latest_checkpoint_path=latest_checkpoint_path,
+        last_completed_step=last_completed_step,
+        resume_count=resume_count,
+    )
+
+
 def estimate_eta_seconds(
     config: dict[str, Any],
     tokens_seen: int,
@@ -481,11 +842,114 @@ def estimate_eta_seconds(
     return remaining_tokens / tokens_per_second
 
 
+def continuation_latest_checkpoint_policy(
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    run = config.get("run", {})
+    continuation = run.get("continuation", {})
+    if not isinstance(continuation, Mapping):
+        continuation = {}
+
+    enabled = bool(continuation.get("enabled", False))
+    interval_steps = continuation.get("latest_checkpoint_save_interval_steps", 1)
+    if interval_steps is None:
+        interval_steps = 0
+    interval_steps = int(interval_steps)
+    if interval_steps < 0:
+        raise ConfigError(
+            "run.continuation.latest_checkpoint_save_interval_steps must be non-negative"
+        )
+
+    return {
+        "enabled": enabled,
+        "save_interval_steps": interval_steps,
+        "save_on_validation": bool(
+            continuation.get("latest_checkpoint_save_on_validation", False)
+        ),
+        "save_on_completion": bool(
+            continuation.get("latest_checkpoint_save_on_completion", True)
+        ),
+    }
+
+
+def should_save_latest_checkpoint(
+    config: Mapping[str, Any],
+    step: int,
+    reason: str,
+) -> bool:
+    policy = continuation_latest_checkpoint_policy(config)
+    if not policy["enabled"]:
+        return False
+
+    if reason == "validation":
+        return policy["save_on_validation"]
+    if reason == "completion":
+        return policy["save_on_completion"]
+    if reason == "failure":
+        return True
+
+    interval_steps = policy["save_interval_steps"]
+    return interval_steps > 0 and step > 0 and step % interval_steps == 0
+
+
+def maybe_write_latest_checkpoint(
+    config: dict[str, Any],
+    model,
+    optimizer,
+    scheduler,
+    heartbeat_writer,
+    run_state: dict[str, Any],
+    reason: str,
+    step: int,
+    distributed_context=None,
+    force: bool = False,
+) -> None:
+    if not force and not should_save_latest_checkpoint(config, step, reason):
+        return
+    if not force and int(run_state.get("latest_checkpoint_step", 0)) == int(step):
+        return
+
+    latest_checkpoint_path = Path(
+        run_state.get("latest_checkpoint_path")
+        or Path(config["run"]["output_dir"]) / "checkpoints" / "latest.pt"
+    )
+    checkpoint_fields = {
+        "checkpoint_status": "latest",
+        "checkpoint_metric": None,
+        "checkpoint_metric_value": None,
+        "checkpoint_selection_step": None,
+        "checkpoint_unavailable_reason": None,
+    }
+
+    with heartbeat_stage(
+        heartbeat_writer,
+        "checkpointing",
+        checkpoint_status="latest",
+        checkpoint_reason=reason,
+    ):
+        save_model_checkpoint(
+            config,
+            model,
+            optimizer,
+            scheduler,
+            latest_checkpoint_path,
+            checkpoint_fields,
+            run_state,
+            distributed_context=distributed_context,
+        )
+
+    run_state["latest_checkpoint_path"] = str(latest_checkpoint_path)
+    run_state["latest_checkpoint_step"] = step
+
+
 def write_checkpoint_if_needed(
     config: dict[str, Any],
     model,
+    optimizer,
+    scheduler,
     metrics_rows: list[dict[str, Any]],
     heartbeat_writer,
+    run_state: dict[str, Any],
     distributed_context=None,
 ) -> dict[str, Any]:
     if should_write_shared_artifact(distributed_context):
@@ -526,8 +990,11 @@ def write_checkpoint_if_needed(
         save_model_checkpoint(
             config,
             model,
+            optimizer,
+            scheduler,
             output_path,
             checkpoint_fields,
+            run_state,
             distributed_context=distributed_context,
         )
 
@@ -541,6 +1008,7 @@ def maybe_write_best_eval_checkpoint(
     step: int,
     heartbeat_writer,
     checkpoint_state: dict[str, Any],
+    run_state: dict[str, Any],
     distributed_context=None,
 ) -> None:
     if not config.get("outputs", {}).get("save_checkpoints", False):
@@ -573,12 +1041,14 @@ def maybe_write_best_eval_checkpoint(
         save_model_checkpoint(
             config,
             model,
+            None,
+            None,
             checkpoint_path,
             checkpoint_fields,
+            run_state,
             distributed_context=distributed_context,
         )
 
-    checkpoint_state.clear()
     checkpoint_state.update(checkpoint_fields)
 
 
@@ -623,13 +1093,21 @@ def build_best_eval_checkpoint_payload(
 def save_model_checkpoint(
     config: dict[str, Any],
     model,
+    optimizer,
+    scheduler,
     output_path: Path,
     checkpoint_fields: dict[str, Any],
+    run_state: dict[str, Any],
     distributed_context=None,
 ) -> None:
-    model_state_dict = checkpoint_state_dict(model, distributed_context)
     if not should_write_shared_artifact(distributed_context):
         return
+
+    model_state_dict, optimizer_state_dict = checkpoint_state_dicts(
+        model,
+        optimizer,
+        distributed_context,
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -643,31 +1121,458 @@ def save_model_checkpoint(
             "checkpoint_selection_step": checkpoint_fields[
                 "checkpoint_selection_step"
             ],
+            "step": run_state.get("step", run_state.get("last_completed_step", 0)),
+            "epoch": run_state.get("epoch", 0),
+            "batch_index": run_state.get("batch_index", 0),
+            "tokens_seen": run_state.get("tokens_seen", 0),
+            "content_tokens_seen": run_state.get("content_tokens_seen", 0),
+            "resume_count": run_state.get("resume_count", 0),
+            "warmup_completed": run_state.get("warmup_completed", False),
+            "warmup_completion_step": run_state.get("warmup_completion_step"),
+            "warmup_transition_reason": run_state.get("warmup_transition_reason"),
+            "latest_checkpoint_path": run_state.get("latest_checkpoint_path"),
             "model_state_dict": model_state_dict,
+            "optimizer_state_dict": optimizer_state_dict,
+            "scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
         },
         output_path,
     )
 
 
-def checkpoint_state_dict(model, distributed_context=None) -> dict[str, Any]:
+def checkpoint_state_dicts(
+    model,
+    optimizer=None,
+    distributed_context=None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
     if (
         distributed_context is None
         or not distributed_context.enabled
         or distributed_context.strategy != "fsdp"
     ):
-        return model.state_dict()
+        model_state_dict = model.state_dict()
+        optimizer_state_dict = optimizer.state_dict() if optimizer is not None else None
+        return model_state_dict, optimizer_state_dict
 
-    from torch.distributed.checkpoint.state_dict import (
-        StateDictOptions,
-        get_state_dict,
-    )
+    from torch.distributed.checkpoint.state_dict import StateDictOptions, get_state_dict
 
-    model_state_dict, _ = get_state_dict(
+    model_state_dict, optimizer_state_dict = get_state_dict(
         model,
-        [],
+        optimizer if optimizer is not None else [],
         options=StateDictOptions(full_state_dict=True, cpu_offload=True),
     )
+    return model_state_dict, optimizer_state_dict
+
+
+def checkpoint_state_dict(model, distributed_context=None) -> dict[str, Any]:
+    model_state_dict, _ = checkpoint_state_dicts(model, distributed_context=distributed_context)
     return model_state_dict
+
+
+def build_initial_continuation_state(config: dict[str, Any]) -> dict[str, Any]:
+    output_dir = Path(config["run"]["output_dir"])
+    return {
+        "status": "fresh",
+        "latest_checkpoint_path": None,
+        "latest_checkpoint_step": 0,
+        "last_completed_step": 0,
+        "resume_count": 0,
+        "tokens_seen": 0,
+        "content_tokens_seen": 0,
+        "step": 0,
+        "epoch": 0,
+        "batch_index": 0,
+        "warmup_completed": False,
+        "warmup_completion_step": None,
+        "warmup_transition_reason": None,
+        "output_dir": str(output_dir),
+    }
+
+
+def load_run_continuation_state(
+    config: dict[str, Any],
+    model,
+    optimizer,
+    scheduler,
+    distributed_context=None,
+) -> dict[str, Any]:
+    checkpoint_path = Path(config["run"]["output_dir"]) / "checkpoints" / "latest.pt"
+    return load_checkpoint_state(
+        checkpoint_path,
+        model,
+        optimizer,
+        scheduler,
+        fallback_tokens_per_step=int(config["training"]["expected_tokens_per_step"]),
+        distributed_context=distributed_context,
+        output_dir=config["run"]["output_dir"],
+        run_id=config["run"]["run_id"],
+    )
+
+
+def load_checkpoint_state(
+    checkpoint_path: str | Path,
+    model,
+    optimizer,
+    scheduler,
+    fallback_tokens_per_step: int | None = None,
+    distributed_context=None,
+    output_dir: str | Path | None = None,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    checkpoint_path = Path(checkpoint_path)
+    if not checkpoint_path.exists():
+        state = {
+            "status": "fresh",
+            "latest_checkpoint_path": None,
+            "latest_checkpoint_step": 0,
+            "last_completed_step": 0,
+            "resume_count": 0,
+            "tokens_seen": 0,
+            "content_tokens_seen": 0,
+            "step": 0,
+            "epoch": 0,
+            "batch_index": 0,
+            "warmup_completed": False,
+            "warmup_completion_step": None,
+            "warmup_transition_reason": None,
+        }
+        if output_dir is not None:
+            state["output_dir"] = str(output_dir)
+        if run_id is not None:
+            state["run_id"] = str(run_id)
+        return state
+
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    model_state_dict = checkpoint.get("model_state_dict")
+    if model_state_dict is None:
+        raise ConfigError(f"Checkpoint missing model_state_dict: {checkpoint_path}")
+
+    optimizer_state_dict = checkpoint.get("optimizer_state_dict")
+    scheduler_state_dict = checkpoint.get("scheduler_state_dict")
+    load_model_and_optimizer_state(
+        model,
+        optimizer,
+        model_state_dict,
+        optimizer_state_dict,
+        distributed_context=distributed_context,
+    )
+    if scheduler is not None and scheduler_state_dict is not None:
+        scheduler.load_state_dict(scheduler_state_dict)
+
+    last_completed_step = int(
+        checkpoint.get("step", checkpoint.get("last_completed_step", 0))
+    )
+    tokens_seen = int(
+        checkpoint.get(
+            "tokens_seen",
+            fallback_tokens_per_step * last_completed_step
+            if fallback_tokens_per_step is not None
+            else 0,
+        )
+    )
+    content_tokens_seen = int(checkpoint.get("content_tokens_seen", 0))
+    resume_count = int(checkpoint.get("resume_count", 0)) + 1
+    state = {
+        "status": "resumed",
+        "latest_checkpoint_path": str(checkpoint_path),
+        "latest_checkpoint_step": last_completed_step,
+        "last_completed_step": last_completed_step,
+        "resume_count": resume_count,
+        "tokens_seen": tokens_seen,
+        "content_tokens_seen": content_tokens_seen,
+        "step": last_completed_step,
+        "epoch": int(checkpoint.get("epoch", 0)),
+        "batch_index": int(checkpoint.get("batch_index", 0)),
+        "warmup_completed": bool(checkpoint.get("warmup_completed", False)),
+        "warmup_completion_step": checkpoint.get("warmup_completion_step"),
+        "warmup_transition_reason": checkpoint.get("warmup_transition_reason"),
+    }
+    if output_dir is not None:
+        state["output_dir"] = str(output_dir)
+    if run_id is not None:
+        state["run_id"] = str(run_id)
+    return state
+
+
+def update_run_continuation_state(
+    config: dict[str, Any],
+    state: Mapping[str, Any],
+) -> None:
+    continuation = config["run"].setdefault("continuation", {})
+    if not isinstance(continuation, dict):
+        raise ConfigError("run.continuation must be a mapping when provided")
+    for key in [
+        "status",
+        "latest_checkpoint_path",
+        "latest_checkpoint_step",
+        "last_completed_step",
+        "resume_count",
+        "tokens_seen",
+        "content_tokens_seen",
+        "step",
+        "epoch",
+        "batch_index",
+    ]:
+        if key in state and state[key] is not None:
+            continuation[key] = state[key]
+
+
+def update_pre_nested_warmup_state(
+    config: dict[str, Any],
+    state: Mapping[str, Any],
+) -> None:
+    training = config.setdefault("training", {})
+    warmup = training.setdefault("pre_nested_warmup", {})
+    if not isinstance(warmup, dict):
+        raise ConfigError("training.pre_nested_warmup must be a mapping when provided")
+
+    for key in [
+        "enabled",
+        "active",
+        "duration",
+        "unit",
+        "completed",
+        "completion_step",
+        "transition_reason",
+    ]:
+        if key in state:
+            warmup[key] = state[key]
+
+
+def build_pre_nested_warmup_state(
+    config: Mapping[str, Any],
+    *,
+    completed: bool,
+    completion_step: int | None,
+    transition_reason: str | None,
+) -> dict[str, Any]:
+    training = config.get("training", {})
+    warmup = training.get("pre_nested_warmup", {})
+    if not isinstance(warmup, Mapping):
+        warmup = {}
+
+    return {
+        "enabled": bool(warmup.get("enabled", False)),
+        "active": bool(warmup.get("active", False)),
+        "duration": int(warmup.get("duration", 0)),
+        "unit": str(warmup.get("unit", "epochs")),
+        "completed": completed,
+        "completion_step": completion_step,
+        "transition_reason": transition_reason,
+    }
+
+
+def resolve_pre_nested_warmup_target_steps(
+    config: Mapping[str, Any],
+    train_dataloader,
+) -> int:
+    warmup = config.get("training", {}).get("pre_nested_warmup", {})
+    if not isinstance(warmup, Mapping):
+        warmup = {}
+
+    duration = int(warmup.get("duration", 0))
+    unit = str(warmup.get("unit", "epochs"))
+    if unit == "steps":
+        return duration
+    if unit == "epochs":
+        return duration * max(1, len(train_dataloader))
+    raise ConfigError(f"Unsupported pre_nested_warmup unit: {unit}")
+
+
+def should_run_pre_nested_warmup(
+    config: Mapping[str, Any],
+    run_state: Mapping[str, Any],
+) -> bool:
+    warmup = config.get("training", {}).get("pre_nested_warmup", {})
+    if not isinstance(warmup, Mapping):
+        warmup = {}
+    if not bool(warmup.get("enabled", False)):
+        return False
+    if config.get("run", {}).get("model_family") != "nested":
+        return False
+    return not bool(run_state.get("warmup_completed", False))
+
+
+def run_pre_nested_warmup_phase(
+    config: dict[str, Any],
+    model,
+    train_dataloader,
+    eval_dataloader,
+    optimizer,
+    scheduler,
+    device: torch.device,
+    heartbeat_writer=None,
+    distributed_context=None,
+    checkpoint_state: dict[str, Any] | None = None,
+    run_state: dict[str, Any] | None = None,
+    monitoring_session=None,
+    stage_name: str = "training",
+) -> list[dict[str, Any]]:
+    run_state = run_state if run_state is not None else build_initial_continuation_state(config)
+    warmup = config["training"].get("pre_nested_warmup", {})
+    if not isinstance(warmup, Mapping):
+        warmup = {}
+
+    warmup_state = build_pre_nested_warmup_state(
+        config,
+        completed=bool(run_state.get("warmup_completed", False)),
+        completion_step=(
+            int(run_state["warmup_completion_step"])
+            if run_state.get("warmup_completion_step") is not None
+            else None
+        ),
+        transition_reason=run_state.get("warmup_transition_reason"),
+    )
+
+    if not should_run_pre_nested_warmup(config, run_state):
+        update_pre_nested_warmup_state(config, warmup_state)
+        return []
+
+    warmup_target_steps = resolve_pre_nested_warmup_target_steps(config, train_dataloader)
+    current_step = int(run_state.get("last_completed_step", 0))
+    if current_step >= warmup_target_steps:
+        warmup_state.update(
+            {
+                "completed": True,
+                "completion_step": current_step,
+                "transition_reason": "warmup_duration_reached",
+            }
+        )
+        run_state.update(
+            {
+                "warmup_completed": True,
+                "warmup_completion_step": current_step,
+                "warmup_transition_reason": "warmup_duration_reached",
+            }
+        )
+        update_pre_nested_warmup_state(config, warmup_state)
+        if checkpoint_state is not None:
+            checkpoint_state.update(
+                {
+                    "warmup_completed": True,
+                    "warmup_completion_step": current_step,
+                    "warmup_transition_reason": "warmup_duration_reached",
+                }
+            )
+        if continuation_latest_checkpoint_policy(config)["enabled"]:
+            maybe_write_latest_checkpoint(
+                config,
+                model,
+                optimizer,
+                scheduler,
+                heartbeat_writer or NoopHeartbeatWriter(),
+                run_state,
+                reason="warmup_completion",
+                step=current_step,
+                distributed_context=distributed_context,
+                force=True,
+            )
+        return []
+
+    warmup_config = copy.deepcopy(config)
+    warmup_config["training"]["max_steps"] = min(
+        int(config["training"]["max_steps"]),
+        warmup_target_steps,
+    )
+    warmup_config["model"]["granularities"] = [
+        config["model"]["granularities"][-1]
+    ]
+    warmup_config["training"]["granularity_sampling"] = "all"
+
+    warmup_metrics_rows = train_for_steps(
+        warmup_config,
+        model,
+        train_dataloader,
+        eval_dataloader,
+        optimizer,
+        scheduler,
+        device,
+        heartbeat_writer=heartbeat_writer,
+        distributed_context=distributed_context,
+        checkpoint_state=checkpoint_state,
+        run_state=run_state,
+        monitoring_session=monitoring_session,
+        stage_name="warmup",
+    )
+
+    current_step = int(run_state.get("last_completed_step", 0))
+    warmup_completed = current_step >= warmup_target_steps
+    transition_reason = (
+        "warmup_duration_reached"
+        if warmup_completed
+        else "budget_exhausted_before_nested_phase"
+    )
+    completion_step = current_step if warmup_completed else None
+    warmup_state.update(
+        {
+            "completed": warmup_completed,
+            "completion_step": completion_step,
+            "transition_reason": transition_reason,
+        }
+    )
+    run_state.update(
+        {
+            "warmup_completed": warmup_completed,
+            "warmup_completion_step": completion_step,
+            "warmup_transition_reason": transition_reason,
+        }
+    )
+    update_pre_nested_warmup_state(config, warmup_state)
+
+    if checkpoint_state is not None:
+        checkpoint_state.update(
+            {
+                "warmup_completed": warmup_completed,
+                "warmup_completion_step": completion_step,
+                "warmup_transition_reason": transition_reason,
+            }
+        )
+
+    if continuation_latest_checkpoint_policy(config)["enabled"]:
+        maybe_write_latest_checkpoint(
+            config,
+            model,
+            optimizer,
+            scheduler,
+            heartbeat_writer or NoopHeartbeatWriter(),
+            run_state,
+            reason="warmup_completion",
+            step=current_step,
+            distributed_context=distributed_context,
+            force=True,
+        )
+
+    return warmup_metrics_rows
+
+
+def load_model_and_optimizer_state(
+    model,
+    optimizer,
+    model_state_dict: Mapping[str, Any],
+    optimizer_state_dict: Mapping[str, Any] | None,
+    distributed_context=None,
+) -> None:
+    if (
+        distributed_context is not None
+        and distributed_context.enabled
+        and distributed_context.strategy == "fsdp"
+    ):
+        from torch.distributed.checkpoint.state_dict import (
+            StateDictOptions,
+            set_state_dict,
+        )
+
+        set_state_dict(
+            model,
+            optimizer if optimizer is not None else [],
+            model_state_dict=model_state_dict,
+            optim_state_dict=optimizer_state_dict or {},
+            options=StateDictOptions(full_state_dict=True, cpu_offload=True),
+        )
+        return
+
+    model.load_state_dict(dict(model_state_dict))
+    if optimizer is not None and optimizer_state_dict is not None:
+        optimizer.load_state_dict(dict(optimizer_state_dict))
 
 
 def best_validation_metric_value(
@@ -819,6 +1724,9 @@ def train_for_steps(
     heartbeat_writer=None,
     distributed_context=None,
     checkpoint_state: dict[str, Any] | None = None,
+    run_state: dict[str, Any] | None = None,
+    monitoring_session=None,
+    stage_name: str = "training",
 ) -> list[dict[str, Any]]:
     training = config["training"]
     granularities = config["model"]["granularities"]
@@ -827,22 +1735,48 @@ def train_for_steps(
     eval_interval = training.get("eval_interval", 0)
 
     metrics_rows = []
-    tokens_seen = 0
-    content_tokens_seen = 0
     start_time = time.time()
-    step = 0
-    epoch = 0
+    run_state = run_state if run_state is not None else build_initial_continuation_state(config)
+    step = int(run_state.get("last_completed_step", 0))
+    epoch = int(run_state.get("epoch", 0))
+    resume_batch_index = int(run_state.get("batch_index", 0))
+    tokens_seen = int(
+        run_state.get("tokens_seen", budget_tokens_seen_for_step(config, step))
+    )
+    content_tokens_seen = int(run_state.get("content_tokens_seen", 0))
     heartbeat_writer = heartbeat_writer or NoopHeartbeatWriter()
     heartbeat_cadence = build_heartbeat_cadence(config)
     checkpoint_state = checkpoint_state if checkpoint_state is not None else {}
+    latest_checkpoint_path = Path(
+        run_state.get("latest_checkpoint_path")
+        or Path(config["run"]["output_dir"]) / "checkpoints" / "latest.pt"
+    )
+    resume_epoch = epoch
+    resume_batch_index = max(0, resume_batch_index)
+    if len(train_dataloader) > 0:
+        while resume_batch_index >= len(train_dataloader):
+            resume_batch_index -= len(train_dataloader)
+            resume_epoch += 1
+    else:
+        resume_batch_index = 0
+    run_state["epoch"] = resume_epoch
+    run_state["batch_index"] = resume_batch_index
+    run_state["content_tokens_seen"] = content_tokens_seen
+    run_state.setdefault("latest_checkpoint_step", int(run_state.get("last_completed_step", 0)))
+    run_state.setdefault("status", "fresh")
+    if continuation_latest_checkpoint_policy(config)["enabled"] and not run_state.get("latest_checkpoint_path"):
+        run_state["latest_checkpoint_path"] = str(latest_checkpoint_path)
 
     model.train()
-    with heartbeat_stage(heartbeat_writer, "training"):
+    with heartbeat_stage(heartbeat_writer, stage_name):
         while step < max_steps and tokens_seen < token_budget:
             set_dataloader_epoch(train_dataloader, epoch)
-            epoch += 1
             made_progress = False
-            for batch in train_dataloader:
+            current_epoch = epoch
+            epoch += 1
+            for batch_index_in_epoch, batch in enumerate(train_dataloader):
+                if current_epoch == resume_epoch and batch_index_in_epoch < resume_batch_index:
+                    continue
                 if step >= max_steps or tokens_seen >= token_budget:
                     break
 
@@ -889,6 +1823,29 @@ def train_for_steps(
                 peak_memory_bytes = current_peak_memory_bytes(device)
                 latest_loss = float(combined_loss.detach().cpu().item())
                 tokens_per_second = tokens_seen / elapsed if elapsed > 0 else None
+                step_metric_rows = []
+                run_state.update(
+                    {
+                        "status": "resumed" if int(run_state.get("resume_count", 0)) > 0 else "fresh",
+                        "last_completed_step": step,
+                        "step": step,
+                        "epoch": current_epoch,
+                        "batch_index": batch_index_in_epoch + 1,
+                        "tokens_seen": tokens_seen,
+                        "content_tokens_seen": content_tokens_seen,
+                    }
+                )
+                maybe_write_latest_checkpoint(
+                    config,
+                    model,
+                    optimizer,
+                    scheduler,
+                    heartbeat_writer,
+                    run_state,
+                    reason="step",
+                    step=step,
+                    distributed_context=distributed_context,
+                )
                 maybe_emit_training_heartbeat(
                     heartbeat_writer,
                     heartbeat_cadence,
@@ -899,10 +1856,11 @@ def train_for_steps(
                     latest_loss=latest_loss,
                     tokens_per_second=tokens_per_second,
                     peak_gpu_memory_bytes=peak_memory_bytes,
+                    stage_name=stage_name,
                 )
 
                 for granularity, loss in granularity_losses:
-                    metrics_rows.append(
+                    step_metric_rows.append(
                         build_training_metric_row(
                             config,
                             step=step,
@@ -914,6 +1872,9 @@ def train_for_steps(
                             peak_memory_bytes=peak_memory_bytes,
                         )
                     )
+                metrics_rows.extend(step_metric_rows)
+                if monitoring_session is not None:
+                    monitoring_session.log_rows(step_metric_rows)
 
                 if eval_interval > 0 and step % eval_interval == 0:
                     with heartbeat_stage(
@@ -943,20 +1904,33 @@ def train_for_steps(
                         step,
                         heartbeat_writer,
                         checkpoint_state,
+                        run_state,
                         distributed_context=distributed_context,
                     )
-                    metrics_rows.extend(
-                        validation_results_to_metric_rows(
-                            validation_results,
-                            config,
-                            step=step,
-                            wall_clock_seconds=elapsed,
-                            tokens_per_second=tokens_per_second,
-                            peak_memory_bytes=peak_memory_bytes,
-                            tokens_seen=tokens_seen,
-                            content_tokens_seen=content_tokens_seen,
-                        )
+                    maybe_write_latest_checkpoint(
+                        config,
+                        model,
+                        optimizer,
+                        scheduler,
+                        heartbeat_writer,
+                        run_state,
+                        reason="validation",
+                        step=step,
+                        distributed_context=distributed_context,
                     )
+                    validation_metric_rows = validation_results_to_metric_rows(
+                        validation_results,
+                        config,
+                        step=step,
+                        wall_clock_seconds=elapsed,
+                        tokens_per_second=tokens_per_second,
+                        peak_memory_bytes=peak_memory_bytes,
+                        tokens_seen=tokens_seen,
+                        content_tokens_seen=content_tokens_seen,
+                    )
+                    metrics_rows.extend(validation_metric_rows)
+                    if monitoring_session is not None:
+                        monitoring_session.log_rows(validation_metric_rows)
 
                 if step >= max_steps or tokens_seen >= token_budget:
                     break
@@ -977,6 +1951,19 @@ def train_for_steps(
         heartbeat_writer=heartbeat_writer,
         distributed_context=distributed_context,
         checkpoint_state=checkpoint_state,
+        run_state=run_state,
+        monitoring_session=monitoring_session,
+    )
+    maybe_write_latest_checkpoint(
+        config,
+        model,
+        optimizer,
+        scheduler,
+        heartbeat_writer,
+        run_state,
+        reason="completion",
+        step=step,
+        distributed_context=distributed_context,
     )
 
     return metrics_rows
@@ -1080,6 +2067,8 @@ def append_final_validation_if_needed(
     heartbeat_writer=None,
     distributed_context=None,
     checkpoint_state: dict[str, Any] | None = None,
+    run_state: dict[str, Any] | None = None,
+    monitoring_session=None,
 ) -> None:
     if not config.get("evaluation", {}).get("validation", False):
         return
@@ -1118,20 +2107,22 @@ def append_final_validation_if_needed(
         step,
         heartbeat_writer,
         checkpoint_state if checkpoint_state is not None else {},
+        run_state if run_state is not None else build_initial_continuation_state(config),
         distributed_context=distributed_context,
     )
-    metrics_rows.extend(
-        validation_results_to_metric_rows(
-            validation_results,
-            config,
-            step=step,
-            wall_clock_seconds=elapsed,
-            tokens_per_second=tokens_seen / elapsed if elapsed > 0 else None,
-            peak_memory_bytes=current_peak_memory_bytes(device),
-            tokens_seen=tokens_seen,
-            content_tokens_seen=content_tokens_seen,
-        )
+    validation_metric_rows = validation_results_to_metric_rows(
+        validation_results,
+        config,
+        step=step,
+        wall_clock_seconds=elapsed,
+        tokens_per_second=tokens_seen / elapsed if elapsed > 0 else None,
+        peak_memory_bytes=current_peak_memory_bytes(device),
+        tokens_seen=tokens_seen,
+        content_tokens_seen=content_tokens_seen,
     )
+    metrics_rows.extend(validation_metric_rows)
+    if monitoring_session is not None:
+        monitoring_session.log_rows(validation_metric_rows)
 
 
 def write_extraction_metadata_if_nested(
@@ -1181,7 +2172,13 @@ def prefix_metadata_by_granularity(
     target = model.module if hasattr(model, "module") else model
     metadata = getattr(target, "ffn_prefix_metadata", None)
     if metadata is None:
-        metadata = get_ffn_prefix_metadata(model_config["intermediate_size"])
+        metadata = model_config.get("ffn_prefix_metadata")
+    if metadata is None:
+        metadata = get_ffn_prefix_metadata(
+            model_config["intermediate_size"],
+            granularity_prefixes=model_config.get("granularity_prefixes"),
+            granularities=model_config.get("granularities"),
+        )
 
     return {entry["name"]: dict(entry) for entry in metadata}
 

@@ -22,17 +22,27 @@ from modified_llama import (
 )
 
 
-def tiny_llama_config(num_hidden_layers=2):
-    return LlamaConfig(
+def tiny_llama_config(
+    num_hidden_layers=2,
+    intermediate_size=64,
+    granularity_prefixes=None,
+    granularities=None,
+):
+    config = LlamaConfig(
         vocab_size=32,
         hidden_size=16,
-        intermediate_size=64,
+        intermediate_size=intermediate_size,
         num_hidden_layers=num_hidden_layers,
         num_attention_heads=4,
         num_key_value_heads=4,
         max_position_embeddings=16,
         tie_word_embeddings=False,
     )
+    if granularity_prefixes is not None:
+        config.granularity_prefixes = granularity_prefixes
+    if granularities is not None:
+        config.granularities = granularities
+    return config
 
 
 def test_granularity_metadata_matches_paper_ratios_and_prefix_widths():
@@ -50,6 +60,26 @@ def test_granularity_metadata_matches_paper_ratios_and_prefix_widths():
     assert [entry["prefix_width"] for entry in metadata] == [8, 16, 32, 64]
 
 
+def test_granularity_metadata_follows_configured_prefix_map():
+    metadata = get_ffn_prefix_metadata(
+        intermediate_size=100,
+        granularity_prefixes={
+            "s": 0.1,
+            "m": 0.2,
+            "l": 0.4,
+            "xl": 1.0,
+        },
+    )
+
+    assert [entry["full_intermediate_fraction"] for entry in metadata] == [
+        0.1,
+        0.2,
+        0.4,
+        1.0,
+    ]
+    assert [entry["prefix_width"] for entry in metadata] == [10, 20, 40, 100]
+
+
 def test_concat_block_metadata_preserves_granularity_boundaries():
     metadata = get_concat_block_metadata(intermediate_size=64)
 
@@ -61,6 +91,21 @@ def test_concat_block_metadata_preserves_granularity_boundaries():
         32,
         64,
     ]
+
+
+def test_concat_block_metadata_can_be_derived_from_config_prefix_map():
+    metadata = get_concat_block_metadata(
+        intermediate_size=100,
+        granularity_prefixes={
+            "s": 0.1,
+            "m": 0.2,
+            "l": 0.4,
+            "xl": 1.0,
+        },
+    )
+
+    assert [entry["block_width"] for entry in metadata] == [10, 10, 20, 60]
+    assert [entry["prefix_width"] for entry in metadata] == [10, 20, 40, 100]
 
 
 def test_concat_membership_counts_follow_concat_boundaries():
@@ -139,6 +184,30 @@ def test_mlp_configures_prefix_tensor_shapes_and_forward_output():
         assert mlp(x).shape == x.shape
 
 
+def test_modified_mlp_uses_configured_prefix_metadata():
+    config = tiny_llama_config(
+        num_hidden_layers=1,
+        intermediate_size=100,
+        granularity_prefixes={
+            "s": 0.1,
+            "m": 0.2,
+            "l": 0.4,
+            "xl": 1.0,
+        },
+        granularities=["s", "m", "l", "xl"],
+    )
+    mlp = ModifiedLlamaMLP(config)
+
+    assert [entry["prefix_width"] for entry in mlp.ffn_prefix_metadata] == [
+        10,
+        20,
+        40,
+        100,
+    ]
+    mlp.configure_subnetwork("l")
+    assert mlp.current_subset_hd == 40
+
+
 def test_cat_mlp_uses_concat_block_counts_for_subnetwork_configuration():
     config = tiny_llama_config(num_hidden_layers=1)
     mlp = CatLlamaMLP(config)
@@ -148,6 +217,36 @@ def test_cat_mlp_uses_concat_block_counts_for_subnetwork_configuration():
         assert mlp.current_subset_blocks == expected_blocks
     assert mlp.gradient_membership_counts == [4, 3, 2, 1]
     assert mlp.gradient_membership_correction_scales == [1.0, 4 / 3, 2.0, 4.0]
+
+
+def test_cat_mlp_uses_configured_concat_block_metadata():
+    config = tiny_llama_config(
+        num_hidden_layers=1,
+        intermediate_size=100,
+        granularity_prefixes={
+            "s": 0.1,
+            "m": 0.2,
+            "l": 0.4,
+            "xl": 1.0,
+        },
+        granularities=["s", "m", "l", "xl"],
+    )
+    mlp = CatLlamaMLP(config)
+
+    assert [entry["prefix_width"] for entry in mlp.ffn_prefix_metadata] == [
+        10,
+        20,
+        40,
+        100,
+    ]
+    assert [entry["block_width"] for entry in mlp.ffn_concat_block_metadata] == [
+        10,
+        10,
+        20,
+        60,
+    ]
+    mlp.configure_subnetwork("m")
+    assert mlp.current_subset_hd == 20
 
 
 def test_modified_mlp_defaults_to_gradient_membership_correction_enabled():
