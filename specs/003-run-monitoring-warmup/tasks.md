@@ -88,9 +88,9 @@
 
 ### Implementation for User Story 3
 
-- [ ] T017 [US3] Implement `training.pre_nested_warmup` parsing, validation, and resolved warmup state in `utils/config.py`
-- [ ] T018 [US3] Implement the pre-nested warmup stage and warmup-state persistence in `training/run.py`
-- [ ] T019 [US3] Assert warmup completion, warmup unit, and nested-transition fields in `tests/test_artifacts.py`
+- [X] T017 [US3] Implement `training.pre_nested_warmup` parsing, validation, and resolved warmup state in `utils/config.py`
+- [X] T018 [US3] Implement the pre-nested warmup stage and warmup-state persistence in `training/run.py`
+- [X] T019 [US3] Assert warmup completion, warmup unit, and nested-transition fields in `tests/test_artifacts.py`
 
 **Checkpoint**: All user stories should now be independently functional.
 

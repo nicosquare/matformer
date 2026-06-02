@@ -40,9 +40,13 @@ training:
   learning_rate_scale_rule: linear
   warmup_steps: 2000 # This flag overrules ratio. We set this for small experiments (e.g. up to 100M tokens), for larger experiments we set warmup_ratio instead (comment this)
   warmup_ratio: 0.01635
+  # Pre-nested warmup is separate from scheduler warmup.
+  # Nested runs can use it to warm the model before block slicing/splitting.
   pre_nested_warmup:
     enabled: false
+    # Duration is applied only when warmup is enabled.
     duration: 0
+    # Use epochs for longer runs or steps for short debug runs.
     unit: epochs
   gradient_clip_norm: 1.0
   eval_interval: 500

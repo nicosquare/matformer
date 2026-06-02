@@ -64,6 +64,27 @@ Expected result:
   monitoring enablement.
 - W&B shows the loss series grouped by granularity for the single run.
 
+### Warmup-Only Nested Example
+
+Use the warmup knobs without enabling continuation when you just want to
+verify the pre-nested transition on a nested run:
+
+```bash
+python train.py \
+  --config configs/debug_matrix.yaml \
+  --run-id debug-nested-001 \
+  --output-root "$OUTPUT_ROOT" \
+  --override training.pre_nested_warmup.enabled=true \
+  --override training.pre_nested_warmup.duration=1 \
+  --override training.pre_nested_warmup.unit=steps
+```
+
+Expected result:
+- The nested run records a completed warmup before the main nested phase.
+- Standalone runs still bypass warmup even if these overrides are supplied.
+- The saved warmup metadata in `config.json` and `run_summary.json` stays
+  explicit about the duration, unit, and transition reason.
+
 ## 5. Inspect Continuation Artifacts
 
 After a relaunch, inspect the output directory:

@@ -266,10 +266,6 @@ def test_pre_nested_warmup_disabled_path_keeps_the_run_in_the_standard_flow(
     assert all("warmup" not in str(event["stage"]) for event in heartbeat_events)
 
 
-@pytest.mark.xfail(
-    reason="Pre-nested warmup stage wiring is implemented in T018, not yet here",
-    strict=False,
-)
 def test_pre_nested_warmup_transition_records_a_warmup_stage_before_training(
     tmp_path,
 ):

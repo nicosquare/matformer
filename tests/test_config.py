@@ -218,6 +218,10 @@ def test_resolve_minimal_config_includes_long_run_defaults(tmp_path):
         "enabled": False,
         "duration": 0,
         "unit": "epochs",
+        "active": False,
+        "completed": False,
+        "completion_step": None,
+        "transition_reason": None,
     }
 
 
@@ -236,7 +240,21 @@ def test_pre_nested_warmup_validation_rules(tmp_path):
         "enabled": True,
         "duration": 3,
         "unit": "steps",
+        "active": True,
+        "completed": False,
+        "completion_step": None,
+        "transition_reason": None,
     }
+
+    standalone_resolved = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-standalone-s-001",
+        overrides=[
+            "training.pre_nested_warmup.enabled=true",
+            "training.pre_nested_warmup.duration=1",
+        ],
+    )
+    assert standalone_resolved["training"]["pre_nested_warmup"]["active"] is False
 
     with pytest.raises(
         ConfigError,

@@ -171,20 +171,72 @@ def run_training(
         emit_run_start_continuation_state(heartbeat_writer, run_state)
         checkpoint_state.update(run_state)
         update_run_continuation_state(config, run_state)
-        metrics_rows = train_for_steps(
-            config,
-            model,
-            train_dataloader,
-            eval_dataloader,
-            optimizer,
-            scheduler,
-            device,
-            heartbeat_writer=heartbeat_writer,
-            distributed_context=distributed_context,
-            checkpoint_state=checkpoint_state,
-            run_state=run_state,
-            monitoring_session=monitoring_session,
+        metrics_rows = []
+        if should_run_pre_nested_warmup(config, run_state):
+            metrics_rows.extend(
+                run_pre_nested_warmup_phase(
+                    config,
+                    model,
+                    train_dataloader,
+                    eval_dataloader,
+                    optimizer,
+                    scheduler,
+                    device,
+                    heartbeat_writer=heartbeat_writer,
+                    distributed_context=distributed_context,
+                    checkpoint_state=checkpoint_state,
+                    run_state=run_state,
+                    monitoring_session=monitoring_session,
+                )
+            )
+        else:
+            update_pre_nested_warmup_state(
+                config,
+                build_pre_nested_warmup_state(
+                    config,
+                    completed=bool(run_state.get("warmup_completed", False)),
+                    completion_step=(
+                        int(run_state["warmup_completion_step"])
+                        if run_state.get("warmup_completion_step") is not None
+                        else None
+                    ),
+                    transition_reason=run_state.get("warmup_transition_reason"),
+                ),
+            )
+
+        warmup_config = config["training"].get("pre_nested_warmup", {})
+        warmup_active = bool(
+            isinstance(warmup_config, Mapping) and warmup_config.get("active", False)
         )
+        warmup_budget_exhausted = (
+            warmup_active
+            and not bool(run_state.get("warmup_completed", False))
+            and (
+                int(run_state.get("last_completed_step", 0))
+                >= int(config["training"]["max_steps"])
+                or int(run_state.get("tokens_seen", 0))
+                >= int(config["training"]["token_budget"])
+            )
+        )
+
+        if not warmup_budget_exhausted:
+            metrics_rows.extend(
+                train_for_steps(
+                    config,
+                    model,
+                    train_dataloader,
+                    eval_dataloader,
+                    optimizer,
+                    scheduler,
+                    device,
+                    heartbeat_writer=heartbeat_writer,
+                    distributed_context=distributed_context,
+                    checkpoint_state=checkpoint_state,
+                    run_state=run_state,
+                    monitoring_session=monitoring_session,
+                    stage_name="training",
+                )
+            )
         extraction_metadata_path = None
         metrics_path = None
         scaling_path = None
@@ -702,13 +754,14 @@ def maybe_emit_training_heartbeat(
     latest_loss: float,
     tokens_per_second: float | None,
     peak_gpu_memory_bytes: int,
+    stage_name: str = "training",
 ) -> None:
     now = time.time()
     if not heartbeat_cadence.should_emit(step=step, now=now):
         return
 
     heartbeat_writer.heartbeat(
-        "training",
+        stage_name,
         **heartbeat_training_fields(
             config,
             step=step,
@@ -1050,6 +1103,9 @@ def save_model_checkpoint(
             "tokens_seen": run_state.get("tokens_seen", 0),
             "content_tokens_seen": run_state.get("content_tokens_seen", 0),
             "resume_count": run_state.get("resume_count", 0),
+            "warmup_completed": run_state.get("warmup_completed", False),
+            "warmup_completion_step": run_state.get("warmup_completion_step"),
+            "warmup_transition_reason": run_state.get("warmup_transition_reason"),
             "latest_checkpoint_path": run_state.get("latest_checkpoint_path"),
             "model_state_dict": model_state_dict,
             "optimizer_state_dict": optimizer_state_dict,
@@ -1101,6 +1157,9 @@ def build_initial_continuation_state(config: dict[str, Any]) -> dict[str, Any]:
         "step": 0,
         "epoch": 0,
         "batch_index": 0,
+        "warmup_completed": False,
+        "warmup_completion_step": None,
+        "warmup_transition_reason": None,
         "output_dir": str(output_dir),
     }
 
@@ -1148,6 +1207,9 @@ def load_checkpoint_state(
             "step": 0,
             "epoch": 0,
             "batch_index": 0,
+            "warmup_completed": False,
+            "warmup_completion_step": None,
+            "warmup_transition_reason": None,
         }
         if output_dir is not None:
             state["output_dir"] = str(output_dir)
@@ -1196,6 +1258,9 @@ def load_checkpoint_state(
         "step": last_completed_step,
         "epoch": int(checkpoint.get("epoch", 0)),
         "batch_index": int(checkpoint.get("batch_index", 0)),
+        "warmup_completed": bool(checkpoint.get("warmup_completed", False)),
+        "warmup_completion_step": checkpoint.get("warmup_completion_step"),
+        "warmup_transition_reason": checkpoint.get("warmup_transition_reason"),
     }
     if output_dir is not None:
         state["output_dir"] = str(output_dir)
@@ -1225,6 +1290,234 @@ def update_run_continuation_state(
     ]:
         if key in state and state[key] is not None:
             continuation[key] = state[key]
+
+
+def update_pre_nested_warmup_state(
+    config: dict[str, Any],
+    state: Mapping[str, Any],
+) -> None:
+    training = config.setdefault("training", {})
+    warmup = training.setdefault("pre_nested_warmup", {})
+    if not isinstance(warmup, dict):
+        raise ConfigError("training.pre_nested_warmup must be a mapping when provided")
+
+    for key in [
+        "enabled",
+        "active",
+        "duration",
+        "unit",
+        "completed",
+        "completion_step",
+        "transition_reason",
+    ]:
+        if key in state:
+            warmup[key] = state[key]
+
+
+def build_pre_nested_warmup_state(
+    config: Mapping[str, Any],
+    *,
+    completed: bool,
+    completion_step: int | None,
+    transition_reason: str | None,
+) -> dict[str, Any]:
+    training = config.get("training", {})
+    warmup = training.get("pre_nested_warmup", {})
+    if not isinstance(warmup, Mapping):
+        warmup = {}
+
+    return {
+        "enabled": bool(warmup.get("enabled", False)),
+        "active": bool(warmup.get("active", False)),
+        "duration": int(warmup.get("duration", 0)),
+        "unit": str(warmup.get("unit", "epochs")),
+        "completed": completed,
+        "completion_step": completion_step,
+        "transition_reason": transition_reason,
+    }
+
+
+def resolve_pre_nested_warmup_target_steps(
+    config: Mapping[str, Any],
+    train_dataloader,
+) -> int:
+    warmup = config.get("training", {}).get("pre_nested_warmup", {})
+    if not isinstance(warmup, Mapping):
+        warmup = {}
+
+    duration = int(warmup.get("duration", 0))
+    unit = str(warmup.get("unit", "epochs"))
+    if unit == "steps":
+        return duration
+    if unit == "epochs":
+        return duration * max(1, len(train_dataloader))
+    raise ConfigError(f"Unsupported pre_nested_warmup unit: {unit}")
+
+
+def should_run_pre_nested_warmup(
+    config: Mapping[str, Any],
+    run_state: Mapping[str, Any],
+) -> bool:
+    warmup = config.get("training", {}).get("pre_nested_warmup", {})
+    if not isinstance(warmup, Mapping):
+        warmup = {}
+    if not bool(warmup.get("enabled", False)):
+        return False
+    if config.get("run", {}).get("model_family") != "nested":
+        return False
+    return not bool(run_state.get("warmup_completed", False))
+
+
+def run_pre_nested_warmup_phase(
+    config: dict[str, Any],
+    model,
+    train_dataloader,
+    eval_dataloader,
+    optimizer,
+    scheduler,
+    device: torch.device,
+    heartbeat_writer=None,
+    distributed_context=None,
+    checkpoint_state: dict[str, Any] | None = None,
+    run_state: dict[str, Any] | None = None,
+    monitoring_session=None,
+    stage_name: str = "training",
+) -> list[dict[str, Any]]:
+    run_state = run_state if run_state is not None else build_initial_continuation_state(config)
+    warmup = config["training"].get("pre_nested_warmup", {})
+    if not isinstance(warmup, Mapping):
+        warmup = {}
+
+    warmup_state = build_pre_nested_warmup_state(
+        config,
+        completed=bool(run_state.get("warmup_completed", False)),
+        completion_step=(
+            int(run_state["warmup_completion_step"])
+            if run_state.get("warmup_completion_step") is not None
+            else None
+        ),
+        transition_reason=run_state.get("warmup_transition_reason"),
+    )
+
+    if not should_run_pre_nested_warmup(config, run_state):
+        update_pre_nested_warmup_state(config, warmup_state)
+        return []
+
+    warmup_target_steps = resolve_pre_nested_warmup_target_steps(config, train_dataloader)
+    current_step = int(run_state.get("last_completed_step", 0))
+    if current_step >= warmup_target_steps:
+        warmup_state.update(
+            {
+                "completed": True,
+                "completion_step": current_step,
+                "transition_reason": "warmup_duration_reached",
+            }
+        )
+        run_state.update(
+            {
+                "warmup_completed": True,
+                "warmup_completion_step": current_step,
+                "warmup_transition_reason": "warmup_duration_reached",
+            }
+        )
+        update_pre_nested_warmup_state(config, warmup_state)
+        if checkpoint_state is not None:
+            checkpoint_state.update(
+                {
+                    "warmup_completed": True,
+                    "warmup_completion_step": current_step,
+                    "warmup_transition_reason": "warmup_duration_reached",
+                }
+            )
+        if continuation_latest_checkpoint_policy(config)["enabled"]:
+            maybe_write_latest_checkpoint(
+                config,
+                model,
+                optimizer,
+                scheduler,
+                heartbeat_writer or NoopHeartbeatWriter(),
+                run_state,
+                reason="warmup_completion",
+                step=current_step,
+                distributed_context=distributed_context,
+                force=True,
+            )
+        return []
+
+    warmup_config = copy.deepcopy(config)
+    warmup_config["training"]["max_steps"] = min(
+        int(config["training"]["max_steps"]),
+        warmup_target_steps,
+    )
+    warmup_config["model"]["granularities"] = [
+        config["model"]["granularities"][-1]
+    ]
+    warmup_config["training"]["granularity_sampling"] = "all"
+
+    warmup_metrics_rows = train_for_steps(
+        warmup_config,
+        model,
+        train_dataloader,
+        eval_dataloader,
+        optimizer,
+        scheduler,
+        device,
+        heartbeat_writer=heartbeat_writer,
+        distributed_context=distributed_context,
+        checkpoint_state=checkpoint_state,
+        run_state=run_state,
+        monitoring_session=monitoring_session,
+        stage_name="warmup",
+    )
+
+    current_step = int(run_state.get("last_completed_step", 0))
+    warmup_completed = current_step >= warmup_target_steps
+    transition_reason = (
+        "warmup_duration_reached"
+        if warmup_completed
+        else "budget_exhausted_before_nested_phase"
+    )
+    completion_step = current_step if warmup_completed else None
+    warmup_state.update(
+        {
+            "completed": warmup_completed,
+            "completion_step": completion_step,
+            "transition_reason": transition_reason,
+        }
+    )
+    run_state.update(
+        {
+            "warmup_completed": warmup_completed,
+            "warmup_completion_step": completion_step,
+            "warmup_transition_reason": transition_reason,
+        }
+    )
+    update_pre_nested_warmup_state(config, warmup_state)
+
+    if checkpoint_state is not None:
+        checkpoint_state.update(
+            {
+                "warmup_completed": warmup_completed,
+                "warmup_completion_step": completion_step,
+                "warmup_transition_reason": transition_reason,
+            }
+        )
+
+    if continuation_latest_checkpoint_policy(config)["enabled"]:
+        maybe_write_latest_checkpoint(
+            config,
+            model,
+            optimizer,
+            scheduler,
+            heartbeat_writer or NoopHeartbeatWriter(),
+            run_state,
+            reason="warmup_completion",
+            step=current_step,
+            distributed_context=distributed_context,
+            force=True,
+        )
+
+    return warmup_metrics_rows
 
 
 def load_model_and_optimizer_state(
@@ -1409,6 +1702,7 @@ def train_for_steps(
     checkpoint_state: dict[str, Any] | None = None,
     run_state: dict[str, Any] | None = None,
     monitoring_session=None,
+    stage_name: str = "training",
 ) -> list[dict[str, Any]]:
     training = config["training"]
     granularities = config["model"]["granularities"]
@@ -1450,7 +1744,7 @@ def train_for_steps(
         run_state["latest_checkpoint_path"] = str(latest_checkpoint_path)
 
     model.train()
-    with heartbeat_stage(heartbeat_writer, "training"):
+    with heartbeat_stage(heartbeat_writer, stage_name):
         while step < max_steps and tokens_seen < token_budget:
             set_dataloader_epoch(train_dataloader, epoch)
             made_progress = False
@@ -1538,6 +1832,7 @@ def train_for_steps(
                     latest_loss=latest_loss,
                     tokens_per_second=tokens_per_second,
                     peak_gpu_memory_bytes=peak_memory_bytes,
+                    stage_name=stage_name,
                 )
 
                 for granularity, loss in granularity_losses:

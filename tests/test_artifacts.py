@@ -283,6 +283,64 @@ def test_run_summary_records_continuation_state_transitions(
     ]
 
 
+def test_warmup_run_summary_records_completion_and_transition_fields(tmp_path):
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "training.max_steps=2",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "training.pre_nested_warmup.enabled=true",
+            "training.pre_nested_warmup.duration=1",
+            "training.pre_nested_warmup.unit=steps",
+            "evaluation.validation=false",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+
+    run_training(
+        config,
+        model=TinyExtractionModel(),
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    saved_config = json.loads((output_dir / "config.json").read_text(encoding="utf-8"))
+    saved_summary = json.loads(
+        (output_dir / "run_summary.json").read_text(encoding="utf-8")
+    )
+
+    assert saved_config["training"]["pre_nested_warmup"] == {
+        "enabled": True,
+        "duration": 1,
+        "unit": "steps",
+        "active": True,
+        "completed": True,
+        "completion_step": 1,
+        "transition_reason": "warmup_duration_reached",
+    }
+    assert saved_summary["warmup_policy"] == {
+        "enabled": True,
+        "duration": 1,
+        "unit": "steps",
+        "completed": True,
+        "completion_step": 1,
+        "transition_reason": "warmup_duration_reached",
+    }
+    assert saved_summary["warmup_completion_step"] == 1
+    assert saved_summary["warmup_completed"] is True
+
+
 def test_write_failed_run_summary_records_failure_note(tmp_path):
     output_dir = tmp_path / "debug-standalone-s-001"
     config = resolve_run_config(

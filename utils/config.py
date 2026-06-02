@@ -1162,6 +1162,11 @@ def _resolve_pre_nested_warmup_defaults(config: dict[str, Any]) -> None:
             f"{sorted(VALID_PRE_NESTED_WARMUP_UNITS)}"
         )
     warmup["unit"] = warmup_unit
+    run = config.get("run", {})
+    warmup["active"] = bool(warmup["enabled"]) and run.get("model_family") == "nested"
+    warmup["completed"] = bool(warmup.get("completed", False))
+    warmup["completion_step"] = warmup.get("completion_step")
+    warmup["transition_reason"] = warmup.get("transition_reason")
     training["pre_nested_warmup"] = warmup
 
 
