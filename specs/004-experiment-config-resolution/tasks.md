@@ -36,8 +36,8 @@
 
 ### Verification for User Story 1
 
-- [ ] T006 [P] [US1] Add correction-mode validation coverage in `tests/test_config.py` for `none`, `gmc`, `lmc`, and `model.membership_correction` conflict cases.
-- [ ] T007 [P] [US1] Add a synthetic concat LMC regression and slicing-path non-regression in `tests/test_training_smoke.py` that checks per-block effective learning rates, unchanged gradients/optimizer state, and unchanged `none`/`gmc` behavior on slicing runs.
+- [X] T006 [P] [US1] Add correction-mode validation coverage in `tests/test_config.py` for `none`, `gmc`, `lmc`, and `model.membership_correction` conflict cases.
+- [X] T007 [P] [US1] Add a synthetic concat LMC regression and slicing-path non-regression in `tests/test_training_smoke.py` that checks per-block effective learning rates, unchanged gradients/optimizer state, and unchanged `none`/`gmc` behavior on slicing runs.
 
 ### Implementation for User Story 1
 

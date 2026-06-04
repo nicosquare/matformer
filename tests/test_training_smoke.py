@@ -95,6 +95,228 @@ class _FakeWandbModule:
         self.finish_calls += 1
 
 
+class ToyConcatLMCModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.current_granularity = None
+        self.current_subset_blocks = None
+        self.gradient_membership_counts = [4, 3, 2, 1]
+        self.gate_weight_blocks = torch.nn.ParameterList(
+            [torch.nn.Parameter(torch.tensor(value)) for value in [1.0, 2.0, 3.0, 4.0]]
+        )
+        self.up_weight_blocks = torch.nn.ParameterList(
+            [torch.nn.Parameter(torch.tensor(value)) for value in [5.0, 6.0, 7.0, 8.0]]
+        )
+        self.down_weight_blocks = torch.nn.ParameterList(
+            [torch.nn.Parameter(torch.tensor(value)) for value in [9.0, 10.0, 11.0, 12.0]]
+        )
+        self.gate_bias_blocks = torch.nn.ParameterList(
+            [torch.nn.Parameter(torch.tensor(value)) for value in [13.0, 14.0, 15.0, 16.0]]
+        )
+        self.up_bias_blocks = torch.nn.ParameterList(
+            [torch.nn.Parameter(torch.tensor(value)) for value in [17.0, 18.0, 19.0, 20.0]]
+        )
+        self.down_bias = torch.nn.Parameter(torch.tensor(21.0))
+
+    def configure_subnetwork(self, granularity):
+        self.current_granularity = granularity
+        self.current_subset_blocks = {"s": 1, "m": 2, "l": 3, "xl": 4}[granularity]
+
+    def forward(self, input_ids, attention_mask=None, labels=None):
+        if self.current_subset_blocks is None:
+            raise ValueError("Subnetwork size not configured. Call `configure_subnetwork` first.")
+
+        loss = self.down_bias * 1.0
+        for blocks in [
+            self.gate_weight_blocks,
+            self.up_weight_blocks,
+            self.down_weight_blocks,
+            self.gate_bias_blocks,
+            self.up_bias_blocks,
+        ]:
+            for param in list(blocks)[: self.current_subset_blocks]:
+                loss = loss + param
+
+        return SimpleNamespace(loss=loss + input_ids.float().mean() * 0.0)
+
+
+def _snapshot_named_parameters(model):
+    return {
+        name: parameter.detach().cpu().clone()
+        for name, parameter in model.named_parameters()
+    }
+
+
+def _snapshot_named_grads(model):
+    return {
+        name: None if parameter.grad is None else parameter.grad.detach().cpu().clone()
+        for name, parameter in model.named_parameters()
+    }
+
+
+def _snapshot_optimizer_state(optimizer):
+    state = optimizer.state_dict()["state"]
+    normalized = {}
+    for key, value in state.items():
+        normalized[key] = {}
+        for state_key, state_value in value.items():
+            if torch.is_tensor(state_value):
+                normalized[key][state_key] = state_value.detach().cpu().clone()
+            else:
+                normalized[key][state_key] = state_value
+    return normalized
+
+
+def _assert_optimizer_states_equal(left, right):
+    assert left.keys() == right.keys()
+    for key in left:
+        assert left[key].keys() == right[key].keys()
+        for state_key in left[key]:
+            left_value = left[key][state_key]
+            right_value = right[key][state_key]
+            if torch.is_tensor(left_value):
+                torch.testing.assert_close(left_value, right_value)
+            else:
+                assert left_value == right_value
+
+
+def _run_concat_lmc_case(tmp_path, monkeypatch, correction_mode):
+    import training.run as training_run
+
+    output_dir = tmp_path / f"concat-{correction_mode}" / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "model.variant=cat_llama",
+            f"model.correction_mode={correction_mode}",
+            "training.max_steps=1",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.name=constant",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "training.gradient_clip_norm=1000",
+            "evaluation.validation=false",
+        ]
+        + (["model.membership_correction=false"] if correction_mode == "none" else []),
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+    model = ToyConcatLMCModel()
+    initial_parameters = _snapshot_named_parameters(model)
+    captured = {}
+    original_build_optimizer_and_scheduler = training_run.build_optimizer_and_scheduler
+    parameter_counts = {
+        "total_parameters": 21,
+        "embedding_parameters": 0,
+        "lm_head_parameters": 0,
+        "non_embedding_parameters": 21,
+    }
+
+    def capturing_build_optimizer_and_scheduler(model_arg, training):
+        optimizer, scheduler = original_build_optimizer_and_scheduler(model_arg, training)
+        captured["optimizer"] = optimizer
+        return optimizer, scheduler
+
+    monkeypatch.setattr(
+        training_run,
+        "build_optimizer_and_scheduler",
+        capturing_build_optimizer_and_scheduler,
+    )
+    monkeypatch.setattr(
+        training_run,
+        "build_artifact_parameter_counts",
+        lambda *args, **kwargs: {
+            granularity: dict(parameter_counts)
+            for granularity in ["s", "m", "l", "xl"]
+        },
+    )
+
+    result = run_training(
+        config,
+        model=model,
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    return {
+        "initial_parameters": initial_parameters,
+        "final_parameters": _snapshot_named_parameters(model),
+        "grads": _snapshot_named_grads(model),
+        "optimizer_state": _snapshot_optimizer_state(captured["optimizer"]),
+        "summary": json.loads(result["summary_path"].read_text(encoding="utf-8")),
+        "model": model,
+    }
+
+
+def _run_slicing_case(tmp_path, monkeypatch, correction_mode):
+    import training.run as training_run
+
+    output_dir = tmp_path / f"slicing-{correction_mode}" / "debug-nested-001"
+    overrides = [
+        f"model.correction_mode={correction_mode}",
+        "training.max_steps=1",
+        "training.eval_interval=0",
+        "training.batch_size_per_process=1",
+        "training.learning_rate=0.01",
+        "training.scheduler.kwargs.warmup_steps=0",
+        "evaluation.validation=false",
+    ]
+    if correction_mode == "none":
+        overrides.append("model.membership_correction=false")
+
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=overrides,
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+    model = TinyNestedTrainingModel()
+    initial_parameters = _snapshot_named_parameters(model)
+    captured = {}
+    original_build_optimizer_and_scheduler = training_run.build_optimizer_and_scheduler
+
+    def capturing_build_optimizer_and_scheduler(model_arg, training):
+        optimizer, scheduler = original_build_optimizer_and_scheduler(model_arg, training)
+        captured["optimizer"] = optimizer
+        return optimizer, scheduler
+
+    monkeypatch.setattr(
+        training_run,
+        "build_optimizer_and_scheduler",
+        capturing_build_optimizer_and_scheduler,
+    )
+
+    result = run_training(
+        config,
+        model=model,
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    return {
+        "initial_parameters": initial_parameters,
+        "final_parameters": _snapshot_named_parameters(model),
+        "grads": _snapshot_named_grads(model),
+        "optimizer_state": _snapshot_optimizer_state(captured["optimizer"]),
+        "train_forward_granularities": list(model.train_forward_granularities),
+        "summary": json.loads(result["summary_path"].read_text(encoding="utf-8")),
+        "model": model,
+    }
+
+
 def _run_monitoring_smoke_case(tmp_path, run_id: str):
     output_dir = tmp_path / run_id
     config = resolve_run_config(
@@ -573,6 +795,69 @@ def test_config_driven_nested_training_uses_resolved_sgd_optimizer(tmp_path, mon
     assert summary["scheduler_name"] == "constant"
     assert summary["scheduler_warmup_steps"] == 0
     assert summary["scheduler_resolved_warmup_steps"] == 0
+
+
+def test_concat_lmc_applies_block_specific_effective_learning_rates_without_changing_gradients_or_optimizer_state(
+    tmp_path,
+    monkeypatch,
+):
+    none_case = _run_concat_lmc_case(tmp_path, monkeypatch, "none")
+    lmc_case = _run_concat_lmc_case(tmp_path, monkeypatch, "lmc")
+
+    expected_scales = {
+        "gate_weight_blocks": [1.0, 4.0 / 3.0, 2.0, 4.0],
+        "up_weight_blocks": [1.0, 4.0 / 3.0, 2.0, 4.0],
+        "down_weight_blocks": [1.0, 4.0 / 3.0, 2.0, 4.0],
+        "gate_bias_blocks": [1.0, 4.0 / 3.0, 2.0, 4.0],
+        "up_bias_blocks": [1.0, 4.0 / 3.0, 2.0, 4.0],
+    }
+
+    for name, initial_value in none_case["initial_parameters"].items():
+        none_delta = initial_value - none_case["final_parameters"][name]
+        lmc_delta = initial_value - lmc_case["final_parameters"][name]
+        if name == "down_bias":
+            torch.testing.assert_close(lmc_delta, none_delta)
+            continue
+
+        block_group, block_index = name.split(".")
+        scale = expected_scales[block_group][int(block_index)]
+        torch.testing.assert_close(lmc_delta, none_delta * scale)
+
+    for name in none_case["grads"]:
+        torch.testing.assert_close(none_case["grads"][name], lmc_case["grads"][name])
+
+    _assert_optimizer_states_equal(
+        none_case["optimizer_state"],
+        lmc_case["optimizer_state"],
+    )
+    assert none_case["summary"]["correction_mode"] == "none"
+    assert lmc_case["summary"]["correction_mode"] == "lmc"
+
+
+def test_slicing_runs_ignore_correction_mode_for_none_and_gmc(
+    tmp_path,
+    monkeypatch,
+):
+    none_case = _run_slicing_case(tmp_path, monkeypatch, "none")
+    gmc_case = _run_slicing_case(tmp_path, monkeypatch, "gmc")
+
+    assert none_case["train_forward_granularities"] == ["s", "m", "l", "xl"]
+    assert gmc_case["train_forward_granularities"] == ["s", "m", "l", "xl"]
+
+    for name, initial_value in none_case["initial_parameters"].items():
+        none_delta = initial_value - none_case["final_parameters"][name]
+        gmc_delta = initial_value - gmc_case["final_parameters"][name]
+        torch.testing.assert_close(gmc_delta, none_delta)
+
+    for name in none_case["grads"]:
+        torch.testing.assert_close(none_case["grads"][name], gmc_case["grads"][name])
+
+    _assert_optimizer_states_equal(
+        none_case["optimizer_state"],
+        gmc_case["optimizer_state"],
+    )
+    assert none_case["summary"]["correction_mode"] == "none"
+    assert gmc_case["summary"]["correction_mode"] == "gmc"
 
 
 def test_external_output_root_keeps_required_artifacts_outside_repo_outputs(tmp_path):

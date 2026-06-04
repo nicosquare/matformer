@@ -17,7 +17,7 @@ run:
 model:
   base_model_name: dmodel256-matformer-llama-swiglu
   variant: matformer_llama
-  correction_mode: lmc
+  correction_mode: gmc
   membership_correction: true
   tokenizer_name: hf-internal-testing/llama-tokenizer
   d_model: 256

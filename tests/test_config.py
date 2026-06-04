@@ -136,6 +136,7 @@ def test_cli_overrides_are_parsed_and_applied():
             "run.seed=123",
             "outputs.save_checkpoints=false",
             "model.variant=cat_llama",
+            "model.correction_mode=none",
             "model.membership_correction=false",
             "training.scheduler.name=constant",
         ],
@@ -416,6 +417,65 @@ def test_shared_configs_resolve_default_model_variant():
     assert pilot_resolved["model"]["membership_correction"] is True
 
 
+@pytest.mark.parametrize(
+    "overrides, expected_mode, expected_membership_correction",
+    [
+        (["model.correction_mode=none", "model.membership_correction=false"], "none", False),
+        (["model.correction_mode=gmc"], "gmc", True),
+        (
+            ["model.variant=cat_llama", "model.correction_mode=lmc"],
+            "lmc",
+            True,
+        ),
+    ],
+)
+def test_explicit_correction_modes_resolve_and_validate(
+    overrides,
+    expected_mode,
+    expected_membership_correction,
+):
+    resolved = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        overrides=overrides,
+    )
+
+    assert resolved["model"]["requested_correction_mode"] == expected_mode
+    assert resolved["model"]["correction_mode"] == expected_mode
+    assert resolved["model"]["membership_correction"] is expected_membership_correction
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        ["model.correction_mode=gmc", "model.membership_correction=false"],
+        ["model.correction_mode=none", "model.membership_correction=true"],
+    ],
+)
+def test_membership_correction_conflicts_fail_fast(overrides):
+    with pytest.raises(
+        ConfigError,
+        match="model.correction_mode and model.membership_correction must not disagree",
+    ):
+        resolve_run_config(
+            "configs/debug_matrix.yaml",
+            run_id="debug-nested-001",
+            overrides=overrides,
+        )
+
+
+def test_lmc_is_rejected_for_non_concat_runs():
+    with pytest.raises(
+        ConfigError,
+        match="model.correction_mode=lmc is only valid for concat runs",
+    ):
+        resolve_run_config(
+            "configs/debug_matrix.yaml",
+            run_id="debug-standalone-s-001",
+            overrides=["model.correction_mode=lmc"],
+        )
+
+
 def test_cat_llama_defaults_membership_correction_on():
     resolved = resolve_run_config(
         "configs/debug_matrix.yaml",
@@ -431,7 +491,10 @@ def test_matformer_llama_allows_disabling_membership_correction():
     resolved = resolve_run_config(
         "configs/debug_matrix.yaml",
         run_id="debug-nested-001",
-        overrides=["model.membership_correction=false"],
+        overrides=[
+            "model.correction_mode=none",
+            "model.membership_correction=false",
+        ],
     )
 
     assert resolved["model"]["variant"] == "matformer_llama"

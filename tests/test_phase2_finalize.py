@@ -712,6 +712,7 @@ def test_make_figures_enriches_model_variant_from_run_config(tmp_path):
         output_dir=output_dir / "debug-nested-001",
         overrides=[
             "model.variant=cat_llama",
+            "model.correction_mode=none",
             "model.membership_correction=false",
         ],
     )

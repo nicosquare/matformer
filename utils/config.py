@@ -492,6 +492,21 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         )
     if not isinstance(model.get("membership_correction"), bool):
         raise ConfigError("model.membership_correction must be a boolean")
+    if model.get("correction_mode") == "lmc" and not _is_concat_model_path(config):
+        raise ConfigError(
+            "model.correction_mode=lmc is only valid for concat runs"
+        )
+    requested_mode = model.get("requested_correction_mode")
+    if requested_mode not in (None, ""):
+        if not isinstance(requested_mode, str):
+            raise ConfigError(
+                "model.requested_correction_mode must be a string or null"
+            )
+        expected_membership_correction = requested_mode.strip() != "none"
+        if model["membership_correction"] != expected_membership_correction:
+            raise ConfigError(
+                "model.correction_mode and model.membership_correction must not disagree"
+            )
 
     if "d_model" in model and "hidden_size" in model:
         if _positive_int(model["d_model"], "model.d_model") != _positive_int(
@@ -665,8 +680,16 @@ def _resolve_model_correction_defaults(config: dict[str, Any]) -> None:
         resolved_mode = "gmc" if membership_correction else "none"
     else:
         resolved_mode = _normalize_correction_mode(requested_mode)
-        if not membership_correction:
-            resolved_mode = "none"
+        expected_membership_correction = resolved_mode != "none"
+        if membership_correction != expected_membership_correction:
+            raise ConfigError(
+                "model.correction_mode and model.membership_correction must not disagree"
+            )
+
+    if resolved_mode == "lmc" and not _is_concat_model_path(config):
+        raise ConfigError(
+            "model.correction_mode=lmc is only valid for concat runs"
+        )
 
     model["requested_correction_mode"] = requested_mode
     model["correction_mode"] = resolved_mode
@@ -686,6 +709,15 @@ def _normalize_correction_mode(raw_mode: Any) -> str:
             f"{sorted(VALID_CORRECTION_MODES)}"
         )
     return correction_mode
+
+
+def _is_concat_model_path(config: Mapping[str, Any]) -> bool:
+    run = config.get("run", {})
+    model = config.get("model", {})
+    if not isinstance(run, Mapping) or not isinstance(model, Mapping):
+        return False
+
+    return run.get("model_family") == "nested" and model.get("variant") == "cat_llama"
 
 
 def _resolve_model_dimension_and_granularity_metadata(config: dict[str, Any]) -> None:

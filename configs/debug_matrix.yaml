@@ -9,7 +9,7 @@ run:
 model:
   base_model_name: debug-llama
   variant: matformer_llama
-  correction_mode: lmc
+  correction_mode: gmc
   membership_correction: true
   tokenizer_name: hf-internal-testing/llama-tokenizer
   d_model: 128

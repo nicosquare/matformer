@@ -1721,6 +1721,92 @@ def build_optimizer_and_scheduler(model, training: Mapping[str, Any]):
     return optimizer, scheduler
 
 
+def _is_concat_lmc_module(module: torch.nn.Module) -> bool:
+    return bool(
+        getattr(module, "gradient_membership_counts", None)
+        and any(
+            hasattr(module, attr)
+            for attr in (
+                "gate_weight_blocks",
+                "up_weight_blocks",
+                "down_weight_blocks",
+                "gate_bias_blocks",
+                "up_bias_blocks",
+            )
+        )
+    )
+
+
+def _capture_concat_lmc_snapshots(
+    model: torch.nn.Module,
+    total_losses: int,
+) -> list[tuple[torch.nn.Parameter, torch.Tensor, float]]:
+    snapshots: list[tuple[torch.nn.Parameter, torch.Tensor, float]] = []
+    if total_losses <= 0:
+        return snapshots
+
+    for module in model.modules():
+        if not _is_concat_lmc_module(module):
+            continue
+
+        counts = list(getattr(module, "gradient_membership_counts", []))
+        scales = [
+            (float(total_losses) / float(count)) if int(count) > 0 else 1.0
+            for count in counts
+        ]
+        block_groups = [
+            getattr(module, "gate_weight_blocks", None),
+            getattr(module, "up_weight_blocks", None),
+            getattr(module, "down_weight_blocks", None),
+            getattr(module, "gate_bias_blocks", None),
+            getattr(module, "up_bias_blocks", None),
+        ]
+
+        for blocks in block_groups:
+            if blocks is None:
+                continue
+            for block_index, param in enumerate(blocks):
+                if block_index >= len(scales) or not isinstance(param, torch.nn.Parameter):
+                    continue
+                if not param.requires_grad:
+                    continue
+                scale = scales[block_index]
+                if scale == 1.0:
+                    continue
+                snapshots.append((param, param.detach().clone(), scale))
+
+    return snapshots
+
+
+def _apply_concat_lmc_corrections(
+    snapshots: list[tuple[torch.nn.Parameter, torch.Tensor, float]],
+) -> None:
+    if not snapshots:
+        return
+
+    with torch.no_grad():
+        for param, pre_step_value, scale in snapshots:
+            base_delta = pre_step_value - param.data
+            if scale == 1.0:
+                continue
+            param.data.copy_(pre_step_value - (base_delta * scale))
+
+
+def _maybe_apply_concat_lmc_optimizer_step(
+    config: Mapping[str, Any],
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    total_losses: int,
+) -> None:
+    if config.get("model", {}).get("correction_mode") != "lmc":
+        optimizer.step()
+        return
+
+    snapshots = _capture_concat_lmc_snapshots(model, total_losses)
+    optimizer.step()
+    _apply_concat_lmc_corrections(snapshots)
+
+
 def train_for_steps(
     config: dict[str, Any],
     model,
@@ -1824,7 +1910,12 @@ def train_for_steps(
                 if gradient_clip_norm is not None:
                     clip_grad_norm_(model.parameters(), float(gradient_clip_norm))
 
-                optimizer.step()
+                _maybe_apply_concat_lmc_optimizer_step(
+                    config,
+                    model,
+                    optimizer,
+                    total_losses=len(granularity_losses),
+                )
                 scheduler.step()
 
                 elapsed = time.time() - start_time
