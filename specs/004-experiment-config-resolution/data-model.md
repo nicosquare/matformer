@@ -8,7 +8,8 @@ Represents the membership-correction behavior selected for a run.
 - `requested_mode`: The mode selected in config or via override.
 - `resolved_mode`: The validated mode used by training.
 - `model_path`: The model family path the mode applies to.
-- `legacy_mode_source`: Whether the value came from a legacy boolean setting.
+- `membership_correction_source`: Whether the value came from the resolved
+  `model.membership_correction` boolean.
 - `conflict_reason`: Explanation when requested settings disagree.
 
 **Relationships**
@@ -19,8 +20,8 @@ Represents the membership-correction behavior selected for a run.
 **Validation Rules**
 - `resolved_mode` must be one of `none`, `gmc`, or `lmc`.
 - `lmc` must be rejected for non-concat runs.
-- A legacy gradient-correction input and an explicit correction-mode input must
-  not disagree.
+- An explicit `model.membership_correction` input and an explicit
+  `model.correction_mode` input must not disagree.
 
 ## Concat Block Membership Plan
 
@@ -82,6 +83,7 @@ Represents a reusable named config block for a single section.
 **Fields**
 - `section_name`: Section the preset belongs to, such as `optimizer`.
 - `preset_name`: Named preset such as `adam`.
+- `registry_path`: The YAML file that defines the preset.
 - `base_values`: Default section values before preset application.
 - `preset_values`: Values defined by the preset.
 - `merged_values`: Final values after preset, explicit config values, and CLI
@@ -97,6 +99,7 @@ Represents a reusable named config block for a single section.
 - Invalid preset names must fail before training starts.
 - Nested mappings must merge deeply so partial overrides only replace targeted
   fields.
+- Presets are defined in separate YAML registry files under `configs/presets/`.
 
 ## Resolved Run Metadata
 
@@ -105,9 +108,11 @@ Represents the saved audit trail for one completed or interrupted run.
 **Fields**
 - `run_id`
 - `correction_mode`
+- `membership_correction`
 - `family_resolution_rule`
 - `output_group`
 - `preset_selections`
+- `preset_registry_paths`
 - `config_path`
 - `run_summary_path`
 
@@ -120,3 +125,4 @@ Represents the saved audit trail for one completed or interrupted run.
 - The saved metadata must be enough to explain the selected correction mode,
   family folder, and preset values without reading console logs.
 - Saved metadata must match the resolved configuration exactly.
+- Saved metadata must identify the preset registry file(s) used for the run.

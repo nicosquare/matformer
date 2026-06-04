@@ -34,12 +34,13 @@
 
 ## 3. Config Presets
 
-- **Decision**: Use section-scoped, config-driven presets stored under
-  `presets.<section>.<name>` and selected with a section field such as
-  `training.optimizer.preset`.
+- **Decision**: Use section-scoped, config-driven presets stored as separate
+  YAML registry files under `configs/presets/` and selected with a section
+  field such as `training.optimizer.preset`.
 - **Rationale**: This matches the current config-style of explicit YAML values
-  and works cleanly with the existing component-merge pattern already used for
-  optimizer and scheduler kwargs.
+  while keeping the main experiment configs short and working cleanly with the
+  existing component-merge pattern already used for optimizer and scheduler
+  kwargs.
 - **Alternatives considered**:
   - A single global preset registry. Rejected because it blurs section
     ownership and makes nested defaults harder to reason about.
@@ -47,6 +48,12 @@
     feature is specifically about reusable config, not implicit behavior.
   - Allowing preset composition in v1. Rejected because one preset per section
     keeps resolution obvious and avoids precedence ambiguity.
+  - Inline preset blocks inside each experiment config. Rejected because it
+    causes the main configs to grow and duplicates shared defaults.
+
+**Initial preset registry**: `adam` with `name: adamw` and standard AdamW
+kwargs, plus `sgd` with `name: sgd` and `kwargs: {momentum: 0.9, dampening:
+0.0, nesterov: false, weight_decay: 0.1}`.
 
 ## 4. Provenance in Resolved Artifacts
 
@@ -60,6 +67,8 @@
     are not durable analysis artifacts.
   - Storing provenance only in one file. Rejected because the spec requires the
     saved config and run summary to both explain what ran.
+  - Recording preset provenance without the registry file path. Rejected
+    because separate preset YAMLs need to be traceable in saved artifacts.
 
 ## 5. Validation Scope
 

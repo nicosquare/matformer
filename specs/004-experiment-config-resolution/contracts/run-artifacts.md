@@ -23,7 +23,8 @@ recorded in saved metadata, but not the file types themselves.
 - Standalone `s`, `m`, and `l` runs that belong to the same family must share
   the same resolved folder key.
 - `config.json` and `run_summary.json` must record the selected correction
-  mode, the resolved family-folder rule, and the selected preset provenance.
+  mode, the resolved family-folder rule, and the selected preset provenance
+  including the preset registry path.
 - `metrics.csv` and `scaling_results.csv` must remain readable from the shared
   family folder without manual copying or renaming.
 - `heartbeats.jsonl` must continue to record stage transitions so the run can

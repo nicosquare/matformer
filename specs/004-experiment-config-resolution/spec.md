@@ -59,7 +59,7 @@ As a researcher, I want recurring config blocks such as optimizer settings to be
 ### Edge Cases
 
 - What happens when `correction_mode=lmc` is selected for a non-concat model path? The run should fail fast rather than silently falling back.
-- What happens when legacy gradient-correction settings and the new correction-mode field disagree? The resolved config should reject the conflict instead of guessing.
+- What happens when legacy membership-correction settings and the new correction-mode field disagree? The resolved config should reject the conflict instead of guessing.
 - What happens when a standalone run belongs to the same comparison family but uses a smaller active size? It should still resolve to the shared family folder, while the active size remains visible in metadata.
 - What happens when the family comparison set does not include `xl`? The folder key should use the largest granularity actually present in the resolved family list.
 - What happens when a preset supplies nested defaults and the config overrides only one nested field? The override should merge into the preset rather than replacing the whole section.
@@ -126,6 +126,6 @@ As a researcher, I want recurring config blocks such as optimizer settings to be
 - LMC is scoped to the concat model path in v1, and the slicing path remains unchanged unless a later design introduces shared plumbing.
 - The family comparison folder is derived from the resolved ordered granularity list already present in the config, with the largest configured family size serving as the shared folder key.
 - The existing token-budget component of the folder key remains in place; only the size component changes when a family comparison folder is resolved.
-- Preset names are section-scoped and configuration-driven, with optimizer presets stored under `presets.optimizer.<name>` and selected via `training.optimizer.preset`.
+- Preset names are section-scoped and configuration-driven, with optimizer presets stored as separate YAML registry files under `configs/presets/` and selected via `training.optimizer.preset`.
 - The current output file formats remain unchanged; the feature changes where they are rooted and what provenance they record, not the contents of the metrics or checkpoint files themselves.
 - Presets are selected one at a time per section in v1, and the optimizer preset registry is the first supported preset namespace.

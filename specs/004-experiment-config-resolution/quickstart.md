@@ -1,7 +1,8 @@
 # Quickstart: Experiment Config Resolution
 
 This quickstart validates the three parts of the feature: concat LMC, shared
-family-folder resolution, and config presets.
+family-folder resolution, and config presets loaded from separate YAML files
+under `configs/presets/`.
 
 ## 1. Prepare the Environment
 
@@ -25,6 +26,8 @@ Expected result:
 - Saved config and summary artifacts include the selected correction mode and
   preset provenance.
 - Artifact placement stays deterministic across reruns.
+- Preset definitions are loaded from `configs/presets/` rather than inline in
+  the experiment config.
 
 ## 3. Run a Concat LMC Smoke Example
 
@@ -78,5 +81,6 @@ Open the saved `config.json` and `run_summary.json` for one completed run.
 
 Expected result:
 - `correction_mode` is recorded explicitly.
+- `model.membership_correction` is recorded explicitly.
 - The resolved family-folder rule is recorded explicitly.
 - The selected preset and final merged values are recorded explicitly.

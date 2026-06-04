@@ -9,9 +9,9 @@
 
 **Purpose**: Add shared fixtures and example configs used by the feature tests.
 
-- [ ] T001 [P] Create a shared experiment-config fixture at `tests/fixtures/experiment_config_resolution.yaml` with representative concat, standalone, and preset values.
-- [ ] T002 [P] Update `configs/debug_matrix.yaml` to include explicit `model.correction_mode` and `presets.optimizer.adam` example fields used by the feature tests.
-- [ ] T003 [P] Update `configs/dmodel256_pilot_comparison.yaml` to include explicit `model.correction_mode` and `presets.optimizer.adam` example fields used by the feature tests.
+- [ ] T001 [P] Create a shared experiment-config fixture at `tests/fixtures/experiment_config_resolution.yaml` plus separate preset registry files under `configs/presets/optimizer/` with representative concat, standalone, Adam, and SGD values.
+- [ ] T002 [P] Update `configs/debug_matrix.yaml` to include explicit `model.correction_mode`, `model.membership_correction`, and `training.optimizer.preset: adam` fields used by the feature tests.
+- [ ] T003 [P] Update `configs/dmodel256_pilot_comparison.yaml` to include explicit `model.correction_mode`, `model.membership_correction`, and `training.optimizer.preset: adam` fields used by the feature tests.
 
 ---
 
@@ -21,8 +21,8 @@
 
 **CRITICAL**: No user story work should proceed until this phase is complete.
 
-- [ ] T004 [P] Extend `utils/config.py` with resolved `model.correction_mode` handling, family-folder key resolution hooks, and preset registry parsing and validation scaffolding.
-- [ ] T005 [P] Extend `utils/metrics.py` so `build_run_summary()` and saved artifacts can carry correction mode, family-folder rule, active size label, and preset provenance fields.
+- [ ] T004 [P] Extend `utils/config.py` with resolved `model.correction_mode` handling, `model.membership_correction` validation, family-folder key resolution hooks, and preset registry parsing/loading/validation scaffolding.
+- [ ] T005 [P] Extend `utils/metrics.py` so `build_run_summary()` and saved artifacts can carry correction mode, family-folder rule, active size label, preset provenance, and preset registry path fields.
 
 **Checkpoint**: Foundation ready - user story implementation can now begin.
 
@@ -36,7 +36,7 @@
 
 ### Verification for User Story 1
 
-- [ ] T006 [P] [US1] Add correction-mode validation coverage in `tests/test_config.py` for `none`, `gmc`, `lmc`, and legacy conflict cases.
+- [ ] T006 [P] [US1] Add correction-mode validation coverage in `tests/test_config.py` for `none`, `gmc`, `lmc`, and `model.membership_correction` conflict cases.
 - [ ] T007 [P] [US1] Add a synthetic concat LMC regression and slicing-path non-regression in `tests/test_training_smoke.py` that checks per-block effective learning rates, unchanged gradients/optimizer state, and unchanged `none`/`gmc` behavior on slicing runs.
 
 ### Implementation for User Story 1
@@ -76,14 +76,14 @@
 
 ### Verification for User Story 3
 
-- [ ] T014 [P] [US3] Add optimizer preset resolution coverage and partial-override cases in `tests/test_config.py`.
+- [ ] T014 [P] [US3] Add optimizer preset resolution coverage and partial-override cases in `tests/test_config.py`, including loading from `configs/presets/optimizer/*.yaml`.
 - [ ] T015 [P] [US3] Add invalid preset and conflicting-preset validation coverage in `tests/test_config.py`.
 
 ### Implementation for User Story 3
 
-- [ ] T016 [P] [US3] Define `presets.optimizer.adam` and switch example optimizer sections to `training.optimizer.preset` in `configs/debug_matrix.yaml` and `configs/dmodel256_pilot_comparison.yaml`.
-- [ ] T017 [US3] Implement section-scoped preset resolution and deep-merge precedence in `utils/config.py`.
-- [ ] T018 [US3] Persist selected preset name and final merged optimizer values in resolved config and run-summary artifacts in `utils/metrics.py`.
+- [ ] T016 [P] [US3] Switch example optimizer sections to `training.optimizer.preset: adam` in `configs/debug_matrix.yaml` and `configs/dmodel256_pilot_comparison.yaml`, referencing the preset registry files created in Phase 1 under `configs/presets/optimizer/`.
+- [ ] T017 [US3] Implement section-scoped preset resolution from registry files and deep-merge precedence in `utils/config.py`.
+- [ ] T018 [US3] Persist selected preset name, preset registry path, and final merged optimizer values in resolved config and run-summary artifacts in `utils/metrics.py`.
 
 **Checkpoint**: All user stories should now be independently functional.
 

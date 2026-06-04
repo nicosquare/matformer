@@ -7,9 +7,10 @@
 
 Add concat-only learning-rate membership correction as an explicit correction
 mode, resolve standalone family runs into the shared largest-size experiment
-folder, and introduce section-scoped config presets starting with optimizer
-defaults. Keep the changes config-driven, local to the existing config resolver
-and training loop, and record the resolved correction mode, folder rule, and
+folder, and introduce section-scoped config presets stored as separate YAML
+registry files under `configs/presets/`, starting with optimizer presets.
+Keep the changes config-driven, local to the existing config resolver and
+training loop, and record the resolved correction mode, folder rule, and
 preset provenance in run artifacts.
 
 ## Technical Context
@@ -30,9 +31,10 @@ naming, and config preset resolution; no dataset or evaluation redesign
 the validation inputs, with one synthetic concat test for membership-driven
 updates  
 **Configuration Inputs**: YAML configs plus `--override` values; new
-`model.correction_mode`, `presets.optimizer.<name>`, and family-folder
-resolution fields are resolved alongside existing `run`, `model`, `training`,
-`dataset`, `monitoring`, and `outputs` sections  
+`model.correction_mode`, `model.membership_correction`,
+`training.optimizer.preset`, and separate preset registry YAML files under
+`configs/presets/` are resolved alongside existing `run`, `model`,
+`training`, `dataset`, `monitoring`, and `outputs` sections  
 **Experiment Outputs**: `config.json`, `run_summary.json`, `metrics.csv`,
 `scaling_results.csv`, checkpoints, `heartbeats.jsonl`, and figure inputs under
 the resolved shared family folder  
@@ -91,6 +93,7 @@ evaluation/
 utils/
 modified_llama.py
 configs/
+configs/presets/
 scripts/
 tests/
 outputs/
@@ -98,66 +101,11 @@ outputs/
 
 **Structure Decision**: Keep the implementation in the existing shallow
 research layout. Use `utils/config.py` for resolved config, naming, and preset
-rules; `training/run.py` for the concat optimizer-step seam and run-state
-recording; `modified_llama.py` for existing concat metadata and membership
-logic; `utils/metrics.py` for saved summary provenance; and focused tests under
-`tests/` for config, artifact, and synthetic concat behavior.
-
-## Implementation Strategy
-
-### Workstream 1: Concat Correction Mode
-
-- Add a resolved correction-mode field with the values `none`, `gmc`, and
-  `lmc`, and keep the value visible in resolved config and run summary output.
-- Reuse the existing concat membership-count metadata already used for GMC
-  scale derivation.
-- Keep GMC behavior unchanged and move LMC into the optimizer-step path so it
-  adjusts the effective learning rate only for concat blocks.
-- Fail fast when LMC is selected for a non-concat path or when legacy and new
-  correction settings conflict.
-- Add synthetic and real concat tests that verify gradients and optimizer
-  state remain unchanged under LMC while block update magnitudes change.
-
-### Workstream 2: Shared Family Folder Resolution
-
-- Resolve the shared experiment folder from the largest configured family size
-  in the family rather than the active standalone size.
-- Preserve the existing family and token-budget components of the folder key
-  so only the size component changes when a family comparison folder is
-  resolved.
-- Apply the resolved folder consistently to config snapshots, summaries,
-  metrics, scaling outputs, checkpoints, and figure inputs.
-- Record the folder-resolution rule in saved metadata so reruns remain
-  deterministic and explainable.
-- Add regression tests that prove standalone `s`, `m`, and `l` runs resolve to
-  the same shared folder when they belong to the same family definition.
-
-### Workstream 3: Section-Scoped Presets
-
-- Introduce a config-driven preset registry for reusable sections, starting
-  with optimizer presets under `presets.optimizer.<name>`.
-- Resolve presets during config loading, then merge explicit config values and
-  CLI overrides on top of the selected preset.
-- Preserve deep-merge behavior for nested mappings so partial overrides change
-  only the targeted nested fields.
-- Record both the selected preset name and the final merged values in resolved
-  config and run summary artifacts.
-- Add validation for unknown preset names and conflicting preset combinations.
-
-### Validation Strategy
-
-- Add config-resolution coverage for correction mode, family-folder naming,
-  and preset selection/override precedence.
-- Add a synthetic concat test for LMC that checks effective learning-rate
-  changes without gradient or optimizer-state mutation.
-- Add a real concat smoke test that exercises the new correction mode on an
-  actual concat experiment config.
-- Add artifact assertions for the shared family folder and the resolved
-  metadata recorded in `config.json` and `run_summary.json`.
-- Add a slicing-path non-regression check so existing `none` and `gmc`
-  behavior remains unchanged while the concat LMC path is introduced.
-- Add a figure-generation smoke test that reads the new shared folder structure
-  directly from `outputs/` without manual copying or renaming.
+registry loading rules; `training/run.py` for the concat optimizer-step seam
+and run-state recording; `modified_llama.py` for existing concat metadata and
+membership logic; `utils/metrics.py` for saved summary provenance; `configs/presets/`
+for reusable optimizer preset YAML files; and focused tests under `tests/` for
+config, artifact, and synthetic concat behavior.
 
 ## Complexity Tracking
 
