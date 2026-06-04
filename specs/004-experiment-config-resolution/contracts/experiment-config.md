@@ -70,13 +70,14 @@ kwargs:
 - `model.correction_mode=lmc` must be rejected for non-concat runs.
 - `model.membership_correction` must be the only accepted boolean correction
   input.
+- `run.active_size_label`, `run.family_size_slug`, `run.family_resolution_rule`,
+  and `run.output_group` must be present in the resolved config.
 - `training.optimizer.preset` must select a named entry from
   `configs/presets/`.
 - Explicit `training.optimizer` fields must override the preset values.
-- The resolved config must record the preset name, the merged optimizer values,
-  the resolved correction mode, and the family-folder rule.
-- The resolved config must expose the shared output-group key used for run
-  artifacts and figure generation.
+- The resolved config must record `training.preset_selections`,
+  `training.preset_registry_paths`, `training.optimizer_name`, and
+  `training.optimizer_kwargs` alongside the resolved correction mode.
 
 ## Validation Rules
 
@@ -85,4 +86,5 @@ kwargs:
 - Nested preset values must merge deeply so partial overrides are preserved.
 - The resolved output-group key must be deterministic for the same family
   definition.
-- Preset registry files must be traceable from the resolved config.
+- Preset registry files must be traceable from
+  `training.preset_registry_paths`.

@@ -23,8 +23,11 @@ python -m pytest tests/test_config.py tests/test_artifacts.py tests/test_trainin
 Expected result:
 - Config resolution accepts `correction_mode`, shared-family folder rules, and
   optimizer presets.
-- Saved config and summary artifacts include the selected correction mode and
-  preset provenance.
+- Saved `config.json` and `run_summary.json` include
+  `model.correction_mode`, `model.membership_correction`,
+  `run.active_size_label`, `run.family_size_slug`, `run.family_resolution_rule`,
+  `training.preset_selections`, `training.preset_registry_paths`,
+  `training.optimizer_name`, and `training.optimizer_kwargs`.
 - Artifact placement stays deterministic across reruns.
 - Preset definitions are loaded from `configs/presets/` rather than inline in
   the experiment config.
@@ -47,7 +50,9 @@ Expected result:
 - The run resolves with `correction_mode=lmc`.
 - Concat blocks use block-specific effective learning rates.
 - Gradients and optimizer moments remain unchanged by LMC.
-- The saved run metadata records the selected preset and family-folder rule.
+- The saved run metadata records `run.family_resolution_rule`,
+  `training.preset_selections`, `training.preset_registry_paths`,
+  `training.optimizer_name`, and `training.optimizer_kwargs`.
 
 ## 4. Validate Shared Family Folder Resolution
 
@@ -62,7 +67,8 @@ python train.py --config configs/debug_matrix.yaml --run-id debug-standalone-l-0
 
 Expected result:
 - Each run resolves to the same family folder for later comparison.
-- The active size remains visible in `config.json` and `run_summary.json`.
+- The active size remains visible as `run.active_size_label` in
+  `config.json` and `run_summary.json`.
 - Figure generation can read the folder directly without copying files.
 
 ## 5. Generate Figures from the Shared Folder
@@ -82,5 +88,8 @@ Open the saved `config.json` and `run_summary.json` for one completed run.
 Expected result:
 - `correction_mode` is recorded explicitly.
 - `model.membership_correction` is recorded explicitly.
-- The resolved family-folder rule is recorded explicitly.
-- The selected preset and final merged values are recorded explicitly.
+- `run.active_size_label`, `run.family_size_slug`, `run.family_resolution_rule`,
+  and `run.output_group` are recorded explicitly.
+- `training.preset_selections`, `training.preset_registry_paths`,
+  `training.optimizer_name`, and `training.optimizer_kwargs` are recorded
+  explicitly.

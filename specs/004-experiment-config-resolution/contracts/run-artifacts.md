@@ -22,9 +22,12 @@ recorded in saved metadata, but not the file types themselves.
   family, while preserving the family and token-budget components.
 - Standalone `s`, `m`, and `l` runs that belong to the same family must share
   the same resolved folder key.
-- `config.json` and `run_summary.json` must record the selected correction
-  mode, the resolved family-folder rule, and the selected preset provenance
-  including the preset registry path.
+- `config.json` and `run_summary.json` must record `model.correction_mode`,
+  `model.membership_correction`, `run.active_size_label`,
+  `run.family_size_slug`, `run.family_resolution_rule`, and `output_group`.
+- `config.json` and `run_summary.json` must record
+  `training.preset_selections`, `training.preset_registry_paths`,
+  `training.optimizer_name`, and `training.optimizer_kwargs`.
 - `metrics.csv` and `scaling_results.csv` must remain readable from the shared
   family folder without manual copying or renaming.
 - `heartbeats.jsonl` must continue to record stage transitions so the run can
@@ -34,4 +37,5 @@ recorded in saved metadata, but not the file types themselves.
 
 - Figure generation should be able to scan the shared family folder directly.
 - Downstream analysis should be able to distinguish active run size from family
-  folder identity using saved metadata alone.
+  folder identity using `run.active_size_label` and `run.family_size_slug`
+  alone.

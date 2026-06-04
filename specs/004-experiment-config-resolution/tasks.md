@@ -93,8 +93,8 @@
 
 **Purpose**: Final cleanup and validation across the feature.
 
-- [ ] T019 [P] Align `specs/004-experiment-config-resolution/quickstart.md` and the contracts under `specs/004-experiment-config-resolution/contracts/` with the final config and artifact field names after implementation.
-- [ ] T020 [P] Run the focused validation suite from `specs/004-experiment-config-resolution/quickstart.md` and fix any regressions in `tests/`, `configs/`, `training/run.py`, `utils/config.py`, and `utils/metrics.py`.
+- [X] T019 [P] Align `specs/004-experiment-config-resolution/quickstart.md` and the contracts under `specs/004-experiment-config-resolution/contracts/` with the final config and artifact field names after implementation.
+- [X] T020 [P] Run the focused validation suite from `specs/004-experiment-config-resolution/quickstart.md` and fix any regressions in `tests/`, `configs/`, `training/run.py`, `utils/config.py`, and `utils/metrics.py`.
 
 ---
 
