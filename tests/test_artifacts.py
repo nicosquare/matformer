@@ -129,6 +129,11 @@ def test_write_config_metrics_and_run_summary(tmp_path):
     assert saved_config["training"]["scheduler"]["kwargs"]["warmup_steps"] == 0
     assert saved_config["training"]["scheduler"]["resolved_warmup_steps"] == 0
     assert saved_config["training"]["scheduler_kwargs"] == {}
+    assert saved_config["training"]["preset_selections"] == {"optimizer": "adam"}
+    assert set(saved_config["training"]["preset_registry_paths"]) == {"optimizer"}
+    assert saved_config["training"]["preset_registry_paths"]["optimizer"].endswith(
+        "configs/presets/optimizer/adam.yaml"
+    )
     assert saved_config["training"]["optimizer_name"] == "adamw"
     assert saved_config["training"]["optimizer_kwargs"] == {
         "betas": [0.9, 0.95],
@@ -157,6 +162,11 @@ def test_write_config_metrics_and_run_summary(tmp_path):
     assert saved_summary["scheduler_warmup_steps"] == 0
     assert saved_summary["scheduler_resolved_warmup_steps"] == 0
     assert saved_summary["scheduler_kwargs"] == {}
+    assert saved_summary["preset_selections"] == {"optimizer": "adam"}
+    assert set(saved_summary["preset_registry_paths"]) == {"optimizer"}
+    assert saved_summary["preset_registry_paths"]["optimizer"].endswith(
+        "configs/presets/optimizer/adam.yaml"
+    )
     assert saved_summary["optimizer_name"] == "adamw"
     assert saved_summary["optimizer_kwargs"] == {
         "betas": [0.9, 0.95],

@@ -81,9 +81,9 @@
 
 ### Implementation for User Story 3
 
-- [ ] T016 [P] [US3] Switch example optimizer sections to `training.optimizer.preset: adam` in `configs/debug_matrix.yaml` and `configs/dmodel256_pilot_comparison.yaml`, referencing the preset registry files created in Phase 1 under `configs/presets/optimizer/`.
-- [ ] T017 [US3] Implement section-scoped preset resolution from registry files and deep-merge precedence in `utils/config.py`.
-- [ ] T018 [US3] Persist selected preset name, preset registry path, and final merged optimizer values in resolved config and run-summary artifacts in `utils/metrics.py`.
+- [X] T016 [P] [US3] Switch example optimizer sections to `training.optimizer.preset: adam` in `configs/debug_matrix.yaml` and `configs/dmodel256_pilot_comparison.yaml`, referencing the preset registry files created in Phase 1 under `configs/presets/optimizer/`.
+- [X] T017 [US3] Implement section-scoped preset resolution from registry files and deep-merge precedence in `utils/config.py`.
+- [X] T018 [US3] Persist selected preset name, preset registry path, and final merged optimizer values in resolved config and run-summary artifacts in `utils/metrics.py`.
 
 **Checkpoint**: All user stories should now be independently functional.
 

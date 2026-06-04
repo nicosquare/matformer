@@ -41,11 +41,6 @@ training:
   gradient_clip_norm: 1.0
   optimizer:
     preset: adam
-    name: adamw
-    kwargs:
-      betas: [0.9, 0.95]
-      eps: 1.0e-8
-      weight_decay: 0.1
   eval_interval: 2
   eval_batches: 1
   mixed_precision: none

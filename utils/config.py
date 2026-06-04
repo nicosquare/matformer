@@ -1797,10 +1797,16 @@ def _resolve_training_optimizer_preset(
             "training.optimizer.preset is set"
         )
 
-    if optimizer.get("name") != preset.get("name"):
+    preset_optimizer_name = preset.get("name")
+    configured_optimizer_name = optimizer.get("name")
+    if (
+        isinstance(configured_optimizer_name, str)
+        and configured_optimizer_name.strip()
+        and configured_optimizer_name != preset_optimizer_name
+    ):
         raise ConfigError(
             "training.optimizer.preset conflicts with the effective optimizer name; "
-            f"preset {preset_name!r} resolves to optimizer.name={preset.get('name')!r}"
+            f"preset {preset_name!r} resolves to optimizer.name={preset_optimizer_name!r}"
         )
 
     merged_optimizer = _deep_merge_dicts(preset, optimizer)
