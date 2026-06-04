@@ -191,15 +191,13 @@ def enrich_scaling_metadata_from_run_config(
             model_variant = model_variant_from_saved_config(config_cache[config_path])
             if model_variant not in (None, ""):
                 enriched_row["model_variant"] = str(model_variant)
-            gradient_membership_correction = (
-                gradient_membership_correction_from_saved_config(
+            membership_correction = (
+                membership_correction_from_saved_config(
                     config_cache[config_path]
                 )
             )
-            if gradient_membership_correction is not None:
-                enriched_row["gradient_membership_correction"] = (
-                    gradient_membership_correction
-                )
+            if membership_correction is not None:
+                enriched_row["membership_correction"] = membership_correction
         enriched_rows.append(enriched_row)
 
     return enriched_rows
@@ -252,13 +250,13 @@ def model_variant_from_saved_config(config: dict[str, Any]) -> str | None:
     return str(variant)
 
 
-def gradient_membership_correction_from_saved_config(
-    config: dict[str, Any]
-) -> bool | None:
+def membership_correction_from_saved_config(config: dict[str, Any]) -> bool | None:
     model = config.get("model")
     if not isinstance(model, dict):
         return None
-    value = model.get("gradient_membership_correction")
+    value = model.get("membership_correction")
+    if value in (None, ""):
+        value = model.get("gradient_membership_correction")
     if value in (None, ""):
         return None
     if isinstance(value, bool):
@@ -756,30 +754,32 @@ def safe_filename_fragment(value: str) -> str:
 def scaling_curve_label(row: dict[str, str]) -> str:
     sampling_mode = row.get("sampling_mode")
     model_variant = row.get("model_variant")
-    gmc_label = scaling_curve_gmc_label(row)
+    membership_correction_label = scaling_curve_membership_correction_label(row)
     if sampling_mode and model_variant:
         parts = [sampling_mode, model_variant]
-        if gmc_label is not None:
-            parts.append(gmc_label)
+        if membership_correction_label is not None:
+            parts.append(membership_correction_label)
         return " / ".join(parts)
     if sampling_mode:
         parts = [sampling_mode]
-        if gmc_label is not None:
-            parts.append(gmc_label)
+        if membership_correction_label is not None:
+            parts.append(membership_correction_label)
         return " / ".join(parts)
     model_family = row.get("model_family")
     if model_family and model_variant:
         parts = [model_family, model_variant]
-        if gmc_label is not None:
-            parts.append(gmc_label)
+        if membership_correction_label is not None:
+            parts.append(membership_correction_label)
         return " / ".join(parts)
     return model_family or "unknown"
 
 
-def scaling_curve_gmc_label(row: dict[str, str]) -> str | None:
+def scaling_curve_membership_correction_label(row: dict[str, str]) -> str | None:
     if row.get("model_family") == "standalone" or row.get("sampling_mode") == "standalone":
         return None
-    raw_value = row.get("gradient_membership_correction")
+    raw_value = row.get("membership_correction")
+    if raw_value in (None, ""):
+        raw_value = row.get("gradient_membership_correction")
     if raw_value in (None, ""):
         return None
     if isinstance(raw_value, bool):
@@ -792,15 +792,15 @@ def scaling_curve_gmc_label(row: dict[str, str]) -> str | None:
             enabled = False
         else:
             enabled = bool(raw_value)
-    return "gmc=on" if enabled else "gmc=off"
+    return "membership_correction=on" if enabled else "membership_correction=off"
 
 
 def scaling_curve_style(rows: list[dict[str, str]]) -> dict[str, Any]:
     for row in rows:
-        gmc_label = scaling_curve_gmc_label(row)
-        if gmc_label == "gmc=off":
+        membership_correction_label = scaling_curve_membership_correction_label(row)
+        if membership_correction_label == "membership_correction=off":
             return {"marker": "s", "linestyle": "--", "linewidth": 1.2}
-        if gmc_label == "gmc=on":
+        if membership_correction_label == "membership_correction=on":
             return {"marker": "o", "linestyle": "-", "linewidth": 1.4}
     return {"marker": "o", "linestyle": "-", "linewidth": 1.4}
 

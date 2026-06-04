@@ -1,0 +1,6 @@
+name: sgd
+kwargs:
+  momentum: 0.9
+  dampening: 0.0
+  nesterov: false
+  weight_decay: 0.1

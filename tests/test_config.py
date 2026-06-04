@@ -136,7 +136,8 @@ def test_cli_overrides_are_parsed_and_applied():
             "run.seed=123",
             "outputs.save_checkpoints=false",
             "model.variant=cat_llama",
-            "model.gradient_membership_correction=false",
+            "model.correction_mode=none",
+            "model.membership_correction=false",
             "training.scheduler.name=constant",
         ],
     )
@@ -145,7 +146,7 @@ def test_cli_overrides_are_parsed_and_applied():
     assert resolved["run"]["seed"] == 123
     assert resolved["outputs"]["save_checkpoints"] is False
     assert resolved["model"]["variant"] == "cat_llama"
-    assert resolved["model"]["gradient_membership_correction"] is False
+    assert resolved["model"]["membership_correction"] is False
     assert resolved["training"]["scheduler_name"] == "constant"
 
 
@@ -354,6 +355,37 @@ def test_debug_matrix_resolves_all_standalone_granularities():
         validate_run_config(resolved)
 
 
+def test_debug_matrix_standalone_runs_share_family_folder_key():
+    resolved_runs = {
+        run_id: resolve_run_config("configs/debug_matrix.yaml", run_id=run_id)
+        for run_id in [
+            "debug-standalone-s-001",
+            "debug-standalone-m-001",
+            "debug-standalone-l-001",
+        ]
+    }
+
+    output_groups = {resolved["run"]["output_group"] for resolved in resolved_runs.values()}
+    family_size_slugs = {
+        resolved["run"]["family_size_slug"] for resolved in resolved_runs.values()
+    }
+
+    assert len(output_groups) == 1
+    assert len(family_size_slugs) == 1
+    assert {
+        resolved["run"]["active_size_label"]
+        for resolved in resolved_runs.values()
+    } == {"s", "m", "l"}
+    for resolved in resolved_runs.values():
+        assert (
+            resolved["run"]["family_resolution_rule"]
+            == "output_group is keyed from the largest configured family size"
+        )
+        assert resolved["run"]["output_group"] == next(iter(output_groups))
+        assert resolved["run"]["family_size_slug"] == next(iter(family_size_slugs))
+        validate_run_config(resolved)
+
+
 def test_debug_standalone_granularity_must_match_model_granularities():
     resolved = resolve_run_config(
         "configs/debug_matrix.yaml",
@@ -390,7 +422,7 @@ def test_single_run_defaults_to_outputs_root(tmp_path):
     resolved = resolve_run_config(config_path)
 
     assert resolved["model"]["variant"] == "matformer_llama"
-    assert resolved["model"]["gradient_membership_correction"] is True
+    assert resolved["model"]["membership_correction"] is True
     assert resolved["run"]["output_root"] == "outputs"
     assert resolved["training"]["gradient_clip_norm"] == 1.0
     assert resolved["training"]["optimizer_kwargs"] == {
@@ -411,12 +443,71 @@ def test_shared_configs_resolve_default_model_variant():
     pilot_resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
 
     assert debug_resolved["model"]["variant"] == "matformer_llama"
-    assert debug_resolved["model"]["gradient_membership_correction"] is True
+    assert debug_resolved["model"]["membership_correction"] is True
     assert pilot_resolved["model"]["variant"] == "matformer_llama"
-    assert pilot_resolved["model"]["gradient_membership_correction"] is True
+    assert pilot_resolved["model"]["membership_correction"] is True
 
 
-def test_cat_llama_defaults_gradient_membership_correction_on():
+@pytest.mark.parametrize(
+    "overrides, expected_mode, expected_membership_correction",
+    [
+        (["model.correction_mode=none", "model.membership_correction=false"], "none", False),
+        (["model.correction_mode=gmc"], "gmc", True),
+        (
+            ["model.variant=cat_llama", "model.correction_mode=lmc"],
+            "lmc",
+            True,
+        ),
+    ],
+)
+def test_explicit_correction_modes_resolve_and_validate(
+    overrides,
+    expected_mode,
+    expected_membership_correction,
+):
+    resolved = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        overrides=overrides,
+    )
+
+    assert resolved["model"]["requested_correction_mode"] == expected_mode
+    assert resolved["model"]["correction_mode"] == expected_mode
+    assert resolved["model"]["membership_correction"] is expected_membership_correction
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        ["model.correction_mode=gmc", "model.membership_correction=false"],
+        ["model.correction_mode=none", "model.membership_correction=true"],
+    ],
+)
+def test_membership_correction_conflicts_fail_fast(overrides):
+    with pytest.raises(
+        ConfigError,
+        match="model.correction_mode and model.membership_correction must not disagree",
+    ):
+        resolve_run_config(
+            "configs/debug_matrix.yaml",
+            run_id="debug-nested-001",
+            overrides=overrides,
+        )
+
+
+def test_lmc_is_rejected_for_non_concat_runs():
+    with pytest.raises(
+        ConfigError,
+        match="model.correction_mode=lmc is only valid for concat runs",
+    ):
+        resolve_run_config(
+            "configs/debug_matrix.yaml",
+            run_id="debug-standalone-s-001",
+            overrides=["model.correction_mode=lmc"],
+        )
+
+
+def test_cat_llama_defaults_membership_correction_on():
     resolved = resolve_run_config(
         "configs/debug_matrix.yaml",
         run_id="debug-nested-001",
@@ -424,18 +515,21 @@ def test_cat_llama_defaults_gradient_membership_correction_on():
     )
 
     assert resolved["model"]["variant"] == "cat_llama"
-    assert resolved["model"]["gradient_membership_correction"] is True
+    assert resolved["model"]["membership_correction"] is True
 
 
-def test_matformer_llama_allows_disabling_gradient_membership_correction():
+def test_matformer_llama_allows_disabling_membership_correction():
     resolved = resolve_run_config(
         "configs/debug_matrix.yaml",
         run_id="debug-nested-001",
-        overrides=["model.gradient_membership_correction=false"],
+        overrides=[
+            "model.correction_mode=none",
+            "model.membership_correction=false",
+        ],
     )
 
     assert resolved["model"]["variant"] == "matformer_llama"
-    assert resolved["model"]["gradient_membership_correction"] is False
+    assert resolved["model"]["membership_correction"] is False
 
 
 def test_invalid_model_variant_override_fails_fast_before_output_setup(tmp_path):
@@ -514,6 +608,7 @@ def test_dmodel256_pilot_config_preserves_clarified_terms_and_shape_fields():
     assert run["sampling_mode"] == "nested-random"
     assert run["completion_label"] == "run"
     assert run["model_family_slug"] == "matformer_llama"
+    assert run["family_size_slug"] == run["model_size_slug"]
     assert run["output_group"].startswith("matformer_llama_")
     assert run["output_dir"] == f"outputs/{run['output_group']}/{run['run_id']}"
     assert "model_size_label" not in run
@@ -692,6 +787,7 @@ def test_dmodel256_pilot_resolves_scaled_learning_rate_warmup_precedence_and_opt
         overrides=[
             "training.warmup_ratio=0.9",
             "training.warmup_steps=7",
+            "training.optimizer.preset=null",
             "training.optimizer.name=sgd",
             "training.optimizer.kwargs.momentum=0.8",
             "training.optimizer.kwargs.dampening=0.1",
@@ -757,6 +853,57 @@ def test_dmodel256_pilot_resolves_schedule_and_optimizer_defaults(
     }
 
 
+def test_optimizer_preset_resolution_merges_registry_defaults_and_partial_overrides():
+    resolved = resolve_run_config(
+        "tests/fixtures/experiment_config_resolution.yaml",
+        overrides=["training.optimizer.kwargs.weight_decay=0.05"],
+    )
+
+    training = resolved["training"]
+    expected_optimizer_kwargs = {
+        "betas": [0.9, 0.95],
+        "eps": 1e-08,
+        "weight_decay": 0.05,
+    }
+
+    assert training["optimizer_name"] == "adamw"
+    assert training["optimizer_kwargs"] == expected_optimizer_kwargs
+    assert training["optimizer"] == {
+        "name": "adamw",
+        "kwargs": expected_optimizer_kwargs,
+    }
+    assert training["preset_selections"] == {"optimizer": "adam"}
+    assert set(training["preset_registry_paths"]) == {"optimizer"}
+    assert training["preset_registry_paths"]["optimizer"].endswith(
+        "configs/presets/optimizer/adam.yaml"
+    )
+
+
+def test_invalid_optimizer_preset_names_fail_before_training_starts():
+    with pytest.raises(
+        ConfigError,
+        match=r"Unknown training\.optimizer\.preset='missing'",
+    ):
+        resolve_run_config(
+            "tests/fixtures/experiment_config_resolution.yaml",
+            overrides=["training.optimizer.preset=missing"],
+        )
+
+
+def test_optimizer_preset_rejects_name_overrides():
+    with pytest.raises(
+        ConfigError,
+        match=(
+            r"training\.optimizer\.name cannot be overridden when "
+            r"training\.optimizer\.preset is set"
+        ),
+    ):
+        resolve_run_config(
+            "tests/fixtures/experiment_config_resolution.yaml",
+            overrides=["training.optimizer.name=sgd"],
+        )
+
+
 def test_single_run_resolves_explicit_schedule_and_optimizer_overrides(tmp_path):
     config_path = _write_single_run_config(tmp_path)
 
@@ -764,6 +911,7 @@ def test_single_run_resolves_explicit_schedule_and_optimizer_overrides(tmp_path)
         config_path,
         overrides=[
             "training.warmup_ratio=0.25",
+            "training.optimizer.preset=null",
             "training.optimizer.name=sgd",
             "training.optimizer.kwargs.momentum=0.9",
             "training.optimizer.kwargs.nesterov=true",

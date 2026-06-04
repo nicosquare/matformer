@@ -1,6 +1,9 @@
-# Debug-size MatFormer reproduction matrix for Phase 3 validation.
+# Shared fixture for experiment config resolution tests.
 run:
-  phase_id: debug_matrix
+  run_id: experiment-config-resolution-001
+  phase_id: experiment_config_resolution
+  model_family: nested
+  model_size_label: debug
   seed: 42
   output_root: outputs
   continuation:
@@ -8,7 +11,7 @@ run:
 
 model:
   base_model_name: debug-llama
-  variant: matformer_llama
+  variant: cat_llama
   correction_mode: gmc
   membership_correction: true
   tokenizer_name: hf-internal-testing/llama-tokenizer
@@ -30,17 +33,18 @@ training:
   batch_size_per_process: 2
   learning_rate: 0.0003
   warmup_steps: 0
-  # Pre-nested warmup is separate from scheduler warmup.
-  # Nested runs can use it to warm the model before block slicing/splitting.
   pre_nested_warmup:
     enabled: false
-    # Duration is applied only when warmup is enabled.
     duration: 0
-    # Use epochs for longer runs or steps for short debug runs.
     unit: epochs
   gradient_clip_norm: 1.0
   optimizer:
     preset: adam
+    name: adamw
+    kwargs:
+      betas: [0.9, 0.95]
+      eps: 1.0e-8
+      weight_decay: 0.1
   eval_interval: 2
   eval_batches: 1
   mixed_precision: none
@@ -58,30 +62,6 @@ dataset:
   sample_limit: 16
   preprocessing_notes: truncate_or_pad_to_context_length_64_debug_samples
 
-matrix:
-  nested:
-    run_id: debug-nested-001
-    model_family: nested
-    model_size_label: debug
-    granularities: [s, m, l, xl]
-  standalone:
-    - run_id: debug-standalone-s-001
-      model_family: standalone
-      model_size_label: debug
-      granularity: s
-    - run_id: debug-standalone-m-001
-      model_family: standalone
-      model_size_label: debug
-      granularity: m
-    - run_id: debug-standalone-l-001
-      model_family: standalone
-      model_size_label: debug
-      granularity: l
-    - run_id: debug-standalone-xl-001
-      model_family: standalone
-      model_size_label: debug
-      granularity: xl
-
 outputs:
   save_config: true
   save_metrics_csv: true
@@ -92,10 +72,10 @@ outputs:
 monitoring:
   enabled: false
   backend: wandb
-  project: debug_matrix
+  project: experiment_config_resolution
   job_type: train
-  tags: [debug, matrix]
-  notes: debug matrix smoke and warmup validation
+  tags: [debug, config-resolution]
+  notes: shared fixture for config resolution tests
   log_loss_by_granularity: true
   log_validation_loss: true
   log_stage_events: true

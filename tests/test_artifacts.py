@@ -6,7 +6,8 @@ import pytest
 import torch
 from datasets import Dataset
 
-from utils.config import resolve_run_config
+from scripts.make_figures import generate_figures
+from utils.config import resolve_all_run_configs, resolve_run_config
 from utils.metrics import (
     ArtifactError,
     SCALING_RESULTS_COLUMNS,
@@ -128,6 +129,11 @@ def test_write_config_metrics_and_run_summary(tmp_path):
     assert saved_config["training"]["scheduler"]["kwargs"]["warmup_steps"] == 0
     assert saved_config["training"]["scheduler"]["resolved_warmup_steps"] == 0
     assert saved_config["training"]["scheduler_kwargs"] == {}
+    assert saved_config["training"]["preset_selections"] == {"optimizer": "adam"}
+    assert set(saved_config["training"]["preset_registry_paths"]) == {"optimizer"}
+    assert saved_config["training"]["preset_registry_paths"]["optimizer"].endswith(
+        "configs/presets/optimizer/adam.yaml"
+    )
     assert saved_config["training"]["optimizer_name"] == "adamw"
     assert saved_config["training"]["optimizer_kwargs"] == {
         "betas": [0.9, 0.95],
@@ -156,12 +162,18 @@ def test_write_config_metrics_and_run_summary(tmp_path):
     assert saved_summary["scheduler_warmup_steps"] == 0
     assert saved_summary["scheduler_resolved_warmup_steps"] == 0
     assert saved_summary["scheduler_kwargs"] == {}
+    assert saved_summary["preset_selections"] == {"optimizer": "adam"}
+    assert set(saved_summary["preset_registry_paths"]) == {"optimizer"}
+    assert saved_summary["preset_registry_paths"]["optimizer"].endswith(
+        "configs/presets/optimizer/adam.yaml"
+    )
     assert saved_summary["optimizer_name"] == "adamw"
     assert saved_summary["optimizer_kwargs"] == {
         "betas": [0.9, 0.95],
         "eps": 1e-08,
         "weight_decay": 0.1,
     }
+    assert saved_summary["family_size_slug"] == saved_summary["model_size_slug"]
     assert saved_summary["notes"] == ["smoke test"]
 
 
@@ -395,6 +407,65 @@ def test_baseline_and_cat_run_summaries_share_schema_and_differ_by_variant(tmp_p
     assert baseline_summary["model_family"] == cat_summary["model_family"] == "nested"
 
 
+def test_shared_family_folder_artifacts_can_be_read_directly_by_figures(tmp_path):
+    output_root = tmp_path / "outputs"
+    resolved_runs = {
+        config["run"]["run_id"]: config
+        for config in resolve_all_run_configs(
+            "configs/debug_matrix.yaml",
+            overrides=[f"run.output_root={output_root}"],
+        )
+    }
+
+    standalone_runs = [
+        resolved_runs["debug-standalone-s-001"],
+        resolved_runs["debug-standalone-m-001"],
+        resolved_runs["debug-standalone-l-001"],
+    ]
+    shared_output_groups = {
+        config["run"]["output_group"] for config in standalone_runs
+    }
+    assert len(shared_output_groups) == 1
+
+    for config in standalone_runs:
+        write_config_artifact(config)
+        granularity = config["model"]["granularities"][0]
+        scaling_rows = build_scaling_result_rows(
+            config,
+            [
+                {
+                    "step": 1,
+                    "split": "validation",
+                    "granularity": granularity,
+                    "loss": 1.0,
+                    "perplexity": 2.0,
+                }
+            ],
+            {
+                granularity: {
+                    "total_parameters": 1,
+                    "embedding_parameters": 0,
+                    "lm_head_parameters": 0,
+                    "non_embedding_parameters": 1,
+                }
+            },
+        )
+        write_scaling_results_csv(
+            output_root / config["run"]["output_group"],
+            scaling_rows,
+        )
+
+    shared_group = next(iter(shared_output_groups))
+    figure_paths = generate_figures(
+        output_root / shared_group,
+        tmp_path / "figures",
+        refresh_counts=False,
+    )
+    figure_names = {path.name for path in figure_paths}
+
+    assert {"loss_vs_size.png", "ppl_vs_size.png"} <= figure_names
+
+
 def test_run_summary_includes_budget_derived_fields(tmp_path):
     output_dir = tmp_path / "dmodel256-pilot-comparison-001"
     config = resolve_run_config(
@@ -411,6 +482,7 @@ def test_run_summary_includes_budget_derived_fields(tmp_path):
         "stop_reason",
         "model_family_slug",
         "model_size_slug",
+        "family_size_slug",
         "token_budget_slug",
         "output_group",
     ]:
@@ -434,6 +506,7 @@ def test_run_summary_records_resolved_schedule_and_optimizer_metadata(tmp_path, 
         overrides=[
             "training.warmup_ratio=0.9",
             "training.warmup_steps=7",
+            "training.optimizer.preset=null",
             "training.optimizer.name=sgd",
             "training.optimizer.kwargs.momentum=0.8",
             "training.optimizer.kwargs.nesterov=true",
