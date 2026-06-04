@@ -496,6 +496,7 @@ def test_run_summary_records_resolved_schedule_and_optimizer_metadata(tmp_path, 
         overrides=[
             "training.warmup_ratio=0.9",
             "training.warmup_steps=7",
+            "training.optimizer.preset=null",
             "training.optimizer.name=sgd",
             "training.optimizer.kwargs.momentum=0.8",
             "training.optimizer.kwargs.nesterov=true",

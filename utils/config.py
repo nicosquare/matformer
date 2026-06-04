@@ -1448,7 +1448,10 @@ def _resolve_training_schedule_defaults(
         raise ConfigError("training.optimizer must be a mapping when provided")
 
     optimizer, optimizer_preset_name, optimizer_preset_registry_path = (
-        _resolve_training_optimizer_preset(optimizer)
+        _resolve_training_optimizer_preset(
+            optimizer,
+            explicit_override_keys=explicit_override_keys,
+        )
     )
     optimizer_name = _normalize_optimizer_name(optimizer.get("name", "adamw"))
     optimizer_kwargs = _resolve_optimizer_kwargs(
@@ -1769,6 +1772,7 @@ def _resolve_component_kwargs(
 
 def _resolve_training_optimizer_preset(
     optimizer: dict[str, Any],
+    explicit_override_keys: set[str] | None = None,
 ) -> tuple[dict[str, Any], str | None, str | None]:
     preset_name = optimizer.get("preset")
     if preset_name in (None, ""):
@@ -1783,6 +1787,21 @@ def _resolve_training_optimizer_preset(
 
     preset_path = PRESET_REGISTRY_ROOT / "optimizer" / f"{preset_name}.yaml"
     preset = _load_preset_registry_entry(preset_path, preset_name)
+
+    if (
+        explicit_override_keys is not None
+        and "training.optimizer.name" in explicit_override_keys
+    ):
+        raise ConfigError(
+            "training.optimizer.name cannot be overridden when "
+            "training.optimizer.preset is set"
+        )
+
+    if optimizer.get("name") != preset.get("name"):
+        raise ConfigError(
+            "training.optimizer.preset conflicts with the effective optimizer name; "
+            f"preset {preset_name!r} resolves to optimizer.name={preset.get('name')!r}"
+        )
 
     merged_optimizer = _deep_merge_dicts(preset, optimizer)
     return merged_optimizer, preset_name, str(preset_path)

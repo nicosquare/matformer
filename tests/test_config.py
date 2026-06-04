@@ -787,6 +787,7 @@ def test_dmodel256_pilot_resolves_scaled_learning_rate_warmup_precedence_and_opt
         overrides=[
             "training.warmup_ratio=0.9",
             "training.warmup_steps=7",
+            "training.optimizer.preset=null",
             "training.optimizer.name=sgd",
             "training.optimizer.kwargs.momentum=0.8",
             "training.optimizer.kwargs.dampening=0.1",
@@ -852,6 +853,57 @@ def test_dmodel256_pilot_resolves_schedule_and_optimizer_defaults(
     }
 
 
+def test_optimizer_preset_resolution_merges_registry_defaults_and_partial_overrides():
+    resolved = resolve_run_config(
+        "tests/fixtures/experiment_config_resolution.yaml",
+        overrides=["training.optimizer.kwargs.weight_decay=0.05"],
+    )
+
+    training = resolved["training"]
+    expected_optimizer_kwargs = {
+        "betas": [0.9, 0.95],
+        "eps": 1e-08,
+        "weight_decay": 0.05,
+    }
+
+    assert training["optimizer_name"] == "adamw"
+    assert training["optimizer_kwargs"] == expected_optimizer_kwargs
+    assert training["optimizer"] == {
+        "name": "adamw",
+        "kwargs": expected_optimizer_kwargs,
+    }
+    assert training["preset_selections"] == {"optimizer": "adam"}
+    assert set(training["preset_registry_paths"]) == {"optimizer"}
+    assert training["preset_registry_paths"]["optimizer"].endswith(
+        "configs/presets/optimizer/adam.yaml"
+    )
+
+
+def test_invalid_optimizer_preset_names_fail_before_training_starts():
+    with pytest.raises(
+        ConfigError,
+        match=r"Unknown training\.optimizer\.preset='missing'",
+    ):
+        resolve_run_config(
+            "tests/fixtures/experiment_config_resolution.yaml",
+            overrides=["training.optimizer.preset=missing"],
+        )
+
+
+def test_optimizer_preset_rejects_name_overrides():
+    with pytest.raises(
+        ConfigError,
+        match=(
+            r"training\.optimizer\.name cannot be overridden when "
+            r"training\.optimizer\.preset is set"
+        ),
+    ):
+        resolve_run_config(
+            "tests/fixtures/experiment_config_resolution.yaml",
+            overrides=["training.optimizer.name=sgd"],
+        )
+
+
 def test_single_run_resolves_explicit_schedule_and_optimizer_overrides(tmp_path):
     config_path = _write_single_run_config(tmp_path)
 
@@ -859,6 +911,7 @@ def test_single_run_resolves_explicit_schedule_and_optimizer_overrides(tmp_path)
         config_path,
         overrides=[
             "training.warmup_ratio=0.25",
+            "training.optimizer.preset=null",
             "training.optimizer.name=sgd",
             "training.optimizer.kwargs.momentum=0.9",
             "training.optimizer.kwargs.nesterov=true",

@@ -76,8 +76,8 @@
 
 ### Verification for User Story 3
 
-- [ ] T014 [P] [US3] Add optimizer preset resolution coverage and partial-override cases in `tests/test_config.py`, including loading from `configs/presets/optimizer/*.yaml`.
-- [ ] T015 [P] [US3] Add invalid preset and conflicting-preset validation coverage in `tests/test_config.py`.
+- [X] T014 [P] [US3] Add optimizer preset resolution coverage and partial-override cases in `tests/test_config.py`, including loading from `configs/presets/optimizer/*.yaml`.
+- [X] T015 [P] [US3] Add invalid preset and conflicting-preset validation coverage in `tests/test_config.py`.
 
 ### Implementation for User Story 3
 

@@ -737,6 +737,7 @@ def test_config_driven_nested_training_uses_resolved_sgd_optimizer(tmp_path, mon
             "training.batch_size_per_process=1",
             "training.learning_rate=0.02",
             "training.scheduler.kwargs.warmup_steps=0",
+            "training.optimizer.preset=null",
             "training.optimizer.name=sgd",
             "training.optimizer.kwargs.momentum=0.8",
             "training.optimizer.kwargs.nesterov=true",
