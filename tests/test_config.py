@@ -355,6 +355,37 @@ def test_debug_matrix_resolves_all_standalone_granularities():
         validate_run_config(resolved)
 
 
+def test_debug_matrix_standalone_runs_share_family_folder_key():
+    resolved_runs = {
+        run_id: resolve_run_config("configs/debug_matrix.yaml", run_id=run_id)
+        for run_id in [
+            "debug-standalone-s-001",
+            "debug-standalone-m-001",
+            "debug-standalone-l-001",
+        ]
+    }
+
+    output_groups = {resolved["run"]["output_group"] for resolved in resolved_runs.values()}
+    family_size_slugs = {
+        resolved["run"]["family_size_slug"] for resolved in resolved_runs.values()
+    }
+
+    assert len(output_groups) == 1
+    assert len(family_size_slugs) == 1
+    assert {
+        resolved["run"]["active_size_label"]
+        for resolved in resolved_runs.values()
+    } == {"s", "m", "l"}
+    for resolved in resolved_runs.values():
+        assert (
+            resolved["run"]["family_resolution_rule"]
+            == "output_group is keyed from the largest configured family size"
+        )
+        assert resolved["run"]["output_group"] == next(iter(output_groups))
+        assert resolved["run"]["family_size_slug"] == next(iter(family_size_slugs))
+        validate_run_config(resolved)
+
+
 def test_debug_standalone_granularity_must_match_model_granularities():
     resolved = resolve_run_config(
         "configs/debug_matrix.yaml",
@@ -577,6 +608,7 @@ def test_dmodel256_pilot_config_preserves_clarified_terms_and_shape_fields():
     assert run["sampling_mode"] == "nested-random"
     assert run["completion_label"] == "run"
     assert run["model_family_slug"] == "matformer_llama"
+    assert run["family_size_slug"] == run["model_size_slug"]
     assert run["output_group"].startswith("matformer_llama_")
     assert run["output_dir"] == f"outputs/{run['output_group']}/{run['run_id']}"
     assert "model_size_label" not in run

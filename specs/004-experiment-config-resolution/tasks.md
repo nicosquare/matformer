@@ -41,8 +41,8 @@
 
 ### Implementation for User Story 1
 
-- [ ] T008 [US1] Apply LMC during the concat optimizer step in `training/run.py` using membership counts from `modified_llama.py`.
-- [ ] T009 [US1] Thread the resolved correction mode through saved config and run-summary artifacts in `utils/config.py` and `utils/metrics.py`.
+- [X] T008 [US1] Apply LMC during the concat optimizer step in `training/run.py` using membership counts from `modified_llama.py`.
+- [X] T009 [US1] Thread the resolved correction mode through saved config and run-summary artifacts in `utils/config.py` and `utils/metrics.py`.
 
 **Checkpoint**: User Story 1 should now be independently functional and testable.
 
@@ -56,13 +56,13 @@
 
 ### Verification for User Story 2
 
-- [ ] T010 [P] [US2] Add shared-family folder resolution coverage in `tests/test_config.py` for standalone `s`, `m`, and `l` runs.
-- [ ] T011 [P] [US2] Add artifact and figure-generation smoke coverage for the shared folder in `tests/test_artifacts.py`.
+- [X] T010 [P] [US2] Add shared-family folder resolution coverage in `tests/test_config.py` for standalone `s`, `m`, and `l` runs.
+- [X] T011 [P] [US2] Add artifact and figure-generation smoke coverage for the shared folder in `tests/test_artifacts.py`.
 
 ### Implementation for User Story 2
 
-- [ ] T012 [US2] Update `utils/config.py` to resolve `output_group` from the largest configured family size while preserving the existing family/token-budget components and recording the resolution rule.
-- [ ] T013 [US2] Record the active size and family-folder provenance in `utils/metrics.py` so `config.json` and `run_summary.json` explain how the folder was chosen.
+- [X] T012 [US2] Update `utils/config.py` to resolve `output_group` from the largest configured family size while preserving the existing family/token-budget components and recording the resolution rule.
+- [X] T013 [US2] Record the active size and family-folder provenance in `utils/metrics.py` so `config.json` and `run_summary.json` explain how the folder was chosen.
 
 **Checkpoint**: User Stories 1 and 2 should now both work independently.
 

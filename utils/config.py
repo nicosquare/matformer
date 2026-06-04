@@ -163,10 +163,15 @@ def resolve_run_config(
     overrides = _snapshot_overrides(overrides)
     explicit_override_keys = _override_keys(overrides)
     config = apply_overrides(load_yaml_config(config_path), overrides)
+    family_size_slug = None
+    if "matrix" in config:
+        family_size_slug = _resolve_family_size_slug(config)
 
     if "matrix" in config:
         run_entry = _select_matrix_run(config, run_id)
         resolved = _compose_matrix_run(config, run_entry)
+        if family_size_slug is not None:
+            resolved["run"]["family_size_slug"] = family_size_slug
     else:
         resolved = _compose_single_run(config)
         if run_id is not None and resolved["run"].get("run_id") != run_id:
@@ -181,6 +186,9 @@ def resolve_run_config(
     _resolve_model_variant_defaults(resolved)
     _resolve_model_correction_defaults(resolved)
     _resolve_model_dimension_and_granularity_metadata(resolved)
+    if family_size_slug is None:
+        family_size_slug = _resolve_family_size_slug(resolved)
+    resolved["run"]["family_size_slug"] = family_size_slug
     _resolve_naming_defaults(resolved)
     _resolve_output_paths(resolved)
     _resolve_sampling_mode_defaults(
@@ -203,12 +211,16 @@ def resolve_all_run_configs(
     overrides = _snapshot_overrides(overrides)
     explicit_override_keys = _override_keys(overrides)
     config = apply_overrides(load_yaml_config(config_path), overrides)
+    shared_family_size_slug = None
+    if "matrix" in config:
+        shared_family_size_slug = _resolve_family_size_slug(config)
 
     if "matrix" not in config:
         resolved = _compose_single_run(config)
         _resolve_model_variant_defaults(resolved)
         _resolve_model_correction_defaults(resolved)
         _resolve_model_dimension_and_granularity_metadata(resolved)
+        resolved["run"]["family_size_slug"] = _resolve_family_size_slug(resolved)
         _resolve_naming_defaults(resolved)
         _resolve_output_paths(resolved)
         _resolve_sampling_mode_defaults(
@@ -232,6 +244,8 @@ def resolve_all_run_configs(
     resolved_runs = []
     for run_entry in runs:
         resolved = _compose_matrix_run(config, run_entry)
+        if shared_family_size_slug is not None:
+            resolved["run"]["family_size_slug"] = shared_family_size_slug
         _resolve_model_variant_defaults(resolved)
         _resolve_model_correction_defaults(resolved)
         _resolve_model_dimension_and_granularity_metadata(resolved)
@@ -324,6 +338,7 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "completion_label",
             "model_family_slug",
             "model_size_slug",
+            "family_size_slug",
             "token_budget_slug",
             "output_group",
             "active_size_label",
@@ -452,19 +467,23 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         "active_size_label"
     ].strip():
         raise ConfigError("run.active_size_label must be a non-empty string")
+    if not isinstance(run.get("family_size_slug"), str) or not run[
+        "family_size_slug"
+    ].strip():
+        raise ConfigError("run.family_size_slug must be a non-empty string")
     if not isinstance(run.get("family_resolution_rule"), str) or not run[
         "family_resolution_rule"
     ].strip():
         raise ConfigError("run.family_resolution_rule must be a non-empty string")
 
     expected_output_group = (
-        f"{run['model_family_slug']}_{run['model_size_slug']}"
+        f"{run['model_family_slug']}_{run['family_size_slug']}"
         f"_{run['token_budget_slug']}"
     )
     if run["output_group"] != expected_output_group:
         raise ConfigError(
             "run.output_group must match "
-            "<model_family_slug>_<model_size_slug>_<token_budget_slug>"
+            "<model_family_slug>_<family_size_slug>_<token_budget_slug>"
         )
 
     granularities = model["granularities"]
@@ -891,15 +910,36 @@ def _resolve_naming_defaults(config: dict[str, Any]) -> None:
 
     run["model_family_slug"] = MODEL_FAMILY_SLUG
     run["model_size_slug"] = derive_model_size_slug(model)
+    family_size_slug = run.get("family_size_slug")
+    if not isinstance(family_size_slug, str) or not family_size_slug.strip():
+        family_size_slug = run["model_size_slug"]
+    else:
+        family_size_slug = family_size_slug.strip()
+    run["family_size_slug"] = family_size_slug
     run["token_budget_slug"] = derive_token_budget_slug(
         _positive_int(training.get("token_budget"), "training.token_budget")
     )
     run["output_group"] = (
-        f"{run['model_family_slug']}_{run['model_size_slug']}"
+        f"{run['model_family_slug']}_{family_size_slug}"
         f"_{run['token_budget_slug']}"
     )
     run["active_size_label"] = _resolve_active_size_label(run)
-    run["family_resolution_rule"] = "output_group is keyed from the active run size"
+    run["family_resolution_rule"] = (
+        "output_group is keyed from the largest configured family size"
+    )
+
+
+def _resolve_family_size_slug(config: Mapping[str, Any]) -> str:
+    family_config = copy.deepcopy(dict(config))
+    _resolve_model_dimension_and_granularity_metadata(family_config)
+    model = family_config.get("model", {})
+    if not isinstance(model, Mapping):
+        raise ConfigError("model must be a mapping when resolving family size")
+
+    family_size_slug = derive_model_size_slug(model)
+    if not isinstance(family_size_slug, str) or not family_size_slug.strip():
+        raise ConfigError("Unable to derive family size slug from resolved model")
+    return family_size_slug
 
 
 def _resolve_active_size_label(run: Mapping[str, Any]) -> str:
