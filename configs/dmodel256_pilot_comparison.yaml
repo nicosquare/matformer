@@ -17,7 +17,8 @@ run:
 model:
   base_model_name: dmodel256-matformer-llama-swiglu
   variant: matformer_llama
-  gradient_membership_correction: true
+  correction_mode: lmc
+  membership_correction: true
   tokenizer_name: hf-internal-testing/llama-tokenizer
   d_model: 256
   num_layers: 16
@@ -52,6 +53,7 @@ training:
   mixed_precision: bf16
   activation_checkpointing: true
   optimizer:
+    preset: adam
     name: adamw
     kwargs:
       betas: [0.9, 0.95]

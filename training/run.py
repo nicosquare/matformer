@@ -399,11 +399,19 @@ def build_artifact_parameter_counts(
 
 def build_model(config: dict[str, Any]):
     llama_config = build_llama_config(config)
-    mlp_kwargs = {
-        "trained_granularities": tuple(config["model"]["granularities"]),
-        "gradient_membership_correction_enabled": config["model"].get(
+    model_config = config["model"]
+    membership_correction_enabled = model_config.get(
+        "membership_correction",
+        model_config.get(
             "gradient_membership_correction",
-            config["model"]["variant"] == "cat_llama",
+            model_config["variant"] == "cat_llama",
+        ),
+    )
+    mlp_kwargs = {
+        "trained_granularities": tuple(model_config["granularities"]),
+        "gradient_membership_correction_enabled": config["model"].get(
+            "membership_correction",
+            membership_correction_enabled,
         ),
     }
     if config["run"]["model_family"] == "standalone":

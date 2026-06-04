@@ -152,7 +152,7 @@ def test_cat_llama_build_passes_configured_granularities_to_membership_correctio
         "model": {
             "variant": "cat_llama",
             "granularities": ["m", "xl"],
-            "gradient_membership_correction": False,
+            "membership_correction": False,
             "vocab_size_assumption": 32,
             "hidden_size": 16,
             "intermediate_size": 64,
@@ -177,7 +177,7 @@ def test_modified_llama_build_passes_membership_correction_configuration():
         "model": {
             "variant": "matformer_llama",
             "granularities": ["m", "xl"],
-            "gradient_membership_correction": True,
+            "membership_correction": True,
             "vocab_size_assumption": 32,
             "hidden_size": 16,
             "intermediate_size": 64,

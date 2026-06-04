@@ -602,13 +602,11 @@ def _resolve_model_variant_defaults(config: dict[str, Any]) -> None:
     model["variant"] = _normalize_model_variant(
         model.get("variant", DEFAULT_MODEL_VARIANT)
     )
-    model["gradient_membership_correction"] = _normalize_bool(
-        model.get(
-            "gradient_membership_correction",
-            True,
-        ),
-        "model.gradient_membership_correction",
+    model["membership_correction"] = _normalize_bool(
+        model.get("membership_correction", model.get("gradient_membership_correction", True)),
+        "model.membership_correction",
     )
+    model.pop("gradient_membership_correction", None)
 
 
 def _resolve_model_dimension_and_granularity_metadata(config: dict[str, Any]) -> None:

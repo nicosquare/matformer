@@ -712,7 +712,7 @@ def test_make_figures_enriches_model_variant_from_run_config(tmp_path):
         output_dir=output_dir / "debug-nested-001",
         overrides=[
             "model.variant=cat_llama",
-            "model.gradient_membership_correction=false",
+            "model.membership_correction=false",
         ],
     )
     write_run_summary(
@@ -735,7 +735,7 @@ def test_make_figures_enriches_model_variant_from_run_config(tmp_path):
     enriched_rows = enrich_scaling_metadata_from_run_config(output_dir, rows)
 
     assert enriched_rows[0]["model_variant"] == "cat_llama"
-    assert enriched_rows[0]["gradient_membership_correction"] is False
+    assert enriched_rows[0]["membership_correction"] is False
 
 
 def test_make_figures_defaults_missing_model_variant_for_legacy_configs(tmp_path):
@@ -835,34 +835,34 @@ def test_make_figures_groups_scaling_curves_by_sampling_mode_and_variant():
     ]
 
 
-def test_make_figures_groups_scaling_curves_by_sampling_mode_variant_and_gmc():
+def test_make_figures_groups_scaling_curves_by_sampling_mode_variant_and_membership_correction():
     rows = [
         {
             "model_family": "nested",
             "sampling_mode": "nested-random",
             "model_variant": "matformer_llama",
-            "gradient_membership_correction": True,
+            "membership_correction": True,
             "granularity": "s",
         },
         {
             "model_family": "nested",
             "sampling_mode": "nested-random",
             "model_variant": "matformer_llama",
-            "gradient_membership_correction": True,
+            "membership_correction": True,
             "granularity": "xl",
         },
         {
             "model_family": "nested",
             "sampling_mode": "nested-random",
             "model_variant": "cat_llama",
-            "gradient_membership_correction": False,
+            "membership_correction": False,
             "granularity": "s",
         },
         {
             "model_family": "nested",
             "sampling_mode": "nested-random",
             "model_variant": "cat_llama",
-            "gradient_membership_correction": False,
+            "membership_correction": False,
             "granularity": "xl",
         },
     ]
@@ -870,15 +870,19 @@ def test_make_figures_groups_scaling_curves_by_sampling_mode_variant_and_gmc():
     grouped = group_scaling_rows(rows)
 
     assert set(grouped) == {
-        "nested-random / matformer_llama / gmc=on",
-        "nested-random / cat_llama / gmc=off",
+        "nested-random / matformer_llama / membership_correction=on",
+        "nested-random / cat_llama / membership_correction=off",
     }
-    assert scaling_curve_style(grouped["nested-random / matformer_llama / gmc=on"]) == {
+    assert scaling_curve_style(
+        grouped["nested-random / matformer_llama / membership_correction=on"]
+    ) == {
         "marker": "o",
         "linestyle": "-",
         "linewidth": 1.4,
     }
-    assert scaling_curve_style(grouped["nested-random / cat_llama / gmc=off"]) == {
+    assert scaling_curve_style(
+        grouped["nested-random / cat_llama / membership_correction=off"]
+    ) == {
         "marker": "s",
         "linestyle": "--",
         "linewidth": 1.2,

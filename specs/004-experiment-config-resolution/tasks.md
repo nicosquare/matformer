@@ -9,9 +9,9 @@
 
 **Purpose**: Add shared fixtures and example configs used by the feature tests.
 
-- [ ] T001 [P] Create a shared experiment-config fixture at `tests/fixtures/experiment_config_resolution.yaml` plus separate preset registry files under `configs/presets/optimizer/` with representative concat, standalone, Adam, and SGD values.
-- [ ] T002 [P] Update `configs/debug_matrix.yaml` to include explicit `model.correction_mode`, `model.membership_correction`, and `training.optimizer.preset: adam` fields used by the feature tests.
-- [ ] T003 [P] Update `configs/dmodel256_pilot_comparison.yaml` to include explicit `model.correction_mode`, `model.membership_correction`, and `training.optimizer.preset: adam` fields used by the feature tests.
+- [X] T001 [P] Create a shared experiment-config fixture at `tests/fixtures/experiment_config_resolution.yaml` plus separate preset registry files under `configs/presets/optimizer/` with representative concat, standalone, Adam, and SGD values.
+- [X] T002 [P] Update `configs/debug_matrix.yaml` to include explicit `model.correction_mode`, `model.membership_correction`, and `training.optimizer.preset: adam` fields used by the feature tests.
+- [X] T003 [P] Update `configs/dmodel256_pilot_comparison.yaml` to include explicit `model.correction_mode`, `model.membership_correction`, and `training.optimizer.preset: adam` fields used by the feature tests.
 
 ---
 

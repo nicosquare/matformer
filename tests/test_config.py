@@ -136,7 +136,7 @@ def test_cli_overrides_are_parsed_and_applied():
             "run.seed=123",
             "outputs.save_checkpoints=false",
             "model.variant=cat_llama",
-            "model.gradient_membership_correction=false",
+            "model.membership_correction=false",
             "training.scheduler.name=constant",
         ],
     )
@@ -145,7 +145,7 @@ def test_cli_overrides_are_parsed_and_applied():
     assert resolved["run"]["seed"] == 123
     assert resolved["outputs"]["save_checkpoints"] is False
     assert resolved["model"]["variant"] == "cat_llama"
-    assert resolved["model"]["gradient_membership_correction"] is False
+    assert resolved["model"]["membership_correction"] is False
     assert resolved["training"]["scheduler_name"] == "constant"
 
 
@@ -390,7 +390,7 @@ def test_single_run_defaults_to_outputs_root(tmp_path):
     resolved = resolve_run_config(config_path)
 
     assert resolved["model"]["variant"] == "matformer_llama"
-    assert resolved["model"]["gradient_membership_correction"] is True
+    assert resolved["model"]["membership_correction"] is True
     assert resolved["run"]["output_root"] == "outputs"
     assert resolved["training"]["gradient_clip_norm"] == 1.0
     assert resolved["training"]["optimizer_kwargs"] == {
@@ -411,12 +411,12 @@ def test_shared_configs_resolve_default_model_variant():
     pilot_resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
 
     assert debug_resolved["model"]["variant"] == "matformer_llama"
-    assert debug_resolved["model"]["gradient_membership_correction"] is True
+    assert debug_resolved["model"]["membership_correction"] is True
     assert pilot_resolved["model"]["variant"] == "matformer_llama"
-    assert pilot_resolved["model"]["gradient_membership_correction"] is True
+    assert pilot_resolved["model"]["membership_correction"] is True
 
 
-def test_cat_llama_defaults_gradient_membership_correction_on():
+def test_cat_llama_defaults_membership_correction_on():
     resolved = resolve_run_config(
         "configs/debug_matrix.yaml",
         run_id="debug-nested-001",
@@ -424,18 +424,18 @@ def test_cat_llama_defaults_gradient_membership_correction_on():
     )
 
     assert resolved["model"]["variant"] == "cat_llama"
-    assert resolved["model"]["gradient_membership_correction"] is True
+    assert resolved["model"]["membership_correction"] is True
 
 
-def test_matformer_llama_allows_disabling_gradient_membership_correction():
+def test_matformer_llama_allows_disabling_membership_correction():
     resolved = resolve_run_config(
         "configs/debug_matrix.yaml",
         run_id="debug-nested-001",
-        overrides=["model.gradient_membership_correction=false"],
+        overrides=["model.membership_correction=false"],
     )
 
     assert resolved["model"]["variant"] == "matformer_llama"
-    assert resolved["model"]["gradient_membership_correction"] is False
+    assert resolved["model"]["membership_correction"] is False
 
 
 def test_invalid_model_variant_override_fails_fast_before_output_setup(tmp_path):
