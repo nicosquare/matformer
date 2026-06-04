@@ -21,8 +21,8 @@
 
 **CRITICAL**: No user story work should proceed until this phase is complete.
 
-- [ ] T004 [P] Extend `utils/config.py` with resolved `model.correction_mode` handling, `model.membership_correction` validation, family-folder key resolution hooks, and preset registry parsing/loading/validation scaffolding.
-- [ ] T005 [P] Extend `utils/metrics.py` so `build_run_summary()` and saved artifacts can carry correction mode, family-folder rule, active size label, preset provenance, and preset registry path fields.
+- [X] T004 [P] Extend `utils/config.py` with resolved `model.correction_mode` handling, `model.membership_correction` validation, family-folder key resolution hooks, and preset registry parsing/loading/validation scaffolding.
+- [X] T005 [P] Extend `utils/metrics.py` so `build_run_summary()` and saved artifacts can carry correction mode, family-folder rule, active size label, preset provenance, and preset registry path fields.
 
 **Checkpoint**: Foundation ready - user story implementation can now begin.
 

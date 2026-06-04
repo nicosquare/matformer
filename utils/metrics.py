@@ -95,6 +95,8 @@ RUN_SUMMARY_FIELDS = [
     "phase_id",
     "model_family",
     "model_variant",
+    "correction_mode",
+    "membership_correction",
     "continuation_state",
     "monitoring_enabled",
     "monitoring_backend",
@@ -105,6 +107,8 @@ RUN_SUMMARY_FIELDS = [
     "latest_checkpoint_path",
     "model_size_label",
     "model_shape_label",
+    "active_size_label",
+    "family_resolution_rule",
     "sampling_mode",
     "model_family_slug",
     "model_size_slug",
@@ -145,6 +149,8 @@ RUN_SUMMARY_FIELDS = [
     "vocab_size_assumption",
     "parameter_counts",
     "parameter_counts_by_granularity",
+    "preset_selections",
+    "preset_registry_paths",
     "checkpoint_status",
     "best_checkpoint_path",
     "final_checkpoint_path",
@@ -217,6 +223,8 @@ def build_run_summary(
         "phase_id": run["phase_id"],
         "model_family": run["model_family"],
         "model_variant": model["variant"],
+        "correction_mode": model.get("correction_mode"),
+        "membership_correction": model.get("membership_correction"),
         "continuation_state": continuation_state,
         "monitoring_enabled": bool(config.get("monitoring", {}).get("enabled", False)),
         "monitoring_backend": config.get("monitoring", {}).get(
@@ -230,6 +238,8 @@ def build_run_summary(
         "latest_checkpoint_path": continuation_state.get("latest_checkpoint_path"),
         "model_size_label": _model_shape_label(run),
         "model_shape_label": _model_shape_label(run),
+        "active_size_label": run.get("active_size_label"),
+        "family_resolution_rule": run.get("family_resolution_rule"),
         "sampling_mode": _sampling_mode(run, training),
         "completion_label": run["completion_label"],
         "model_family_slug": run.get("model_family_slug"),
@@ -278,6 +288,8 @@ def build_run_summary(
         "parameter_counts_by_granularity": config.get(
             "parameter_counts_by_granularity"
         ),
+        "preset_selections": training.get("preset_selections", {}),
+        "preset_registry_paths": training.get("preset_registry_paths", {}),
         **build_checkpoint_summary_fields(
             config,
             metrics_rows=[],

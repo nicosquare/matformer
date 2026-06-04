@@ -22,6 +22,7 @@ from utils.monitoring import DEFAULT_MONITORING_BACKEND, VALID_MONITORING_BACKEN
 VALID_GRANULARITIES = {"s", "m", "l", "xl"}
 VALID_MODEL_TOPOLOGIES = {"nested", "standalone"}
 VALID_MODEL_VARIANTS = {"matformer_llama", "cat_llama"}
+VALID_CORRECTION_MODES = {"none", "gmc", "lmc"}
 VALID_LEARNING_RATE_SCALE_RULES = {"none", "linear", "sqrt"}
 VALID_OPTIMIZER_NAMES = {"adamw", "sgd"}
 VALID_COMPLETION_LABELS = {"debug", "run"}
@@ -37,6 +38,8 @@ CANONICAL_GRANULARITY_PREFIX_FRACTIONS = {
     "xl": (1, 1),
 }
 DEFAULT_FFN_MULTIPLIER = 4
+CONFIG_ROOT = Path(__file__).resolve().parent.parent
+PRESET_REGISTRY_ROOT = CONFIG_ROOT / "configs" / "presets"
 OPTIMIZER_DEFAULT_KWARGS = {
     "adamw": {
         "betas": [0.9, 0.95],
@@ -176,6 +179,7 @@ def resolve_run_config(
         resolved["run"]["output_dir"] = str(output_dir)
 
     _resolve_model_variant_defaults(resolved)
+    _resolve_model_correction_defaults(resolved)
     _resolve_model_dimension_and_granularity_metadata(resolved)
     _resolve_naming_defaults(resolved)
     _resolve_output_paths(resolved)
@@ -203,6 +207,7 @@ def resolve_all_run_configs(
     if "matrix" not in config:
         resolved = _compose_single_run(config)
         _resolve_model_variant_defaults(resolved)
+        _resolve_model_correction_defaults(resolved)
         _resolve_model_dimension_and_granularity_metadata(resolved)
         _resolve_naming_defaults(resolved)
         _resolve_output_paths(resolved)
@@ -228,6 +233,7 @@ def resolve_all_run_configs(
     for run_entry in runs:
         resolved = _compose_matrix_run(config, run_entry)
         _resolve_model_variant_defaults(resolved)
+        _resolve_model_correction_defaults(resolved)
         _resolve_model_dimension_and_granularity_metadata(resolved)
         _resolve_naming_defaults(resolved)
         _resolve_output_paths(resolved)
@@ -297,6 +303,14 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
     warmup = training.get("pre_nested_warmup")
     if not isinstance(warmup, Mapping):
         raise ConfigError("Missing mapping section: training.pre_nested_warmup")
+    preset_selections = training.get("preset_selections")
+    if not isinstance(preset_selections, Mapping):
+        raise ConfigError("Missing mapping section: training.preset_selections")
+    preset_registry_paths = training.get("preset_registry_paths")
+    if not isinstance(preset_registry_paths, Mapping):
+        raise ConfigError(
+            "Missing mapping section: training.preset_registry_paths"
+        )
     _require_mapping(config, "outputs")
     _require_mapping(config, "evaluation")
 
@@ -312,6 +326,8 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "model_size_slug",
             "token_budget_slug",
             "output_group",
+            "active_size_label",
+            "family_resolution_rule",
             "output_root",
             "output_dir",
         ],
@@ -327,6 +343,8 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         [
             "base_model_name",
             "variant",
+            "correction_mode",
+            "membership_correction",
             "num_layers",
             "num_attention_heads",
             "intermediate_size",
@@ -363,6 +381,8 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "optimizer",
             "optimizer_name",
             "optimizer_kwargs",
+            "preset_selections",
+            "preset_registry_paths",
         ],
     )
     _require_fields(continuation, "run.continuation", ["enabled"])
@@ -428,6 +448,14 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             f"run.model_family_slug must be {MODEL_FAMILY_SLUG}: "
             f"{run['model_family_slug']}"
         )
+    if not isinstance(run.get("active_size_label"), str) or not run[
+        "active_size_label"
+    ].strip():
+        raise ConfigError("run.active_size_label must be a non-empty string")
+    if not isinstance(run.get("family_resolution_rule"), str) or not run[
+        "family_resolution_rule"
+    ].strip():
+        raise ConfigError("run.family_resolution_rule must be a non-empty string")
 
     expected_output_group = (
         f"{run['model_family_slug']}_{run['model_size_slug']}"
@@ -456,6 +484,14 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "model.variant must be one of "
             f"{sorted(VALID_MODEL_VARIANTS)}"
         )
+    correction_mode = model.get("correction_mode")
+    if correction_mode not in VALID_CORRECTION_MODES:
+        raise ConfigError(
+            "model.correction_mode must be one of "
+            f"{sorted(VALID_CORRECTION_MODES)}"
+        )
+    if not isinstance(model.get("membership_correction"), bool):
+        raise ConfigError("model.membership_correction must be a boolean")
 
     if "d_model" in model and "hidden_size" in model:
         if _positive_int(model["d_model"], "model.d_model") != _positive_int(
@@ -607,6 +643,49 @@ def _resolve_model_variant_defaults(config: dict[str, Any]) -> None:
         "model.membership_correction",
     )
     model.pop("gradient_membership_correction", None)
+
+
+def _resolve_model_correction_defaults(config: dict[str, Any]) -> None:
+    model = config.setdefault("model", {})
+    requested_mode = model.get("correction_mode")
+    if requested_mode in (None, ""):
+        requested_mode = None
+    elif not isinstance(requested_mode, str):
+        raise ConfigError("model.correction_mode must be a string")
+    else:
+        requested_mode = requested_mode.strip()
+        if not requested_mode:
+            requested_mode = None
+
+    membership_correction = model.get("membership_correction")
+    if not isinstance(membership_correction, bool):
+        raise ConfigError("model.membership_correction must be a boolean")
+
+    if requested_mode is None:
+        resolved_mode = "gmc" if membership_correction else "none"
+    else:
+        resolved_mode = _normalize_correction_mode(requested_mode)
+        if not membership_correction:
+            resolved_mode = "none"
+
+    model["requested_correction_mode"] = requested_mode
+    model["correction_mode"] = resolved_mode
+    model["membership_correction"] = membership_correction
+
+
+def _normalize_correction_mode(raw_mode: Any) -> str:
+    if not isinstance(raw_mode, str):
+        raise ConfigError("model.correction_mode must be a string")
+
+    correction_mode = raw_mode.strip()
+    if not correction_mode:
+        raise ConfigError("model.correction_mode must be a non-empty string")
+    if correction_mode not in VALID_CORRECTION_MODES:
+        raise ConfigError(
+            "model.correction_mode must be one of "
+            f"{sorted(VALID_CORRECTION_MODES)}"
+        )
+    return correction_mode
 
 
 def _resolve_model_dimension_and_granularity_metadata(config: dict[str, Any]) -> None:
@@ -787,6 +866,18 @@ def _resolve_naming_defaults(config: dict[str, Any]) -> None:
         f"{run['model_family_slug']}_{run['model_size_slug']}"
         f"_{run['token_budget_slug']}"
     )
+    run["active_size_label"] = _resolve_active_size_label(run)
+    run["family_resolution_rule"] = "output_group is keyed from the active run size"
+
+
+def _resolve_active_size_label(run: Mapping[str, Any]) -> str:
+    for field_name in ("granularity", "model_size_label", "model_shape_label"):
+        value = run.get(field_name)
+        if isinstance(value, str):
+            value = value.strip()
+            if value:
+                return value
+    return str(run.get("model_family", "unknown"))
 
 
 def _resolve_sampling_mode_defaults(
@@ -1284,6 +1375,9 @@ def _resolve_training_schedule_defaults(
     if not isinstance(optimizer, dict):
         raise ConfigError("training.optimizer must be a mapping when provided")
 
+    optimizer, optimizer_preset_name, optimizer_preset_registry_path = (
+        _resolve_training_optimizer_preset(optimizer)
+    )
     optimizer_name = _normalize_optimizer_name(optimizer.get("name", "adamw"))
     optimizer_kwargs = _resolve_optimizer_kwargs(
         optimizer_name,
@@ -1299,6 +1393,14 @@ def _resolve_training_schedule_defaults(
     }
     training["optimizer_name"] = optimizer_name
     training["optimizer_kwargs"] = optimizer_kwargs
+    training["preset_selections"] = (
+        {"optimizer": optimizer_preset_name} if optimizer_preset_name else {}
+    )
+    training["preset_registry_paths"] = (
+        {"optimizer": optimizer_preset_registry_path}
+        if optimizer_preset_registry_path
+        else {}
+    )
 
     scheduler = training.get("scheduler")
     if scheduler is None:
@@ -1591,6 +1693,81 @@ def _resolve_component_kwargs(
             explicit_kwargs[kwarg_name] = copy.deepcopy(raw_kwargs[kwarg_name])
 
     return explicit_kwargs
+
+
+def _resolve_training_optimizer_preset(
+    optimizer: dict[str, Any],
+) -> tuple[dict[str, Any], str | None, str | None]:
+    preset_name = optimizer.get("preset")
+    if preset_name in (None, ""):
+        return optimizer, None, None
+
+    if not isinstance(preset_name, str):
+        raise ConfigError("training.optimizer.preset must be a string")
+
+    preset_name = preset_name.strip()
+    if not preset_name:
+        raise ConfigError("training.optimizer.preset must be a non-empty string")
+
+    preset_path = PRESET_REGISTRY_ROOT / "optimizer" / f"{preset_name}.yaml"
+    preset = _load_preset_registry_entry(preset_path, preset_name)
+
+    merged_optimizer = _deep_merge_dicts(preset, optimizer)
+    return merged_optimizer, preset_name, str(preset_path)
+
+
+def _load_preset_registry_entry(
+    preset_path: Path,
+    preset_name: str,
+) -> dict[str, Any]:
+    if not preset_path.is_file():
+        raise ConfigError(
+            f"Unknown training.optimizer.preset={preset_name!r}; "
+            f"missing registry file: {preset_path}"
+        )
+
+    preset = load_yaml_config(preset_path)
+    if preset_path.stem != preset_name:
+        raise ConfigError(
+            f"Preset registry file name must match the preset name: {preset_path}"
+        )
+    _validate_preset_registry_entry(preset, preset_path)
+    return preset
+
+
+def _validate_preset_registry_entry(
+    preset: Mapping[str, Any],
+    preset_path: Path,
+) -> None:
+    if not isinstance(preset, Mapping):
+        raise ConfigError(f"Preset registry entry must be a mapping: {preset_path}")
+
+    preset_name = preset.get("name")
+    if not isinstance(preset_name, str) or not preset_name.strip():
+        raise ConfigError(f"Preset registry entry {preset_path} must define name")
+
+    kwargs = preset.get("kwargs", {})
+    if kwargs is None:
+        kwargs = {}
+    if not isinstance(kwargs, Mapping):
+        raise ConfigError(f"Preset registry entry {preset_path} must define kwargs")
+
+
+def _deep_merge_dicts(
+    base: Mapping[str, Any],
+    override: Mapping[str, Any],
+) -> dict[str, Any]:
+    merged = copy.deepcopy(dict(base))
+    for key, value in override.items():
+        if (
+            key in merged
+            and isinstance(merged[key], Mapping)
+            and isinstance(value, Mapping)
+        ):
+            merged[key] = _deep_merge_dicts(merged[key], value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
 
 
 def _normalize_optimizer_kwarg(
