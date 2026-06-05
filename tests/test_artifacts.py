@@ -6,7 +6,7 @@ import pytest
 import torch
 from datasets import Dataset
 
-from scripts.make_figures import generate_figures
+from scripts.make_figures import generate_figures, scaling_curve_label
 from utils.config import resolve_all_run_configs, resolve_run_config
 from utils.metrics import (
     ArtifactError,
@@ -464,6 +464,27 @@ def test_shared_family_folder_artifacts_can_be_read_directly_by_figures(tmp_path
     figure_names = {path.name for path in figure_paths}
 
     assert {"loss_vs_size.png", "ppl_vs_size.png"} <= figure_names
+
+
+def test_scaling_curve_label_prefers_correction_mode_when_available():
+    labeled_row = {
+        "sampling_mode": "nested-random",
+        "model_variant": "cat_llama",
+        "correction_mode": "lmc",
+        "membership_correction": True,
+    }
+    legacy_row = {
+        "sampling_mode": "nested-random",
+        "model_variant": "cat_llama",
+        "membership_correction": True,
+    }
+
+    assert scaling_curve_label(labeled_row) == (
+        "nested-random / cat_llama / correction_mode=lmc"
+    )
+    assert scaling_curve_label(legacy_row) == (
+        "nested-random / cat_llama / membership_correction=on"
+    )
 
 
 def test_run_summary_includes_budget_derived_fields(tmp_path):

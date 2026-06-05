@@ -121,6 +121,31 @@ def test_dmodel256_pilot_resolves_current_reference_config(tmp_path):
     validate_run_config(config)
 
 
+def test_dmodel256_pilot_standalone_runs_share_family_folder_key(tmp_path):
+    output_root = tmp_path / "pilot-output"
+    resolved = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        overrides=[
+            f"run.output_root={output_root}",
+            "run.run_id=dmodel256-standalone-s-001",
+            "run.model_family=standalone",
+            "run.sampling_mode=standalone",
+            "run.granularity=s",
+            "model.correction_mode=none",
+            "model.membership_correction=false",
+        ],
+    )
+
+    assert resolved["run"]["family_size_slug"] == "148m"
+    assert resolved["run"]["output_group"] == "matformer_llama_148m_100m_tokens"
+    assert resolved["run"]["output_dir"] == (
+        f"{output_root}/matformer_llama_148m_100m_tokens/"
+        "dmodel256-standalone-s-001"
+    )
+
+    validate_run_config(resolved)
+
+
 def test_dmodel256_pilot_runner_propagates_output_root_env(tmp_path):
     output_root = tmp_path / "pilot-output"
 
