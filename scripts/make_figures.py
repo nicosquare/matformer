@@ -873,18 +873,26 @@ def place_legend_in_panel(legend_axis, axis) -> None:
     ncol = 1
     if len(labels) >= 6:
         ncol = 2
-    if len(labels) >= 10:
-        ncol = 3
 
     legend_axis.legend(
         handles,
-        labels,
+        [wrap_legend_label(label) for label in labels],
         loc="center",
         bbox_to_anchor=(0.5, 0.5),
         ncol=ncol,
         frameon=False,
         borderaxespad=0.0,
+        fontsize="small",
+        handlelength=1.8,
+        handletextpad=0.6,
+        columnspacing=1.2,
     )
+
+
+def wrap_legend_label(label: str) -> str:
+    if " / " not in label:
+        return label
+    return label.replace(" / ", "\n")
 
 
 def consistency_pair_label(row: dict[str, Any]) -> str:
