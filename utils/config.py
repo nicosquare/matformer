@@ -954,7 +954,14 @@ def _resolve_family_size_slug(config: Mapping[str, Any]) -> str:
     if not isinstance(model, Mapping):
         raise ConfigError("model must be a mapping when resolving family size")
 
-    family_size_slug = derive_model_size_slug(model)
+    family_size_source = model.get("matformer_source_intermediate_size")
+    if family_size_source is not None:
+        source_model = dict(model)
+        source_model["intermediate_size"] = family_size_source
+        source_model.pop("matformer_source_intermediate_size", None)
+        family_size_slug = derive_model_size_slug(source_model)
+    else:
+        family_size_slug = derive_model_size_slug(model)
     if not isinstance(family_size_slug, str) or not family_size_slug.strip():
         raise ConfigError("Unable to derive family size slug from resolved model")
     return family_size_slug
