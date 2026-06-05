@@ -33,10 +33,15 @@ PARAMETER_COUNT_FIELDS = [
 ]
 
 LOSS_MOVING_AVERAGE_FRACTION = 0.1
-SCALING_VARIANT_STYLES = {
-    "cat": {"color": "tab:blue", "marker": "o"},
-    "slice": {"color": "tab:orange", "marker": "s"},
-    "standalone": {"color": "tab:green", "marker": "D"},
+SCALING_FAMILY_COLORS = {
+    "nested-all": "tab:blue",
+    "nested-random": "tab:orange",
+    "standalone": "tab:green",
+}
+SCALING_VARIANT_MARKERS = {
+    "cat": "o",
+    "slice": "s",
+    "standalone": "D",
 }
 SCALING_CORRECTION_LINESTYLES = {
     "none": "-",
@@ -859,30 +864,30 @@ def scaling_curve_correction_label(row: dict[str, str]) -> str | None:
 
 
 def scaling_curve_style(rows: list[dict[str, str]]) -> dict[str, Any]:
-    style_key = None
+    family_key = None
+    marker_key = None
     correction_label = None
     for row in rows:
         family_label = scaling_curve_family_label(row)
         variant_label = scaling_curve_variant_label(row)
         correction_label = scaling_curve_correction_label(row)
         if family_label:
-            if family_label == "standalone":
-                style_key = "standalone"
-            else:
-                style_key = variant_label or "slice"
+            family_key = family_label if family_label in SCALING_FAMILY_COLORS else None
+            marker_key = (
+                "standalone"
+                if family_label == "standalone"
+                else variant_label
+            )
             break
 
     style = {
         "linewidth": 1.4,
         "linestyle": SCALING_CORRECTION_LINESTYLES.get(correction_label or "none", "-"),
+        "color": SCALING_FAMILY_COLORS.get(family_key or "", "tab:gray"),
+        "marker": SCALING_VARIANT_MARKERS.get(marker_key or "", "o"),
+        "markersize": 5,
     }
-    style.update(
-        SCALING_VARIANT_STYLES.get(
-            style_key or "slice",
-            {"color": "tab:gray", "marker": "o"},
-        )
-    )
-    if style_key == "standalone":
+    if family_key == "standalone":
         style["linewidth"] = 1.6
     return style
 
