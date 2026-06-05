@@ -198,6 +198,11 @@ def enrich_scaling_metadata_from_run_config(
             )
             if membership_correction is not None:
                 enriched_row["membership_correction"] = membership_correction
+            correction_mode = correction_mode_from_saved_config(
+                config_cache[config_path]
+            )
+            if correction_mode is not None:
+                enriched_row["correction_mode"] = correction_mode
         enriched_rows.append(enriched_row)
 
     return enriched_rows
@@ -268,6 +273,18 @@ def membership_correction_from_saved_config(config: dict[str, Any]) -> bool | No
         if normalized in {"false", "0", "no", "off"}:
             return False
     return bool(value)
+
+
+def correction_mode_from_saved_config(config: dict[str, Any]) -> str | None:
+    model = config.get("model")
+    if not isinstance(model, dict):
+        return None
+    value = model.get("correction_mode")
+    if value in (None, ""):
+        value = model.get("requested_correction_mode")
+    if value in (None, ""):
+        return None
+    return str(value).strip().lower()
 
 
 def with_default_model_variant(config: dict[str, Any]) -> dict[str, Any]:
@@ -754,28 +771,44 @@ def safe_filename_fragment(value: str) -> str:
 def scaling_curve_label(row: dict[str, str]) -> str:
     sampling_mode = row.get("sampling_mode")
     model_variant = row.get("model_variant")
+    correction_mode_label = scaling_curve_correction_mode_label(row)
     membership_correction_label = scaling_curve_membership_correction_label(row)
     if sampling_mode and model_variant:
         parts = [sampling_mode, model_variant]
+        if correction_mode_label is not None:
+            parts.append(correction_mode_label)
         if membership_correction_label is not None:
             parts.append(membership_correction_label)
         return " / ".join(parts)
     if sampling_mode:
         parts = [sampling_mode]
+        if correction_mode_label is not None:
+            parts.append(correction_mode_label)
         if membership_correction_label is not None:
             parts.append(membership_correction_label)
         return " / ".join(parts)
     model_family = row.get("model_family")
     if model_family and model_variant:
         parts = [model_family, model_variant]
+        if correction_mode_label is not None:
+            parts.append(correction_mode_label)
         if membership_correction_label is not None:
             parts.append(membership_correction_label)
         return " / ".join(parts)
     return model_family or "unknown"
 
 
+def scaling_curve_correction_mode_label(row: dict[str, str]) -> str | None:
+    raw_value = row.get("correction_mode")
+    if raw_value in (None, ""):
+        return None
+    return f"correction_mode={str(raw_value).strip().lower()}"
+
+
 def scaling_curve_membership_correction_label(row: dict[str, str]) -> str | None:
     if row.get("model_family") == "standalone" or row.get("sampling_mode") == "standalone":
+        return None
+    if row.get("correction_mode") not in (None, ""):
         return None
     raw_value = row.get("membership_correction")
     if raw_value in (None, ""):

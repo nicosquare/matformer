@@ -163,9 +163,10 @@ def resolve_run_config(
     overrides = _snapshot_overrides(overrides)
     explicit_override_keys = _override_keys(overrides)
     config = apply_overrides(load_yaml_config(config_path), overrides)
-    family_size_slug = None
+    family_size_slug = _configured_family_size_slug(config)
     if "matrix" in config:
-        family_size_slug = _resolve_family_size_slug(config)
+        if family_size_slug is None:
+            family_size_slug = _resolve_family_size_slug(config)
 
     if "matrix" in config:
         run_entry = _select_matrix_run(config, run_id)
@@ -211,9 +212,10 @@ def resolve_all_run_configs(
     overrides = _snapshot_overrides(overrides)
     explicit_override_keys = _override_keys(overrides)
     config = apply_overrides(load_yaml_config(config_path), overrides)
-    shared_family_size_slug = None
+    shared_family_size_slug = _configured_family_size_slug(config)
     if "matrix" in config:
-        shared_family_size_slug = _resolve_family_size_slug(config)
+        if shared_family_size_slug is None:
+            shared_family_size_slug = _resolve_family_size_slug(config)
 
     if "matrix" not in config:
         resolved = _compose_single_run(config)
@@ -264,6 +266,22 @@ def resolve_all_run_configs(
         resolved_runs.append(resolved)
 
     return resolved_runs
+
+
+def _configured_family_size_slug(config: Mapping[str, Any]) -> str | None:
+    run = config.get("run", {})
+    if not isinstance(run, Mapping):
+        return None
+
+    family_size_slug = run.get("family_size_slug")
+    if not isinstance(family_size_slug, str):
+        return None
+
+    family_size_slug = family_size_slug.strip()
+    if not family_size_slug:
+        return None
+
+    return family_size_slug
 
 
 def write_resolved_config(

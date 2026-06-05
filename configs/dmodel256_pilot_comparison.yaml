@@ -6,6 +6,7 @@ run:
   model_family: nested
   sampling_mode: nested-random
   model_shape_label: dmodel256
+  family_size_slug: 148m
   seed: 42
   output_root: outputs
   continuation:
