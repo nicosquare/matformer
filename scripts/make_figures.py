@@ -19,6 +19,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.colors import to_rgb
 
 
 PARAMETER_COUNT_FIELDS = [
@@ -33,20 +34,17 @@ PARAMETER_COUNT_FIELDS = [
 ]
 
 LOSS_MOVING_AVERAGE_FRACTION = 0.1
-SCALING_FAMILY_COLORS = {
-    "nested-all": "tab:blue",
-    "nested-random": "tab:orange",
+SCALING_GROUP_COLORS = {
+    "nested-all / cat": "tab:blue",
+    "nested-random / cat": "tab:purple",
+    "nested-all / slice": "tab:orange",
+    "nested-random / slice": "tab:red",
     "standalone": "tab:green",
 }
-SCALING_VARIANT_MARKERS = {
-    "cat": "o",
-    "slice": "s",
-    "standalone": "D",
-}
-SCALING_CORRECTION_LINESTYLES = {
-    "none": "-",
-    "gmc": "--",
-    "lmc": "-.",
+SCALING_CORRECTION_STYLES = {
+    "none": {"linestyle": "-", "marker": "o", "shade": 0.0},
+    "gmc": {"linestyle": "--", "marker": "s", "shade": 0.2},
+    "lmc": {"linestyle": "-.", "marker": "^", "shade": 0.35},
 }
 
 
@@ -808,6 +806,15 @@ def scaling_curve_label(row: dict[str, str]) -> str:
     return " / ".join(parts)
 
 
+def scaling_curve_group_label(row: dict[str, str]) -> str:
+    family_label = scaling_curve_family_label(row)
+    if family_label == "standalone":
+        return "standalone"
+
+    variant_label = scaling_curve_variant_label(row) or "slice"
+    return f"{family_label} / {variant_label}"
+
+
 def scaling_curve_family_label(row: dict[str, str]) -> str:
     sampling_mode = row.get("sampling_mode")
     if sampling_mode == "standalone":
@@ -864,32 +871,36 @@ def scaling_curve_correction_label(row: dict[str, str]) -> str | None:
 
 
 def scaling_curve_style(rows: list[dict[str, str]]) -> dict[str, Any]:
-    family_key = None
-    marker_key = None
+    group_key = None
     correction_label = None
     for row in rows:
-        family_label = scaling_curve_family_label(row)
-        variant_label = scaling_curve_variant_label(row)
+        group_label = scaling_curve_group_label(row)
         correction_label = scaling_curve_correction_label(row)
-        if family_label:
-            family_key = family_label if family_label in SCALING_FAMILY_COLORS else None
-            marker_key = (
-                "standalone"
-                if family_label == "standalone"
-                else variant_label
-            )
+        if group_label:
+            group_key = group_label
             break
 
+    correction_style = SCALING_CORRECTION_STYLES.get(
+        correction_label or "none",
+        SCALING_CORRECTION_STYLES["none"],
+    )
+    base_color = SCALING_GROUP_COLORS.get(group_key or "", "tab:gray")
     style = {
         "linewidth": 1.4,
-        "linestyle": SCALING_CORRECTION_LINESTYLES.get(correction_label or "none", "-"),
-        "color": SCALING_FAMILY_COLORS.get(family_key or "", "tab:gray"),
-        "marker": SCALING_VARIANT_MARKERS.get(marker_key or "", "o"),
+        "linestyle": correction_style["linestyle"],
+        "marker": correction_style["marker"],
+        "color": blend_color_toward_white(base_color, correction_style["shade"]),
         "markersize": 5,
     }
-    if family_key == "standalone":
+    if group_key == "standalone":
         style["linewidth"] = 1.6
     return style
+
+
+def blend_color_toward_white(color: str, shade: float) -> tuple[float, float, float]:
+    rgb = to_rgb(color)
+    shade = min(max(shade, 0.0), 1.0)
+    return tuple(component + (1.0 - component) * shade for component in rgb)
 
 
 def create_figure_with_side_legend(

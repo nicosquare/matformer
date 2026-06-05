@@ -495,8 +495,18 @@ def test_scaling_curve_label_prefers_correction_mode_when_available():
     assert scaling_curve_label(standalone_row) == "standalone"
 
 
-def test_scaling_curve_style_groups_family_colors_variant_markers_and_correction_lines():
-    nested_all_cat_style = scaling_curve_style(
+def test_scaling_curve_style_groups_family_colors_markers_and_shades():
+    nested_all_cat_none_style = scaling_curve_style(
+        [
+            {
+                "sampling_mode": "nested-all",
+                "model_family": "nested",
+                "model_variant": "cat_llama",
+                "correction_mode": "none",
+            }
+        ]
+    )
+    nested_all_cat_gmc_style = scaling_curve_style(
         [
             {
                 "sampling_mode": "nested-all",
@@ -506,12 +516,22 @@ def test_scaling_curve_style_groups_family_colors_variant_markers_and_correction
             }
         ]
     )
-    nested_all_slice_style = scaling_curve_style(
+    nested_all_cat_lmc_style = scaling_curve_style(
         [
             {
                 "sampling_mode": "nested-all",
                 "model_family": "nested",
-                "model_variant": "matformer_llama",
+                "model_variant": "cat_llama",
+                "correction_mode": "lmc",
+            }
+        ]
+    )
+    nested_random_cat_none_style = scaling_curve_style(
+        [
+            {
+                "sampling_mode": "nested-random",
+                "model_family": "nested",
+                "model_variant": "cat_llama",
                 "correction_mode": "none",
             }
         ]
@@ -526,23 +546,43 @@ def test_scaling_curve_style_groups_family_colors_variant_markers_and_correction
             }
         ]
     )
-    nested_random_cat_lmc_style = scaling_curve_style(
+    nested_all_slice_none_style = scaling_curve_style(
         [
             {
-                "sampling_mode": "nested-random",
+                "sampling_mode": "nested-all",
                 "model_family": "nested",
-                "model_variant": "cat_llama",
-                "correction_mode": "lmc",
+                "model_variant": "matformer_llama",
+                "correction_mode": "none",
             }
         ]
     )
-    nested_random_slice_style = scaling_curve_style(
+    nested_all_slice_gmc_style = scaling_curve_style(
+        [
+            {
+                "sampling_mode": "nested-all",
+                "model_family": "nested",
+                "model_variant": "matformer_llama",
+                "membership_correction": True,
+            }
+        ]
+    )
+    nested_random_slice_none_style = scaling_curve_style(
         [
             {
                 "sampling_mode": "nested-random",
                 "model_family": "nested",
                 "model_variant": "matformer_llama",
                 "correction_mode": "none",
+            }
+        ]
+    )
+    nested_random_slice_gmc_style = scaling_curve_style(
+        [
+            {
+                "sampling_mode": "nested-random",
+                "model_family": "nested",
+                "model_variant": "matformer_llama",
+                "membership_correction": True,
             }
         ]
     )
@@ -556,22 +596,35 @@ def test_scaling_curve_style_groups_family_colors_variant_markers_and_correction
         ]
     )
 
-    assert nested_all_cat_style["color"] == "tab:blue"
-    assert nested_all_slice_style["color"] == "tab:blue"
-    assert nested_random_cat_gmc_style["color"] == "tab:orange"
-    assert nested_random_cat_lmc_style["color"] == "tab:orange"
-    assert nested_random_slice_style["color"] == "tab:orange"
-    assert standalone_style["color"] == "tab:green"
+    assert nested_all_cat_none_style["color"] != nested_random_cat_none_style["color"]
+    assert nested_all_slice_none_style["color"] != nested_random_slice_none_style["color"]
+    assert nested_all_cat_none_style["color"] != nested_all_slice_none_style["color"]
+    assert standalone_style["color"] not in {
+        nested_all_cat_none_style["color"],
+        nested_random_cat_none_style["color"],
+        nested_all_slice_none_style["color"],
+        nested_random_slice_none_style["color"],
+    }
 
-    assert nested_all_cat_style["marker"] == "o"
-    assert nested_all_slice_style["marker"] == "s"
-    assert nested_random_cat_gmc_style["marker"] == "o"
-    assert nested_random_slice_style["marker"] == "s"
-    assert standalone_style["marker"] == "D"
+    assert nested_all_cat_none_style["marker"] == "o"
+    assert nested_all_cat_gmc_style["marker"] == "s"
+    assert nested_all_cat_lmc_style["marker"] == "^"
+    assert nested_random_cat_none_style["marker"] == "o"
+    assert nested_random_cat_gmc_style["marker"] == "s"
+    assert nested_all_slice_none_style["marker"] == "o"
+    assert nested_all_slice_gmc_style["marker"] == "s"
+    assert nested_random_slice_none_style["marker"] == "o"
+    assert nested_random_slice_gmc_style["marker"] == "s"
 
+    assert nested_all_cat_none_style["linestyle"] == "-"
+    assert nested_all_cat_gmc_style["linestyle"] == "--"
+    assert nested_all_cat_lmc_style["linestyle"] == "-."
+    assert nested_random_cat_none_style["linestyle"] == "-"
     assert nested_random_cat_gmc_style["linestyle"] == "--"
-    assert nested_random_cat_lmc_style["linestyle"] == "-."
-    assert nested_all_slice_style["linestyle"] == "-"
+    assert nested_all_slice_none_style["linestyle"] == "-"
+    assert nested_all_slice_gmc_style["linestyle"] == "--"
+    assert nested_random_slice_none_style["linestyle"] == "-"
+    assert nested_random_slice_gmc_style["linestyle"] == "--"
     assert standalone_style["linestyle"] == "-"
 
 
