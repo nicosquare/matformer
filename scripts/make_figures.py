@@ -301,7 +301,11 @@ def plot_metric_vs_size(
     ylabel: str,
     output_path: Path,
 ) -> Path:
-    figure, axis = plt.subplots(figsize=(10, 5))
+    figure, axis, legend_axis = create_figure_with_legend_panel(
+        width=10,
+        plot_height=5,
+        legend_height=1.2,
+    )
     grouped = group_scaling_rows(rows)
 
     for label, group_rows_for_label in grouped.items():
@@ -321,8 +325,8 @@ def plot_metric_vs_size(
     axis.set_xlabel("Non-embedding parameters")
     axis.set_ylabel(ylabel)
     axis.grid(True, alpha=0.3)
-    place_legend_below(figure, axis, bottom_margin=0.22)
-    figure.savefig(output_path, bbox_inches="tight")
+    place_legend_in_panel(legend_axis, axis)
+    figure.savefig(output_path)
     plt.close(figure)
     return output_path
 
@@ -333,7 +337,11 @@ def plot_metric_over_steps(
     ylabel: str,
     output_path: Path,
 ) -> Path:
-    figure, axis = plt.subplots(figsize=(7, 4))
+    figure, axis, legend_axis = create_figure_with_legend_panel(
+        width=7,
+        plot_height=4,
+        legend_height=1.0,
+    )
     grouped = group_rows(rows, ["split", "granularity"])
 
     for label, group_rows_for_label in grouped.items():
@@ -351,8 +359,8 @@ def plot_metric_over_steps(
     axis.set_xlabel("Step")
     axis.set_ylabel(ylabel)
     axis.grid(True, alpha=0.3)
-    place_legend_below(figure, axis, bottom_margin=0.2)
-    figure.savefig(output_path, bbox_inches="tight")
+    place_legend_in_panel(legend_axis, axis)
+    figure.savefig(output_path)
     plt.close(figure)
     return output_path
 
@@ -466,7 +474,11 @@ def plot_loss_over_steps_for_experiment(
 
 
 def plot_consistency_results(rows: list[dict[str, str]], output_path: Path) -> Path:
-    figure, axis = plt.subplots(figsize=(10, 5))
+    figure, axis, legend_axis = create_figure_with_legend_panel(
+        width=10,
+        plot_height=5,
+        legend_height=1.0,
+    )
     numeric_rows = [
         row for row in rows if to_float_or_none(row.get("metric_value")) is not None
     ]
@@ -530,8 +542,8 @@ def plot_consistency_results(rows: list[dict[str, str]], output_path: Path) -> P
     axis.set_xlabel("Granularity pair")
     axis.set_ylabel("Metric value")
     axis.grid(True, axis="y", alpha=0.3)
-    place_legend_below(figure, axis, bottom_margin=0.2)
-    figure.savefig(output_path, bbox_inches="tight")
+    place_legend_in_panel(legend_axis, axis)
+    figure.savefig(output_path)
     plt.close(figure)
     return output_path
 
@@ -835,25 +847,44 @@ def scaling_curve_style(rows: list[dict[str, str]]) -> dict[str, Any]:
     return {"marker": "o", "linestyle": "-", "linewidth": 1.4}
 
 
-def place_legend_below(
-    figure,
-    axis,
-    bottom_margin: float = 0.2,
-) -> None:
+def create_figure_with_legend_panel(
+    width: float,
+    plot_height: float,
+    legend_height: float,
+):
+    figure = plt.figure(figsize=(width, plot_height + legend_height))
+    grid = figure.add_gridspec(
+        2,
+        1,
+        height_ratios=[plot_height, legend_height],
+        hspace=0.12,
+    )
+    axis = figure.add_subplot(grid[0])
+    legend_axis = figure.add_subplot(grid[1])
+    legend_axis.set_axis_off()
+    return figure, axis, legend_axis
+
+
+def place_legend_in_panel(legend_axis, axis) -> None:
     handles, labels = axis.get_legend_handles_labels()
     if not handles:
         return
 
-    figure.legend(
+    ncol = 1
+    if len(labels) >= 6:
+        ncol = 2
+    if len(labels) >= 10:
+        ncol = 3
+
+    legend_axis.legend(
         handles,
         labels,
-        loc="lower center",
-        bbox_to_anchor=(0.5, 0.01),
-        ncol=1,
+        loc="center",
+        bbox_to_anchor=(0.5, 0.5),
+        ncol=ncol,
         frameon=False,
         borderaxespad=0.0,
     )
-    figure.tight_layout(rect=[0, bottom_margin, 1, 1])
 
 
 def consistency_pair_label(row: dict[str, Any]) -> str:
