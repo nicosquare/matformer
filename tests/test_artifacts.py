@@ -6,7 +6,7 @@ import pytest
 import torch
 from datasets import Dataset
 
-from scripts.make_figures import generate_figures, scaling_curve_label
+from scripts.make_figures import generate_figures, scaling_curve_label, scaling_curve_style
 from utils.config import resolve_all_run_configs, resolve_run_config
 from utils.metrics import (
     ArtifactError,
@@ -469,22 +469,79 @@ def test_shared_family_folder_artifacts_can_be_read_directly_by_figures(tmp_path
 def test_scaling_curve_label_prefers_correction_mode_when_available():
     labeled_row = {
         "sampling_mode": "nested-random",
+        "model_family": "nested",
         "model_variant": "cat_llama",
         "correction_mode": "lmc",
-        "membership_correction": True,
     }
     legacy_row = {
         "sampling_mode": "nested-random",
+        "model_family": "nested",
         "model_variant": "cat_llama",
         "membership_correction": True,
     }
+    standalone_row = {
+        "sampling_mode": "standalone",
+        "model_family": "standalone",
+        "model_variant": "matformer_llama",
+        "membership_correction": False,
+    }
 
     assert scaling_curve_label(labeled_row) == (
-        "nested-random / cat_llama / correction_mode=lmc"
+        "nested-random / cat / lmc"
     )
     assert scaling_curve_label(legacy_row) == (
-        "nested-random / cat_llama / membership_correction=on"
+        "nested-random / cat / gmc"
     )
+    assert scaling_curve_label(standalone_row) == "standalone"
+
+
+def test_scaling_curve_style_groups_variant_colors_and_correction_lines():
+    cat_gmc_style = scaling_curve_style(
+        [
+            {
+                "sampling_mode": "nested-random",
+                "model_family": "nested",
+                "model_variant": "cat_llama",
+                "membership_correction": True,
+            }
+        ]
+    )
+    cat_lmc_style = scaling_curve_style(
+        [
+            {
+                "sampling_mode": "nested-random",
+                "model_family": "nested",
+                "model_variant": "cat_llama",
+                "correction_mode": "lmc",
+            }
+        ]
+    )
+    slice_none_style = scaling_curve_style(
+        [
+            {
+                "sampling_mode": "nested-all",
+                "model_family": "nested",
+                "model_variant": "matformer_llama",
+                "correction_mode": "none",
+            }
+        ]
+    )
+    standalone_style = scaling_curve_style(
+        [
+            {
+                "sampling_mode": "standalone",
+                "model_family": "standalone",
+                "model_variant": "matformer_llama",
+            }
+        ]
+    )
+    assert cat_gmc_style["color"] == cat_lmc_style["color"] == "tab:blue"
+    assert cat_gmc_style["linestyle"] == "--"
+    assert cat_lmc_style["linestyle"] == "-."
+    assert slice_none_style["color"] == "tab:orange"
+    assert slice_none_style["linestyle"] == "-"
+    assert standalone_style["color"] == "tab:green"
+    assert standalone_style["linestyle"] == "-"
 
 
 def test_run_summary_includes_budget_derived_fields(tmp_path):

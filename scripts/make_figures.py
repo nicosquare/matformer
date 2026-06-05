@@ -33,6 +33,16 @@ PARAMETER_COUNT_FIELDS = [
 ]
 
 LOSS_MOVING_AVERAGE_FRACTION = 0.1
+SCALING_VARIANT_STYLES = {
+    "cat": {"color": "tab:blue", "marker": "o"},
+    "slice": {"color": "tab:orange", "marker": "s"},
+    "standalone": {"color": "tab:green", "marker": "D"},
+}
+SCALING_CORRECTION_LINESTYLES = {
+    "none": "-",
+    "gmc": "--",
+    "lmc": "-.",
+}
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -301,10 +311,10 @@ def plot_metric_vs_size(
     ylabel: str,
     output_path: Path,
 ) -> Path:
-    figure, axis, legend_axis = create_figure_with_legend_panel(
-        width=10,
+    figure, axis, legend_axis = create_figure_with_side_legend(
+        plot_width=10,
         plot_height=5,
-        legend_height=1.2,
+        legend_width=4.8,
     )
     grouped = group_scaling_rows(rows)
 
@@ -325,7 +335,7 @@ def plot_metric_vs_size(
     axis.set_xlabel("Non-embedding parameters")
     axis.set_ylabel(ylabel)
     axis.grid(True, alpha=0.3)
-    place_legend_in_panel(legend_axis, axis)
+    place_legend_on_right(legend_axis, axis)
     figure.savefig(output_path)
     plt.close(figure)
     return output_path
@@ -474,10 +484,10 @@ def plot_loss_over_steps_for_experiment(
 
 
 def plot_consistency_results(rows: list[dict[str, str]], output_path: Path) -> Path:
-    figure, axis, legend_axis = create_figure_with_legend_panel(
-        width=10,
+    figure, axis, legend_axis = create_figure_with_side_legend(
+        plot_width=10,
         plot_height=5,
-        legend_height=1.0,
+        legend_width=4.8,
     )
     numeric_rows = [
         row for row in rows if to_float_or_none(row.get("metric_value")) is not None
@@ -542,7 +552,7 @@ def plot_consistency_results(rows: list[dict[str, str]], output_path: Path) -> P
     axis.set_xlabel("Granularity pair")
     axis.set_ylabel("Metric value")
     axis.grid(True, axis="y", alpha=0.3)
-    place_legend_in_panel(legend_axis, axis)
+    place_legend_on_right(legend_axis, axis)
     figure.savefig(output_path)
     plt.close(figure)
     return output_path
@@ -778,47 +788,58 @@ def safe_filename_fragment(value: str) -> str:
 
 
 def scaling_curve_label(row: dict[str, str]) -> str:
+    family_label = scaling_curve_family_label(row)
+    if family_label == "standalone":
+        return "standalone"
+
+    variant_label = scaling_curve_variant_label(row)
+    parts = [family_label]
+    if variant_label is not None:
+        parts.append(variant_label)
+
+    correction_label = scaling_curve_correction_label(row)
+    if correction_label is not None:
+        parts.append(correction_label)
+    return " / ".join(parts)
+
+
+def scaling_curve_family_label(row: dict[str, str]) -> str:
     sampling_mode = row.get("sampling_mode")
-    model_variant = row.get("model_variant")
-    correction_mode_label = scaling_curve_correction_mode_label(row)
-    membership_correction_label = scaling_curve_membership_correction_label(row)
-    if sampling_mode and model_variant:
-        parts = [sampling_mode, model_variant]
-        if correction_mode_label is not None:
-            parts.append(correction_mode_label)
-        if membership_correction_label is not None:
-            parts.append(membership_correction_label)
-        return " / ".join(parts)
-    if sampling_mode:
-        parts = [sampling_mode]
-        if correction_mode_label is not None:
-            parts.append(correction_mode_label)
-        if membership_correction_label is not None:
-            parts.append(membership_correction_label)
-        return " / ".join(parts)
+    if sampling_mode == "standalone":
+        return "standalone"
+    if sampling_mode in {"nested-all", "nested-random"}:
+        return str(sampling_mode)
     model_family = row.get("model_family")
-    if model_family and model_variant:
-        parts = [model_family, model_variant]
-        if correction_mode_label is not None:
-            parts.append(correction_mode_label)
-        if membership_correction_label is not None:
-            parts.append(membership_correction_label)
-        return " / ".join(parts)
-    return model_family or "unknown"
+    if model_family == "standalone":
+        return "standalone"
+    if model_family in {"nested", "standalone"}:
+        return str(model_family)
+    return str(sampling_mode or model_family or "unknown")
 
 
-def scaling_curve_correction_mode_label(row: dict[str, str]) -> str | None:
-    raw_value = row.get("correction_mode")
-    if raw_value in (None, ""):
+def scaling_curve_variant_label(row: dict[str, str]) -> str | None:
+    variant = row.get("model_variant")
+    if variant in (None, ""):
         return None
-    return f"correction_mode={str(raw_value).strip().lower()}"
+    normalized = str(variant).strip().lower()
+    if normalized == "cat_llama":
+        return "cat"
+    if normalized == "matformer_llama":
+        return "slice"
+    return normalized
 
 
-def scaling_curve_membership_correction_label(row: dict[str, str]) -> str | None:
+def scaling_curve_correction_label(row: dict[str, str]) -> str | None:
+    correction_mode = row.get("correction_mode")
+    if correction_mode not in (None, ""):
+        normalized = str(correction_mode).strip().lower()
+        if normalized in {"gmc", "lmc"}:
+            return normalized
+        return None
+
     if row.get("model_family") == "standalone" or row.get("sampling_mode") == "standalone":
         return None
-    if row.get("correction_mode") not in (None, ""):
-        return None
+
     raw_value = row.get("membership_correction")
     if raw_value in (None, ""):
         raw_value = row.get("gradient_membership_correction")
@@ -834,30 +855,49 @@ def scaling_curve_membership_correction_label(row: dict[str, str]) -> str | None
             enabled = False
         else:
             enabled = bool(raw_value)
-    return "membership_correction=on" if enabled else "membership_correction=off"
+    return "gmc" if enabled else None
 
 
 def scaling_curve_style(rows: list[dict[str, str]]) -> dict[str, Any]:
+    style_key = None
+    correction_label = None
     for row in rows:
-        membership_correction_label = scaling_curve_membership_correction_label(row)
-        if membership_correction_label == "membership_correction=off":
-            return {"marker": "s", "linestyle": "--", "linewidth": 1.2}
-        if membership_correction_label == "membership_correction=on":
-            return {"marker": "o", "linestyle": "-", "linewidth": 1.4}
-    return {"marker": "o", "linestyle": "-", "linewidth": 1.4}
+        family_label = scaling_curve_family_label(row)
+        variant_label = scaling_curve_variant_label(row)
+        correction_label = scaling_curve_correction_label(row)
+        if family_label:
+            if family_label == "standalone":
+                style_key = "standalone"
+            else:
+                style_key = variant_label or "slice"
+            break
+
+    style = {
+        "linewidth": 1.4,
+        "linestyle": SCALING_CORRECTION_LINESTYLES.get(correction_label or "none", "-"),
+    }
+    style.update(
+        SCALING_VARIANT_STYLES.get(
+            style_key or "slice",
+            {"color": "tab:gray", "marker": "o"},
+        )
+    )
+    if style_key == "standalone":
+        style["linewidth"] = 1.6
+    return style
 
 
-def create_figure_with_legend_panel(
-    width: float,
+def create_figure_with_side_legend(
+    plot_width: float,
     plot_height: float,
-    legend_height: float,
+    legend_width: float,
 ):
-    figure = plt.figure(figsize=(width, plot_height + legend_height))
+    figure = plt.figure(figsize=(plot_width + legend_width, plot_height))
     grid = figure.add_gridspec(
-        2,
         1,
-        height_ratios=[plot_height, legend_height],
-        hspace=0.12,
+        2,
+        width_ratios=[plot_width, legend_width],
+        wspace=0.08,
     )
     axis = figure.add_subplot(grid[0])
     legend_axis = figure.add_subplot(grid[1])
@@ -865,34 +905,20 @@ def create_figure_with_legend_panel(
     return figure, axis, legend_axis
 
 
-def place_legend_in_panel(legend_axis, axis) -> None:
+def place_legend_on_right(legend_axis, axis) -> None:
     handles, labels = axis.get_legend_handles_labels()
     if not handles:
         return
 
-    ncol = 1
-    if len(labels) >= 6:
-        ncol = 2
-
     legend_axis.legend(
         handles,
-        [wrap_legend_label(label) for label in labels],
-        loc="center",
-        bbox_to_anchor=(0.5, 0.5),
-        ncol=ncol,
+        labels,
+        loc="center left",
+        bbox_to_anchor=(0.0, 0.5),
+        ncol=1,
         frameon=False,
         borderaxespad=0.0,
-        fontsize="small",
-        handlelength=1.8,
-        handletextpad=0.6,
-        columnspacing=1.2,
     )
-
-
-def wrap_legend_label(label: str) -> str:
-    if " / " not in label:
-        return label
-    return label.replace(" / ", "\n")
 
 
 def consistency_pair_label(row: dict[str, Any]) -> str:
