@@ -17,9 +17,9 @@
 
 **Purpose**: Create the shallow model package and shared scaffolding needed for all story work
 
-- [ ] T001 Create the shallow `models/` package scaffold with `models/__init__.py`, `models/granularity.py`, `models/correction.py`, `models/ffn.py`, and `models/wiring.py`
-- [ ] T002 Update the feature plan reference in `AGENTS.md` to point at `specs/005-granularity-sampling-modes/plan.md`
-- [ ] T003 [P] Add a small compatibility export layer in `modified_llama.py` so current imports still resolve while the new package is introduced
+- [X] T001 Create the shallow `models/` package scaffold with `models/__init__.py`, `models/granularity.py`, `models/correction.py`, `models/ffn.py`, and `models/wiring.py`
+- [X] T002 Update the feature plan reference in `AGENTS.md` to point at `specs/005-granularity-sampling-modes/plan.md`
+- [X] T003 [P] Add a small compatibility export layer in `modified_llama.py` so current imports still resolve while the new package is introduced
 
 ---
 
