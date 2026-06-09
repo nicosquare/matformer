@@ -32,8 +32,8 @@
 - [X] T004 Add explicit model-level sampling-mode config resolution and legacy `training.granularity_sampling` alias handling in `utils/config.py`
 - [X] T005 [P] Add validation rules for `global` and `per_layer` sampling modes plus legacy alias resolution and their interaction with `model.correction_mode` in `utils/config.py`
 - [X] T006 [P] Add run-metadata fields for requested legacy alias, resolved sampling mode, and granularity-pattern provenance in `utils/config.py` and `utils/metrics.py`
-- [ ] T007 Introduce shared granularity-pattern data structures and helpers in `models/granularity.py`
-- [ ] T008 Introduce shared correction-context helpers for global vs per-layer activation in `models/correction.py`
+- [X] T007 Introduce shared granularity-pattern data structures and helpers in `models/granularity.py`
+- [X] T008 Introduce shared correction-context helpers for global vs per-layer activation in `models/correction.py`
 
 **Checkpoint**: Shared model/config plumbing is ready and user story work can proceed
 
