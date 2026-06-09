@@ -23,6 +23,7 @@ VALID_GRANULARITIES = {"s", "m", "l", "xl"}
 VALID_MODEL_TOPOLOGIES = {"nested", "standalone"}
 VALID_MODEL_VARIANTS = {"matformer_llama", "cat_llama"}
 VALID_CORRECTION_MODES = {"none", "gmc", "lmc"}
+VALID_MODEL_GRANULARITY_SAMPLING_MODES = {"global", "per_layer"}
 VALID_LEARNING_RATE_SCALE_RULES = {"none", "linear", "sqrt"}
 VALID_OPTIMIZER_NAMES = {"adamw", "sgd"}
 VALID_COMPLETION_LABELS = {"debug", "run"}
@@ -163,6 +164,10 @@ def resolve_run_config(
     overrides = _snapshot_overrides(overrides)
     explicit_override_keys = _override_keys(overrides)
     config = apply_overrides(load_yaml_config(config_path), overrides)
+    requested_granularity_sampling_alias = _configured_granularity_sampling_alias(
+        config
+    )
+    requested_run_sampling_mode = _configured_run_sampling_mode(config)
     family_size_slug = _configured_family_size_slug(config)
     if "matrix" in config:
         if family_size_slug is None:
@@ -194,9 +199,8 @@ def resolve_run_config(
     _resolve_output_paths(resolved)
     _resolve_sampling_mode_defaults(
         resolved,
-        explicit_granularity_sampling=(
-            "training.granularity_sampling" in explicit_override_keys
-        ),
+        requested_granularity_sampling_alias=requested_granularity_sampling_alias,
+        requested_run_sampling_mode=requested_run_sampling_mode,
     )
     _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
     _resolve_parameter_reporting_defaults(resolved)
@@ -212,6 +216,10 @@ def resolve_all_run_configs(
     overrides = _snapshot_overrides(overrides)
     explicit_override_keys = _override_keys(overrides)
     config = apply_overrides(load_yaml_config(config_path), overrides)
+    requested_granularity_sampling_alias = _configured_granularity_sampling_alias(
+        config
+    )
+    requested_run_sampling_mode = _configured_run_sampling_mode(config)
     shared_family_size_slug = _configured_family_size_slug(config)
     if "matrix" in config:
         if shared_family_size_slug is None:
@@ -227,9 +235,8 @@ def resolve_all_run_configs(
         _resolve_output_paths(resolved)
         _resolve_sampling_mode_defaults(
             resolved,
-            explicit_granularity_sampling=(
-                "training.granularity_sampling" in explicit_override_keys
-            ),
+            requested_granularity_sampling_alias=requested_granularity_sampling_alias,
+            requested_run_sampling_mode=requested_run_sampling_mode,
         )
         _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
         _resolve_parameter_reporting_defaults(resolved)
@@ -255,9 +262,8 @@ def resolve_all_run_configs(
         _resolve_output_paths(resolved)
         _resolve_sampling_mode_defaults(
             resolved,
-            explicit_granularity_sampling=(
-                "training.granularity_sampling" in explicit_override_keys
-            ),
+            requested_granularity_sampling_alias=requested_granularity_sampling_alias,
+            requested_run_sampling_mode=requested_run_sampling_mode,
         )
         _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
         _resolve_parameter_reporting_defaults(resolved)
@@ -282,6 +288,38 @@ def _configured_family_size_slug(config: Mapping[str, Any]) -> str | None:
         return None
 
     return family_size_slug
+
+
+def _configured_granularity_sampling_alias(config: Mapping[str, Any]) -> str | None:
+    training = config.get("training", {})
+    if not isinstance(training, Mapping):
+        return None
+
+    granularity_sampling = training.get("granularity_sampling")
+    if not isinstance(granularity_sampling, str):
+        return None
+
+    granularity_sampling = granularity_sampling.strip()
+    if not granularity_sampling:
+        return None
+
+    return granularity_sampling
+
+
+def _configured_run_sampling_mode(config: Mapping[str, Any]) -> str | None:
+    run = config.get("run", {})
+    if not isinstance(run, Mapping):
+        return None
+
+    sampling_mode = run.get("sampling_mode")
+    if not isinstance(sampling_mode, str):
+        return None
+
+    sampling_mode = sampling_mode.strip()
+    if not sampling_mode:
+        return None
+
+    return sampling_mode
 
 
 def write_resolved_config(
@@ -378,6 +416,7 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "variant",
             "correction_mode",
             "membership_correction",
+            "granularity_sampling_mode",
             "num_layers",
             "num_attention_heads",
             "intermediate_size",
@@ -532,6 +571,17 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
     if model.get("correction_mode") == "lmc" and not _is_concat_model_path(config):
         raise ConfigError(
             "model.correction_mode=lmc is only valid for concat runs"
+        )
+    granularity_sampling_mode = model.get("granularity_sampling_mode")
+    if granularity_sampling_mode not in VALID_MODEL_GRANULARITY_SAMPLING_MODES:
+        raise ConfigError(
+            "model.granularity_sampling_mode must be one of "
+            f"{sorted(VALID_MODEL_GRANULARITY_SAMPLING_MODES)}"
+        )
+    if granularity_sampling_mode == "global" and correction_mode == "lmc":
+        raise ConfigError(
+            "model.correction_mode=lmc requires "
+            "model.granularity_sampling_mode=per_layer"
         )
     requested_mode = model.get("requested_correction_mode")
     if requested_mode not in (None, ""):
@@ -979,35 +1029,169 @@ def _resolve_active_size_label(run: Mapping[str, Any]) -> str:
 
 def _resolve_sampling_mode_defaults(
     config: dict[str, Any],
-    explicit_granularity_sampling: bool = False,
+    requested_granularity_sampling_alias: str | None = None,
+    requested_run_sampling_mode: str | None = None,
 ) -> None:
-    run = config.get("run", {})
-    training = config.get("training")
-    if not isinstance(run, Mapping) or not isinstance(training, dict):
+    run = config.setdefault("run", {})
+    training = config.setdefault("training", {})
+    model = config.setdefault("model", {})
+    if not isinstance(run, dict) or not isinstance(training, dict) or not isinstance(model, dict):
         return
 
-    sampling_mode = run.get("sampling_mode")
-    if sampling_mode not in VALID_SAMPLING_MODES:
+    model_family = run.get("model_family")
+    if model_family not in VALID_MODEL_TOPOLOGIES:
         return
 
-    expected_sampling = {
-        "nested-random": "random",
-        "nested-all": "all",
-        "standalone": "all",
-    }[sampling_mode]
-    current_sampling = training.get("granularity_sampling")
-    if (
-        explicit_granularity_sampling
-        and current_sampling is not None
-        and current_sampling != expected_sampling
-    ):
-        raise ConfigError(
-            f"training.granularity_sampling={current_sampling} conflicts with "
-            f"run.sampling_mode={sampling_mode}; omit the training override or "
-            f"use training.granularity_sampling={expected_sampling}"
+    explicit_model_mode = model.get("granularity_sampling_mode")
+    if explicit_model_mode in (None, ""):
+        explicit_model_mode = None
+    elif not isinstance(explicit_model_mode, str):
+        raise ConfigError("model.granularity_sampling_mode must be a string")
+    else:
+        explicit_model_mode = explicit_model_mode.strip()
+        if not explicit_model_mode:
+            explicit_model_mode = None
+        elif explicit_model_mode not in VALID_MODEL_GRANULARITY_SAMPLING_MODES:
+            raise ConfigError(
+                "model.granularity_sampling_mode must be one of "
+                f"{sorted(VALID_MODEL_GRANULARITY_SAMPLING_MODES)}"
+            )
+
+    legacy_alias_mode = None
+    if requested_granularity_sampling_alias is not None:
+        legacy_alias_mode = _granularity_sampling_mode_from_legacy_alias(
+            requested_granularity_sampling_alias
         )
 
-    training["granularity_sampling"] = expected_sampling
+    run_sampling_mode = None
+    if requested_run_sampling_mode is not None:
+        run_sampling_mode = _normalize_run_sampling_mode(requested_run_sampling_mode)
+        if run_sampling_mode not in VALID_SAMPLING_MODES:
+            raise ConfigError(
+                f"run.sampling_mode must be one of {sorted(VALID_SAMPLING_MODES)}"
+            )
+
+    canonical_mode = explicit_model_mode or legacy_alias_mode
+    if canonical_mode is None and run_sampling_mode is not None:
+        canonical_mode = _granularity_sampling_mode_from_run_sampling_mode(
+            run_sampling_mode
+        )
+    if canonical_mode is None:
+        canonical_mode = "global"
+
+    if canonical_mode == "per_layer" and model_family != "nested":
+        raise ConfigError(
+            "model.granularity_sampling_mode=per_layer requires nested runs"
+        )
+
+    derived_run_sampling_mode = _run_sampling_mode_from_granularity_sampling_mode(
+        model_family,
+        canonical_mode,
+    )
+    training_sampling = _granularity_sampling_alias_from_mode(canonical_mode)
+
+    run["sampling_mode"] = derived_run_sampling_mode
+
+    training["granularity_sampling"] = training_sampling
+    model["granularity_sampling_mode"] = canonical_mode
+    model["requested_granularity_sampling_alias"] = (
+        requested_granularity_sampling_alias
+        if requested_granularity_sampling_alias is not None
+        else None
+    )
+    model["granularity_pattern_provenance"] = _build_granularity_pattern_provenance(
+        model,
+        run,
+        requested_granularity_sampling_alias=requested_granularity_sampling_alias,
+    )
+
+
+def _normalize_run_sampling_mode(raw_mode: Any) -> str:
+    if not isinstance(raw_mode, str):
+        raise ConfigError("run.sampling_mode must be a string")
+
+    sampling_mode = raw_mode.strip()
+    if not sampling_mode:
+        raise ConfigError("run.sampling_mode must be a non-empty string")
+    return sampling_mode
+
+
+def _granularity_sampling_mode_from_legacy_alias(alias: str) -> str:
+    if alias not in VALID_GRANULARITY_SAMPLING:
+        raise ConfigError(
+            "training.granularity_sampling must be one of "
+            f"{sorted(VALID_GRANULARITY_SAMPLING)}"
+        )
+    return {
+        "all": "global",
+        "random": "per_layer",
+    }[alias]
+
+
+def _granularity_sampling_alias_from_mode(mode: str) -> str:
+    if mode not in VALID_MODEL_GRANULARITY_SAMPLING_MODES:
+        raise ConfigError(
+            "model.granularity_sampling_mode must be one of "
+            f"{sorted(VALID_MODEL_GRANULARITY_SAMPLING_MODES)}"
+        )
+    return {
+        "global": "all",
+        "per_layer": "random",
+    }[mode]
+
+
+def _granularity_sampling_mode_from_run_sampling_mode(run_sampling_mode: str) -> str:
+    if run_sampling_mode not in VALID_SAMPLING_MODES:
+        raise ConfigError(
+            f"run.sampling_mode must be one of {sorted(VALID_SAMPLING_MODES)}"
+        )
+    return {
+        "nested-random": "per_layer",
+        "nested-all": "global",
+        "standalone": "global",
+    }[run_sampling_mode]
+
+
+def _run_sampling_mode_from_granularity_sampling_mode(
+    model_family: str,
+    granularity_sampling_mode: str,
+) -> str:
+    if model_family == "standalone":
+        if granularity_sampling_mode != "global":
+            raise ConfigError(
+                "model.granularity_sampling_mode=per_layer requires nested runs"
+            )
+        return "standalone"
+    if model_family != "nested":
+        raise ConfigError(f"Unknown training topology: {model_family}")
+
+    return {
+        "global": "nested-all",
+        "per_layer": "nested-random",
+    }[granularity_sampling_mode]
+
+
+def _build_granularity_pattern_provenance(
+    model: Mapping[str, Any],
+    run: Mapping[str, Any],
+    requested_granularity_sampling_alias: str | None = None,
+) -> dict[str, Any]:
+    granularity_sampling_mode = model.get("granularity_sampling_mode")
+    provenance = {
+        "pattern_type": (
+            "single" if granularity_sampling_mode == "global" else "per_layer"
+        ),
+        "scope": "model",
+        "source": "model.granularity_sampling_mode",
+        "requested_alias": requested_granularity_sampling_alias,
+        "layer_count": model.get("num_layers"),
+        "available_granularities": list(model.get("granularities", []))
+        if isinstance(model.get("granularities"), list)
+        else [],
+    }
+    if run.get("granularity") is not None:
+        provenance["active_granularity"] = run["granularity"]
+    return provenance
 
 
 def _validate_sampling_mode(

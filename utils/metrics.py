@@ -111,6 +111,9 @@ RUN_SUMMARY_FIELDS = [
     "family_size_slug",
     "family_resolution_rule",
     "sampling_mode",
+    "requested_granularity_sampling_alias",
+    "granularity_sampling_mode",
+    "granularity_pattern_provenance",
     "model_family_slug",
     "model_size_slug",
     "token_budget_slug",
@@ -243,6 +246,11 @@ def build_run_summary(
         "family_size_slug": run.get("family_size_slug"),
         "family_resolution_rule": run.get("family_resolution_rule"),
         "sampling_mode": _sampling_mode(run, training),
+        "requested_granularity_sampling_alias": model.get(
+            "requested_granularity_sampling_alias"
+        ),
+        "granularity_sampling_mode": model.get("granularity_sampling_mode"),
+        "granularity_pattern_provenance": _granularity_pattern_provenance(config),
         "completion_label": run["completion_label"],
         "model_family_slug": run.get("model_family_slug"),
         "model_size_slug": run.get("model_size_slug"),
@@ -1037,6 +1045,39 @@ def _sampling_mode(run: Mapping[str, Any], training: Mapping[str, Any]) -> Any:
     if granularity_sampling == "all":
         return "nested-all"
     return granularity_sampling
+
+
+def _granularity_pattern_provenance(
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    model = config.get("model", {})
+    run = config.get("run", {})
+    if not isinstance(model, Mapping):
+        model = {}
+    if not isinstance(run, Mapping):
+        run = {}
+
+    provenance = model.get("granularity_pattern_provenance")
+    if isinstance(provenance, Mapping):
+        return dict(provenance)
+
+    granularity_sampling_mode = model.get("granularity_sampling_mode")
+    if granularity_sampling_mode is None:
+        granularity_sampling_mode = "global"
+
+    return {
+        "pattern_type": (
+            "single" if granularity_sampling_mode == "global" else "per_layer"
+        ),
+        "scope": "model",
+        "source": "model.granularity_sampling_mode",
+        "requested_alias": model.get("requested_granularity_sampling_alias"),
+        "layer_count": model.get("num_layers"),
+        "available_granularities": list(model.get("granularities", []))
+        if isinstance(model.get("granularities"), list)
+        else [],
+        "active_granularity": run.get("granularity"),
+    }
 
 
 def _summary_granularities(summary: Mapping[str, Any]) -> list[str]:
