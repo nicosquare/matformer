@@ -202,6 +202,7 @@ def resolve_run_config(
         resolved,
         requested_granularity_sampling_alias=requested_granularity_sampling_alias,
         requested_run_sampling_mode=requested_run_sampling_mode,
+        explicit_override_keys=explicit_override_keys,
     )
     _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
     _resolve_parameter_reporting_defaults(resolved)
@@ -239,6 +240,7 @@ def resolve_all_run_configs(
             resolved,
             requested_granularity_sampling_alias=requested_granularity_sampling_alias,
             requested_run_sampling_mode=requested_run_sampling_mode,
+            explicit_override_keys=explicit_override_keys,
         )
         _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
         _resolve_parameter_reporting_defaults(resolved)
@@ -1043,6 +1045,7 @@ def _resolve_sampling_mode_defaults(
     config: dict[str, Any],
     requested_granularity_sampling_alias: str | None = None,
     requested_run_sampling_mode: str | None = None,
+    explicit_override_keys: set[str] | None = None,
 ) -> None:
     run = config.setdefault("run", {})
     training = config.setdefault("training", {})
@@ -1083,20 +1086,30 @@ def _resolve_sampling_mode_defaults(
                 f"run.sampling_mode must be one of {sorted(VALID_SAMPLING_MODES)}"
             )
 
+    run_sampling_mode_is_explicit = (
+        explicit_override_keys is not None
+        and "run.sampling_mode" in explicit_override_keys
+    )
+
     candidate_modes: list[str] = []
     if explicit_model_mode is not None:
         candidate_modes.append(explicit_model_mode)
     if legacy_alias_mode is not None:
         candidate_modes.append(legacy_alias_mode)
-    if run_sampling_mode is not None:
-        candidate_modes.append(
-            _granularity_sampling_mode_from_run_sampling_mode(run_sampling_mode)
-        )
 
     if candidate_modes:
         canonical_mode = candidate_modes[0]
         for candidate_mode in candidate_modes[1:]:
             if candidate_mode != canonical_mode:
+                raise ConfigError(
+                    "model.granularity_sampling_mode, training.granularity_sampling, "
+                    "and run.sampling_mode conflicts"
+                )
+        if run_sampling_mode is not None and run_sampling_mode_is_explicit:
+            explicit_run_mode = _granularity_sampling_mode_from_run_sampling_mode(
+                run_sampling_mode
+            )
+            if explicit_run_mode != canonical_mode:
                 raise ConfigError(
                     "model.granularity_sampling_mode, training.granularity_sampling, "
                     "and run.sampling_mode conflicts"
@@ -1111,11 +1124,16 @@ def _resolve_sampling_mode_defaults(
             "model.granularity_sampling_mode=per_layer requires nested runs"
         )
 
-    derived_run_sampling_mode = _run_sampling_mode_from_granularity_sampling_mode(
-        model_family,
-        canonical_mode,
+    if run_sampling_mode is not None:
+        derived_run_sampling_mode = run_sampling_mode
+    else:
+        derived_run_sampling_mode = _run_sampling_mode_from_granularity_sampling_mode(
+            model_family,
+            canonical_mode,
+        )
+    training_sampling = _granularity_sampling_alias_from_mode(
+        _granularity_sampling_mode_from_run_sampling_mode(derived_run_sampling_mode)
     )
-    training_sampling = _granularity_sampling_alias_from_mode(canonical_mode)
 
     run["sampling_mode"] = derived_run_sampling_mode
 

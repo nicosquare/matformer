@@ -9,6 +9,7 @@ import pytest
 import torch
 from datasets import Dataset
 
+from models.granularity import build_granularity_pattern
 from training.run import run_training
 from utils.config import resolve_run_config
 from utils.monitoring import group_loss_rows_by_series
@@ -19,14 +20,34 @@ class TinyNestedTrainingModel(torch.nn.Module):
         super().__init__()
         self.weight = torch.nn.Parameter(torch.tensor(0.5))
         self.current_granularity = None
+        self.current_layer_granularities = None
+        self.current_granularity_pattern = None
         self.train_forward_granularities = []
+        self.train_forward_layer_granularities = []
 
     def configure_subnetwork(self, granularity):
         self.current_granularity = granularity
+        self.current_layer_granularities = None
+        self.current_granularity_pattern = None
+
+    def configure_layer_granularities(self, granularities):
+        self.current_granularity = None
+        self.current_layer_granularities = list(granularities)
+        self.current_granularity_pattern = build_granularity_pattern(
+            pattern_type="per_layer",
+            selected_granularities=tuple(self.current_layer_granularities),
+            layer_count=len(self.current_layer_granularities),
+            repeatable_source=("tiny-nested-training-model", "per_layer"),
+        )
 
     def forward(self, input_ids, attention_mask=None, labels=None):
         if self.training:
-            self.train_forward_granularities.append(self.current_granularity)
+            if self.current_layer_granularities is not None:
+                self.train_forward_layer_granularities.append(
+                    list(self.current_layer_granularities)
+                )
+            else:
+                self.train_forward_granularities.append(self.current_granularity)
 
         loss = self.weight.pow(2) + input_ids.float().mean() * 0.0
         return SimpleNamespace(loss=loss)
@@ -649,7 +670,7 @@ def test_training_counts_parameters_before_runtime_wrapping(tmp_path, monkeypatc
     assert {row["total_parameters"] for row in rows} == {"1"}
 
 
-def test_tiny_nested_training_can_sample_one_random_granularity_per_batch(
+def test_tiny_nested_training_can_sample_one_granularity_per_layer_per_batch(
     tmp_path,
     monkeypatch,
 ):
@@ -677,7 +698,8 @@ def test_tiny_nested_training_can_sample_one_random_granularity_per_batch(
         }
     )
     model = TinyNestedTrainingModel()
-    monkeypatch.setattr(training_run.random, "randrange", lambda count: 2)
+    randrange_values = iter([0, 1])
+    monkeypatch.setattr(training_run.random, "randrange", lambda count: next(randrange_values))
 
     result = run_training(
         config,
@@ -686,14 +708,19 @@ def test_tiny_nested_training_can_sample_one_random_granularity_per_batch(
         device="cpu",
     )
 
-    assert model.train_forward_granularities == ["l"]
+    assert model.train_forward_granularities == []
+    assert model.train_forward_layer_granularities == [["s", "m"]]
     with result["metrics_path"].open("r", encoding="utf-8", newline="") as metrics_file:
         train_rows = [
             row
             for row in csv.DictReader(metrics_file)
             if row["split"] == "train" and row["step"] == "1"
         ]
-    assert [row["granularity"] for row in train_rows] == ["l"]
+    assert [row["granularity"] for row in train_rows] == ["s", "m"]
+    assert all(
+        json.loads(row["granularity_pattern_summary"])["pattern_type"] == "per_layer"
+        for row in train_rows
+    )
 
 
 def test_config_driven_nested_training_records_cat_llama_variant_in_summary(tmp_path):

@@ -1852,6 +1852,9 @@ def train_for_steps(
 ) -> list[dict[str, Any]]:
     training = config["training"]
     granularities = config["model"]["granularities"]
+    model_sampling_mode = str(config["model"].get("granularity_sampling_mode", "global"))
+    target_model = model.module if hasattr(model, "module") else model
+    supports_layer_granularities = hasattr(target_model, "configure_layer_granularities")
     token_budget = training["token_budget"]
     max_steps = training["max_steps"]
     eval_interval = training.get("eval_interval", 0)
@@ -1859,10 +1862,6 @@ def train_for_steps(
     metrics_rows = []
     start_time = time.time()
     run_state = run_state if run_state is not None else build_initial_continuation_state(config)
-    runtime_pattern_summary, correction_context = _runtime_granularity_artifacts(
-        config,
-        model,
-    )
     step = int(run_state.get("last_completed_step", 0))
     epoch = int(run_state.get("epoch", 0))
     resume_batch_index = int(run_state.get("batch_index", 0))
@@ -1918,24 +1917,73 @@ def train_for_steps(
 
                 optimizer.zero_grad(set_to_none=True)
 
-                selected_granularities = select_training_granularities(
-                    config,
-                    granularities,
-                    device,
-                )
-                granularity_losses = []
-                for granularity in selected_granularities:
-                    configure_model_granularity(model, granularity)
+                step_metric_rows_data: list[
+                    tuple[str, torch.Tensor, dict[str, Any], dict[str, Any]]
+                ] = []
+                if model_sampling_mode == "per_layer" and supports_layer_granularities:
+                    selected_layer_granularities = select_training_layer_granularities(
+                        config,
+                        granularities,
+                        device,
+                    )
+                    configure_model_layer_granularities(
+                        model,
+                        selected_layer_granularities,
+                    )
+                    step_runtime_pattern_summary, step_correction_context = _runtime_granularity_artifacts(
+                        config,
+                        model,
+                    )
                     outputs = model(
                         input_ids=batch["input_ids"],
                         attention_mask=batch.get("attention_mask"),
                         labels=batch["labels"],
                     )
-                    granularity_losses.append((granularity, outputs.loss))
+                    combined_loss = outputs.loss
+                    for granularity in selected_layer_granularities:
+                        step_metric_rows_data.append(
+                            (
+                                granularity,
+                                combined_loss,
+                                step_runtime_pattern_summary,
+                                step_correction_context,
+                            )
+                        )
+                    total_losses = 1
+                else:
+                    selected_granularities = select_training_granularities(
+                        config,
+                        granularities,
+                        device,
+                    )
+                    forward_losses: list[torch.Tensor] = []
+                    for granularity in selected_granularities:
+                        configure_model_granularity(model, granularity)
+                        step_runtime_pattern_summary, step_correction_context = _runtime_granularity_artifacts(
+                            config,
+                            model,
+                        )
+                        outputs = model(
+                            input_ids=batch["input_ids"],
+                            attention_mask=batch.get("attention_mask"),
+                            labels=batch["labels"],
+                        )
+                        forward_losses.append(outputs.loss)
+                        step_metric_rows_data.append(
+                            (
+                                granularity,
+                                outputs.loss,
+                                step_runtime_pattern_summary,
+                                step_correction_context,
+                            )
+                        )
+                    combined_loss = (
+                        forward_losses[0]
+                        if len(forward_losses) == 1
+                        else torch.stack(forward_losses).mean()
+                    )
+                    total_losses = len(forward_losses)
 
-                combined_loss = torch.stack(
-                    [loss for _, loss in granularity_losses]
-                ).mean()
                 combined_loss.backward()
 
                 gradient_clip_norm = training.get("gradient_clip_norm")
@@ -1946,7 +1994,7 @@ def train_for_steps(
                     config,
                     model,
                     optimizer,
-                    total_losses=len(granularity_losses),
+                    total_losses=total_losses,
                 )
                 scheduler.step()
 
@@ -1990,7 +2038,12 @@ def train_for_steps(
                     stage_name=stage_name,
                 )
 
-                for granularity, loss in granularity_losses:
+                for (
+                    granularity,
+                    loss,
+                    step_runtime_pattern_summary,
+                    step_correction_context,
+                ) in step_metric_rows_data:
                     step_metric_rows.append(
                         build_training_metric_row(
                             config,
@@ -2001,8 +2054,8 @@ def train_for_steps(
                             content_tokens_seen=content_tokens_seen,
                             wall_clock_seconds=elapsed,
                             peak_memory_bytes=peak_memory_bytes,
-                            granularity_pattern_summary=runtime_pattern_summary,
-                            correction_context=correction_context,
+                            granularity_pattern_summary=step_runtime_pattern_summary,
+                            correction_context=step_correction_context,
                         )
                     )
                 metrics_rows.extend(step_metric_rows)
@@ -2121,6 +2174,26 @@ def select_training_granularities(
     raise ValueError(f"Unknown granularity sampling mode: {sampling_mode}")
 
 
+def select_training_layer_granularities(
+    config: dict[str, Any],
+    granularities: list[str],
+    device: torch.device,
+) -> list[str]:
+    layer_count = int(config["model"]["num_layers"])
+    if layer_count <= 0:
+        raise ValueError("model.num_layers must be positive")
+
+    return [
+        granularities[
+            select_random_granularity_index(
+                granularity_count=len(granularities),
+                device=device,
+            )
+        ]
+        for _ in range(layer_count)
+    ]
+
+
 def select_random_granularity_index(
     granularity_count: int,
     device: torch.device,
@@ -2136,6 +2209,29 @@ def select_random_granularity_index(
         return int(selected_index.item())
 
     return random.randrange(granularity_count)
+
+
+def configure_model_layer_granularities(
+    model,
+    layer_granularities: list[str] | tuple[str, ...],
+) -> None:
+    target = model.module if hasattr(model, "module") else model
+    configure_layer_granularities = getattr(target, "configure_layer_granularities", None)
+    if configure_layer_granularities is not None:
+        configure_layer_granularities(layer_granularities)
+        return
+
+    configure_subnetwork = getattr(target, "configure_subnetwork", None)
+    if configure_subnetwork is not None:
+        layer_granularities = tuple(layer_granularities)
+        if len(layer_granularities) == 1:
+            configure_subnetwork(layer_granularities[0])
+            return
+
+    raise AttributeError(
+        "configure_model_layer_granularities requires a model with "
+        "configure_layer_granularities or a single-granularity configure_subnetwork"
+    )
 
 
 def set_dataloader_epoch(dataloader, epoch: int) -> None:
