@@ -72,13 +72,44 @@ def build_correction_context(
     )
 
 
+def derive_local_membership_pattern(
+    granularity_pattern: GranularityPattern | Sequence[str] | None,
+) -> tuple[Any, ...]:
+    """Extract the layer-wise membership pattern used for local correction."""
+
+    if granularity_pattern is None:
+        return ()
+    if isinstance(granularity_pattern, GranularityPattern):
+        return tuple(granularity_pattern.selected_granularities)
+    return tuple(granularity_pattern)
+
+
+def build_local_correction_context_from_pattern(
+    correction_mode: str,
+    granularity_pattern: GranularityPattern | Sequence[str] | None = None,
+) -> CorrectionContext:
+    """Build a per-layer correction context from a sampled layer pattern."""
+
+    return build_correction_context(
+        correction_mode,
+        "per_layer",
+        derived_membership_pattern=derive_local_membership_pattern(
+            granularity_pattern
+        ),
+    )
+
+
 def build_correction_context_from_pattern(
     correction_mode: str,
     sampling_mode: str,
     granularity_pattern: GranularityPattern | Sequence[str] | None = None,
 ) -> CorrectionContext:
     derived_membership_pattern: Sequence[Any] | None
-    if granularity_pattern is None:
+    if sampling_mode == "per_layer":
+        derived_membership_pattern = derive_local_membership_pattern(
+            granularity_pattern
+        )
+    elif granularity_pattern is None:
         derived_membership_pattern = None
     elif isinstance(granularity_pattern, GranularityPattern):
         derived_membership_pattern = granularity_pattern.selected_granularities
@@ -114,6 +145,11 @@ def correction_context_from_config(
             sampling_mode = "per_layer"
         else:
             sampling_mode = "global"
+    if sampling_mode == "per_layer":
+        return build_local_correction_context_from_pattern(
+            correction_mode,
+            granularity_pattern=granularity_pattern,
+        )
     return build_correction_context_from_pattern(
         correction_mode,
         sampling_mode,

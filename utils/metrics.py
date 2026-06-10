@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from utils.config import write_resolved_config
+from models.correction import correction_context_from_config
 from utils.monitoring import (
     DEFAULT_MONITORING_BACKEND,
     build_monitoring_series_metadata,
@@ -116,6 +117,7 @@ RUN_SUMMARY_FIELDS = [
     "granularity_sampling_mode",
     "granularity_pattern_provenance",
     "granularity_pattern_summary",
+    "correction_context",
     "model_family_slug",
     "model_size_slug",
     "token_budget_slug",
@@ -255,6 +257,7 @@ def build_run_summary(
         "granularity_sampling_mode": model.get("granularity_sampling_mode"),
         "granularity_pattern_provenance": _granularity_pattern_provenance(config),
         "granularity_pattern_summary": _granularity_pattern_summary(config),
+        "correction_context": _correction_context_summary(config),
         "completion_label": run["completion_label"],
         "model_family_slug": run.get("model_family_slug"),
         "model_size_slug": run.get("model_size_slug"),
@@ -1106,6 +1109,13 @@ def _granularity_pattern_summary(
             f"model.granularity_sampling_mode={sampling_mode}",
         ],
     }
+
+
+def _correction_context_summary(
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    context = correction_context_from_config(config)
+    return context.to_dict()
 
 
 def _summary_granularities(summary: Mapping[str, Any]) -> list[str]:

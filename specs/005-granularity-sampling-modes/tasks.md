@@ -74,10 +74,10 @@
 
 ### Implementation for User Story 2
 
-- [ ] T017 [P] [US2] Implement per-layer sampling pattern selection in `models/wiring.py`
-- [ ] T018 [P] [US2] Implement local GMC/LMC derivation from a sampled per-layer pattern in `models/correction.py`
-- [ ] T019 [US2] Update the model assembly path in `models/wiring.py` so each transformer block consumes the per-layer granularity choice for the current forward pass
-- [ ] T020 [US2] Update `training/run.py` and `utils/metrics.py` so per-layer runs record the sampled pattern and correction context in saved artifacts
+- [X] T017 [P] [US2] Implement per-layer sampling pattern selection in `models/wiring.py`
+- [X] T018 [P] [US2] Implement local GMC/LMC derivation from a sampled per-layer pattern in `models/correction.py`
+- [X] T019 [US2] Update the model assembly path in `models/wiring.py` so each transformer block consumes the per-layer granularity choice for the current forward pass
+- [X] T020 [US2] Update `training/run.py` and `utils/metrics.py` so per-layer runs record the sampled pattern and correction context in saved artifacts
 
 **Checkpoint**: User Story 2 should now work independently of any later refactor cleanup
 

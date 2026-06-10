@@ -11,8 +11,10 @@ from models.ffn import (
     build_ffn_prefix_metadata as _build_ffn_prefix_metadata,
     build_prefix_membership_segment_metadata as _build_prefix_membership_segment_metadata,
 )
-from models.granularity import build_granularity_pattern
-from models.wiring import build_global_granularity_pattern
+from models.wiring import (
+    build_global_granularity_pattern,
+    build_per_layer_granularity_pattern,
+)
 from utils.config import CANONICAL_GRANULARITY_PREFIX_FRACTIONS
 
 
@@ -742,16 +744,22 @@ class ModifiedLlamaForCausalLM(LlamaForCausalLM):
 
     def configure_layer_granularities(self, layer_granularities):
         """Configure a repeating or explicit granularity pattern across layers."""
-        expanded_pattern = expand_layer_granularity_pattern(
-            layer_granularities,
-            len(self.matformer_layers),
+        self.current_granularity_pattern = build_per_layer_granularity_pattern(
+            {
+                "model": {
+                    "granularity_sampling_mode": "per_layer",
+                    "granularities": list(layer_granularities),
+                    "num_layers": len(self.matformer_layers),
+                },
+                "run": {"run_id": ""},
+            },
+            layer_granularities=layer_granularities,
         )
-        self.current_layer_granularities = expanded_pattern
-        self.current_granularity_pattern = build_granularity_pattern(
-            pattern_type="per_layer",
-            selected_granularities=expanded_pattern,
-            layer_count=len(self.matformer_layers),
-            repeatable_source=tuple(layer_granularities),
+        self.current_layer_granularities = list(
+            self.current_granularity_pattern.selected_granularities
         )
-        for layer, granularity in zip(self.matformer_layers, expanded_pattern):
+        for layer, granularity in zip(
+            self.matformer_layers,
+            self.current_layer_granularities,
+        ):
             layer.configure_subnetwork(granularity)

@@ -6,6 +6,8 @@ from models.correction import (
     VALID_SAMPLING_MODES,
     build_correction_context,
     build_correction_context_from_pattern,
+    build_local_correction_context_from_pattern,
+    derive_local_membership_pattern,
     correction_context_from_config,
     should_activate_local_correction,
     summarize_correction_context,
@@ -34,6 +36,10 @@ from models.granularity import (
     granularity_prefix_width,
     summarize_granularity_pattern,
 )
+from models.wiring import (
+    build_global_granularity_pattern,
+    build_per_layer_granularity_pattern,
+)
 
 __all__ = [
     "CorrectionContext",
@@ -41,6 +47,8 @@ __all__ = [
     "VALID_SAMPLING_MODES",
     "build_correction_context",
     "build_correction_context_from_pattern",
+    "build_local_correction_context_from_pattern",
+    "derive_local_membership_pattern",
     "correction_context_from_config",
     "should_activate_local_correction",
     "summarize_correction_context",
@@ -66,4 +74,6 @@ __all__ = [
     "granularity_concat_block_count",
     "granularity_prefix_width",
     "summarize_granularity_pattern",
+    "build_global_granularity_pattern",
+    "build_per_layer_granularity_pattern",
 ]

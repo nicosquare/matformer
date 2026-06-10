@@ -31,6 +31,7 @@ from modified_llama import (
     get_concat_layout_diagnostic,
     get_ffn_prefix_metadata,
 )
+from models.correction import correction_context_from_config, summarize_correction_context
 from training.data import (
     build_language_model_dataloader,
     load_and_tokenize_dataset,
@@ -313,6 +314,12 @@ def run_training(
                     config["run"]["run_id"],
                     *repeatable_source[1:],
                 ]
+        correction_context = summarize_correction_context(
+            correction_context_from_config(
+                config,
+                granularity_pattern=runtime_pattern,
+            )
+        )
         extra_summary_fields = {
             "steps_completed": training_outcome["steps_completed"],
             "stop_reason": training_outcome["stop_reason"],
@@ -325,6 +332,7 @@ def run_training(
                 "global",
             ),
             "granularity_pattern_summary": runtime_pattern_summary,
+            "correction_context": correction_context,
             "parameter_counts_by_granularity": parameter_counts_by_granularity,
             **build_monitoring_summary_fields(config, metrics_rows),
             **checkpoint_summary_fields,
