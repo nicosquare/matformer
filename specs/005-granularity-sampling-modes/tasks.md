@@ -99,9 +99,9 @@
 - [X] T023 [P] [US3] Move the granularity metadata helpers out of `modified_llama.py` into `models/granularity.py`
 - [X] T024 [P] [US3] Move the MatFormer FFN implementations out of `modified_llama.py` into `models/ffn.py`
 - [X] T025 [P] [US3] Move the correction helpers and local/global correction boundaries into `models/correction.py`
-- [ ] T026 [US3] Move the model assembly and layer-wiring logic into `models/wiring.py`
-- [ ] T027 [US3] Keep `modified_llama.py` as a thin compatibility façade that delegates to the new `models/` package
-- [ ] T028 [US3] Update `train.py` and `training/run.py` call sites so the explicit sampling-mode API is used consistently end to end
+- [X] T026 [US3] Move the model assembly and layer-wiring logic into `models/wiring.py`
+- [X] T027 [US3] Keep `modified_llama.py` as a thin compatibility façade that delegates to the new `models/` package
+- [X] T028 [US3] Update `train.py` and `training/run.py` call sites so the explicit sampling-mode API is used consistently end to end
 
 **Checkpoint**: All user stories should now be independently functional and the model responsibilities should be clearer
 

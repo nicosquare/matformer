@@ -7,8 +7,6 @@ the repository migrates call sites over to the shallow package layout.
 
 from __future__ import annotations
 
-from transformers import LlamaForCausalLM
-
 from models.correction import (
     CorrectionContext,
     VALID_CORRECTION_MODES,
@@ -51,52 +49,9 @@ from models.granularity import (
     granularity_block_count,
     summarize_granularity_pattern,
 )
-from models.wiring import apply_granularity_pattern_to_model
+from models.wiring import ModifiedLlamaForCausalLM, apply_granularity_pattern_to_model
 
 get_concat_layout_diagnostic = build_concat_layout_diagnostic
-
-
-class ModifiedLlamaForCausalLM(LlamaForCausalLM):
-    def __init__(self, config, mlp_cls=ModifiedLlamaMLP, mlp_kwargs=None):
-        super().__init__(config)
-        self.granularity_order = MATFORMER_GRANULARITY_ORDER
-        self.ffn_prefix_metadata = (
-            [dict(entry) for entry in getattr(config, "ffn_prefix_metadata", [])]
-            if getattr(config, "ffn_prefix_metadata", None)
-            else get_ffn_prefix_metadata(
-                config.intermediate_size,
-                granularity_prefixes=getattr(config, "granularity_prefixes", None),
-                granularities=getattr(config, "granularities", None),
-            )
-        )
-        self.mlp_cls = mlp_cls
-        self.mlp_kwargs = dict(mlp_kwargs or {})
-        self.matformer_layers = []
-        self.current_layer_granularities = None
-        self.current_granularity_pattern = None
-        self.current_sampling_mode = "global"
-
-        for layer_idx in range(config.num_hidden_layers):
-            mlp = self.mlp_cls(config, **self.mlp_kwargs)
-            self.model.layers[layer_idx].mlp = mlp
-            self.matformer_layers.append(mlp)
-
-    def configure_subnetwork(self, flag):
-        """Configure the subnetwork for all layers based on the flag."""
-        apply_granularity_pattern_to_model(
-            self,
-            flag,
-            sampling_mode="global",
-        )
-
-    def configure_layer_granularities(self, layer_granularities):
-        """Configure a repeating or explicit granularity pattern across layers."""
-        apply_granularity_pattern_to_model(
-            self,
-            layer_granularities,
-            sampling_mode="per_layer",
-        )
-
 
 __all__ = [
     "CorrectionContext",
@@ -137,4 +92,5 @@ __all__ = [
     "get_granularity_metadata",
     "granularity_block_count",
     "summarize_granularity_pattern",
+    "apply_granularity_pattern_to_model",
 ]

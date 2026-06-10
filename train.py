@@ -13,7 +13,6 @@ import torch
 import torch.distributed as dist
 from torch.nn.utils import clip_grad_norm_
 from datasets import load_dataset
-from modified_llama import ModifiedLlamaForCausalLM, CatLlamaMLP
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     CheckpointImpl,
     apply_activation_checkpointing,
@@ -28,6 +27,8 @@ from transformers import AutoTokenizer, LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 import yaml
 
+from models.ffn import CatLlamaMLP
+from models.wiring import ModifiedLlamaForCausalLM, apply_granularity_pattern_to_model
 from training.run import build_optimizer_and_scheduler
 from training.run import load_checkpoint_state
 from training.run import save_model_checkpoint
@@ -233,7 +234,7 @@ def wrap_with_fsdp(model, args, device, rank):
 
 def configure_subnetwork(model, flag):
     target = model.module if hasattr(model, "module") else model
-    target.configure_subnetwork(flag)
+    apply_granularity_pattern_to_model(target, flag, sampling_mode="global")
 
 
 def select_training_flag(device, distributed):

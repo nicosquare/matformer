@@ -25,13 +25,9 @@ from evaluation.validation import (
     perplexity_from_loss,
     validation_results_to_metric_rows,
 )
-from modified_llama import (
-    CatLlamaMLP,
-    ModifiedLlamaForCausalLM,
-    get_concat_layout_diagnostic,
-    get_ffn_prefix_metadata,
-)
+from models.ffn import CatLlamaMLP, get_concat_layout_diagnostic, get_ffn_prefix_metadata
 from models.correction import correction_context_from_config, summarize_correction_context
+from models.wiring import ModifiedLlamaForCausalLM
 from training.data import (
     build_language_model_dataloader,
     load_and_tokenize_dataset,

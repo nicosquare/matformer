@@ -5,7 +5,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from transformers import LlamaForCausalLM
+
+from models.ffn import CatLlamaMLP, ModifiedLlamaMLP, get_ffn_prefix_metadata
 from models.granularity import (
+    MATFORMER_GRANULARITY_ORDER,
     GranularityPattern,
     build_granularity_pattern,
     expand_layer_granularity_pattern,
@@ -159,3 +163,57 @@ def _normalize_selected_granularities(
     if not granularities:
         raise ValueError("selected_granularities must be a non-empty sequence")
     return granularities
+
+
+class ModifiedLlamaForCausalLM(LlamaForCausalLM):
+    """MatFormer-compatible Llama wrapper with explicit sampling-mode wiring."""
+
+    def __init__(self, config, mlp_cls=ModifiedLlamaMLP, mlp_kwargs=None):
+        super().__init__(config)
+        self.granularity_order = MATFORMER_GRANULARITY_ORDER
+        self.ffn_prefix_metadata = (
+            [dict(entry) for entry in getattr(config, "ffn_prefix_metadata", [])]
+            if getattr(config, "ffn_prefix_metadata", None)
+            else get_ffn_prefix_metadata(
+                config.intermediate_size,
+                granularity_prefixes=getattr(config, "granularity_prefixes", None),
+                granularities=getattr(config, "granularities", None),
+            )
+        )
+        self.mlp_cls = mlp_cls
+        self.mlp_kwargs = dict(mlp_kwargs or {})
+        self.matformer_layers = []
+        self.current_layer_granularities = None
+        self.current_granularity_pattern = None
+        self.current_sampling_mode = "global"
+
+        for layer_idx in range(config.num_hidden_layers):
+            mlp = self.mlp_cls(config, **self.mlp_kwargs)
+            self.model.layers[layer_idx].mlp = mlp
+            self.matformer_layers.append(mlp)
+
+    def configure_subnetwork(self, flag):
+        """Configure the subnetwork for all layers based on the flag."""
+        apply_granularity_pattern_to_model(
+            self,
+            flag,
+            sampling_mode="global",
+        )
+
+    def configure_layer_granularities(self, layer_granularities):
+        """Configure a repeating or explicit granularity pattern across layers."""
+        apply_granularity_pattern_to_model(
+            self,
+            layer_granularities,
+            sampling_mode="per_layer",
+        )
+
+
+__all__ = [
+    "ModifiedLlamaForCausalLM",
+    "CatLlamaMLP",
+    "ModifiedLlamaMLP",
+    "build_global_granularity_pattern",
+    "build_per_layer_granularity_pattern",
+    "apply_granularity_pattern_to_model",
+]

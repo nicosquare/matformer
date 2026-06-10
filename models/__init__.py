@@ -12,6 +12,7 @@ from models.correction import (
     should_activate_local_correction,
     summarize_correction_context,
 )
+from models.ffn import CatLlamaMLP, ModifiedLlamaMLP
 from models.granularity import (
     MATFORMER_GRANULARITY_DISPLAY_NAMES,
     MATFORMER_GRANULARITY_ORDER,
@@ -39,6 +40,7 @@ from models.granularity import (
 from models.wiring import (
     apply_granularity_pattern_to_model,
     build_global_granularity_pattern,
+    ModifiedLlamaForCausalLM,
     build_per_layer_granularity_pattern,
 )
 
@@ -57,6 +59,9 @@ __all__ = [
     "MATFORMER_GRANULARITY_ORDER",
     "GranularityMetadata",
     "GranularityPattern",
+    "CatLlamaMLP",
+    "ModifiedLlamaMLP",
+    "ModifiedLlamaForCausalLM",
     "build_granularity_pattern",
     "canonical_prefix_fraction",
     "expand_layer_granularity_pattern",
