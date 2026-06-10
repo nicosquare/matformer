@@ -12,6 +12,8 @@ from utils.config import (
     validate_run_config,
     write_resolved_config,
 )
+from models.correction import correction_context_from_config
+from models.granularity import build_granularity_pattern
 
 
 def _write_single_run_config(tmp_path):
@@ -197,6 +199,47 @@ def test_legacy_granularity_sampling_alias_resolves_to_canonical_model_mode(
         "available_granularities": ["s", "m", "l", "xl"],
         "active_granularity": None,
     }
+
+
+@pytest.mark.parametrize(
+    "overrides, expected_active",
+    [
+        (["model.granularity_sampling_mode=global", "model.correction_mode=gmc"], False),
+        (["model.granularity_sampling_mode=per_layer", "model.correction_mode=gmc"], True),
+        (
+            [
+                "model.granularity_sampling_mode=per_layer",
+                "model.correction_mode=none",
+                "model.membership_correction=false",
+            ],
+            False,
+        ),
+    ],
+)
+def test_per_layer_sampling_controls_local_correction_activation(
+    overrides,
+    expected_active,
+):
+    resolved = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        overrides=overrides,
+    )
+
+    pattern = build_granularity_pattern(
+        pattern_type="per_layer",
+        selected_granularities=("s", "m", "l", "xl"),
+        layer_count=resolved["model"]["num_layers"],
+    )
+    context = correction_context_from_config(resolved, granularity_pattern=pattern)
+
+    assert context.sampling_mode == resolved["model"]["granularity_sampling_mode"]
+    assert context.correction_mode == resolved["model"]["correction_mode"]
+    assert context.local_correction_active is expected_active
+    if expected_active:
+        assert context.derived_membership_pattern == ("s", "m", "l", "xl")
+    else:
+        assert context.derived_membership_pattern == ()
 
 
 def test_write_resolved_config(tmp_path):

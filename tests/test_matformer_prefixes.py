@@ -297,6 +297,30 @@ def test_explicit_global_sampling_path_uses_all_configured_granularities():
     )
 
 
+def test_per_layer_sampling_path_repeats_layer_choices_across_blocks():
+    resolved = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        overrides=["model.granularity_sampling_mode=per_layer"],
+    )
+
+    assert resolved["model"]["granularity_sampling_mode"] == "per_layer"
+    assert resolved["run"]["sampling_mode"] == "nested-random"
+    assert resolved["model"]["granularity_pattern_provenance"] == {
+        "pattern_type": "per_layer",
+        "scope": "model",
+        "source": "model.granularity_sampling_mode",
+        "requested_alias": None,
+        "layer_count": resolved["model"]["num_layers"],
+        "available_granularities": ["s", "m", "l", "xl"],
+    }
+
+    pattern = expand_layer_granularity_pattern(["s", "m"], num_layers=4)
+
+    assert pattern == ["s", "m", "s", "m"]
+    assert len(pattern) == 4
+
+
 def test_layer_granularity_pattern_repeats_across_model_layers():
     config = tiny_llama_config(num_hidden_layers=4)
     model = ModifiedLlamaForCausalLM(config)

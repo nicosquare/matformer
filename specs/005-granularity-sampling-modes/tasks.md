@@ -69,8 +69,8 @@
 
 ### Verification for User Story 2
 
-- [ ] T015 [P] [US2] Add a focused per-layer sampling regression test in `tests/test_matformer_prefixes.py`
-- [ ] T016 [P] [US2] Add a focused correction-activation test for per-layer mode in `tests/test_config.py`
+- [X] T015 [P] [US2] Add a focused per-layer sampling regression test in `tests/test_matformer_prefixes.py`
+- [X] T016 [P] [US2] Add a focused correction-activation test for per-layer mode in `tests/test_config.py`
 
 ### Implementation for User Story 2
 
