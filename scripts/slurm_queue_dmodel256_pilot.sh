@@ -5,7 +5,6 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=4G
 #SBATCH --time=00:30:00
-#SBATCH -p cscc-gpu-p
 #SBATCH --output=./logs/matformer_dmodel256_queue_%j.out
 #SBATCH --error=./logs/matformer_dmodel256_queue_%j.err
 

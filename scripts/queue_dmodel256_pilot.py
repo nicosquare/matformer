@@ -96,6 +96,16 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         help="Slurm submission script.",
     )
     parser.add_argument(
+        "--slurm-partition",
+        default=None,
+        help="Partition to use for each submitted training job.",
+    )
+    parser.add_argument(
+        "--slurm-qos",
+        default=None,
+        help="QoS to use for each submitted training job.",
+    )
+    parser.add_argument(
         "--output-root",
         default=os.environ.get("OUTPUT_ROOT", DEFAULT_OUTPUT_ROOT),
         help="Root directory for run artifacts.",
@@ -442,10 +452,17 @@ def _build_submission_command(
     run_id: str,
     spec: ExperimentSpec,
     settings: BatchSettings,
+    slurm_partition: str | None,
+    slurm_qos: str | None,
 ) -> list[str]:
-    command = [
-        "sbatch",
-        str(slurm_script),
+    command = ["sbatch"]
+    if slurm_partition:
+        command.extend(["--partition", slurm_partition])
+    if slurm_qos:
+        command.extend(["--qos", slurm_qos])
+    command.extend(["--gres", "gpu:1"])
+    command.append(str(slurm_script))
+    command.extend([
         "--repo-root",
         str(REPO_ROOT),
         "--config",
@@ -454,7 +471,7 @@ def _build_submission_command(
         str(output_root),
         "--run-id",
         run_id,
-    ]
+    ])
     for override in _build_batch_overrides(settings):
         command.extend(["--override", override])
     for override in settings.passthrough_overrides:
@@ -501,6 +518,8 @@ def build_queued_runs(
     output_root: Path,
     slurm_script: Path,
     settings: BatchSettings,
+    slurm_partition: str | None = None,
+    slurm_qos: str | None = None,
 ) -> list[QueuedRun]:
     batch_slug = _build_batch_slug(settings)
     queued_runs: list[QueuedRun] = []
@@ -535,6 +554,8 @@ def build_queued_runs(
                         run_id=run_id,
                         spec=spec,
                         settings=settings,
+                        slurm_partition=slurm_partition,
+                        slurm_qos=slurm_qos,
                     )
                 ),
                 completed=completed,
@@ -585,6 +606,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         output_root=output_root,
         slurm_script=slurm_script,
         settings=settings,
+        slurm_partition=args.slurm_partition,
+        slurm_qos=args.slurm_qos,
     )
 
     submitted = 0

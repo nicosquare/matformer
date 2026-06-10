@@ -570,6 +570,10 @@ def test_queue_dmodel256_pilot_skips_completed_runs_and_forwards_overrides(tmp_p
     cli_args = [
         "--output-root",
         str(output_root),
+        "--slurm-partition",
+        "test-partition",
+        "--slurm-qos",
+        "test-qos",
         "--token-budget",
         "200000000",
         "--learning-rate",
@@ -640,7 +644,10 @@ def test_queue_dmodel256_pilot_skips_completed_runs_and_forwards_overrides(tmp_p
     assert completed_run.run_id not in submitted_run_ids
 
     first_call = calls[0]
-    assert first_call[0] == str(queue_module.DEFAULT_SLURM_SCRIPT)
+    assert str(queue_module.DEFAULT_SLURM_SCRIPT) in first_call
+    assert _has_arg_pair(first_call, "--partition", "test-partition")
+    assert _has_arg_pair(first_call, "--qos", "test-qos")
+    assert _has_arg_pair(first_call, "--gres", "gpu:1")
     assert "training.token_budget=200000000" in first_call
     assert "training.learning_rate=0.001" in first_call
     assert "training.learning_rate_scale_rule=none" in first_call
