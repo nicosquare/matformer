@@ -73,7 +73,7 @@ def build_correction_context(
 
 
 def derive_local_membership_pattern(
-    granularity_pattern: GranularityPattern | Sequence[str] | None,
+    granularity_pattern: GranularityPattern | Sequence[str] | str | None,
 ) -> tuple[Any, ...]:
     """Extract the layer-wise membership pattern used for local correction."""
 
@@ -81,12 +81,14 @@ def derive_local_membership_pattern(
         return ()
     if isinstance(granularity_pattern, GranularityPattern):
         return tuple(granularity_pattern.selected_granularities)
+    if isinstance(granularity_pattern, str):
+        return (granularity_pattern,)
     return tuple(granularity_pattern)
 
 
 def build_local_correction_context_from_pattern(
     correction_mode: str,
-    granularity_pattern: GranularityPattern | Sequence[str] | None = None,
+    granularity_pattern: GranularityPattern | Sequence[str] | str | None = None,
 ) -> CorrectionContext:
     """Build a per-layer correction context from a sampled layer pattern."""
 
@@ -102,7 +104,7 @@ def build_local_correction_context_from_pattern(
 def build_correction_context_from_pattern(
     correction_mode: str,
     sampling_mode: str,
-    granularity_pattern: GranularityPattern | Sequence[str] | None = None,
+    granularity_pattern: GranularityPattern | Sequence[str] | str | None = None,
 ) -> CorrectionContext:
     derived_membership_pattern: Sequence[Any] | None
     if sampling_mode == "per_layer":
@@ -128,7 +130,7 @@ def summarize_correction_context(context: CorrectionContext) -> dict[str, Any]:
 
 def correction_context_from_config(
     config: Mapping[str, Any],
-    granularity_pattern: GranularityPattern | Sequence[str] | None = None,
+    granularity_pattern: GranularityPattern | Sequence[str] | str | None = None,
 ) -> CorrectionContext:
     model = config.get("model", {})
     run = config.get("run", {})

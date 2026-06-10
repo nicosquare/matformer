@@ -9,6 +9,8 @@ from typing import Any, Iterable, Mapping
 import torch
 import torch.distributed as dist
 
+from utils.metrics import json_artifact_value
+
 
 def perplexity_from_loss(loss: float) -> float:
     try:
@@ -115,6 +117,8 @@ def validation_results_to_metric_rows(
     peak_memory_bytes: int | None = None,
     tokens_seen: int | None = None,
     content_tokens_seen: int | None = None,
+    granularity_pattern_summary: dict[str, Any] | None = None,
+    correction_context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     run = config["run"]
     rows = []
@@ -128,7 +132,20 @@ def validation_results_to_metric_rows(
                 "model_size_label": _model_shape_label(run),
                 "model_shape_label": _model_shape_label(run),
                 "sampling_mode": _sampling_mode(run, config.get("training", {})),
+                "granularity_sampling_mode": config["model"].get(
+                    "granularity_sampling_mode"
+                ),
                 "granularity": result["granularity"],
+                "granularity_pattern_summary": json_artifact_value(
+                    granularity_pattern_summary
+                    if granularity_pattern_summary is not None
+                    else _default_granularity_pattern_summary(config)
+                ),
+                "correction_context": json_artifact_value(
+                    correction_context
+                    if correction_context is not None
+                    else _default_correction_context(config)
+                ),
                 "loss": result["loss"],
                 "perplexity": result["perplexity"],
                 "tokens_seen": (
@@ -258,6 +275,40 @@ def _sampling_mode(run: dict[str, Any], training: dict[str, Any]) -> Any:
     if granularity_sampling == "all":
         return "nested-all"
     return granularity_sampling
+
+
+def _default_granularity_pattern_summary(config: dict[str, Any]) -> dict[str, Any]:
+    model = config["model"]
+    run = config["run"]
+    sampling_mode = str(model.get("granularity_sampling_mode", "global"))
+    return {
+        "pattern_type": "single" if sampling_mode == "global" else "per_layer",
+        "selected_granularities": list(model.get("granularities", [])),
+        "layer_count": model.get("num_layers"),
+        "repeatable_source": [
+            str(run.get("run_id") or ""),
+            f"model.granularity_sampling_mode={sampling_mode}",
+        ],
+    }
+
+
+def _default_correction_context(config: dict[str, Any]) -> dict[str, Any]:
+    model = config["model"]
+    sampling_mode = str(model.get("granularity_sampling_mode", "global"))
+    local_correction_active = (
+        sampling_mode == "per_layer"
+        and model.get("correction_mode") in {"gmc", "lmc"}
+    )
+    return {
+        "correction_mode": model.get("correction_mode"),
+        "sampling_mode": sampling_mode,
+        "local_correction_active": local_correction_active,
+        "derived_membership_pattern": (
+            list(model.get("granularities", []))
+            if local_correction_active
+            else []
+        ),
+    }
 
 
 def _float_or_none(value: Any) -> float | None:

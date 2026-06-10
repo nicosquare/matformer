@@ -95,3 +95,67 @@ def build_per_layer_granularity_pattern(
             *seed_granularities,
         ),
     )
+
+
+def apply_granularity_pattern_to_model(
+    model,
+    selected_granularities: Sequence[str] | str,
+    sampling_mode: str,
+) -> GranularityPattern:
+    """Apply a resolved granularity pattern to a MatFormer model instance."""
+
+    target = model.module if hasattr(model, "module") else model
+    layers = getattr(target, "matformer_layers", None)
+    if layers is None:
+        raise AttributeError(
+            "apply_granularity_pattern_to_model requires a MatFormer model with "
+            "matformer_layers"
+        )
+
+    granularities = _normalize_selected_granularities(selected_granularities)
+    run_id = str(getattr(target, "current_run_id", "") or "")
+    config = {
+        "model": {
+            "granularity_sampling_mode": sampling_mode,
+            "granularities": list(granularities),
+            "num_layers": len(layers),
+        },
+        "run": {"run_id": run_id},
+    }
+
+    if sampling_mode == "global":
+        pattern = build_global_granularity_pattern(
+            config,
+            granularities=granularities,
+        )
+    elif sampling_mode == "per_layer":
+        pattern = build_per_layer_granularity_pattern(
+            config,
+            layer_granularities=granularities,
+        )
+    else:
+        raise ValueError(
+            "sampling_mode must be one of {'global', 'per_layer'}"
+        )
+
+    target.current_sampling_mode = sampling_mode
+    target.current_granularity_pattern = pattern
+    if sampling_mode == "global":
+        configured_granularities = [granularities[0]] * len(layers)
+    else:
+        configured_granularities = list(pattern.selected_granularities)
+    target.current_layer_granularities = configured_granularities
+    for layer, granularity in zip(layers, configured_granularities):
+        layer.configure_subnetwork(granularity)
+    return pattern
+
+
+def _normalize_selected_granularities(
+    selected_granularities: Sequence[str] | str,
+) -> tuple[str, ...]:
+    if isinstance(selected_granularities, str):
+        return (selected_granularities,)
+    granularities = tuple(selected_granularities)
+    if not granularities:
+        raise ValueError("selected_granularities must be a non-empty sequence")
+    return granularities

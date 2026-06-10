@@ -165,7 +165,8 @@ def resolve_run_config(
     explicit_override_keys = _override_keys(overrides)
     config = apply_overrides(load_yaml_config(config_path), overrides)
     requested_granularity_sampling_alias = _configured_granularity_sampling_alias(
-        config
+        config,
+        explicit_override_keys,
     )
     requested_run_sampling_mode = _configured_run_sampling_mode(config)
     family_size_slug = _configured_family_size_slug(config)
@@ -217,7 +218,8 @@ def resolve_all_run_configs(
     explicit_override_keys = _override_keys(overrides)
     config = apply_overrides(load_yaml_config(config_path), overrides)
     requested_granularity_sampling_alias = _configured_granularity_sampling_alias(
-        config
+        config,
+        explicit_override_keys,
     )
     requested_run_sampling_mode = _configured_run_sampling_mode(config)
     shared_family_size_slug = _configured_family_size_slug(config)
@@ -290,7 +292,10 @@ def _configured_family_size_slug(config: Mapping[str, Any]) -> str | None:
     return family_size_slug
 
 
-def _configured_granularity_sampling_alias(config: Mapping[str, Any]) -> str | None:
+def _configured_granularity_sampling_alias(
+    config: Mapping[str, Any],
+    explicit_override_keys: set[str] | None = None,
+) -> str | None:
     training = config.get("training", {})
     if not isinstance(training, Mapping):
         return None
@@ -301,6 +306,13 @@ def _configured_granularity_sampling_alias(config: Mapping[str, Any]) -> str | N
 
     granularity_sampling = granularity_sampling.strip()
     if not granularity_sampling:
+        return None
+
+    if (
+        granularity_sampling == "all"
+        and explicit_override_keys is not None
+        and "training.granularity_sampling" not in explicit_override_keys
+    ):
         return None
 
     return granularity_sampling
@@ -1071,12 +1083,27 @@ def _resolve_sampling_mode_defaults(
                 f"run.sampling_mode must be one of {sorted(VALID_SAMPLING_MODES)}"
             )
 
-    canonical_mode = explicit_model_mode or legacy_alias_mode
-    if canonical_mode is None and run_sampling_mode is not None:
-        canonical_mode = _granularity_sampling_mode_from_run_sampling_mode(
-            run_sampling_mode
+    candidate_modes: list[str] = []
+    if explicit_model_mode is not None:
+        candidate_modes.append(explicit_model_mode)
+    if legacy_alias_mode is not None:
+        candidate_modes.append(legacy_alias_mode)
+    if run_sampling_mode is not None:
+        candidate_modes.append(
+            _granularity_sampling_mode_from_run_sampling_mode(run_sampling_mode)
         )
-    if canonical_mode is None:
+
+    if candidate_modes:
+        canonical_mode = candidate_modes[0]
+        for candidate_mode in candidate_modes[1:]:
+            if candidate_mode != canonical_mode:
+                raise ConfigError(
+                    "model.granularity_sampling_mode, training.granularity_sampling, "
+                    "and run.sampling_mode conflicts"
+                )
+    elif model.get("correction_mode") == "lmc":
+        canonical_mode = "per_layer"
+    else:
         canonical_mode = "global"
 
     if canonical_mode == "per_layer" and model_family != "nested":
@@ -1189,8 +1216,8 @@ def _build_granularity_pattern_provenance(
         if isinstance(model.get("granularities"), list)
         else [],
     }
-    if run.get("granularity") is not None:
-        provenance["active_granularity"] = run["granularity"]
+    if requested_granularity_sampling_alias is not None or run.get("granularity") is not None:
+        provenance["active_granularity"] = run.get("granularity")
     return provenance
 
 
@@ -1546,8 +1573,6 @@ def resolve_training_length_for_world_size(
     world_size_source: str | None = None,
     explicit_override_keys: set[str] | None = None,
 ) -> None:
-    _resolve_sampling_mode_defaults(config)
-
     training = config.get("training")
     model = config.get("model")
     if not isinstance(training, dict) or not isinstance(model, Mapping):

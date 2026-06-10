@@ -12,8 +12,7 @@ from models.ffn import (
     build_prefix_membership_segment_metadata as _build_prefix_membership_segment_metadata,
 )
 from models.wiring import (
-    build_global_granularity_pattern,
-    build_per_layer_granularity_pattern,
+    apply_granularity_pattern_to_model,
 )
 from utils.config import CANONICAL_GRANULARITY_PREFIX_FRACTIONS
 
@@ -718,6 +717,7 @@ class ModifiedLlamaForCausalLM(LlamaForCausalLM):
         self.matformer_layers = []
         self.current_layer_granularities = None
         self.current_granularity_pattern = None
+        self.current_sampling_mode = "global"
 
         # Replace FFN in each layer with the selected MatFormer FFN variant
         for layer_idx in range(config.num_hidden_layers):
@@ -727,39 +727,16 @@ class ModifiedLlamaForCausalLM(LlamaForCausalLM):
 
     def configure_subnetwork(self, flag):
         """Configure the subnetwork for all layers based on the flag."""
-        self.current_layer_granularities = [flag] * len(self.matformer_layers)
-        self.current_granularity_pattern = build_global_granularity_pattern(
-            {
-                "model": {
-                    "granularity_sampling_mode": "global",
-                    "granularities": [flag],
-                    "num_layers": len(self.matformer_layers),
-                },
-                "run": {"run_id": ""},
-            },
-            granularities=[flag],
+        apply_granularity_pattern_to_model(
+            self,
+            flag,
+            sampling_mode="global",
         )
-        for layer in self.matformer_layers:
-            layer.configure_subnetwork(flag)
 
     def configure_layer_granularities(self, layer_granularities):
         """Configure a repeating or explicit granularity pattern across layers."""
-        self.current_granularity_pattern = build_per_layer_granularity_pattern(
-            {
-                "model": {
-                    "granularity_sampling_mode": "per_layer",
-                    "granularities": list(layer_granularities),
-                    "num_layers": len(self.matformer_layers),
-                },
-                "run": {"run_id": ""},
-            },
-            layer_granularities=layer_granularities,
+        apply_granularity_pattern_to_model(
+            self,
+            layer_granularities,
+            sampling_mode="per_layer",
         )
-        self.current_layer_granularities = list(
-            self.current_granularity_pattern.selected_granularities
-        )
-        for layer, granularity in zip(
-            self.matformer_layers,
-            self.current_layer_granularities,
-        ):
-            layer.configure_subnetwork(granularity)

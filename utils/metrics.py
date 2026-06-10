@@ -23,7 +23,10 @@ METRICS_COLUMNS = [
     "model_size_label",
     "model_shape_label",
     "sampling_mode",
+    "granularity_sampling_mode",
     "granularity",
+    "granularity_pattern_summary",
+    "correction_context",
     "loss",
     "perplexity",
     "tokens_seen",
@@ -1000,6 +1003,9 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "model_size_label": model_shape_label,
         "model_shape_label": model_shape_label,
         "sampling_mode": None,
+        "granularity_sampling_mode": None,
+        "granularity_pattern_summary": None,
+        "correction_context": None,
         "model_family_slug": None,
         "model_variant": None,
         "model_size_slug": None,
@@ -1054,6 +1060,14 @@ def _sampling_mode(run: Mapping[str, Any], training: Mapping[str, Any]) -> Any:
     return granularity_sampling
 
 
+def json_artifact_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, sort_keys=True)
+
+
 def _granularity_pattern_provenance(
     config: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -1072,7 +1086,7 @@ def _granularity_pattern_provenance(
     if granularity_sampling_mode is None:
         granularity_sampling_mode = "global"
 
-    return {
+    provenance = {
         "pattern_type": (
             "single" if granularity_sampling_mode == "global" else "per_layer"
         ),
@@ -1083,8 +1097,12 @@ def _granularity_pattern_provenance(
         "available_granularities": list(model.get("granularities", []))
         if isinstance(model.get("granularities"), list)
         else [],
-        "active_granularity": run.get("granularity"),
     }
+    if model.get("requested_granularity_sampling_alias") is not None or run.get(
+        "granularity"
+    ) is not None:
+        provenance["active_granularity"] = run.get("granularity")
+    return provenance
 
 
 def _granularity_pattern_summary(

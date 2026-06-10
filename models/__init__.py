@@ -37,6 +37,7 @@ from models.granularity import (
     summarize_granularity_pattern,
 )
 from models.wiring import (
+    apply_granularity_pattern_to_model,
     build_global_granularity_pattern,
     build_per_layer_granularity_pattern,
 )
@@ -76,4 +77,5 @@ __all__ = [
     "summarize_granularity_pattern",
     "build_global_granularity_pattern",
     "build_per_layer_granularity_pattern",
+    "apply_granularity_pattern_to_model",
 ]
