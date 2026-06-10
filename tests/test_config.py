@@ -168,6 +168,14 @@ def test_granularity_sampling_mode_validation():
         )
 
 
+def test_requested_run_sampling_mode_does_not_force_per_layer_model_mode():
+    resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
+
+    assert resolved["run"]["sampling_mode"] == "nested-random"
+    assert resolved["training"]["granularity_sampling"] == "random"
+    assert resolved["model"]["granularity_sampling_mode"] == "global"
+
+
 @pytest.mark.parametrize(
     "alias, expected_mode, expected_sampling_mode",
     [
