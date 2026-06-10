@@ -20,6 +20,8 @@ from modified_llama import (
     get_prefix_membership_segment_metadata,
     granularity_prefix_width,
 )
+from models.wiring import build_global_granularity_pattern
+from utils.config import resolve_run_config
 
 
 def tiny_llama_config(
@@ -275,6 +277,24 @@ def test_model_configures_all_layer_prefixes():
     ]
     assert layer_widths == [16, 16]
     assert model.ffn_prefix_metadata[-1]["prefix_width"] == config.intermediate_size
+
+
+def test_explicit_global_sampling_path_uses_all_configured_granularities():
+    resolved = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        overrides=["model.granularity_sampling_mode=global"],
+    )
+
+    pattern = build_global_granularity_pattern(resolved)
+
+    assert pattern.pattern_type == "single"
+    assert pattern.selected_granularities == ("s", "m", "l", "xl")
+    assert pattern.layer_count == resolved["model"]["num_layers"]
+    assert pattern.repeatable_source == (
+        "debug-nested-001",
+        "model.granularity_sampling_mode=global",
+    )
 
 
 def test_layer_granularity_pattern_repeats_across_model_layers():

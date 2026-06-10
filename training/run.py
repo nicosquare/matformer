@@ -295,6 +295,24 @@ def run_training(
 
         training_outcome = summarize_training_outcome(config, metrics_rows)
         tokens_seen = training_outcome["tokens_seen"]
+        target_model = getattr(model, "module", model)
+        runtime_pattern = getattr(target_model, "current_granularity_pattern", None)
+        if runtime_pattern is not None and hasattr(runtime_pattern, "to_dict"):
+            runtime_pattern_summary = runtime_pattern.to_dict()
+        elif runtime_pattern is not None:
+            runtime_pattern_summary = dict(runtime_pattern)
+        else:
+            runtime_pattern_summary = config["model"].get(
+                "granularity_pattern_provenance",
+                {},
+            )
+        if isinstance(runtime_pattern_summary, dict):
+            repeatable_source = runtime_pattern_summary.get("repeatable_source")
+            if isinstance(repeatable_source, (list, tuple)) and repeatable_source:
+                runtime_pattern_summary["repeatable_source"] = [
+                    config["run"]["run_id"],
+                    *repeatable_source[1:],
+                ]
         extra_summary_fields = {
             "steps_completed": training_outcome["steps_completed"],
             "stop_reason": training_outcome["stop_reason"],
@@ -302,6 +320,11 @@ def run_training(
             "model_variant": config["model"]["variant"],
             "granularities": config["model"]["granularities"],
             "granularity_sampling": training.get("granularity_sampling", "all"),
+            "resolved_sampling_mode": config["model"].get(
+                "granularity_sampling_mode",
+                "global",
+            ),
+            "granularity_pattern_summary": runtime_pattern_summary,
             "parameter_counts_by_granularity": parameter_counts_by_granularity,
             **build_monitoring_summary_fields(config, metrics_rows),
             **checkpoint_summary_fields,

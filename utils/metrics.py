@@ -111,9 +111,11 @@ RUN_SUMMARY_FIELDS = [
     "family_size_slug",
     "family_resolution_rule",
     "sampling_mode",
+    "resolved_sampling_mode",
     "requested_granularity_sampling_alias",
     "granularity_sampling_mode",
     "granularity_pattern_provenance",
+    "granularity_pattern_summary",
     "model_family_slug",
     "model_size_slug",
     "token_budget_slug",
@@ -246,11 +248,13 @@ def build_run_summary(
         "family_size_slug": run.get("family_size_slug"),
         "family_resolution_rule": run.get("family_resolution_rule"),
         "sampling_mode": _sampling_mode(run, training),
+        "resolved_sampling_mode": model.get("granularity_sampling_mode", "global"),
         "requested_granularity_sampling_alias": model.get(
             "requested_granularity_sampling_alias"
         ),
         "granularity_sampling_mode": model.get("granularity_sampling_mode"),
         "granularity_pattern_provenance": _granularity_pattern_provenance(config),
+        "granularity_pattern_summary": _granularity_pattern_summary(config),
         "completion_label": run["completion_label"],
         "model_family_slug": run.get("model_family_slug"),
         "model_size_slug": run.get("model_size_slug"),
@@ -1077,6 +1081,30 @@ def _granularity_pattern_provenance(
         if isinstance(model.get("granularities"), list)
         else [],
         "active_granularity": run.get("granularity"),
+    }
+
+
+def _granularity_pattern_summary(
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    model = config.get("model", {})
+    run = config.get("run", {})
+    if not isinstance(model, Mapping):
+        model = {}
+    if not isinstance(run, Mapping):
+        run = {}
+
+    sampling_mode = str(model.get("granularity_sampling_mode", "global"))
+    return {
+        "pattern_type": "single" if sampling_mode == "global" else "per_layer",
+        "selected_granularities": list(model.get("granularities", []))
+        if isinstance(model.get("granularities"), list)
+        else [],
+        "layer_count": model.get("num_layers"),
+        "repeatable_source": [
+            str(run.get("run_id") or ""),
+            f"model.granularity_sampling_mode={sampling_mode}",
+        ],
     }
 
 

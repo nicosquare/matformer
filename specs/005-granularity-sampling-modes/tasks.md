@@ -47,15 +47,15 @@
 
 ### Verification for User Story 1
 
-- [ ] T009 [P] [US1] Add a focused config-resolution test for legacy `training.granularity_sampling` aliases in `tests/test_config.py`
-- [ ] T010 [P] [US1] Add a focused regression test for the explicit global sampling path in `tests/test_matformer_prefixes.py`
+- [X] T009 [P] [US1] Add a focused config-resolution test for legacy `training.granularity_sampling` aliases in `tests/test_config.py`
+- [X] T010 [P] [US1] Add a focused regression test for the explicit global sampling path in `tests/test_matformer_prefixes.py`
 
 ### Implementation for User Story 1
 
-- [ ] T011 [P] [US1] Implement explicit global sampling selection in `models/wiring.py`
-- [ ] T012 [P] [US1] Move the existing global FFN configuration path into `models/ffn.py` so the current behavior is preserved under the new mode
-- [ ] T013 [US1] Update `modified_llama.py` to route global sampling through the new model-level API without changing the observed forward-pass behavior
-- [ ] T014 [US1] Record the resolved global sampling mode and pattern summary in run summaries through `training/run.py`
+- [X] T011 [P] [US1] Implement explicit global sampling selection in `models/wiring.py`
+- [X] T012 [P] [US1] Move the existing global FFN configuration path into `models/ffn.py` so the current behavior is preserved under the new mode
+- [X] T013 [US1] Update `modified_llama.py` to route global sampling through the new model-level API without changing the observed forward-pass behavior
+- [X] T014 [US1] Record the resolved global sampling mode and pattern summary in run summaries through `training/run.py`
 
 **Checkpoint**: User Story 1 should now be fully functional and independently verifiable
 

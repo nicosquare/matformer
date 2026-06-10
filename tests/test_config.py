@@ -166,6 +166,39 @@ def test_granularity_sampling_mode_validation():
         )
 
 
+@pytest.mark.parametrize(
+    "alias, expected_mode, expected_sampling_mode",
+    [
+        ("all", "global", "nested-all"),
+        ("random", "per_layer", "nested-random"),
+    ],
+)
+def test_legacy_granularity_sampling_alias_resolves_to_canonical_model_mode(
+    alias,
+    expected_mode,
+    expected_sampling_mode,
+):
+    resolved = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        overrides=[f"training.granularity_sampling={alias}"],
+    )
+
+    assert resolved["training"]["granularity_sampling"] == alias
+    assert resolved["model"]["granularity_sampling_mode"] == expected_mode
+    assert resolved["model"]["requested_granularity_sampling_alias"] == alias
+    assert resolved["run"]["sampling_mode"] == expected_sampling_mode
+    assert resolved["model"]["granularity_pattern_provenance"] == {
+        "pattern_type": "single" if expected_mode == "global" else "per_layer",
+        "scope": "model",
+        "source": "model.granularity_sampling_mode",
+        "requested_alias": alias,
+        "layer_count": resolved["model"]["num_layers"],
+        "available_granularities": ["s", "m", "l", "xl"],
+        "active_granularity": None,
+    }
+
+
 def test_write_resolved_config(tmp_path):
     output_dir = tmp_path / "dmodel256-pilot-comparison-001"
     resolved = resolve_run_config(
