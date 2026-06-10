@@ -2,29 +2,29 @@ import pytest
 import torch
 from transformers import LlamaConfig
 
-from modified_llama import (
+from models.ffn import (
     CatLlamaMLP,
-    MATFORMER_GRANULARITY_ORDER,
-    ModifiedLlamaForCausalLM,
     ModifiedLlamaMLP,
-    expand_layer_granularity_pattern,
-    get_block_membership_counts,
-    get_concat_block_metadata,
-    get_concat_block_membership_counts,
-    get_concat_gradient_membership_correction_scales,
-    get_concat_block_membership_counts_from_metadata,
-    get_concat_gradient_membership_correction_scales_from_metadata,
     get_concat_layout_diagnostic,
     get_ffn_prefix_metadata,
-    get_gradient_membership_correction_scales,
     get_prefix_membership_segment_metadata,
+    get_concat_block_metadata,
+    get_concat_block_membership_counts,
+    get_concat_block_membership_counts_from_metadata,
+    get_concat_gradient_membership_correction_scales,
+    get_concat_gradient_membership_correction_scales_from_metadata,
     granularity_prefix_width,
 )
 from models.granularity import (
+    MATFORMER_GRANULARITY_ORDER,
     build_granularity_pattern,
+    expand_layer_granularity_pattern,
+    get_block_membership_counts,
+    get_gradient_membership_correction_scales,
     get_granularity_metadata,
     summarize_granularity_pattern,
 )
+from models.wiring import ModifiedLlamaForCausalLM
 from models.wiring import build_global_granularity_pattern
 from utils.config import resolve_run_config
 

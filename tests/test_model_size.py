@@ -1,7 +1,8 @@
 import torch.nn as nn
 from transformers import LlamaConfig, LlamaForCausalLM
 
-from modified_llama import CatLlamaMLP, ModifiedLlamaForCausalLM, ModifiedLlamaMLP
+from models.ffn import CatLlamaMLP, ModifiedLlamaMLP
+from models.wiring import ModifiedLlamaForCausalLM
 from training.run import build_model
 from utils.config import resolve_run_config
 from utils.model_size import (

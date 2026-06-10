@@ -111,10 +111,10 @@
 
 **Purpose**: Finish validation, cleanup, and run-documentation updates that touch multiple stories
 
-- [ ] T029 [P] Run the focused test set from `specs/005-granularity-sampling-modes/quickstart.md` and capture any follow-up fixes in `tests/test_config.py`, `tests/test_matformer_prefixes.py`, or `tests/test_training_smoke.py`
-- [ ] T030 [P] Verify the global, per-layer, and legacy-alias smoke commands from `specs/005-granularity-sampling-modes/quickstart.md` and adjust `training/run.py` or `utils/metrics.py` if saved artifacts are incomplete
-- [ ] T031 Clean up any redundant helpers left behind in `modified_llama.py` after the module split
-- [ ] T032 Confirm `config.json`, `run_summary.json`, and `metrics.csv` include the selected sampling mode and granularity-pattern summary for both supported modes
+- [X] T029 [P] Run the focused test set from `specs/005-granularity-sampling-modes/quickstart.md` and capture any follow-up fixes in `tests/test_config.py`, `tests/test_matformer_prefixes.py`, or `tests/test_training_smoke.py`
+- [X] T030 [P] Verify the global, per-layer, and legacy-alias smoke commands from `specs/005-granularity-sampling-modes/quickstart.md` and adjust `training/run.py` or `utils/metrics.py` if saved artifacts are incomplete
+- [X] T031 Clean up any redundant helpers left behind in `modified_llama.py` after the module split
+- [X] T032 Confirm `config.json`, `run_summary.json`, and `metrics.csv` include the selected sampling mode and granularity-pattern summary for both supported modes
 
 ---
 
