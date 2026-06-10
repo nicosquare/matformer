@@ -1,3 +1,5 @@
+import importlib.util
+import json
 import os
 import re
 import subprocess
@@ -59,6 +61,18 @@ def _read_runner_dmodel256_script():
     )
 
 
+def _read_queue_dmodel256_script():
+    return (REPO_ROOT / "scripts" / "queue_dmodel256_pilot.py").read_text(
+        encoding="utf-8"
+    )
+
+
+def _read_slurm_queue_dmodel256_script():
+    return (REPO_ROOT / "scripts" / "slurm_queue_dmodel256_pilot.sh").read_text(
+        encoding="utf-8"
+    )
+
+
 def _sbatch_option_value(script_text, option):
     for line in script_text.splitlines():
         stripped = line.strip()
@@ -81,6 +95,21 @@ def _resource_count(value):
         return None
     match = re.search(r"(\d+)$", value.strip())
     return int(match.group(1)) if match else None
+
+
+def _load_queue_dmodel256_module():
+    script_path = REPO_ROOT / "scripts" / "queue_dmodel256_pilot.py"
+    spec = importlib.util.spec_from_file_location(
+        "queue_dmodel256_pilot",
+        script_path,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    import sys
+
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_dmodel256_pilot_resolves_current_reference_config(tmp_path):
@@ -520,3 +549,174 @@ def test_slurm_dmodel256_pilot_comparison_wrapper_rejects_direct_execution(tmp_p
     assert result.returncode == 2
     assert "intended for sbatch" in result.stderr
     assert not argv_path.exists()
+
+
+def test_queue_dmodel256_pilot_skips_completed_runs_and_forwards_overrides(tmp_path):
+    queue_module = _load_queue_dmodel256_module()
+    output_root = tmp_path / "queue-output"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    sbatch_log = tmp_path / "sbatch-log.txt"
+
+    fake_sbatch = fake_bin / "sbatch"
+    fake_sbatch.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '__CALL__\\n' >> \"$SBATCH_LOG\"\n"
+        "printf '%s\\n' \"$@\" >> \"$SBATCH_LOG\"\n",
+        encoding="utf-8",
+    )
+    fake_sbatch.chmod(0o755)
+
+    cli_args = [
+        "--output-root",
+        str(output_root),
+        "--token-budget",
+        "200000000",
+        "--learning-rate",
+        "0.001",
+        "--learning-rate-scale-rule",
+        "none",
+        "--override",
+        "training.max_steps_cap=1",
+    ]
+    args = queue_module.parse_args(cli_args)
+    settings = queue_module._normalize_batch_settings(args)
+    queued_runs = queue_module.build_queued_runs(
+        config_path=queue_module.DEFAULT_CONFIG_PATH,
+        output_root=output_root,
+        slurm_script=queue_module.DEFAULT_SLURM_SCRIPT,
+        settings=settings,
+    )
+
+    completed_run = next(
+        run for run in queued_runs if run.spec.label == "nested-random-cat-none-global"
+    )
+    completed_run.run_summary_path.parent.mkdir(parents=True, exist_ok=True)
+    completed_run.run_summary_path.write_text(
+        json.dumps({"status": "completed"}),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{fake_bin}:{env['PATH']}",
+            "SBATCH_LOG": str(sbatch_log),
+        }
+    )
+
+    subprocess.run(
+        [
+            "/home/nicolas.avila/.conda/envs/elasticnn/bin/python",
+            "scripts/queue_dmodel256_pilot.py",
+            *cli_args,
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    log_lines = sbatch_log.read_text(encoding="utf-8").splitlines()
+    calls = []
+    current = []
+    for line in log_lines:
+        if line == "__CALL__":
+            if current:
+                calls.append(current)
+            current = []
+            continue
+        current.append(line)
+    if current:
+        calls.append(current)
+
+    assert len(calls) == len(queued_runs) - 1
+    submitted_run_ids = [
+        call[call.index("--run-id") + 1]
+        for call in calls
+        if "--run-id" in call
+    ]
+    assert completed_run.run_id not in submitted_run_ids
+
+    first_call = calls[0]
+    assert first_call[0] == str(queue_module.DEFAULT_SLURM_SCRIPT)
+    assert "training.token_budget=200000000" in first_call
+    assert "training.learning_rate=0.001" in first_call
+    assert "training.learning_rate_scale_rule=none" in first_call
+    assert "training.max_steps_cap=1" in first_call
+    assert "run.model_family=nested" in first_call
+
+
+def test_queue_dmodel256_pilot_excludes_nested_all_lmc():
+    queue_module = _load_queue_dmodel256_module()
+    specs = queue_module.build_experiment_specs()
+
+    assert not any(
+        "run.sampling_mode=nested-all" in spec.run_overrides
+        and "model.correction_mode=lmc" in spec.model_overrides
+        for spec in specs
+    )
+
+
+def test_slurm_queue_dmodel256_pilot_wrapper_invokes_queue_helper(tmp_path):
+    recorder = tmp_path / "python-recorder.sh"
+    argv_path = tmp_path / "argv.txt"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    sbatch_log = tmp_path / "sbatch-log.txt"
+
+    recorder.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$@\" > \"$ARGV_FILE\"\n"
+        "exec /home/nicolas.avila/.conda/envs/elasticnn/bin/python \"$@\"\n",
+        encoding="utf-8",
+    )
+    recorder.chmod(0o755)
+
+    fake_sbatch = fake_bin / "sbatch"
+    fake_sbatch.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '__CALL__\\n' >> \"$SBATCH_LOG\"\n"
+        "printf '%s\\n' \"$@\" >> \"$SBATCH_LOG\"\n",
+        encoding="utf-8",
+    )
+    fake_sbatch.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "ALLOW_LOCAL_SLURM_WRAPPER": "1",
+            "PATH": f"{fake_bin}:{env['PATH']}",
+            "PYTHON_BIN": str(recorder),
+            "ARGV_FILE": str(argv_path),
+            "SBATCH_LOG": str(sbatch_log),
+        }
+    )
+
+    subprocess.run(
+        [
+            "bash",
+            "scripts/slurm_queue_dmodel256_pilot.sh",
+            "--output-root",
+            str(tmp_path / "queue-output"),
+            "--token-budget",
+            "200000000",
+            "--override",
+            "training.max_steps_cap=1",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    helper_args = argv_path.read_text(encoding="utf-8").splitlines()
+    assert helper_args[0] == "scripts/queue_dmodel256_pilot.py"
+    assert _has_arg_pair(helper_args, "--output-root", str(tmp_path / "queue-output"))
+    assert _has_arg_pair(helper_args, "--token-budget", "200000000")
+    assert _has_arg_pair(helper_args, "--override", "training.max_steps_cap=1")
+
+    sbatch_lines = sbatch_log.read_text(encoding="utf-8").splitlines()
+    assert "__CALL__" in sbatch_lines
