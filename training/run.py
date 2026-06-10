@@ -25,12 +25,9 @@ from evaluation.validation import (
     perplexity_from_loss,
     validation_results_to_metric_rows,
 )
-from modified_llama import (
-    CatLlamaMLP,
-    ModifiedLlamaForCausalLM,
-    get_concat_layout_diagnostic,
-    get_ffn_prefix_metadata,
-)
+from models.ffn import CatLlamaMLP, get_concat_layout_diagnostic, get_ffn_prefix_metadata
+from models.correction import correction_context_from_config, summarize_correction_context
+from models.wiring import ModifiedLlamaForCausalLM
 from training.data import (
     build_language_model_dataloader,
     load_and_tokenize_dataset,
@@ -60,6 +57,7 @@ from utils.metrics import (
     build_scaling_result_rows,
     write_config_artifact,
     write_failed_run_summary,
+    json_artifact_value,
     write_json_artifact,
     write_metrics_csv,
     write_run_summary,
@@ -295,6 +293,30 @@ def run_training(
 
         training_outcome = summarize_training_outcome(config, metrics_rows)
         tokens_seen = training_outcome["tokens_seen"]
+        target_model = getattr(model, "module", model)
+        runtime_pattern = getattr(target_model, "current_granularity_pattern", None)
+        if runtime_pattern is not None and hasattr(runtime_pattern, "to_dict"):
+            runtime_pattern_summary = runtime_pattern.to_dict()
+        elif runtime_pattern is not None:
+            runtime_pattern_summary = dict(runtime_pattern)
+        else:
+            runtime_pattern_summary = config["model"].get(
+                "granularity_pattern_provenance",
+                {},
+            )
+        if isinstance(runtime_pattern_summary, dict):
+            repeatable_source = runtime_pattern_summary.get("repeatable_source")
+            if isinstance(repeatable_source, (list, tuple)) and repeatable_source:
+                runtime_pattern_summary["repeatable_source"] = [
+                    config["run"]["run_id"],
+                    *repeatable_source[1:],
+                ]
+        correction_context = summarize_correction_context(
+            correction_context_from_config(
+                config,
+                granularity_pattern=runtime_pattern,
+            )
+        )
         extra_summary_fields = {
             "steps_completed": training_outcome["steps_completed"],
             "stop_reason": training_outcome["stop_reason"],
@@ -302,6 +324,12 @@ def run_training(
             "model_variant": config["model"]["variant"],
             "granularities": config["model"]["granularities"],
             "granularity_sampling": training.get("granularity_sampling", "all"),
+            "resolved_sampling_mode": config["model"].get(
+                "granularity_sampling_mode",
+                "global",
+            ),
+            "granularity_pattern_summary": runtime_pattern_summary,
+            "correction_context": correction_context,
             "parameter_counts_by_granularity": parameter_counts_by_granularity,
             **build_monitoring_summary_fields(config, metrics_rows),
             **checkpoint_summary_fields,
@@ -1831,6 +1859,10 @@ def train_for_steps(
     metrics_rows = []
     start_time = time.time()
     run_state = run_state if run_state is not None else build_initial_continuation_state(config)
+    runtime_pattern_summary, correction_context = _runtime_granularity_artifacts(
+        config,
+        model,
+    )
     step = int(run_state.get("last_completed_step", 0))
     epoch = int(run_state.get("epoch", 0))
     resume_batch_index = int(run_state.get("batch_index", 0))
@@ -1969,6 +2001,8 @@ def train_for_steps(
                             content_tokens_seen=content_tokens_seen,
                             wall_clock_seconds=elapsed,
                             peak_memory_bytes=peak_memory_bytes,
+                            granularity_pattern_summary=runtime_pattern_summary,
+                            correction_context=correction_context,
                         )
                     )
                 metrics_rows.extend(step_metric_rows)
@@ -2026,6 +2060,8 @@ def train_for_steps(
                         peak_memory_bytes=peak_memory_bytes,
                         tokens_seen=tokens_seen,
                         content_tokens_seen=content_tokens_seen,
+                        granularity_pattern_summary=runtime_pattern_summary,
+                        correction_context=correction_context,
                     )
                     metrics_rows.extend(validation_metric_rows)
                     if monitoring_session is not None:
@@ -2180,6 +2216,10 @@ def append_final_validation_if_needed(
 
     elapsed = time.time() - start_time
     heartbeat_writer = heartbeat_writer or NoopHeartbeatWriter()
+    runtime_pattern_summary, correction_context = _runtime_granularity_artifacts(
+        config,
+        model,
+    )
     with heartbeat_stage(
         heartbeat_writer,
         "validation",
@@ -2218,6 +2258,8 @@ def append_final_validation_if_needed(
         peak_memory_bytes=current_peak_memory_bytes(device),
         tokens_seen=tokens_seen,
         content_tokens_seen=content_tokens_seen,
+        granularity_pattern_summary=runtime_pattern_summary,
+        correction_context=correction_context,
     )
     metrics_rows.extend(validation_metric_rows)
     if monitoring_session is not None:
@@ -2307,6 +2349,8 @@ def build_training_metric_row(
     content_tokens_seen: int,
     wall_clock_seconds: float,
     peak_memory_bytes: int,
+    granularity_pattern_summary: dict[str, Any] | None = None,
+    correction_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     run = config["run"]
     tokens_per_second = tokens_seen / wall_clock_seconds if wall_clock_seconds > 0 else None
@@ -2318,7 +2362,20 @@ def build_training_metric_row(
         "model_size_label": _model_shape_label(run),
         "model_shape_label": _model_shape_label(run),
         "sampling_mode": _sampling_mode(run, config["training"]),
+        "granularity_sampling_mode": config["model"].get("granularity_sampling_mode"),
         "granularity": granularity,
+        "granularity_pattern_summary": json_artifact_value(
+            granularity_pattern_summary
+            if granularity_pattern_summary is not None
+            else config["model"].get("granularity_pattern_summary")
+            or _default_granularity_pattern_summary(config)
+        ),
+        "correction_context": json_artifact_value(
+            correction_context
+            if correction_context is not None
+            else config["model"].get("correction_context")
+            or _default_correction_context(config)
+        ),
         "loss": loss,
         "perplexity": perplexity_from_loss(loss),
         "tokens_seen": tokens_seen,
@@ -2390,3 +2447,67 @@ def _sampling_mode(run: dict[str, Any], training: dict[str, Any]) -> Any:
     if granularity_sampling == "all":
         return "nested-all"
     return granularity_sampling
+
+
+def _default_granularity_pattern_summary(config: dict[str, Any]) -> dict[str, Any]:
+    model = config["model"]
+    run = config["run"]
+    sampling_mode = str(model.get("granularity_sampling_mode", "global"))
+    return {
+        "pattern_type": "single" if sampling_mode == "global" else "per_layer",
+        "selected_granularities": list(model.get("granularities", [])),
+        "layer_count": model.get("num_layers"),
+        "repeatable_source": [
+            str(run.get("run_id") or ""),
+            f"model.granularity_sampling_mode={sampling_mode}",
+        ],
+    }
+
+
+def _default_correction_context(config: dict[str, Any]) -> dict[str, Any]:
+    model = config["model"]
+    sampling_mode = str(model.get("granularity_sampling_mode", "global"))
+    local_correction_active = (
+        sampling_mode == "per_layer"
+        and model.get("correction_mode") in {"gmc", "lmc"}
+    )
+    return {
+        "correction_mode": model.get("correction_mode"),
+        "sampling_mode": sampling_mode,
+        "local_correction_active": local_correction_active,
+        "derived_membership_pattern": (
+            list(model.get("granularities", []))
+            if local_correction_active
+            else []
+        ),
+    }
+
+
+def _runtime_granularity_artifacts(
+    config: dict[str, Any],
+    model,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    target_model = getattr(model, "module", model)
+    runtime_pattern = getattr(target_model, "current_granularity_pattern", None)
+    if runtime_pattern is not None and hasattr(runtime_pattern, "to_dict"):
+        runtime_pattern_summary = runtime_pattern.to_dict()
+    elif runtime_pattern is not None:
+        runtime_pattern_summary = dict(runtime_pattern)
+    else:
+        runtime_pattern_summary = _default_granularity_pattern_summary(config)
+
+    if isinstance(runtime_pattern_summary, dict):
+        repeatable_source = runtime_pattern_summary.get("repeatable_source")
+        if isinstance(repeatable_source, (list, tuple)) and repeatable_source:
+            runtime_pattern_summary["repeatable_source"] = [
+                config["run"]["run_id"],
+                *repeatable_source[1:],
+            ]
+
+    correction_context = summarize_correction_context(
+        correction_context_from_config(
+            config,
+            granularity_pattern=runtime_pattern,
+        )
+    )
+    return runtime_pattern_summary, correction_context

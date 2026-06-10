@@ -1,382 +1,65 @@
-from collections.abc import Mapping
+"""FFN helpers and metadata for MatFormer and CatLlama variants."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 import torch
 import torch.nn.functional as F
 from torch import nn
-from transformers import LlamaForCausalLM
 from transformers.models.llama.modeling_llama import LlamaMLP
 
-from utils.config import CANONICAL_GRANULARITY_PREFIX_FRACTIONS
+from models.granularity import (
+    MATFORMER_GRANULARITY_ORDER,
+    get_concat_block_metadata,
+    get_concat_block_membership_counts,
+    get_concat_block_membership_counts_from_metadata,
+    get_concat_gradient_membership_correction_scales,
+    get_concat_gradient_membership_correction_scales_from_metadata,
+    get_concat_layout_diagnostic,
+    get_ffn_prefix_metadata,
+    get_gradient_membership_correction_scales,
+    get_prefix_membership_segment_metadata,
+    granularity_concat_block_count,
+    granularity_prefix_width,
+)
 
 
-MATFORMER_GRANULARITY_ORDER = ("s", "m", "l", "xl")
-MATFORMER_GRANULARITY_DISPLAY_NAMES = {
-    "s": "S",
-    "m": "M",
-    "l": "L",
-    "xl": "XL",
-}
-
-
-def get_granularity_metadata(granularity):
-    if granularity not in MATFORMER_GRANULARITY_DISPLAY_NAMES:
-        raise ValueError(f"Unknown MatFormer granularity: {granularity}")
-    fraction = _canonical_prefix_fraction(granularity)
-    return {
-        "display_name": MATFORMER_GRANULARITY_DISPLAY_NAMES[granularity],
-        "ffn_ratio": fraction / _canonical_prefix_fraction("m"),
-        "full_intermediate_fraction": fraction,
-    }
-
-
-def granularity_prefix_width(
-    intermediate_size,
-    granularity,
+def build_ffn_prefix_metadata(
+    intermediate_size: int,
     granularity_prefixes: Mapping[str, object] | None = None,
-):
-    get_granularity_metadata(granularity)
-    fraction = _granularity_prefix_fraction(
-        granularity,
-        granularity_prefixes=granularity_prefixes,
-    )
-    prefix_width = int(intermediate_size * fraction)
-    if prefix_width <= 0:
-        raise ValueError(
-            f"Granularity {granularity} produced empty FFN prefix for "
-            f"intermediate_size={intermediate_size}"
-        )
-    return prefix_width
-
-
-def get_ffn_prefix_metadata(
-    intermediate_size,
-    granularity_prefixes: Mapping[str, object] | None = None,
-    granularities: list[str] | tuple[str, ...] | None = None,
-):
-    granularities = tuple(granularities or MATFORMER_GRANULARITY_ORDER)
-    resolved_prefixes = _resolve_granularity_prefixes(
-        granularities,
-        granularity_prefixes=granularity_prefixes,
-    )
-    metadata = []
-    for granularity in granularities:
-        granularity_metadata = get_granularity_metadata(granularity)
-        fraction = resolved_prefixes[granularity]
-        metadata.append(
-            {
-                "name": granularity,
-                "display_name": granularity_metadata["display_name"],
-                "ffn_ratio": fraction / _canonical_prefix_fraction("m"),
-                "full_intermediate_fraction": fraction,
-                "prefix_width": granularity_prefix_width(
-                    intermediate_size,
-                    granularity,
-                    granularity_prefixes=resolved_prefixes,
-                ),
-            }
-        )
-    return metadata
-
-
-def _canonical_prefix_fraction(granularity):
-    numerator, denominator = CANONICAL_GRANULARITY_PREFIX_FRACTIONS[granularity]
-    return numerator / denominator
-
-
-def _granularity_prefix_fraction(
-    granularity,
-    granularity_prefixes: Mapping[str, object] | None = None,
-):
-    if granularity_prefixes is None:
-        return _canonical_prefix_fraction(granularity)
-    if granularity not in granularity_prefixes:
-        raise ValueError(f"Missing MatFormer granularity prefix: {granularity}")
-    return float(granularity_prefixes[granularity])
-
-
-def _resolve_granularity_prefixes(
-    granularities: tuple[str, ...] | list[str],
-    granularity_prefixes: Mapping[str, object] | None = None,
-) -> dict[str, float]:
-    prefixes = granularity_prefixes or {
-        granularity: _canonical_prefix_fraction(granularity)
-        for granularity in granularities
-    }
-    resolved = {}
-    previous_fraction = 0.0
-    for granularity in granularities:
-        fraction = _granularity_prefix_fraction(
-            granularity,
-            granularity_prefixes=prefixes,
-        )
-        if fraction <= 0:
-            raise ValueError(
-                f"Granularity {granularity} must resolve to a positive prefix fraction"
-            )
-        if fraction <= previous_fraction:
-            raise ValueError(
-                "MatFormer granularity prefixes must be strictly increasing "
-                "in the configured order"
-            )
-        resolved[granularity] = fraction
-        previous_fraction = fraction
-    return resolved
-
-
-def expand_layer_granularity_pattern(layer_granularities, num_layers):
-    if not isinstance(layer_granularities, (list, tuple)) or not layer_granularities:
-        raise ValueError("layer_granularities must be a non-empty list or tuple")
-    if num_layers <= 0:
-        raise ValueError("num_layers must be positive")
-
-    expanded = []
-    for layer_index in range(num_layers):
-        granularity = layer_granularities[layer_index % len(layer_granularities)]
-        get_granularity_metadata(granularity)
-        expanded.append(granularity)
-    return expanded
-
-
-def granularity_block_count(granularity):
-    metadata = get_granularity_metadata(granularity)
-    smallest_granularity = MATFORMER_GRANULARITY_ORDER[0]
-    smallest_ratio = get_granularity_metadata(smallest_granularity)["ffn_ratio"]
-    ratio = metadata["ffn_ratio"]
-    block_count = ratio / smallest_ratio
-    if int(block_count) != block_count:
-        raise ValueError(
-            f"Granularity {granularity} has incompatible ffn_ratio={ratio} "
-            f"for smallest_ratio={smallest_ratio}"
-        )
-    return int(block_count)
-
-
-def get_concat_block_metadata(
-    intermediate_size,
-    granularity_prefixes: Mapping[str, object] | None = None,
-    granularities: list[str] | tuple[str, ...] | None = None,
-):
-    granularities = tuple(granularities or MATFORMER_GRANULARITY_ORDER)
-    prefix_metadata = get_ffn_prefix_metadata(
+    granularities: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
+    return get_ffn_prefix_metadata(
         intermediate_size,
         granularity_prefixes=granularity_prefixes,
         granularities=granularities,
     )
-    base_block_width = prefix_metadata[0]["prefix_width"]
-    block_metadata = []
-    previous_prefix_width = 0
-
-    for block_index, prefix_entry in enumerate(prefix_metadata):
-        prefix_width = prefix_entry["prefix_width"]
-        if prefix_width <= previous_prefix_width:
-            raise ValueError(
-                "Granularity order must expand to strictly larger prefix blocks"
-            )
-        block_width = prefix_width - previous_prefix_width
-        block_metadata.append(
-            {
-                "name": f"block_{block_index + 1}",
-                "display_name": f"B{block_index + 1}",
-                "ffn_ratio": block_width / base_block_width,
-                "full_intermediate_fraction": prefix_width / intermediate_size,
-                "prefix_width": prefix_width,
-                "block_width": block_width,
-                "cumulative_prefix_width": prefix_width,
-            }
-        )
-        previous_prefix_width = prefix_width
-
-    return block_metadata
 
 
-def granularity_concat_block_count(granularity):
-    get_granularity_metadata(granularity)
-    return MATFORMER_GRANULARITY_ORDER.index(granularity) + 1
-
-
-def get_block_membership_counts(granularities, total_blocks=None):
-    if not granularities:
-        raise ValueError("granularities must be a non-empty sequence")
-
-    block_counts = [granularity_block_count(granularity) for granularity in granularities]
-    max_blocks = max(block_counts)
-    if total_blocks is None:
-        total_blocks = max_blocks
-    elif total_blocks < max_blocks:
-        raise ValueError(
-            "total_blocks cannot be smaller than the widest configured granularity"
-        )
-
-    return [
-        sum(1 for block_count in block_counts if block_index < block_count)
-        for block_index in range(total_blocks)
-    ]
-
-
-def get_gradient_membership_correction_scales(granularities, total_blocks=None):
-    membership_counts = get_block_membership_counts(
-        granularities,
-        total_blocks=total_blocks,
-    )
-    total_losses = len(granularities)
-    scales = []
-    for membership_count in membership_counts:
-        if membership_count == 0:
-            scales.append(1.0)
-            continue
-        scales.append(total_losses / membership_count)
-    return scales
-
-
-def get_concat_block_membership_counts(
-    intermediate_size,
-    granularities,
+def build_concat_layout_diagnostic(
+    intermediate_size: int,
+    granularities: Sequence[str],
     granularity_prefixes: Mapping[str, object] | None = None,
-):
-    if not granularities:
-        raise ValueError("granularities must be a non-empty sequence")
-
-    return get_concat_block_membership_counts_from_metadata(
-        get_concat_block_metadata(
-            intermediate_size,
-            granularity_prefixes=granularity_prefixes,
-            granularities=granularities,
-        ),
-        granularities,
-    )
-
-
-def get_concat_block_membership_counts_from_metadata(block_metadata, granularities):
-    if not block_metadata:
-        raise ValueError("block_metadata must be a non-empty sequence")
-    if not granularities:
-        raise ValueError("granularities must be a non-empty sequence")
-
-    prefix_widths = []
-    for granularity in granularities:
-        block_index = MATFORMER_GRANULARITY_ORDER.index(granularity)
-        if block_index >= len(block_metadata):
-            raise ValueError(
-                "Configured granularities exceed the available concat blocks"
-            )
-        prefix_widths.append(block_metadata[block_index]["cumulative_prefix_width"])
-    return [
-        sum(
-            1
-            for prefix_width in prefix_widths
-            if prefix_width >= block["cumulative_prefix_width"]
-        )
-        for block in block_metadata
-    ]
-
-
-def get_concat_gradient_membership_correction_scales_from_metadata(
-    block_metadata,
-    granularities,
-):
-    membership_counts = get_concat_block_membership_counts_from_metadata(
-        block_metadata,
-        granularities,
-    )
-    total_losses = len(granularities)
-    scales = []
-    for membership_count in membership_counts:
-        if membership_count == 0:
-            scales.append(1.0)
-            continue
-        scales.append(total_losses / membership_count)
-    return scales
-
-
-def get_concat_gradient_membership_correction_scales(
-    intermediate_size,
-    granularities,
-    granularity_prefixes: Mapping[str, object] | None = None,
-):
-    return get_concat_gradient_membership_correction_scales_from_metadata(
-        get_concat_block_metadata(
-            intermediate_size,
-            granularity_prefixes=granularity_prefixes,
-            granularities=granularities,
-        ),
-        granularities,
-    )
-
-
-def get_concat_layout_diagnostic(
-    intermediate_size,
-    granularities,
-    granularity_prefixes: Mapping[str, object] | None = None,
-):
-    block_metadata = get_concat_block_metadata(
+) -> dict[str, Any]:
+    return get_concat_layout_diagnostic(
         intermediate_size,
+        granularities,
         granularity_prefixes=granularity_prefixes,
-        granularities=granularities,
     )
-    return {
-        "intermediate_size": intermediate_size,
-        "granularities": list(granularities),
-        "block_widths": [block["block_width"] for block in block_metadata],
-        "prefix_widths": [block["prefix_width"] for block in block_metadata],
-        "gradient_membership_counts": get_concat_block_membership_counts_from_metadata(
-            block_metadata,
-            granularities,
-        ),
-        "gradient_membership_correction_scales": get_concat_gradient_membership_correction_scales_from_metadata(
-            block_metadata,
-            granularities,
-        ),
-    }
 
 
-def get_prefix_membership_segment_metadata(
-    intermediate_size,
-    granularities,
+def build_prefix_membership_segment_metadata(
+    intermediate_size: int,
+    granularities: Sequence[str],
     granularity_prefixes: Mapping[str, object] | None = None,
-):
-    if not granularities:
-        raise ValueError("granularities must be a non-empty sequence")
-
-    prefix_widths = [
-        granularity_prefix_width(
-            intermediate_size,
-            granularity,
-            granularity_prefixes=granularity_prefixes,
-        )
-        for granularity in granularities
-    ]
-    total_losses = len(granularities)
-    boundaries = sorted(set(prefix_widths))
-    metadata = []
-    start = 0
-
-    for end in boundaries:
-        if end <= start:
-            continue
-        membership_count = sum(1 for prefix_width in prefix_widths if prefix_width >= end)
-        metadata.append(
-            {
-                "start": start,
-                "end": end,
-                "width": end - start,
-                "membership_count": membership_count,
-                "scale": total_losses / membership_count,
-            }
-        )
-        start = end
-
-    if start < intermediate_size:
-        metadata.append(
-            {
-                "start": start,
-                "end": intermediate_size,
-                "width": intermediate_size - start,
-                "membership_count": 0,
-                "scale": 1.0,
-            }
-        )
-
-    return metadata
+) -> list[dict[str, Any]]:
+    return get_prefix_membership_segment_metadata(
+        intermediate_size,
+        granularities,
+        granularity_prefixes=granularity_prefixes,
+    )
 
 
 class ModifiedLlamaMLP(LlamaMLP):
@@ -729,7 +412,7 @@ class CatLlamaMLP(LlamaMLP):
             parameter_count += self.down_bias.numel()
 
         return parameter_count
-
+    
     def _assemble_prefix(self, blocks, dim):
         if self.current_subset_blocks is None:
             raise ValueError("Subnetwork size not configured. Call `configure_subnetwork` first.")
@@ -761,42 +444,21 @@ class CatLlamaMLP(LlamaMLP):
         )
 
 
-class ModifiedLlamaForCausalLM(LlamaForCausalLM):
-    def __init__(self, config, mlp_cls=ModifiedLlamaMLP, mlp_kwargs=None):
-        super().__init__(config)
-        self.granularity_order = MATFORMER_GRANULARITY_ORDER
-        self.ffn_prefix_metadata = (
-            [dict(entry) for entry in getattr(config, "ffn_prefix_metadata", [])]
-            if getattr(config, "ffn_prefix_metadata", None)
-            else get_ffn_prefix_metadata(
-                config.intermediate_size,
-                granularity_prefixes=getattr(config, "granularity_prefixes", None),
-                granularities=getattr(config, "granularities", None),
-            )
-        )
-        self.mlp_cls = mlp_cls
-        self.mlp_kwargs = dict(mlp_kwargs or {})
-        self.matformer_layers = []
-        self.current_layer_granularities = None
-
-        # Replace FFN in each layer with the selected MatFormer FFN variant
-        for layer_idx in range(config.num_hidden_layers):
-            mlp = self.mlp_cls(config, **self.mlp_kwargs)
-            self.model.layers[layer_idx].mlp = mlp
-            self.matformer_layers.append(mlp)
-
-    def configure_subnetwork(self, flag):
-        """Configure the subnetwork for all layers based on the flag."""
-        self.current_layer_granularities = [flag] * len(self.matformer_layers)
-        for layer in self.matformer_layers:
-            layer.configure_subnetwork(flag)
-
-    def configure_layer_granularities(self, layer_granularities):
-        """Configure a repeating or explicit granularity pattern across layers."""
-        expanded_pattern = expand_layer_granularity_pattern(
-            layer_granularities,
-            len(self.matformer_layers),
-        )
-        self.current_layer_granularities = expanded_pattern
-        for layer, granularity in zip(self.matformer_layers, expanded_pattern):
-            layer.configure_subnetwork(granularity)
+__all__ = [
+    "MATFORMER_GRANULARITY_ORDER",
+    "ModifiedLlamaMLP",
+    "CatLlamaMLP",
+    "build_concat_layout_diagnostic",
+    "build_ffn_prefix_metadata",
+    "build_prefix_membership_segment_metadata",
+    "get_concat_block_metadata",
+    "get_concat_block_membership_counts",
+    "get_concat_block_membership_counts_from_metadata",
+    "get_concat_gradient_membership_correction_scales",
+    "get_concat_gradient_membership_correction_scales_from_metadata",
+    "get_ffn_prefix_metadata",
+    "get_gradient_membership_correction_scales",
+    "get_prefix_membership_segment_metadata",
+    "granularity_concat_block_count",
+    "granularity_prefix_width",
+]

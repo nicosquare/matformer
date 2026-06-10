@@ -2,24 +2,31 @@ import pytest
 import torch
 from transformers import LlamaConfig
 
-from modified_llama import (
+from models.ffn import (
     CatLlamaMLP,
-    MATFORMER_GRANULARITY_ORDER,
-    ModifiedLlamaForCausalLM,
     ModifiedLlamaMLP,
-    expand_layer_granularity_pattern,
-    get_block_membership_counts,
-    get_concat_block_metadata,
-    get_concat_block_membership_counts,
-    get_concat_gradient_membership_correction_scales,
-    get_concat_block_membership_counts_from_metadata,
-    get_concat_gradient_membership_correction_scales_from_metadata,
     get_concat_layout_diagnostic,
     get_ffn_prefix_metadata,
-    get_gradient_membership_correction_scales,
     get_prefix_membership_segment_metadata,
+    get_concat_block_metadata,
+    get_concat_block_membership_counts,
+    get_concat_block_membership_counts_from_metadata,
+    get_concat_gradient_membership_correction_scales,
+    get_concat_gradient_membership_correction_scales_from_metadata,
     granularity_prefix_width,
 )
+from models.granularity import (
+    MATFORMER_GRANULARITY_ORDER,
+    build_granularity_pattern,
+    expand_layer_granularity_pattern,
+    get_block_membership_counts,
+    get_gradient_membership_correction_scales,
+    get_granularity_metadata,
+    summarize_granularity_pattern,
+)
+from models.wiring import ModifiedLlamaForCausalLM
+from models.wiring import build_global_granularity_pattern
+from utils.config import resolve_run_config
 
 
 def tiny_llama_config(
@@ -106,6 +113,41 @@ def test_concat_block_metadata_can_be_derived_from_config_prefix_map():
 
     assert [entry["block_width"] for entry in metadata] == [10, 10, 20, 60]
     assert [entry["prefix_width"] for entry in metadata] == [10, 20, 40, 100]
+
+
+def test_granularity_metadata_helpers_build_stable_pattern_summaries():
+    metadata = get_granularity_metadata("l")
+    pattern = build_granularity_pattern(
+        pattern_type="per_layer",
+        selected_granularities=("s", "m", "l"),
+        layer_count=3,
+        repeatable_source=(
+            "debug-nested-001",
+            "model.granularity_sampling_mode=per_layer",
+        ),
+    )
+
+    assert metadata == {
+        "display_name": "L",
+        "ffn_ratio": 2.0,
+        "full_intermediate_fraction": 0.5,
+    }
+    assert pattern.pattern_type == "per_layer"
+    assert pattern.selected_granularities == ("s", "m", "l")
+    assert pattern.layer_count == 3
+    assert pattern.repeatable_source == (
+        "debug-nested-001",
+        "model.granularity_sampling_mode=per_layer",
+    )
+    assert summarize_granularity_pattern(pattern) == {
+        "pattern_type": "per_layer",
+        "selected_granularities": ("s", "m", "l"),
+        "layer_count": 3,
+        "repeatable_source": (
+            "debug-nested-001",
+            "model.granularity_sampling_mode=per_layer",
+        ),
+    }
 
 
 def test_concat_membership_counts_follow_concat_boundaries():
@@ -275,6 +317,48 @@ def test_model_configures_all_layer_prefixes():
     ]
     assert layer_widths == [16, 16]
     assert model.ffn_prefix_metadata[-1]["prefix_width"] == config.intermediate_size
+
+
+def test_explicit_global_sampling_path_uses_all_configured_granularities():
+    resolved = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        overrides=["model.granularity_sampling_mode=global"],
+    )
+
+    pattern = build_global_granularity_pattern(resolved)
+
+    assert pattern.pattern_type == "single"
+    assert pattern.selected_granularities == ("s", "m", "l", "xl")
+    assert pattern.layer_count == resolved["model"]["num_layers"]
+    assert pattern.repeatable_source == (
+        "debug-nested-001",
+        "model.granularity_sampling_mode=global",
+    )
+
+
+def test_per_layer_sampling_path_repeats_layer_choices_across_blocks():
+    resolved = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        overrides=["model.granularity_sampling_mode=per_layer"],
+    )
+
+    assert resolved["model"]["granularity_sampling_mode"] == "per_layer"
+    assert resolved["run"]["sampling_mode"] == "nested-random"
+    assert resolved["model"]["granularity_pattern_provenance"] == {
+        "pattern_type": "per_layer",
+        "scope": "model",
+        "source": "model.granularity_sampling_mode",
+        "requested_alias": None,
+        "layer_count": resolved["model"]["num_layers"],
+        "available_granularities": ["s", "m", "l", "xl"],
+    }
+
+    pattern = expand_layer_granularity_pattern(["s", "m"], num_layers=4)
+
+    assert pattern == ["s", "m", "s", "m"]
+    assert len(pattern) == 4
 
 
 def test_layer_granularity_pattern_repeats_across_model_layers():

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from utils.config import write_resolved_config
+from models.correction import correction_context_from_config
 from utils.monitoring import (
     DEFAULT_MONITORING_BACKEND,
     build_monitoring_series_metadata,
@@ -22,7 +23,10 @@ METRICS_COLUMNS = [
     "model_size_label",
     "model_shape_label",
     "sampling_mode",
+    "granularity_sampling_mode",
     "granularity",
+    "granularity_pattern_summary",
+    "correction_context",
     "loss",
     "perplexity",
     "tokens_seen",
@@ -111,6 +115,12 @@ RUN_SUMMARY_FIELDS = [
     "family_size_slug",
     "family_resolution_rule",
     "sampling_mode",
+    "resolved_sampling_mode",
+    "requested_granularity_sampling_alias",
+    "granularity_sampling_mode",
+    "granularity_pattern_provenance",
+    "granularity_pattern_summary",
+    "correction_context",
     "model_family_slug",
     "model_size_slug",
     "token_budget_slug",
@@ -243,6 +253,14 @@ def build_run_summary(
         "family_size_slug": run.get("family_size_slug"),
         "family_resolution_rule": run.get("family_resolution_rule"),
         "sampling_mode": _sampling_mode(run, training),
+        "resolved_sampling_mode": model.get("granularity_sampling_mode", "global"),
+        "requested_granularity_sampling_alias": model.get(
+            "requested_granularity_sampling_alias"
+        ),
+        "granularity_sampling_mode": model.get("granularity_sampling_mode"),
+        "granularity_pattern_provenance": _granularity_pattern_provenance(config),
+        "granularity_pattern_summary": _granularity_pattern_summary(config),
+        "correction_context": _correction_context_summary(config),
         "completion_label": run["completion_label"],
         "model_family_slug": run.get("model_family_slug"),
         "model_size_slug": run.get("model_size_slug"),
@@ -985,6 +1003,9 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "model_size_label": model_shape_label,
         "model_shape_label": model_shape_label,
         "sampling_mode": None,
+        "granularity_sampling_mode": None,
+        "granularity_pattern_summary": None,
+        "correction_context": None,
         "model_family_slug": None,
         "model_variant": None,
         "model_size_slug": None,
@@ -1037,6 +1058,82 @@ def _sampling_mode(run: Mapping[str, Any], training: Mapping[str, Any]) -> Any:
     if granularity_sampling == "all":
         return "nested-all"
     return granularity_sampling
+
+
+def json_artifact_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, sort_keys=True)
+
+
+def _granularity_pattern_provenance(
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    model = config.get("model", {})
+    run = config.get("run", {})
+    if not isinstance(model, Mapping):
+        model = {}
+    if not isinstance(run, Mapping):
+        run = {}
+
+    provenance = model.get("granularity_pattern_provenance")
+    if isinstance(provenance, Mapping):
+        return dict(provenance)
+
+    granularity_sampling_mode = model.get("granularity_sampling_mode")
+    if granularity_sampling_mode is None:
+        granularity_sampling_mode = "global"
+
+    provenance = {
+        "pattern_type": (
+            "single" if granularity_sampling_mode == "global" else "per_layer"
+        ),
+        "scope": "model",
+        "source": "model.granularity_sampling_mode",
+        "requested_alias": model.get("requested_granularity_sampling_alias"),
+        "layer_count": model.get("num_layers"),
+        "available_granularities": list(model.get("granularities", []))
+        if isinstance(model.get("granularities"), list)
+        else [],
+    }
+    if model.get("requested_granularity_sampling_alias") is not None or run.get(
+        "granularity"
+    ) is not None:
+        provenance["active_granularity"] = run.get("granularity")
+    return provenance
+
+
+def _granularity_pattern_summary(
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    model = config.get("model", {})
+    run = config.get("run", {})
+    if not isinstance(model, Mapping):
+        model = {}
+    if not isinstance(run, Mapping):
+        run = {}
+
+    sampling_mode = str(model.get("granularity_sampling_mode", "global"))
+    return {
+        "pattern_type": "single" if sampling_mode == "global" else "per_layer",
+        "selected_granularities": list(model.get("granularities", []))
+        if isinstance(model.get("granularities"), list)
+        else [],
+        "layer_count": model.get("num_layers"),
+        "repeatable_source": [
+            str(run.get("run_id") or ""),
+            f"model.granularity_sampling_mode={sampling_mode}",
+        ],
+    }
+
+
+def _correction_context_summary(
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    context = correction_context_from_config(config)
+    return context.to_dict()
 
 
 def _summary_granularities(summary: Mapping[str, Any]) -> list[str]:

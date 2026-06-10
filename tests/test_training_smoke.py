@@ -237,6 +237,13 @@ def _run_concat_lmc_case(tmp_path, monkeypatch, correction_mode):
             for granularity in ["s", "m", "l", "xl"]
         },
     )
+    # Keep the legacy concat-LMC smoke deterministic so it still exercises the
+    # full four-granularity correction path after the sampling-mode refactor.
+    monkeypatch.setattr(
+        training_run,
+        "select_training_granularities",
+        lambda config, granularities, device: list(granularities),
+    )
 
     result = run_training(
         config,
