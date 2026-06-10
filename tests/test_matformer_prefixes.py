@@ -20,6 +20,11 @@ from modified_llama import (
     get_prefix_membership_segment_metadata,
     granularity_prefix_width,
 )
+from models.granularity import (
+    build_granularity_pattern,
+    get_granularity_metadata,
+    summarize_granularity_pattern,
+)
 from models.wiring import build_global_granularity_pattern
 from utils.config import resolve_run_config
 
@@ -108,6 +113,41 @@ def test_concat_block_metadata_can_be_derived_from_config_prefix_map():
 
     assert [entry["block_width"] for entry in metadata] == [10, 10, 20, 60]
     assert [entry["prefix_width"] for entry in metadata] == [10, 20, 40, 100]
+
+
+def test_granularity_metadata_helpers_build_stable_pattern_summaries():
+    metadata = get_granularity_metadata("l")
+    pattern = build_granularity_pattern(
+        pattern_type="per_layer",
+        selected_granularities=("s", "m", "l"),
+        layer_count=3,
+        repeatable_source=(
+            "debug-nested-001",
+            "model.granularity_sampling_mode=per_layer",
+        ),
+    )
+
+    assert metadata == {
+        "display_name": "L",
+        "ffn_ratio": 2.0,
+        "full_intermediate_fraction": 0.5,
+    }
+    assert pattern.pattern_type == "per_layer"
+    assert pattern.selected_granularities == ("s", "m", "l")
+    assert pattern.layer_count == 3
+    assert pattern.repeatable_source == (
+        "debug-nested-001",
+        "model.granularity_sampling_mode=per_layer",
+    )
+    assert summarize_granularity_pattern(pattern) == {
+        "pattern_type": "per_layer",
+        "selected_granularities": ("s", "m", "l"),
+        "layer_count": 3,
+        "repeatable_source": (
+            "debug-nested-001",
+            "model.granularity_sampling_mode=per_layer",
+        ),
+    }
 
 
 def test_concat_membership_counts_follow_concat_boundaries():

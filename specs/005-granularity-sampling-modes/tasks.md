@@ -91,8 +91,8 @@
 
 ### Verification for User Story 3
 
-- [ ] T021 [P] [US3] Add focused unit coverage for the new granularity metadata helpers in `tests/test_matformer_prefixes.py`
-- [ ] T022 [P] [US3] Add focused artifact/provenance coverage for sampling mode and pattern summaries in `tests/test_artifacts.py`
+- [X] T021 [P] [US3] Add focused unit coverage for the new granularity metadata helpers in `tests/test_matformer_prefixes.py`
+- [X] T022 [P] [US3] Add focused artifact/provenance coverage for sampling mode and pattern summaries in `tests/test_artifacts.py`
 
 ### Implementation for User Story 3
 

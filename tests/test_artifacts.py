@@ -7,6 +7,15 @@ import torch
 from datasets import Dataset
 
 from scripts.make_figures import generate_figures, scaling_curve_label, scaling_curve_style
+from models.correction import (
+    correction_context_from_config,
+    summarize_correction_context,
+)
+from models.granularity import summarize_granularity_pattern
+from models.wiring import (
+    build_global_granularity_pattern,
+    build_per_layer_granularity_pattern,
+)
 from utils.config import resolve_all_run_configs, resolve_run_config
 from utils.metrics import (
     ArtifactError,
@@ -22,7 +31,7 @@ from utils.metrics import (
     write_scaling_results_csv,
     write_task_results_csv,
 )
-from training.run import run_training
+from training.run import build_training_metric_row, run_training
 
 
 class TinyExtractionModel(torch.nn.Module):
@@ -212,6 +221,125 @@ def test_run_summary_includes_default_long_run_metadata(tmp_path):
     }
     assert saved_summary["warmup_completion_step"] is None
     assert saved_summary["warmup_completed"] is False
+
+
+@pytest.mark.parametrize(
+    "alias, expected_mode, expected_sampling_mode, expected_pattern_type, pattern_builder, layer_granularities",
+    [
+        (
+            "all",
+            "global",
+            "nested-all",
+            "single",
+            build_global_granularity_pattern,
+            None,
+        ),
+        (
+            "random",
+            "per_layer",
+            "nested-random",
+            "per_layer",
+            build_per_layer_granularity_pattern,
+            ["s", "m"],
+        ),
+    ],
+)
+def test_artifacts_record_sampling_mode_and_pattern_provenance(
+    tmp_path,
+    alias,
+    expected_mode,
+    expected_sampling_mode,
+    expected_pattern_type,
+    pattern_builder,
+    layer_granularities,
+):
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[f"training.granularity_sampling={alias}"],
+    )
+
+    if layer_granularities is None:
+        runtime_pattern = pattern_builder(config)
+    else:
+        runtime_pattern = pattern_builder(config, layer_granularities)
+
+    runtime_pattern_summary = json.loads(
+        json.dumps(summarize_granularity_pattern(runtime_pattern))
+    )
+    correction_context = json.loads(
+        json.dumps(
+            summarize_correction_context(
+                correction_context_from_config(
+                    config,
+                    granularity_pattern=runtime_pattern,
+                )
+            )
+        )
+    )
+
+    config_path = write_config_artifact(config)
+    summary = build_run_summary(
+        config,
+        tokens_seen=128,
+        notes=["artifact provenance smoke"],
+        extra_fields={
+            "granularity_pattern_summary": runtime_pattern_summary,
+            "correction_context": correction_context,
+        },
+    )
+    summary_path = write_run_summary(output_dir, summary)
+
+    metric_row = build_training_metric_row(
+        config,
+        step=1,
+        granularity=config["model"]["granularities"][0],
+        loss=1.25,
+        tokens_seen=8,
+        content_tokens_seen=8,
+        wall_clock_seconds=2.0,
+        peak_memory_bytes=512,
+        granularity_pattern_summary=runtime_pattern_summary,
+        correction_context=correction_context,
+    )
+    metrics_path = write_metrics_csv(output_dir, [metric_row])
+
+    saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved_config["model"]["granularity_sampling_mode"] == expected_mode
+    assert saved_config["model"]["requested_granularity_sampling_alias"] == alias
+    assert saved_config["model"]["granularity_pattern_provenance"] == {
+        "pattern_type": expected_pattern_type,
+        "scope": "model",
+        "source": "model.granularity_sampling_mode",
+        "requested_alias": alias,
+        "layer_count": config["model"]["num_layers"],
+        "available_granularities": ["s", "m", "l", "xl"],
+        "active_granularity": None,
+    }
+
+    saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert saved_summary["sampling_mode"] == expected_sampling_mode
+    assert saved_summary["resolved_sampling_mode"] == expected_mode
+    assert saved_summary["requested_granularity_sampling_alias"] == alias
+    assert saved_summary["granularity_sampling_mode"] == expected_mode
+    assert saved_summary["granularity_pattern_summary"] == runtime_pattern_summary
+    assert saved_summary["correction_context"] == correction_context
+    assert saved_summary["granularity_pattern_provenance"] == saved_config[
+        "model"
+    ]["granularity_pattern_provenance"]
+
+    with metrics_path.open("r", encoding="utf-8", newline="") as metrics_file:
+        metric_rows = list(csv.DictReader(metrics_file))
+    assert len(metric_rows) == 1
+    assert metric_rows[0]["sampling_mode"] == expected_sampling_mode
+    assert metric_rows[0]["granularity_sampling_mode"] == expected_mode
+    assert json.loads(metric_rows[0]["granularity_pattern_summary"]) == (
+        runtime_pattern_summary
+    )
+    assert json.loads(metric_rows[0]["correction_context"]) == correction_context
+    assert metric_rows[0]["granularity"] == config["model"]["granularities"][0]
 
 
 @pytest.mark.parametrize(
