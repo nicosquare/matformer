@@ -62,23 +62,28 @@ matrix:
   nested:
     run_id: debug-nested-001
     model_family: nested
+    sampling_mode: nested-all
     model_size_label: debug
     granularities: [s, m, l, xl]
   standalone:
     - run_id: debug-standalone-s-001
       model_family: standalone
+      sampling_mode: standalone
       model_size_label: debug
       granularity: s
     - run_id: debug-standalone-m-001
       model_family: standalone
+      sampling_mode: standalone
       model_size_label: debug
       granularity: m
     - run_id: debug-standalone-l-001
       model_family: standalone
+      sampling_mode: standalone
       model_size_label: debug
       granularity: l
     - run_id: debug-standalone-xl-001
       model_family: standalone
+      sampling_mode: standalone
       model_size_label: debug
       granularity: xl
 

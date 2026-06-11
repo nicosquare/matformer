@@ -17,9 +17,9 @@
 
 **Purpose**: Refresh shared experiment fixtures and validation entry points before shared plumbing changes begin
 
-- [ ] T001 [P] Update `configs/debug_matrix.yaml` so the debug matrix exercises explicit `nested-random`, `nested-all`, and `standalone` mode combinations for smoke validation
-- [ ] T002 [P] Update `configs/dmodel256_pilot_comparison.yaml` so the pilot comparison keeps the canonical `nested-random` path and artifact provenance fields explicit
-- [ ] T003 [P] Refresh `tests/fixtures/experiment_config_resolution.yaml` so config-resolution tests cover the resolved canonical mode fields
+- [X] T001 [P] Update `configs/debug_matrix.yaml` so the debug matrix exercises explicit `nested-random`, `nested-all`, and `standalone` mode combinations for smoke validation
+- [X] T002 [P] Update `configs/dmodel256_pilot_comparison.yaml` so the pilot comparison keeps the canonical `nested-random` path and artifact provenance fields explicit
+- [X] T003 [P] Refresh `tests/fixtures/experiment_config_resolution.yaml` so config-resolution tests cover the resolved canonical mode fields
 
 ---
 

@@ -950,6 +950,8 @@ def test_optimizer_preset_resolution_merges_registry_defaults_and_partial_overri
         "weight_decay": 0.05,
     }
 
+    assert resolved["run"]["sampling_mode"] == "nested-all"
+    assert resolved["model"]["granularity_sampling_mode"] == "global"
     assert training["optimizer_name"] == "adamw"
     assert training["optimizer_kwargs"] == expected_optimizer_kwargs
     assert training["optimizer"] == {
