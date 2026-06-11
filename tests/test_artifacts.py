@@ -223,6 +223,30 @@ def test_run_summary_includes_default_long_run_metadata(tmp_path):
     assert saved_summary["warmup_completed"] is False
 
 
+def test_run_summary_default_pattern_summary_distinguishes_nested_all(tmp_path):
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=["run.sampling_mode=nested-all"],
+    )
+
+    summary = build_run_summary(config, tokens_seen=0)
+
+    assert summary["sampling_mode"] == "nested-all"
+    assert summary["granularity_pattern_summary"] == {
+        "pattern_type": "all_granularities",
+        "selected_granularities": config["model"]["granularities"],
+        "layer_count": config["model"]["num_layers"],
+        "repeatable_source": [
+            config["run"]["run_id"],
+            "run.sampling_mode=nested-all",
+            "model.granularity_sampling_mode=global",
+        ],
+    }
+
+
 @pytest.mark.parametrize(
     "alias, expected_mode, expected_sampling_mode, expected_pattern_type, pattern_builder, layer_granularities",
     [

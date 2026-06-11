@@ -1073,10 +1073,13 @@ def _granularity_pattern_provenance(
 ) -> dict[str, Any]:
     model = config.get("model", {})
     run = config.get("run", {})
+    training = config.get("training", {})
     if not isinstance(model, Mapping):
         model = {}
     if not isinstance(run, Mapping):
         run = {}
+    if not isinstance(training, Mapping):
+        training = {}
 
     provenance = model.get("granularity_pattern_provenance")
     if isinstance(provenance, Mapping):
@@ -1085,10 +1088,17 @@ def _granularity_pattern_provenance(
     granularity_sampling_mode = model.get("granularity_sampling_mode")
     if granularity_sampling_mode is None:
         granularity_sampling_mode = "global"
+    resolved_run_mode = _sampling_mode(run, training)
 
     provenance = {
         "pattern_type": (
-            "single" if granularity_sampling_mode == "global" else "per_layer"
+            "all_granularities"
+            if resolved_run_mode == "nested-all"
+            else (
+                "per_layer"
+                if granularity_sampling_mode == "per_layer"
+                else "single"
+            )
         ),
         "scope": "model",
         "source": "model.granularity_sampling_mode",
@@ -1110,22 +1120,42 @@ def _granularity_pattern_summary(
 ) -> dict[str, Any]:
     model = config.get("model", {})
     run = config.get("run", {})
+    training = config.get("training", {})
     if not isinstance(model, Mapping):
         model = {}
     if not isinstance(run, Mapping):
         run = {}
+    if not isinstance(training, Mapping):
+        training = {}
 
+    resolved_run_mode = _sampling_mode(run, training)
     sampling_mode = str(model.get("granularity_sampling_mode", "global"))
+    if resolved_run_mode == "nested-all":
+        pattern_type = "all_granularities"
+    elif sampling_mode == "per_layer":
+        pattern_type = "per_layer"
+    else:
+        pattern_type = "single"
+
+    selected_granularities = list(model.get("granularities", [])) if isinstance(
+        model.get("granularities"), list
+    ) else []
+    if resolved_run_mode == "standalone" and run.get("granularity") is not None:
+        selected_granularities = [str(run["granularity"])]
+
+    repeatable_source = [
+        str(run.get("run_id") or ""),
+        f"run.sampling_mode={resolved_run_mode}",
+        f"model.granularity_sampling_mode={sampling_mode}",
+    ]
+    if resolved_run_mode == "standalone" and run.get("granularity") is not None:
+        repeatable_source.append(f"run.granularity={run['granularity']}")
+
     return {
-        "pattern_type": "single" if sampling_mode == "global" else "per_layer",
-        "selected_granularities": list(model.get("granularities", []))
-        if isinstance(model.get("granularities"), list)
-        else [],
+        "pattern_type": pattern_type,
+        "selected_granularities": selected_granularities,
         "layer_count": model.get("num_layers"),
-        "repeatable_source": [
-            str(run.get("run_id") or ""),
-            f"model.granularity_sampling_mode={sampling_mode}",
-        ],
+        "repeatable_source": repeatable_source,
     }
 
 
