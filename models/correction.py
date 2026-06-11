@@ -128,6 +128,20 @@ def summarize_correction_context(context: CorrectionContext) -> dict[str, Any]:
     return context.to_dict()
 
 
+def summarize_correction_context_from_config(
+    config: Mapping[str, Any],
+    granularity_pattern: GranularityPattern | Sequence[str] | str | None = None,
+) -> dict[str, Any]:
+    """Build a stable correction-context summary from resolved config state."""
+
+    return summarize_correction_context(
+        correction_context_from_config(
+            config,
+            granularity_pattern=granularity_pattern,
+        )
+    )
+
+
 def correction_context_from_config(
     config: Mapping[str, Any],
     granularity_pattern: GranularityPattern | Sequence[str] | str | None = None,

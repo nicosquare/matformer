@@ -11,6 +11,7 @@ from models.correction import (
     correction_context_from_config,
     should_activate_local_correction,
     summarize_correction_context,
+    summarize_correction_context_from_config,
 )
 from models.ffn import CatLlamaMLP, ModifiedLlamaMLP
 from models.granularity import (
@@ -35,6 +36,7 @@ from models.granularity import (
     granularity_block_count,
     granularity_concat_block_count,
     granularity_prefix_width,
+    summarize_granularity_pattern_from_config,
     summarize_granularity_pattern,
 )
 from models.wiring import (
@@ -55,6 +57,7 @@ __all__ = [
     "correction_context_from_config",
     "should_activate_local_correction",
     "summarize_correction_context",
+    "summarize_correction_context_from_config",
     "MATFORMER_GRANULARITY_DISPLAY_NAMES",
     "MATFORMER_GRANULARITY_ORDER",
     "GranularityMetadata",
@@ -79,6 +82,7 @@ __all__ = [
     "granularity_block_count",
     "granularity_concat_block_count",
     "granularity_prefix_width",
+    "summarize_granularity_pattern_from_config",
     "summarize_granularity_pattern",
     "build_global_granularity_pattern",
     "build_per_layer_granularity_pattern",

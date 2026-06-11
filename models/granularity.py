@@ -409,6 +409,62 @@ def summarize_granularity_pattern(pattern: GranularityPattern) -> dict[str, Any]
     return pattern.to_dict()
 
 
+def summarize_granularity_pattern_from_config(
+    config: Mapping[str, Any],
+    runtime_pattern: GranularityPattern | None = None,
+) -> dict[str, Any]:
+    """Build a stable granularity-pattern summary from resolved config state."""
+
+    model = config.get("model", {})
+    run = config.get("run", {})
+    training = config.get("training", {})
+    if not isinstance(model, Mapping):
+        model = {}
+    if not isinstance(run, Mapping):
+        run = {}
+    if not isinstance(training, Mapping):
+        training = {}
+
+    if runtime_pattern is not None:
+        summary = runtime_pattern.to_dict()
+        repeatable_source = summary.get("repeatable_source")
+        if isinstance(repeatable_source, (list, tuple)) and repeatable_source:
+            summary["repeatable_source"] = [
+                str(run.get("run_id") or repeatable_source[0]),
+                *repeatable_source[1:],
+            ]
+        return summary
+
+    resolved_run_mode = str(run.get("sampling_mode") or "nested-random")
+    sampling_mode = str(model.get("granularity_sampling_mode", "global"))
+
+    if resolved_run_mode == "nested-all":
+        pattern_type = "all_granularities"
+    elif sampling_mode == "per_layer":
+        pattern_type = "per_layer"
+    else:
+        pattern_type = "single"
+
+    selected_granularities = list(model.get("granularities", []))
+    if resolved_run_mode == "standalone" and run.get("granularity") is not None:
+        selected_granularities = [str(run["granularity"])]
+
+    repeatable_source = [
+        str(run.get("run_id") or ""),
+        f"run.sampling_mode={resolved_run_mode}",
+        f"model.granularity_sampling_mode={sampling_mode}",
+    ]
+    if resolved_run_mode == "standalone" and run.get("granularity") is not None:
+        repeatable_source.append(f"run.granularity={run['granularity']}")
+
+    return {
+        "pattern_type": pattern_type,
+        "selected_granularities": selected_granularities,
+        "layer_count": model.get("num_layers"),
+        "repeatable_source": repeatable_source,
+    }
+
+
 def _canonical_prefix_fraction(granularity: str) -> float:
     return canonical_prefix_fraction(granularity)
 

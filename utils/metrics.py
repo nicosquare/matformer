@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from utils.config import write_resolved_config
-from models.correction import correction_context_from_config
+from models.correction import summarize_correction_context_from_config
+from models.granularity import summarize_granularity_pattern_from_config
 from utils.monitoring import (
     DEFAULT_MONITORING_BACKEND,
     build_monitoring_series_metadata,
@@ -115,6 +116,7 @@ RUN_SUMMARY_FIELDS = [
     "family_size_slug",
     "family_resolution_rule",
     "sampling_mode",
+    "resolved_run_mode",
     "resolved_sampling_mode",
     "requested_granularity_sampling_alias",
     "granularity_sampling_mode",
@@ -253,7 +255,14 @@ def build_run_summary(
         "family_size_slug": run.get("family_size_slug"),
         "family_resolution_rule": run.get("family_resolution_rule"),
         "sampling_mode": _sampling_mode(run, training),
-        "resolved_sampling_mode": model.get("granularity_sampling_mode", "global"),
+        "resolved_run_mode": run.get(
+            "resolved_run_mode",
+            _sampling_mode(run, training),
+        ),
+        "resolved_sampling_mode": model.get(
+            "resolved_sampling_mode",
+            model.get("granularity_sampling_mode", "global"),
+        ),
         "requested_granularity_sampling_alias": model.get(
             "requested_granularity_sampling_alias"
         ),
@@ -1119,51 +1128,25 @@ def _granularity_pattern_summary(
     config: Mapping[str, Any],
 ) -> dict[str, Any]:
     model = config.get("model", {})
-    run = config.get("run", {})
-    training = config.get("training", {})
     if not isinstance(model, Mapping):
         model = {}
-    if not isinstance(run, Mapping):
-        run = {}
-    if not isinstance(training, Mapping):
-        training = {}
+    stored_summary = model.get("granularity_pattern_summary")
+    if isinstance(stored_summary, Mapping):
+        return dict(stored_summary)
 
-    resolved_run_mode = _sampling_mode(run, training)
-    sampling_mode = str(model.get("granularity_sampling_mode", "global"))
-    if resolved_run_mode == "nested-all":
-        pattern_type = "all_granularities"
-    elif sampling_mode == "per_layer":
-        pattern_type = "per_layer"
-    else:
-        pattern_type = "single"
-
-    selected_granularities = list(model.get("granularities", [])) if isinstance(
-        model.get("granularities"), list
-    ) else []
-    if resolved_run_mode == "standalone" and run.get("granularity") is not None:
-        selected_granularities = [str(run["granularity"])]
-
-    repeatable_source = [
-        str(run.get("run_id") or ""),
-        f"run.sampling_mode={resolved_run_mode}",
-        f"model.granularity_sampling_mode={sampling_mode}",
-    ]
-    if resolved_run_mode == "standalone" and run.get("granularity") is not None:
-        repeatable_source.append(f"run.granularity={run['granularity']}")
-
-    return {
-        "pattern_type": pattern_type,
-        "selected_granularities": selected_granularities,
-        "layer_count": model.get("num_layers"),
-        "repeatable_source": repeatable_source,
-    }
+    return summarize_granularity_pattern_from_config(config)
 
 
 def _correction_context_summary(
     config: Mapping[str, Any],
 ) -> dict[str, Any]:
-    context = correction_context_from_config(config)
-    return context.to_dict()
+    model = config.get("model", {})
+    if isinstance(model, Mapping):
+        stored_context = model.get("correction_context")
+        if isinstance(stored_context, Mapping):
+            return dict(stored_context)
+
+    return summarize_correction_context_from_config(config)
 
 
 def _summary_granularities(summary: Mapping[str, Any]) -> list[str]:

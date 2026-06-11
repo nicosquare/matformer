@@ -32,9 +32,9 @@
 - [X] T004 Implement canonical `run.sampling_mode` and `model.granularity_sampling_mode` resolution in `utils/config.py`
 - [X] T005 [P] Add invalid-combination validation for nested modes, standalone granularities, and correction modes in `utils/config.py`
 - [X] T006 [P] Extend provenance serialization helpers for resolved mode and pattern summaries in `utils/metrics.py`
-- [ ] T007 Propagate the resolved provenance fields into config writing and run-summary generation in `training/run.py`
-- [ ] T008 [P] Keep granularity-pattern modeling explicit in `models/granularity.py`
-- [ ] T009 [P] Keep correction-context modeling explicit in `models/correction.py`
+- [X] T007 Propagate the resolved provenance fields into config writing and run-summary generation in `training/run.py`
+- [X] T008 [P] Keep granularity-pattern modeling explicit in `models/granularity.py`
+- [X] T009 [P] Keep correction-context modeling explicit in `models/correction.py`
 
 **Checkpoint**: Shared run-mode, pattern, correction, and provenance plumbing is ready
 

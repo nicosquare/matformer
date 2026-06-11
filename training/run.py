@@ -26,7 +26,8 @@ from evaluation.validation import (
     validation_results_to_metric_rows,
 )
 from models.ffn import CatLlamaMLP, get_concat_layout_diagnostic, get_ffn_prefix_metadata
-from models.correction import correction_context_from_config, summarize_correction_context
+from models.correction import summarize_correction_context_from_config
+from models.granularity import summarize_granularity_pattern_from_config
 from models.wiring import ModifiedLlamaForCausalLM
 from training.data import (
     build_language_model_dataloader,
@@ -295,28 +296,22 @@ def run_training(
         tokens_seen = training_outcome["tokens_seen"]
         target_model = getattr(model, "module", model)
         runtime_pattern = getattr(target_model, "current_granularity_pattern", None)
-        if runtime_pattern is not None and hasattr(runtime_pattern, "to_dict"):
-            runtime_pattern_summary = runtime_pattern.to_dict()
-        elif runtime_pattern is not None:
-            runtime_pattern_summary = dict(runtime_pattern)
-        else:
-            runtime_pattern_summary = config["model"].get(
-                "granularity_pattern_provenance",
-                {},
-            )
-        if isinstance(runtime_pattern_summary, dict):
-            repeatable_source = runtime_pattern_summary.get("repeatable_source")
-            if isinstance(repeatable_source, (list, tuple)) and repeatable_source:
-                runtime_pattern_summary["repeatable_source"] = [
-                    config["run"]["run_id"],
-                    *repeatable_source[1:],
-                ]
-        correction_context = summarize_correction_context(
-            correction_context_from_config(
-                config,
-                granularity_pattern=runtime_pattern,
-            )
+        runtime_pattern_summary = summarize_granularity_pattern_from_config(
+            config,
+            runtime_pattern=runtime_pattern,
         )
+        correction_context = summarize_correction_context_from_config(
+            config,
+            granularity_pattern=runtime_pattern,
+        )
+        resolved_run_mode = str(config["run"].get("sampling_mode", "nested-random"))
+        config["run"]["resolved_run_mode"] = resolved_run_mode
+        config["model"]["resolved_sampling_mode"] = config["model"].get(
+            "granularity_sampling_mode",
+            "global",
+        )
+        config["model"]["granularity_pattern_summary"] = runtime_pattern_summary
+        config["model"]["correction_context"] = correction_context
         extra_summary_fields = {
             "steps_completed": training_outcome["steps_completed"],
             "stop_reason": training_outcome["stop_reason"],
@@ -324,6 +319,7 @@ def run_training(
             "model_variant": config["model"]["variant"],
             "granularities": config["model"]["granularities"],
             "granularity_sampling": training.get("granularity_sampling", "all"),
+            "resolved_run_mode": resolved_run_mode,
             "resolved_sampling_mode": config["model"].get(
                 "granularity_sampling_mode",
                 "global",
@@ -2546,57 +2542,11 @@ def _sampling_mode(run: dict[str, Any], training: dict[str, Any]) -> Any:
 
 
 def _default_granularity_pattern_summary(config: dict[str, Any]) -> dict[str, Any]:
-    model = config["model"]
-    run = config["run"]
-    training = config.get("training", {})
-    if not isinstance(training, dict):
-        training = {}
-    resolved_run_mode = _sampling_mode(run, training)
-    sampling_mode = str(model.get("granularity_sampling_mode", "global"))
-    if resolved_run_mode == "nested-all":
-        pattern_type = "all_granularities"
-    elif sampling_mode == "per_layer":
-        pattern_type = "per_layer"
-    else:
-        pattern_type = "single"
-
-    selected_granularities = list(model.get("granularities", []))
-    if resolved_run_mode == "standalone" and run.get("granularity") is not None:
-        selected_granularities = [str(run["granularity"])]
-
-    repeatable_source = [
-        str(run.get("run_id") or ""),
-        f"run.sampling_mode={resolved_run_mode}",
-        f"model.granularity_sampling_mode={sampling_mode}",
-    ]
-    if resolved_run_mode == "standalone" and run.get("granularity") is not None:
-        repeatable_source.append(f"run.granularity={run['granularity']}")
-
-    return {
-        "pattern_type": pattern_type,
-        "selected_granularities": selected_granularities,
-        "layer_count": model.get("num_layers"),
-        "repeatable_source": repeatable_source,
-    }
+    return summarize_granularity_pattern_from_config(config)
 
 
 def _default_correction_context(config: dict[str, Any]) -> dict[str, Any]:
-    model = config["model"]
-    sampling_mode = str(model.get("granularity_sampling_mode", "global"))
-    local_correction_active = (
-        sampling_mode == "per_layer"
-        and model.get("correction_mode") in {"gmc", "lmc"}
-    )
-    return {
-        "correction_mode": model.get("correction_mode"),
-        "sampling_mode": sampling_mode,
-        "local_correction_active": local_correction_active,
-        "derived_membership_pattern": (
-            list(model.get("granularities", []))
-            if local_correction_active
-            else []
-        ),
-    }
+    return summarize_correction_context_from_config(config)
 
 
 def _runtime_granularity_artifacts(
@@ -2605,25 +2555,12 @@ def _runtime_granularity_artifacts(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     target_model = getattr(model, "module", model)
     runtime_pattern = getattr(target_model, "current_granularity_pattern", None)
-    if runtime_pattern is not None and hasattr(runtime_pattern, "to_dict"):
-        runtime_pattern_summary = runtime_pattern.to_dict()
-    elif runtime_pattern is not None:
-        runtime_pattern_summary = dict(runtime_pattern)
-    else:
-        runtime_pattern_summary = _default_granularity_pattern_summary(config)
-
-    if isinstance(runtime_pattern_summary, dict):
-        repeatable_source = runtime_pattern_summary.get("repeatable_source")
-        if isinstance(repeatable_source, (list, tuple)) and repeatable_source:
-            runtime_pattern_summary["repeatable_source"] = [
-                config["run"]["run_id"],
-                *repeatable_source[1:],
-            ]
-
-    correction_context = summarize_correction_context(
-        correction_context_from_config(
-            config,
-            granularity_pattern=runtime_pattern,
-        )
+    runtime_pattern_summary = summarize_granularity_pattern_from_config(
+        config,
+        runtime_pattern=runtime_pattern,
+    )
+    correction_context = summarize_correction_context_from_config(
+        config,
+        granularity_pattern=runtime_pattern,
     )
     return runtime_pattern_summary, correction_context
