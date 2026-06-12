@@ -7,7 +7,7 @@
 
 Normalize MatFormer training into three explicit run modes: `nested-random`,
 `nested-all`, and `standalone`. Preserve the current whole-model path as the
-named `nested-random + global` behavior, add `nested-random + per_layer` as an
+named `nested-random + global` behavior, add `nested-random + per_block` as an
 explicit submode, and persist the resolved mode, correction mode, and runtime
 granularity-pattern provenance in saved artifacts.
 
@@ -19,7 +19,7 @@ granularity-pattern provenance in saved artifacts.
 **Storage**: filesystem artifacts under `outputs/`, checkpoints in the run
 directory, metrics CSV/JSON, summary JSON, extraction metadata, and logs  
 **Testing**: pytest plus focused config-resolution, artifact, model-wiring, and
-training-smoke tests for global, per-layer, nested-all, and standalone paths  
+training-smoke tests for global, per-block, nested-all, and standalone paths
 **Target Platform**: Linux research workstation and single-node GPU cluster;
 single-process execution only  
 **Project Type**: research script/model change/training pipeline  
@@ -34,7 +34,7 @@ dataset redesign or distributed validation in this feature
 **Reproducibility Notes**: save the resolved config per run, record the seed
 when set, and persist the resolved mode, runtime granularity pattern, and
 correction context in run metadata  
-**Performance Goals**: preserve current global-path behavior; per-layer mode
+**Performance Goals**: preserve current global-path behavior; per-block mode
 adds only local sampling and correction bookkeeping, with no distributed sync  
 **Constraints**: single-process only; invalid mode or correction pairings must
 fail before training begins  
@@ -119,10 +119,10 @@ Research is complete and the open questions from the feature spec are resolved:
 1. The top-level run selector remains `run.sampling_mode` with values
    `nested-random`, `nested-all`, and `standalone`.
 2. `model.granularity_sampling_mode` remains the model-level sampling submode
-   and carries the explicit `global` or `per_layer` choice.
+   and carries the explicit `global` or `per_block` choice.
 3. Validation should cover config resolution, correction activation, artifact
    serialization, and smoke runs for `nested-random + global`,
-   `nested-random + per_layer`, `nested-all`, and `standalone`.
+   `nested-random + per_block`, `nested-all`, and `standalone`.
 
 See `research.md` for the detailed decisions and rejected alternatives.
 

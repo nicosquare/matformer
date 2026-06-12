@@ -56,12 +56,12 @@ python train.py \
   --run-id debug-nested-001 \
   --output-root "$OUTPUT_ROOT" \
   --override run.sampling_mode=nested-random \
-  --override model.granularity_sampling_mode=per_layer
+  --override model.granularity_sampling_mode=per_block
 ```
 
 Expected result:
 - Each transformer block receives its own granularity choice.
-- Local GMC/LMC is derived from the sampled per-layer pattern.
+- Local GMC/LMC is derived from the sampled per-block pattern.
 - Global correction is not activated in this mode.
 
 ## 5. Run a Nested-All Smoke Example

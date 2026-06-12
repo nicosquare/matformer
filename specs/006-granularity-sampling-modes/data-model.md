@@ -16,9 +16,9 @@ Represents the canonical top-level mode for a training run.
 
 **Validation Rules**
 - `name` must be one of the three canonical values.
-- `nested-random` must support `global` and `per_layer` model sampling.
+- `nested-random` must support `global` and `per_block` model sampling.
 - `nested-all` must evaluate all configured granularities and must not enable
-  per-layer random sampling.
+  per-block random sampling.
 - `standalone` must remain fixed to one granularity for the entire run.
 
 ## Sampling Submode
@@ -26,7 +26,7 @@ Represents the canonical top-level mode for a training run.
 Represents the model-level choice used within `nested-random`.
 
 **Fields**
-- `mode`: One of `global` or `per_layer`.
+- `mode`: One of `global` or `per_block`.
 - `source`: The resolved config field that selected the submode.
 
 **Relationships**
@@ -35,7 +35,7 @@ Represents the model-level choice used within `nested-random`.
 
 **Validation Rules**
 - `global` must select one granularity for the full model on a given iteration.
-- `per_layer` must select one granularity per transformer block.
+- `per_block` must select one granularity per transformer block.
 
 ## Granularity Pattern
 
@@ -43,9 +43,9 @@ Represents the granularity choices actually used during a forward pass or
 evaluation pass.
 
 **Fields**
-- `pattern_type`: `single`, `per_layer`, or `all_granularities`.
+- `pattern_type`: `single`, `per_block`, or `all_granularities`.
 - `selected_granularities`: The chosen granularity or ordered sequence of
-  per-layer or per-evaluation choices.
+  per-block or per-evaluation choices.
 - `layer_count`: Number of transformer blocks covered by the pattern.
 - `repeatable_source`: The config inputs needed to reconstruct the pattern.
 
@@ -56,7 +56,7 @@ evaluation pass.
 **Validation Rules**
 - `nested-random + global` must produce a single shared selection per
   iteration.
-- `nested-random + per_layer` must produce one selection per transformer
+- `nested-random + per_block` must produce one selection per transformer
   block.
 - `nested-all` must record the full set of evaluated granularities.
 - `standalone` must record the fixed granularity used for the whole run.
@@ -79,11 +79,11 @@ Represents the correction behavior that accompanies a sampling decision.
 - Derived from both the resolved config and the runtime granularity pattern.
 
 **Validation Rules**
-- Local correction may be active only when the run is using per-layer
+- Local correction may be active only when the run is using per-block
   sampling.
 - Global, nested-all, and standalone paths must preserve the current whole-
   model correction behavior.
-- A per-layer pattern must drive the local correction interpretation.
+- A per-block pattern must drive the local correction interpretation.
 
 ## Run Provenance Record
 
@@ -101,7 +101,7 @@ Represents the saved metadata needed to reconstruct a run without logs.
 
 **Validation Rules**
 - All accepted runs must be reconstructable from saved artifacts alone.
-- The provenance record must distinguish global, per-layer, nested-all, and
+- The provenance record must distinguish global, per-block, nested-all, and
   standalone executions.
 - The provenance record must match the resolved config exactly.
 
@@ -123,7 +123,7 @@ Represents the common FFN metadata needed by both MatFormer FFN variants.
 
 **Relationships**
 - Shared by the granularity helpers and the model wiring layer.
-- Used to build the per-layer sampling and correction logic.
+- Used to build the per-block sampling and correction logic.
 
 **Validation Rules**
 - Metadata must remain consistent across the slicing and concat variants.
@@ -133,7 +133,7 @@ Represents the common FFN metadata needed by both MatFormer FFN variants.
 
 ## Model Wiring State
 
-Represents the assembled model and the per-layer selections currently in use.
+Represents the assembled model and the per-block selections currently in use.
 
 **Fields**
 - `layer_modules`: Ordered list of FFN-bearing transformer blocks.

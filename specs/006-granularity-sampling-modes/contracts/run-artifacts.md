@@ -26,7 +26,7 @@ The saved config, run summary, and metric rows must include:
 
 - A saved `nested-random + global` run must be readable without knowing the
   implementation internals.
-- A saved `nested-random + per_layer` run must include enough information to
+- A saved `nested-random + per_block` run must include enough information to
   distinguish the pattern from the global path.
 - A saved `nested-all` run must show the evaluated granularity set and the mean
   loss aggregation behavior.

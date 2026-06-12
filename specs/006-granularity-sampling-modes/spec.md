@@ -3,13 +3,19 @@
 **Feature Branch**: `006-granularity-sampling-modes`  
 **Created**: 2026-06-11  
 **Status**: Draft  
-**Input**: User description: "Refactor the MatFormer training feature so the operation modes are coherent and explicitly specified. The feature must consolidate three top-level run modes: nested-random, nested-all, and standalone. nested-random is elastic training and supports two sampling submodes, global and per_layer. nested-all evaluates all configured granularities on every iteration and optimizes the mean of the per-granularity losses. standalone trains the full token budget using a single fixed granularity for the entire run. The feature must also define correction rules clearly, keep a canonical resolved sampling mode in the model config, and record the resolved mode and runtime granularity pattern in run artifacts."
+**Input**: User description: "Refactor the MatFormer training feature so the operation modes are coherent and explicitly specified. The feature must consolidate three top-level run modes: nested-random, nested-all, and standalone. nested-random is elastic training and supports two sampling submodes, global and per_block. nested-all evaluates all configured granularities on every iteration and optimizes the mean of the per-granularity losses. standalone trains the full token budget using a single fixed granularity for the entire run. The feature must also define correction rules clearly, keep a canonical resolved sampling mode in the model config, and record the resolved mode and runtime granularity pattern in run artifacts."
+
+## Clarifications
+
+### Session 2026-06-12
+
+- Q: Should the canonical nested-random submode be named `per_block` or `per_layer`? → A: `per_block`
 
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Train with explicit nested-random sampling (Priority: P1)
 
-As a researcher, I can run elastic training in nested-random mode and choose whether sampling is global or per-layer so that the current adaptive behavior remains available as a named, explicit mode.
+As a researcher, I can run elastic training in nested-random mode and choose whether sampling is global or per-block so that the current adaptive behavior remains available as a named, explicit mode.
 
 **Why this priority**: This is the primary elastic-training path and the most important behavior to preserve while making the mode selection explicit.
 
@@ -18,8 +24,8 @@ As a researcher, I can run elastic training in nested-random mode and choose whe
 **Acceptance Scenarios**:
 
 1. **Given** nested-random with `global` selected, **When** an iteration starts, **Then** one granularity choice applies to every FFN in the model for that iteration.
-2. **Given** nested-random with `per_layer` selected, **When** an iteration starts, **Then** each transformer block receives its own granularity choice for that iteration.
-3. **Given** nested-random with either sampling submode, **When** correction is computed, **Then** the correction context matches the selected pattern, with a shared correction scalar or pattern in `global` and a per-block correction derived from the sampled pattern in `per_layer`, and the saved run metadata records the resolved mode, submode, and runtime pattern summary.
+2. **Given** nested-random with `per_block` selected, **When** an iteration starts, **Then** each transformer block receives its own granularity choice for that iteration.
+3. **Given** nested-random with either sampling submode, **When** correction is computed, **Then** the correction context matches the selected pattern, with a shared correction scalar or pattern in `global` and a per-block correction derived from the sampled pattern in `per_block`, and the saved run metadata records the resolved mode, submode, and runtime pattern summary.
 
 ---
 
@@ -35,7 +41,7 @@ As a researcher, I can run nested-all mode to compare all configured granulariti
 
 1. **Given** nested-all with a configured set of granularities, **When** an iteration runs, **Then** every configured granularity is evaluated during that iteration.
 2. **Given** nested-all evaluation of multiple granularities, **When** the training objective is computed, **Then** it equals the mean of the per-granularity losses for that iteration.
-3. **Given** nested-all with correction enabled, **When** a particular granularity is evaluated, **Then** correction follows that uniform granularity across the model and does not introduce per-layer random sampling.
+3. **Given** nested-all with correction enabled, **When** a particular granularity is evaluated, **Then** correction follows that uniform granularity across the model and does not introduce per-block random sampling.
 
 ---
 
@@ -53,8 +59,8 @@ As a researcher or maintainer, I can run a fixed-granularity standalone experime
 2. **Given** a completed standalone run, **When** the saved artifacts are inspected, **Then** they identify the requested input, resolved mode, correction mode, and runtime granularity pattern without requiring console logs.
 ### Edge Cases
 
-- A per-layer run may coincidentally choose the same granularity for every block in one iteration; that is still per-layer sampling because the choices were made independently.
-- Nested-all must not perform per-layer random sampling, even if the evaluated granularity is repeated across the model.
+- A per-block run may coincidentally choose the same granularity for every block in one iteration; that is still per-block sampling because the choices were made independently.
+- Nested-all must not perform per-block random sampling, even if the evaluated granularity is repeated across the model.
 - Standalone must reject nested sampling submodes and must only accept the supported fixed granularities `s`, `m`, `l`, and `xl`.
 - Invalid mode combinations must fail early with a clear error rather than falling back to an unintended behavior.
 - The feature remains single-process only; distributed training is out of scope for this release.
@@ -65,13 +71,13 @@ As a researcher or maintainer, I can run a fixed-granularity standalone experime
 
 - **FR-001**: The system MUST expose a canonical run mode with exactly three top-level values: `nested-random`, `nested-all`, and `standalone`.
 - **FR-002**: The system MUST keep `nested-random` as the elastic-training path and MUST not treat it as a dense-model training mode.
-- **FR-003**: The canonical configuration for `nested-random` MUST include an explicit sampling submode with exactly two values: `global` and `per_layer`.
+- **FR-003**: The canonical configuration for `nested-random` MUST include an explicit sampling submode with exactly two values: `global` and `per_block`.
 - **FR-004**: In `nested-random + global`, the system MUST choose one granularity once per dataloader iteration and apply that same granularity to every FFN in the model for that iteration.
-- **FR-005**: In `nested-random + per_layer`, the system MUST choose one granularity independently for each transformer block on every dataloader iteration.
+- **FR-005**: In `nested-random + per_block`, the system MUST choose one granularity independently for each transformer block on every dataloader iteration.
 - **FR-006**: In `nested-random + global`, correction MUST use one shared scalar or pattern for the whole iteration.
-- **FR-007**: In `nested-random + per_layer`, correction MUST be derived per block from the sampled per-layer pattern.
+- **FR-007**: In `nested-random + per_block`, correction MUST be derived per block from the sampled per-block pattern.
 - **FR-008**: The system MUST support `nested-all` by evaluating every configured granularity on every iteration and optimizing the mean of the per-granularity losses.
-- **FR-009**: In `nested-all`, correction MUST follow the granularity selected for evaluation and MUST not introduce per-layer random sampling.
+- **FR-009**: In `nested-all`, correction MUST follow the granularity selected for evaluation and MUST not introduce per-block random sampling.
 - **FR-010**: The system MUST support `standalone` as a single fixed-granularity run for the entire training job.
 - **FR-011**: `standalone` MUST accept only the supported fixed granularities `s`, `m`, `l`, and `xl`.
 - **FR-012**: The system MUST preserve the correction modes `none`, `gmc`, and `lmc` where those modes are valid for the selected run mode, and MUST reject correction modes that are not valid for that run mode.
@@ -79,14 +85,14 @@ As a researcher or maintainer, I can run a fixed-granularity standalone experime
 - **FR-014**: The canonical model configuration MUST retain the resolved run mode and, when applicable, the resolved `nested-random` submode as separate explicit values.
 - **FR-015**: Saved run artifacts MUST record the resolved canonical mode, the resolved `nested-random` submode when applicable, the correction mode, and the runtime granularity pattern summary.
 - **FR-016**: The saved artifacts and run summary MUST make it possible to reconstruct which mode was used without reading console logs.
-- **FR-017**: Invalid combinations MUST be rejected before training begins, including `nested-all` with per-layer sampling, `standalone` with nested sampling submodes, unsupported standalone granularities, and any mode/correction pairing that is not valid.
+- **FR-017**: Invalid combinations MUST be rejected before training begins, including `nested-all` with per-block sampling, `standalone` with nested sampling submodes, unsupported standalone granularities, and any mode/correction pairing that is not valid.
 - **FR-018**: The system MUST preserve the named `nested-random + global` configuration as the explicit whole-model path.
-- **FR-019**: The resolved configuration and runtime pattern summary MUST make the difference between `nested-random + global` and `nested-random + per_layer` observable.
+- **FR-019**: The resolved configuration and runtime pattern summary MUST make the difference between `nested-random + global` and `nested-random + per_block` observable.
 
 ### Key Entities
 
 - **Run Mode**: The canonical top-level operating mode for a training run, with values `nested-random`, `nested-all`, and `standalone`.
-- **Sampling Submode**: The nested-random-specific choice between `global` and `per_layer`.
+- **Sampling Submode**: The nested-random-specific choice between `global` and `per_block`.
 - **Granularity Pattern**: The effective granularity selection used during a run or iteration, represented as a shared choice, a per-block pattern, a per-evaluated-granularity summary, or a fixed standalone choice.
 - **Correction Context**: The correction behavior paired with the selected mode and granularity pattern for a given iteration or evaluation.
 - **Run Provenance Record**: The saved metadata needed to reconstruct the resolved mode, correction mode, and runtime pattern without logs.
@@ -96,7 +102,7 @@ As a researcher or maintainer, I can run a fixed-granularity standalone experime
 ### Measurable Outcomes
 
 - **SC-001**: In validated `nested-random + global` runs, 100% of checked iterations use exactly one granularity across all FFNs in the model.
-- **SC-002**: In validated `nested-random + per_layer` runs, 100% of saved pattern summaries contain one entry per transformer block and preserve a per-block pattern shape that is distinct from the single-value global summary format.
+- **SC-002**: In validated `nested-random + per_block` runs, 100% of saved pattern summaries contain one entry per transformer block and preserve a per-block pattern shape that is distinct from the single-value global summary format.
 - **SC-003**: In validated `nested-all` runs, 100% of checked iterations evaluate every configured granularity and report an aggregate loss equal to the mean of the per-granularity losses within a tolerance of `1e-6`.
 - **SC-004**: In validated `standalone` runs, all four supported granularities `s`, `m`, `l`, and `xl` complete successfully and remain fixed for the full run.
 - **SC-005**: 100% of completed runs store the resolved mode, resolved submode when applicable, correction mode, and runtime granularity pattern summary in saved artifacts.

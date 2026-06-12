@@ -5,7 +5,7 @@
 - **Decision**: Keep `run.sampling_mode` as the top-level runtime selector with
   the explicit values `nested-random`, `nested-all`, and `standalone`, while
   `model.granularity_sampling_mode` continues to represent the model-level
-  granularity submode with `global` and `per_layer`.
+  granularity submode with `global` and `per_block`.
 - **Rationale**: The repository already distinguishes top-level run mode from
   model-level granularity selection in config resolution. Preserving that split
   keeps the feature explicit without inventing a new config hierarchy.
@@ -35,9 +35,9 @@
 
 - **Decision**: Preserve the existing whole-model correction behavior for the
   global path, and only derive local GMC/LMC behavior when
-  `model.granularity_sampling_mode=per_layer`.
+  `model.granularity_sampling_mode=per_block`.
 - **Rationale**: The feature must not change the behavior of the current global
-  path. Tying local correction to the per-layer mode makes parity tests for the
+  path. Tying local correction to the per-block mode makes parity tests for the
   existing path straightforward.
 - **Alternatives considered**:
   - Enabling local correction for all modes. Rejected because it would change
@@ -55,8 +55,8 @@
   and pattern there lets downstream analysis reconstruct a run without logs.
 - **Alternatives considered**:
   - Recording only the resolved mode and omitting the runtime pattern summary.
-    Rejected because per-layer and nested-all runs need the pattern to be
-    interpretable later.
+  Rejected because per-block and nested-all runs need the pattern to be
+  interpretable later.
   - Storing provenance only in console output. Rejected because logs are not a
     durable experiment record.
 

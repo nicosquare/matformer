@@ -42,19 +42,19 @@
 
 ## Phase 3: User Story 1 - Train with explicit nested-random sampling (Priority: P1) MVP
 
-**Goal**: Preserve the current elastic-training path as an explicit `nested-random` mode with `global` and `per_layer` sampling submodes
+**Goal**: Preserve the current elastic-training path as an explicit `nested-random` mode with `global` and `per_block` sampling submodes
 
-**Independent Test**: A debug run with `run.sampling_mode=nested-random` and `model.granularity_sampling_mode=global` still chooses one granularity for the full forward pass; switching to `per_layer` produces a block-wise pattern, and both runs save the resolved mode, submode, and pattern summary
+**Independent Test**: A debug run with `run.sampling_mode=nested-random` and `model.granularity_sampling_mode=global` still chooses one granularity for the full forward pass; switching to `per_block` produces a block-wise pattern, and both runs save the resolved mode, submode, and pattern summary
 
 ### Verification for User Story 1
 
-- [X] T010 [P] [US1] Add config-resolution coverage for `nested-random`, `global`, and `per_layer` in `tests/test_config.py`
-- [X] T011 [P] [US1] Add model-wiring, correction, smoke-run, and artifact verification coverage for the explicit global and per-layer paths in `tests/test_matformer_prefixes.py`, `tests/test_training_smoke.py`, and `tests/test_artifacts.py`
+- [X] T010 [P] [US1] Add config-resolution coverage for `nested-random`, `global`, and `per_block` in `tests/test_config.py`
+- [X] T011 [P] [US1] Add model-wiring, correction, smoke-run, and artifact verification coverage for the explicit global and per-block paths in `tests/test_matformer_prefixes.py`, `tests/test_training_smoke.py`, and `tests/test_artifacts.py`
 
 ### Implementation for User Story 1
 
-- [X] T012 [P] [US1] Implement explicit `nested-random` global/per-layer pattern application in `models/wiring.py`
-- [X] T013 [US1] Implement per-layer correction derivation and global-path parity handling in `models/correction.py`
+- [X] T012 [P] [US1] Implement explicit `nested-random` global/per-block pattern application in `models/wiring.py`
+- [X] T013 [US1] Implement per-block correction derivation and global-path parity handling in `models/correction.py`
 - [X] T014 [US1] Record nested-random provenance fields and pattern summaries in `training/run.py` and `utils/metrics.py`
 
 **Checkpoint**: User Story 1 should now be fully functional and independently verifiable
@@ -75,7 +75,7 @@
 ### Implementation for User Story 2
 
 - [ ] T017 [P] [US2] Implement nested-all iteration over every configured granularity in `training/run.py`
-- [ ] T018 [US2] Update `evaluation/validation.py` and `models/correction.py` so nested-all uses the evaluated granularity and does not activate per-layer random sampling
+- [ ] T018 [US2] Update `evaluation/validation.py` and `models/correction.py` so nested-all uses the evaluated granularity and does not activate per-block random sampling
 - [ ] T019 [US2] Record nested-all runtime granularity summaries in `utils/metrics.py`
 
 **Checkpoint**: User Story 2 should now work independently of any later cleanup
@@ -134,7 +134,7 @@
 - Verification comes first when it helps catch likely research regressions
 - Shared config and data structures before model wiring changes
 - Model logic before run-summary and artifact updates
-- Preserve the current global path before introducing the per-layer path
+- Preserve the current global path before introducing the per-block path
 - Keep the canonical mode surface clear and direct
 
 ### Parallel Opportunities
@@ -154,12 +154,12 @@
 
 ```bash
 # Run the verification tasks together:
-Task: "Add config-resolution coverage for nested-random, global, and per_layer in tests/test_config.py"
-Task: "Add model-wiring and correction regression coverage for the explicit global and per-layer paths in tests/test_matformer_prefixes.py"
+Task: "Add config-resolution coverage for nested-random, global, and per_block in tests/test_config.py"
+Task: "Add model-wiring and correction regression coverage for the explicit global and per-block paths in tests/test_matformer_prefixes.py"
 
 # Run the independent implementation tasks together:
-Task: "Implement explicit nested-random global/per-layer pattern application in models/wiring.py"
-Task: "Implement per-layer correction derivation and global-path parity handling in models/correction.py"
+Task: "Implement explicit nested-random global/per-block pattern application in models/wiring.py"
+Task: "Implement per-block correction derivation and global-path parity handling in models/correction.py"
 ```
 
 ---
