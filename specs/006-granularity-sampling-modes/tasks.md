@@ -69,8 +69,8 @@
 
 ### Verification for User Story 2
 
-- [ ] T015 [P] [US2] Add nested-all evaluation and mean-loss coverage in `tests/test_training_smoke.py`
-- [ ] T016 [P] [US2] Add nested-all artifact and provenance coverage in `tests/test_artifacts.py`
+- [X] T015 [P] [US2] Add nested-all evaluation and mean-loss coverage in `tests/test_training_smoke.py`
+- [X] T016 [P] [US2] Add nested-all artifact and provenance coverage in `tests/test_artifacts.py`
 
 ### Implementation for User Story 2
 

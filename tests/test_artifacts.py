@@ -242,9 +242,87 @@ def test_run_summary_default_pattern_summary_distinguishes_nested_all(tmp_path):
         "repeatable_source": [
             config["run"]["run_id"],
             "run.sampling_mode=nested-all",
+        "model.granularity_sampling_mode=global",
+        ],
+    }
+
+
+def test_artifacts_record_nested_all_sampling_mode_and_pattern_provenance(tmp_path):
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "run.sampling_mode=nested-all",
+            "model.granularity_sampling_mode=global",
+        ],
+    )
+
+    config_path = write_config_artifact(config)
+    summary = build_run_summary(config, tokens_seen=128, notes=["artifact smoke"])
+    summary_path = write_run_summary(output_dir, summary)
+
+    metric_rows = [
+        build_training_metric_row(
+            config,
+            step=1,
+            granularity=granularity,
+            loss=float(index + 1),
+            tokens_seen=8,
+            content_tokens_seen=8,
+            wall_clock_seconds=2.0,
+            peak_memory_bytes=512,
+        )
+        for index, granularity in enumerate(config["model"]["granularities"])
+    ]
+    metrics_path = write_metrics_csv(output_dir, metric_rows)
+
+    saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved_config["run"]["sampling_mode"] == "nested-all"
+    assert saved_config["model"]["granularity_sampling_mode"] == "global"
+    assert saved_config["model"]["granularity_pattern_provenance"] == {
+        "pattern_type": "all_granularities",
+        "scope": "model",
+        "source": "model.granularity_sampling_mode",
+        "requested_alias": None,
+        "layer_count": config["model"]["num_layers"],
+        "available_granularities": ["s", "m", "l", "xl"],
+    }
+
+    saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert saved_summary["sampling_mode"] == "nested-all"
+    assert saved_summary["resolved_run_mode"] == "nested-all"
+    assert saved_summary["resolved_sampling_mode"] == "global"
+    assert saved_summary["granularity_pattern_summary"] == {
+        "pattern_type": "all_granularities",
+        "selected_granularities": config["model"]["granularities"],
+        "layer_count": config["model"]["num_layers"],
+        "repeatable_source": [
+            config["run"]["run_id"],
+            "run.sampling_mode=nested-all",
             "model.granularity_sampling_mode=global",
         ],
     }
+    assert saved_summary["granularity_pattern_provenance"] == saved_config["model"][
+        "granularity_pattern_provenance"
+    ]
+    assert saved_summary["correction_context"]["local_correction_active"] is False
+
+    with metrics_path.open("r", encoding="utf-8", newline="") as metrics_file:
+        rows = list(csv.DictReader(metrics_file))
+    assert [row["granularity"] for row in rows] == config["model"]["granularities"]
+    assert {row["sampling_mode"] for row in rows} == {"nested-all"}
+    assert {row["granularity_sampling_mode"] for row in rows} == {"global"}
+    assert all(
+        json.loads(row["granularity_pattern_summary"])["pattern_type"]
+        == "all_granularities"
+        for row in rows
+    )
+    assert all(
+        json.loads(row["correction_context"])["local_correction_active"] is False
+        for row in rows
+    )
 
 
 @pytest.mark.parametrize(

@@ -1222,9 +1222,16 @@ def _build_granularity_pattern_provenance(
     requested_granularity_sampling_alias: str | None = None,
 ) -> dict[str, Any]:
     granularity_sampling_mode = model.get("granularity_sampling_mode")
+    run_sampling_mode = run.get("sampling_mode")
     provenance = {
         "pattern_type": (
-            "single" if granularity_sampling_mode == "global" else "per_layer"
+            "all_granularities"
+            if run_sampling_mode == "nested-all"
+            else (
+                "single"
+                if granularity_sampling_mode == "global"
+                else "per_layer"
+            )
         ),
         "scope": "model",
         "source": "model.granularity_sampling_mode",
