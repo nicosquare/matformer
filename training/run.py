@@ -2138,6 +2138,10 @@ def train_for_steps(
                         step=step,
                         distributed_context=distributed_context,
                     )
+                    validation_runtime_pattern_summary, validation_correction_context = _runtime_granularity_artifacts(
+                        config,
+                        model,
+                    )
                     validation_metric_rows = validation_results_to_metric_rows(
                         validation_results,
                         config,
@@ -2147,8 +2151,8 @@ def train_for_steps(
                         peak_memory_bytes=peak_memory_bytes,
                         tokens_seen=tokens_seen,
                         content_tokens_seen=content_tokens_seen,
-                        granularity_pattern_summary=runtime_pattern_summary,
-                        correction_context=correction_context,
+                        granularity_pattern_summary=validation_runtime_pattern_summary,
+                        correction_context=validation_correction_context,
                     )
                     metrics_rows.extend(validation_metric_rows)
                     if monitoring_session is not None:
