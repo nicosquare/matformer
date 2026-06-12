@@ -12,7 +12,7 @@ run:
 
 model:
   base_model_name: debug-llama
-  variant: cat_llama
+  variant: concat
   correction_mode: gmc
   membership_correction: true
   tokenizer_name: hf-internal-testing/llama-tokenizer

@@ -137,7 +137,7 @@ def test_cli_overrides_are_parsed_and_applied():
             "training.max_steps=7",
             "run.seed=123",
             "outputs.save_checkpoints=false",
-            "model.variant=cat_llama",
+            "model.variant=concat",
             "model.correction_mode=none",
             "model.membership_correction=false",
             "training.scheduler.name=constant",
@@ -147,7 +147,7 @@ def test_cli_overrides_are_parsed_and_applied():
     assert resolved["training"]["max_steps"] == 7
     assert resolved["run"]["seed"] == 123
     assert resolved["outputs"]["save_checkpoints"] is False
-    assert resolved["model"]["variant"] == "cat_llama"
+    assert resolved["model"]["variant"] == "concat"
     assert resolved["model"]["membership_correction"] is False
     assert resolved["training"]["scheduler_name"] == "constant"
 
@@ -586,7 +586,7 @@ def test_single_run_defaults_to_outputs_root(tmp_path):
 
     resolved = resolve_run_config(config_path)
 
-    assert resolved["model"]["variant"] == "matformer_llama"
+    assert resolved["model"]["variant"] == "slicing"
     assert resolved["model"]["membership_correction"] is True
     assert resolved["run"]["output_root"] == "outputs"
     assert resolved["training"]["gradient_clip_norm"] == 1.0
@@ -607,9 +607,9 @@ def test_shared_configs_resolve_default_model_variant():
     )
     pilot_resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
 
-    assert debug_resolved["model"]["variant"] == "matformer_llama"
+    assert debug_resolved["model"]["variant"] == "slicing"
     assert debug_resolved["model"]["membership_correction"] is True
-    assert pilot_resolved["model"]["variant"] == "matformer_llama"
+    assert pilot_resolved["model"]["variant"] == "slicing"
     assert pilot_resolved["model"]["membership_correction"] is True
 
 
@@ -619,7 +619,7 @@ def test_shared_configs_resolve_default_model_variant():
         (["model.correction_mode=none", "model.membership_correction=false"], "none", False),
         (["model.correction_mode=gmc"], "gmc", True),
         (
-            ["model.variant=cat_llama", "model.correction_mode=lmc"],
+            ["model.variant=concat", "model.correction_mode=lmc"],
             "lmc",
             True,
         ),
@@ -672,18 +672,18 @@ def test_lmc_is_rejected_for_non_concat_runs():
         )
 
 
-def test_cat_llama_defaults_membership_correction_on():
+def test_concat_defaults_membership_correction_on():
     resolved = resolve_run_config(
         "configs/debug_matrix.yaml",
         run_id="debug-nested-001",
-        overrides=["model.variant=cat_llama"],
+        overrides=["model.variant=concat"],
     )
 
-    assert resolved["model"]["variant"] == "cat_llama"
+    assert resolved["model"]["variant"] == "concat"
     assert resolved["model"]["membership_correction"] is True
 
 
-def test_matformer_llama_allows_disabling_membership_correction():
+def test_slicing_allows_disabling_membership_correction():
     resolved = resolve_run_config(
         "configs/debug_matrix.yaml",
         run_id="debug-nested-001",
@@ -693,7 +693,7 @@ def test_matformer_llama_allows_disabling_membership_correction():
         ],
     )
 
-    assert resolved["model"]["variant"] == "matformer_llama"
+    assert resolved["model"]["variant"] == "slicing"
     assert resolved["model"]["membership_correction"] is False
 
 

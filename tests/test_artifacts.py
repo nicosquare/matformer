@@ -125,7 +125,7 @@ def test_write_config_metrics_and_run_summary(tmp_path):
 
     saved_config = json.loads(config_path.read_text(encoding="utf-8"))
     assert saved_config["run"]["run_id"] == "debug-nested-001"
-    assert saved_config["model"]["variant"] == "matformer_llama"
+    assert saved_config["model"]["variant"] == "slicing"
     assert saved_config["training"]["base_learning_rate"] == 0.0003
     assert saved_config["training"]["learning_rate_scale_rule"] == "none"
     assert saved_config["training"]["learning_rate_scale_factor"] == 1.0
@@ -158,7 +158,7 @@ def test_write_config_metrics_and_run_summary(tmp_path):
     saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert saved_summary["status"] == "completed"
     assert saved_summary["tokens_seen"] == 128
-    assert saved_summary["model_variant"] == "matformer_llama"
+    assert saved_summary["model_variant"] == "slicing"
     assert saved_summary["base_learning_rate"] == 0.0003
     assert saved_summary["learning_rate_scale_rule"] == "none"
     assert saved_summary["learning_rate_scale_factor"] == 1.0
@@ -796,7 +796,7 @@ def test_write_failed_run_summary_records_failure_note(tmp_path):
     saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert saved_summary["status"] == "failed"
     assert saved_summary["tokens_seen"] == 64
-    assert saved_summary["model_variant"] == "matformer_llama"
+    assert saved_summary["model_variant"] == "slicing"
     assert saved_summary["notes"] == ["CUDA out of memory during debug smoke"]
 
 
@@ -813,7 +813,7 @@ def test_baseline_and_cat_run_summaries_share_schema_and_differ_by_variant(tmp_p
         "configs/debug_matrix.yaml",
         run_id="debug-nested-001",
         output_dir=cat_output_dir,
-        overrides=["model.variant=cat_llama"],
+        overrides=["model.variant=concat"],
     )
 
     baseline_summary = build_run_summary(
@@ -828,8 +828,8 @@ def test_baseline_and_cat_run_summaries_share_schema_and_differ_by_variant(tmp_p
     )
 
     assert set(baseline_summary) == set(cat_summary)
-    assert baseline_summary["model_variant"] == "matformer_llama"
-    assert cat_summary["model_variant"] == "cat_llama"
+    assert baseline_summary["model_variant"] == "slicing"
+    assert cat_summary["model_variant"] == "concat"
     assert baseline_summary["model_family"] == cat_summary["model_family"] == "nested"
 
 
@@ -896,78 +896,78 @@ def test_scaling_curve_label_prefers_correction_mode_when_available():
     labeled_row = {
         "sampling_mode": "nested-random",
         "model_family": "nested",
-        "model_variant": "cat_llama",
+        "model_variant": "concat",
         "correction_mode": "lmc",
     }
     legacy_row = {
         "sampling_mode": "nested-random",
         "model_family": "nested",
-        "model_variant": "cat_llama",
+        "model_variant": "concat",
         "membership_correction": True,
     }
     standalone_row = {
         "sampling_mode": "standalone",
         "model_family": "standalone",
-        "model_variant": "matformer_llama",
+        "model_variant": "slicing",
         "membership_correction": False,
     }
 
     assert scaling_curve_label(labeled_row) == (
-        "nested-random / cat / lmc"
+        "nested-random / concat / lmc"
     )
     assert scaling_curve_label(legacy_row) == (
-        "nested-random / cat / gmc"
+        "nested-random / concat / gmc"
     )
     assert scaling_curve_label(standalone_row) == "standalone"
 
 
 def test_scaling_curve_style_groups_family_colors_markers_and_shades():
-    nested_all_cat_none_style = scaling_curve_style(
+    nested_all_concat_none_style = scaling_curve_style(
         [
             {
                 "sampling_mode": "nested-all",
                 "model_family": "nested",
-                "model_variant": "cat_llama",
+                "model_variant": "concat",
                 "correction_mode": "none",
             }
         ]
     )
-    nested_all_cat_gmc_style = scaling_curve_style(
+    nested_all_concat_gmc_style = scaling_curve_style(
         [
             {
                 "sampling_mode": "nested-all",
                 "model_family": "nested",
-                "model_variant": "cat_llama",
+                "model_variant": "concat",
                 "membership_correction": True,
             }
         ]
     )
-    nested_all_cat_lmc_style = scaling_curve_style(
+    nested_all_concat_lmc_style = scaling_curve_style(
         [
             {
                 "sampling_mode": "nested-all",
                 "model_family": "nested",
-                "model_variant": "cat_llama",
+                "model_variant": "concat",
                 "correction_mode": "lmc",
             }
         ]
     )
-    nested_random_cat_none_style = scaling_curve_style(
+    nested_random_concat_none_style = scaling_curve_style(
         [
             {
                 "sampling_mode": "nested-random",
                 "model_family": "nested",
-                "model_variant": "cat_llama",
+                "model_variant": "concat",
                 "correction_mode": "none",
             }
         ]
     )
-    nested_random_cat_gmc_style = scaling_curve_style(
+    nested_random_concat_gmc_style = scaling_curve_style(
         [
             {
                 "sampling_mode": "nested-random",
                 "model_family": "nested",
-                "model_variant": "cat_llama",
+                "model_variant": "concat",
                 "membership_correction": True,
             }
         ]
@@ -977,7 +977,7 @@ def test_scaling_curve_style_groups_family_colors_markers_and_shades():
             {
                 "sampling_mode": "nested-all",
                 "model_family": "nested",
-                "model_variant": "matformer_llama",
+                "model_variant": "slicing",
                 "correction_mode": "none",
             }
         ]
@@ -987,7 +987,7 @@ def test_scaling_curve_style_groups_family_colors_markers_and_shades():
             {
                 "sampling_mode": "nested-all",
                 "model_family": "nested",
-                "model_variant": "matformer_llama",
+                "model_variant": "slicing",
                 "membership_correction": True,
             }
         ]
@@ -997,7 +997,7 @@ def test_scaling_curve_style_groups_family_colors_markers_and_shades():
             {
                 "sampling_mode": "nested-random",
                 "model_family": "nested",
-                "model_variant": "matformer_llama",
+                "model_variant": "slicing",
                 "correction_mode": "none",
             }
         ]
@@ -1007,7 +1007,7 @@ def test_scaling_curve_style_groups_family_colors_markers_and_shades():
             {
                 "sampling_mode": "nested-random",
                 "model_family": "nested",
-                "model_variant": "matformer_llama",
+                "model_variant": "slicing",
                 "membership_correction": True,
             }
         ]
@@ -1017,36 +1017,36 @@ def test_scaling_curve_style_groups_family_colors_markers_and_shades():
             {
                 "sampling_mode": "standalone",
                 "model_family": "standalone",
-                "model_variant": "matformer_llama",
+                "model_variant": "slicing",
             }
         ]
     )
 
-    assert nested_all_cat_none_style["color"] != nested_random_cat_none_style["color"]
+    assert nested_all_concat_none_style["color"] != nested_random_concat_none_style["color"]
     assert nested_all_slice_none_style["color"] != nested_random_slice_none_style["color"]
-    assert nested_all_cat_none_style["color"] != nested_all_slice_none_style["color"]
+    assert nested_all_concat_none_style["color"] != nested_all_slice_none_style["color"]
     assert standalone_style["color"] not in {
-        nested_all_cat_none_style["color"],
-        nested_random_cat_none_style["color"],
+        nested_all_concat_none_style["color"],
+        nested_random_concat_none_style["color"],
         nested_all_slice_none_style["color"],
         nested_random_slice_none_style["color"],
     }
 
-    assert nested_all_cat_none_style["marker"] == "o"
-    assert nested_all_cat_gmc_style["marker"] == "s"
-    assert nested_all_cat_lmc_style["marker"] == "^"
-    assert nested_random_cat_none_style["marker"] == "o"
-    assert nested_random_cat_gmc_style["marker"] == "s"
+    assert nested_all_concat_none_style["marker"] == "o"
+    assert nested_all_concat_gmc_style["marker"] == "s"
+    assert nested_all_concat_lmc_style["marker"] == "^"
+    assert nested_random_concat_none_style["marker"] == "o"
+    assert nested_random_concat_gmc_style["marker"] == "s"
     assert nested_all_slice_none_style["marker"] == "o"
     assert nested_all_slice_gmc_style["marker"] == "s"
     assert nested_random_slice_none_style["marker"] == "o"
     assert nested_random_slice_gmc_style["marker"] == "s"
 
-    assert nested_all_cat_none_style["linestyle"] == "-"
-    assert nested_all_cat_gmc_style["linestyle"] == "--"
-    assert nested_all_cat_lmc_style["linestyle"] == "-."
-    assert nested_random_cat_none_style["linestyle"] == "-"
-    assert nested_random_cat_gmc_style["linestyle"] == "--"
+    assert nested_all_concat_none_style["linestyle"] == "-"
+    assert nested_all_concat_gmc_style["linestyle"] == "--"
+    assert nested_all_concat_lmc_style["linestyle"] == "-."
+    assert nested_random_concat_none_style["linestyle"] == "-"
+    assert nested_random_concat_gmc_style["linestyle"] == "--"
     assert nested_all_slice_none_style["linestyle"] == "-"
     assert nested_all_slice_gmc_style["linestyle"] == "--"
     assert nested_random_slice_none_style["linestyle"] == "-"

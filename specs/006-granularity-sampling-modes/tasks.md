@@ -107,10 +107,10 @@
 
 **Purpose**: Validation, cleanup, and artifact checks that affect multiple user stories
 
-- [ ] T025 [P] Run the focused quickstart validation commands from `specs/006-granularity-sampling-modes/quickstart.md` and capture any follow-up fixes in `tests/test_training_smoke.py` or `tests/test_artifacts.py`
-- [ ] T026 [P] Remove redundant helper logic left behind in `utils/config.py`, `utils/metrics.py`, and `training/run.py`
-- [ ] T027 Confirm `config.json`, `run_summary.json`, and `metrics.csv` reconstruct `nested-random`, `nested-all`, and `standalone` runs without log inspection in `tests/test_artifacts.py`
-- [ ] T028 [P] Rename remaining `matformer_llama` and `cat_llama` references to the canonical `slicing` and `concat` names in `models/ffn.py`, `models/wiring.py`, `configs/debug_matrix.yaml`, `configs/dmodel256_pilot_comparison.yaml`, `tests/test_matformer_prefixes.py`, `tests/test_artifacts.py`, and `specs/006-granularity-sampling-modes/*`
+- [X] T025 [P] Run the focused quickstart validation commands from `specs/006-granularity-sampling-modes/quickstart.md` and capture any follow-up fixes in `tests/test_training_smoke.py` or `tests/test_artifacts.py`
+- [X] T026 [P] Remove redundant helper logic left behind in `utils/config.py`, `utils/metrics.py`, and `training/run.py`
+- [X] T027 Confirm `config.json`, `run_summary.json`, and `metrics.csv` reconstruct `nested-random`, `nested-all`, and `standalone` runs without log inspection in `tests/test_artifacts.py`
+- [X] T028 [P] Rename remaining `matformer_llama` and `cat_llama` references to the canonical `slicing` and `concat` names in `models/ffn.py`, `models/wiring.py`, `configs/debug_matrix.yaml`, `configs/dmodel256_pilot_comparison.yaml`, `tests/test_matformer_prefixes.py`, `tests/test_artifacts.py`, and `specs/006-granularity-sampling-modes/*`
 
 ---
 

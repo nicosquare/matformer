@@ -459,7 +459,7 @@ def test_prefix_membership_segment_metadata_matches_sliced_prefix_boundaries():
     assert [segment["scale"] for segment in metadata] == [1.0, 4 / 3, 2.0, 4.0]
 
 
-def test_cat_llama_scales_active_block_gradients_by_inverse_membership():
+def test_concat_scales_active_block_gradients_by_inverse_membership():
     torch.manual_seed(0)
     config = tiny_llama_config(num_hidden_layers=1)
     corrected = CatLlamaMLP(
@@ -488,7 +488,7 @@ def test_cat_llama_scales_active_block_gradients_by_inverse_membership():
     assert baseline.gate_weight_blocks[2].grad is None
 
 
-def test_cat_llama_can_disable_gradient_membership_correction():
+def test_concat_can_disable_gradient_membership_correction():
     torch.manual_seed(0)
     config = tiny_llama_config(num_hidden_layers=1)
     corrected = CatLlamaMLP(

@@ -8,7 +8,7 @@ run:
 
 model:
   base_model_name: debug-llama
-  variant: matformer_llama
+  variant: slicing
   correction_mode: gmc
   membership_correction: true
   tokenizer_name: hf-internal-testing/llama-tokenizer

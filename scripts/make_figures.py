@@ -35,10 +35,10 @@ PARAMETER_COUNT_FIELDS = [
 
 LOSS_MOVING_AVERAGE_FRACTION = 0.1
 SCALING_GROUP_COLORS = {
-    "nested-all / cat": "tab:blue",
-    "nested-random / cat": "tab:purple",
-    "nested-all / slice": "tab:orange",
-    "nested-random / slice": "tab:red",
+    "nested-all / concat": "tab:blue",
+    "nested-random / concat": "tab:purple",
+    "nested-all / slicing": "tab:orange",
+    "nested-random / slicing": "tab:red",
     "standalone": "tab:green",
 }
 SCALING_CORRECTION_STYLES = {
@@ -834,10 +834,10 @@ def scaling_curve_variant_label(row: dict[str, str]) -> str | None:
     if variant in (None, ""):
         return None
     normalized = str(variant).strip().lower()
-    if normalized == "cat_llama":
-        return "cat"
-    if normalized == "matformer_llama":
-        return "slice"
+    if normalized in {"cat_llama", "cat"}:
+        return "concat"
+    if normalized in {"matformer_llama", "slice"}:
+        return "slicing"
     return normalized
 
 

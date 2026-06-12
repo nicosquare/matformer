@@ -7,7 +7,10 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from utils.config import write_resolved_config
+from utils.config import (
+    resolve_sampling_mode_from_config_sections,
+    write_resolved_config,
+)
 from models.correction import summarize_correction_context_from_config
 from models.granularity import summarize_granularity_pattern_from_config
 from utils.monitoring import (
@@ -225,7 +228,7 @@ def summarize_runtime_granularity_pattern_from_config(
     if not isinstance(training, Mapping):
         training = {}
 
-    if _sampling_mode(run, training) == "nested-all":
+    if resolve_sampling_mode_from_config_sections(run, training) == "nested-all":
         return summarize_granularity_pattern_from_config(config)
     return summarize_granularity_pattern_from_config(
         config,
@@ -277,10 +280,10 @@ def build_run_summary(
         "active_size_label": run.get("active_size_label"),
         "family_size_slug": run.get("family_size_slug"),
         "family_resolution_rule": run.get("family_resolution_rule"),
-        "sampling_mode": _sampling_mode(run, training),
+        "sampling_mode": resolve_sampling_mode_from_config_sections(run, training),
         "resolved_run_mode": run.get(
             "resolved_run_mode",
-            _sampling_mode(run, training),
+            resolve_sampling_mode_from_config_sections(run, training),
         ),
         "resolved_sampling_mode": model.get(
             "resolved_sampling_mode",
@@ -698,7 +701,10 @@ def build_scaling_result_rows(
                 "model_family": run["model_family"],
                 "model_size_label": _model_shape_label(run),
                 "model_shape_label": _model_shape_label(run),
-                "sampling_mode": _sampling_mode(run, training),
+                "sampling_mode": resolve_sampling_mode_from_config_sections(
+                    run,
+                    training,
+                ),
                 "model_family_slug": run.get("model_family_slug"),
                 "model_size_slug": run.get("model_size_slug"),
                 "token_budget_slug": run.get("token_budget_slug"),
@@ -1078,20 +1084,6 @@ def _non_embedding_count(counts: Mapping[str, Any] | None):
 
 def _model_shape_label(run: Mapping[str, Any]) -> Any:
     return run.get("model_shape_label", run.get("model_size_label"))
-
-
-def _sampling_mode(run: Mapping[str, Any], training: Mapping[str, Any]) -> Any:
-    if run.get("sampling_mode") is not None:
-        return run["sampling_mode"]
-    if run.get("model_family") == "standalone":
-        return "standalone"
-
-    granularity_sampling = training.get("granularity_sampling")
-    if granularity_sampling == "random":
-        return "nested-random"
-    if granularity_sampling == "all":
-        return "nested-all"
-    return granularity_sampling
 
 
 def json_artifact_value(value: Any) -> Any:

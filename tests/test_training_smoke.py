@@ -254,7 +254,7 @@ def _run_concat_lmc_case(tmp_path, monkeypatch, correction_mode):
         run_id="debug-nested-001",
         output_dir=output_dir,
         overrides=[
-            "model.variant=cat_llama",
+            "model.variant=concat",
             f"model.correction_mode={correction_mode}",
             "training.max_steps=1",
             "training.eval_interval=0",
@@ -964,14 +964,14 @@ def test_tiny_nested_training_can_sample_one_granularity_per_layer_per_batch(
     )
 
 
-def test_config_driven_nested_training_records_cat_llama_variant_in_summary(tmp_path):
+def test_config_driven_nested_training_records_concat_variant_in_summary(tmp_path):
     output_dir = tmp_path / "debug-nested-001"
     config = resolve_run_config(
         "configs/debug_matrix.yaml",
         run_id="debug-nested-001",
         output_dir=output_dir,
         overrides=[
-            "model.variant=cat_llama",
+            "model.variant=concat",
             "training.max_steps=1",
             "training.eval_interval=0",
             "training.batch_size_per_process=1",
@@ -994,8 +994,8 @@ def test_config_driven_nested_training_records_cat_llama_variant_in_summary(tmp_
     )
 
     summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
-    assert config["model"]["variant"] == "cat_llama"
-    assert summary["model_variant"] == "cat_llama"
+    assert config["model"]["variant"] == "concat"
+    assert summary["model_variant"] == "concat"
 
 
 def test_config_driven_nested_training_uses_resolved_sgd_optimizer(tmp_path, monkeypatch):

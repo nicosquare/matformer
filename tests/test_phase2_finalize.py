@@ -711,7 +711,7 @@ def test_make_figures_enriches_model_variant_from_run_config(tmp_path):
         run_id="debug-nested-001",
         output_dir=output_dir / "debug-nested-001",
         overrides=[
-            "model.variant=cat_llama",
+            "model.variant=concat",
             "model.correction_mode=none",
             "model.membership_correction=false",
         ],
@@ -735,7 +735,7 @@ def test_make_figures_enriches_model_variant_from_run_config(tmp_path):
 
     enriched_rows = enrich_scaling_metadata_from_run_config(output_dir, rows)
 
-    assert enriched_rows[0]["model_variant"] == "cat_llama"
+    assert enriched_rows[0]["model_variant"] == "concat"
     assert enriched_rows[0]["membership_correction"] is False
 
 
@@ -775,7 +775,7 @@ def test_make_figures_defaults_missing_model_variant_for_legacy_configs(tmp_path
     enriched_rows = enrich_scaling_metadata_from_run_config(output_dir, [stale_row])
     refreshed_rows = refresh_scaling_parameter_counts(output_dir, [stale_row])
 
-    assert enriched_rows[0]["model_variant"] == "matformer_llama"
+    assert enriched_rows[0]["model_variant"] == "slicing"
     assert refreshed_rows[0]["total_parameters"] != stale_row["total_parameters"]
 
 
@@ -801,25 +801,25 @@ def test_make_figures_groups_scaling_curves_by_sampling_mode_and_variant():
         {
             "model_family": "nested",
             "sampling_mode": "nested-random",
-            "model_variant": "matformer_llama",
+            "model_variant": "slicing",
             "granularity": "s",
         },
         {
             "model_family": "nested",
             "sampling_mode": "nested-random",
-            "model_variant": "matformer_llama",
+            "model_variant": "slicing",
             "granularity": "xl",
         },
         {
             "model_family": "nested",
             "sampling_mode": "nested-random",
-            "model_variant": "cat_llama",
+            "model_variant": "concat",
             "granularity": "s",
         },
         {
             "model_family": "nested",
             "sampling_mode": "nested-random",
-            "model_variant": "cat_llama",
+            "model_variant": "concat",
             "granularity": "xl",
         },
     ]
@@ -827,10 +827,10 @@ def test_make_figures_groups_scaling_curves_by_sampling_mode_and_variant():
     grouped = group_scaling_rows(rows)
 
     assert set(grouped) == {
-        "nested-random / matformer_llama",
-        "nested-random / cat_llama",
+        "nested-random / slicing",
+        "nested-random / concat",
     }
-    assert [row["granularity"] for row in grouped["nested-random / cat_llama"]] == [
+    assert [row["granularity"] for row in grouped["nested-random / concat"]] == [
         "s",
         "xl",
     ]
@@ -841,28 +841,28 @@ def test_make_figures_groups_scaling_curves_by_sampling_mode_variant_and_members
         {
             "model_family": "nested",
             "sampling_mode": "nested-random",
-            "model_variant": "matformer_llama",
+            "model_variant": "slicing",
             "membership_correction": True,
             "granularity": "s",
         },
         {
             "model_family": "nested",
             "sampling_mode": "nested-random",
-            "model_variant": "matformer_llama",
+            "model_variant": "slicing",
             "membership_correction": True,
             "granularity": "xl",
         },
         {
             "model_family": "nested",
             "sampling_mode": "nested-random",
-            "model_variant": "cat_llama",
+            "model_variant": "concat",
             "membership_correction": False,
             "granularity": "s",
         },
         {
             "model_family": "nested",
             "sampling_mode": "nested-random",
-            "model_variant": "cat_llama",
+            "model_variant": "concat",
             "membership_correction": False,
             "granularity": "xl",
         },
@@ -871,18 +871,18 @@ def test_make_figures_groups_scaling_curves_by_sampling_mode_variant_and_members
     grouped = group_scaling_rows(rows)
 
     assert set(grouped) == {
-        "nested-random / matformer_llama / membership_correction=on",
-        "nested-random / cat_llama / membership_correction=off",
+        "nested-random / slicing / membership_correction=on",
+        "nested-random / concat / membership_correction=off",
     }
     assert scaling_curve_style(
-        grouped["nested-random / matformer_llama / membership_correction=on"]
+        grouped["nested-random / slicing / membership_correction=on"]
     ) == {
         "marker": "o",
         "linestyle": "-",
         "linewidth": 1.4,
     }
     assert scaling_curve_style(
-        grouped["nested-random / cat_llama / membership_correction=off"]
+        grouped["nested-random / concat / membership_correction=off"]
     ) == {
         "marker": "s",
         "linestyle": "--",

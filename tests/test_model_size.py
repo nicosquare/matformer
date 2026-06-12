@@ -172,11 +172,11 @@ def test_standalone_model_builds_fixed_width_llama_baselines(
     assert model.current_granularity_pattern.selected_granularities == (granularity,)
 
 
-def test_cat_llama_build_passes_configured_granularities_to_membership_correction():
+def test_concat_build_passes_configured_granularities_to_membership_correction():
     config = {
         "run": {"model_family": "nested"},
         "model": {
-            "variant": "cat_llama",
+            "variant": "concat",
             "granularities": ["m", "xl"],
             "membership_correction": False,
             "vocab_size_assumption": 32,
@@ -201,7 +201,7 @@ def test_modified_llama_build_passes_membership_correction_configuration():
     config = {
         "run": {"model_family": "nested"},
         "model": {
-            "variant": "matformer_llama",
+            "variant": "slicing",
             "granularities": ["m", "xl"],
             "membership_correction": True,
             "vocab_size_assumption": 32,

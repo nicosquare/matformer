@@ -47,6 +47,7 @@ from utils.config import (
     attach_parameter_counts_to_config,
     resolve_run_config,
     resolve_optimizer_kwargs,
+    resolve_sampling_mode_from_config_sections,
     resolve_training_length_for_world_size,
 )
 from utils.heartbeats import HeartbeatCadence, HeartbeatWriter
@@ -115,14 +116,14 @@ def run_training(
                 model = build_model(config)
             if (
                 distributed_context.is_rank_zero
-                and config["model"]["variant"] == "cat_llama"
+                and config["model"]["variant"] == "concat"
             ):
                 diagnostic = get_concat_layout_diagnostic(
                     config["model"]["intermediate_size"],
                     config["model"]["granularities"],
                     granularity_prefixes=config["model"].get("granularity_prefixes"),
                 )
-                print(f"[cat-llama-diagnostic] {diagnostic}", flush=True)
+                print(f"[concat-diagnostic] {diagnostic}", flush=True)
             parameter_counts_by_granularity = build_artifact_parameter_counts(
                 config,
                 model,
@@ -431,7 +432,7 @@ def build_model(config: dict[str, Any]):
         "membership_correction",
         model_config.get(
             "gradient_membership_correction",
-            model_config["variant"] == "cat_llama",
+            model_config["variant"] == "concat",
         ),
     )
     mlp_kwargs = {
@@ -450,7 +451,7 @@ def build_model(config: dict[str, Any]):
         )
         return model
 
-    if config["model"]["variant"] == "cat_llama":
+    if config["model"]["variant"] == "concat":
         return ModifiedLlamaForCausalLM(
             llama_config,
             mlp_cls=CatLlamaMLP,
@@ -2504,10 +2505,16 @@ def build_training_metric_row(
         "model_family": run["model_family"],
         "model_size_label": _model_shape_label(run),
         "model_shape_label": _model_shape_label(run),
-        "sampling_mode": _sampling_mode(run, config["training"]),
+        "sampling_mode": resolve_sampling_mode_from_config_sections(
+            run,
+            config["training"],
+        ),
         "resolved_run_mode": run.get(
             "resolved_run_mode",
-            _sampling_mode(run, config["training"]),
+            resolve_sampling_mode_from_config_sections(
+                run,
+                config["training"],
+            ),
         ),
         "resolved_sampling_mode": config["model"].get(
             "resolved_sampling_mode",
@@ -2585,19 +2592,6 @@ def set_random_seed(seed: int | None) -> None:
 
 def _model_shape_label(run: dict[str, Any]) -> Any:
     return run.get("model_shape_label", run.get("model_size_label"))
-
-
-def _sampling_mode(run: dict[str, Any], training: dict[str, Any]) -> Any:
-    if run.get("sampling_mode") is not None:
-        return run["sampling_mode"]
-    if run.get("model_family") == "standalone":
-        return "standalone"
-    granularity_sampling = training.get("granularity_sampling")
-    if granularity_sampling == "random":
-        return "nested-random"
-    if granularity_sampling == "all":
-        return "nested-all"
-    return granularity_sampling
 
 
 def _default_granularity_pattern_summary(config: dict[str, Any]) -> dict[str, Any]:
