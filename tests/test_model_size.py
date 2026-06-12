@@ -157,7 +157,9 @@ def test_standalone_model_builds_fixed_width_llama_baselines(
 
     assert config["run"]["model_family"] == "standalone"
     assert config["run"]["granularity"] == granularity
+    assert config["run"]["resolved_run_mode"] == "standalone"
     assert config["model"]["granularities"] == [granularity]
+    assert config["model"]["resolved_sampling_mode"] == "global"
 
     model = build_model(config)
 
@@ -165,6 +167,9 @@ def test_standalone_model_builds_fixed_width_llama_baselines(
     assert not isinstance(model, ModifiedLlamaForCausalLM)
     assert model.config.intermediate_size == expected_intermediate_size
     assert not hasattr(model, "configure_subnetwork")
+    assert model.current_sampling_mode == "standalone"
+    assert model.current_granularity_pattern.pattern_type == "single"
+    assert model.current_granularity_pattern.selected_granularities == (granularity,)
 
 
 def test_cat_llama_build_passes_configured_granularities_to_membership_correction():

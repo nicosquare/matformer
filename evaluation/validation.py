@@ -138,6 +138,14 @@ def validation_results_to_metric_rows(
                 "model_size_label": _model_shape_label(run),
                 "model_shape_label": _model_shape_label(run),
                 "sampling_mode": _sampling_mode(run, config.get("training", {})),
+                "resolved_run_mode": run.get(
+                    "resolved_run_mode",
+                    _sampling_mode(run, config.get("training", {})),
+                ),
+                "resolved_sampling_mode": config["model"].get(
+                    "resolved_sampling_mode",
+                    config["model"].get("granularity_sampling_mode", "global"),
+                ),
                 "granularity_sampling_mode": config["model"].get(
                     "granularity_sampling_mode"
                 ),

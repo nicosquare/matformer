@@ -476,9 +476,11 @@ def test_artifacts_reconstruct_standalone_mode_from_saved_files(tmp_path):
     saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
 
     assert saved_config["run"]["sampling_mode"] == "standalone"
+    assert saved_config["run"]["resolved_run_mode"] == "standalone"
     assert saved_config["run"]["granularity"] == "m"
     assert saved_config["model"]["granularities"] == ["m"]
     assert saved_config["model"]["granularity_sampling_mode"] == "global"
+    assert saved_config["model"]["resolved_sampling_mode"] == "global"
     assert saved_config["model"]["granularity_pattern_provenance"] == {
         "pattern_type": "single",
         "scope": "model",
@@ -513,6 +515,8 @@ def test_artifacts_reconstruct_standalone_mode_from_saved_files(tmp_path):
         metric_rows = list(csv.DictReader(metrics_file))
     assert len(metric_rows) == 1
     assert metric_rows[0]["sampling_mode"] == "standalone"
+    assert metric_rows[0]["resolved_run_mode"] == "standalone"
+    assert metric_rows[0]["resolved_sampling_mode"] == "global"
     assert metric_rows[0]["granularity_sampling_mode"] == "global"
     assert metric_rows[0]["granularity"] == "m"
     assert json.loads(metric_rows[0]["granularity_pattern_summary"]) == (

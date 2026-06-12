@@ -483,9 +483,11 @@ def test_debug_matrix_resolves_all_standalone_granularities():
         resolved = by_run_id[run_id]
         assert resolved["run"]["model_family"] == "standalone"
         assert resolved["run"]["sampling_mode"] == "standalone"
+        assert resolved["run"]["resolved_run_mode"] == "standalone"
         assert resolved["run"]["granularity"] == granularity
         assert resolved["training"]["granularity_sampling"] == "all"
         assert resolved["model"]["granularity_sampling_mode"] == "global"
+        assert resolved["model"]["resolved_sampling_mode"] == "global"
         assert resolved["model"]["granularities"] == [granularity]
         assert resolved["model"]["intermediate_size"] == intermediate_size
         assert resolved["model"]["matformer_source_intermediate_size"] == 512

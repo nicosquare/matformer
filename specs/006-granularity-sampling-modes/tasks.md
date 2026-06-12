@@ -95,9 +95,9 @@
 
 ### Implementation for User Story 3
 
-- [ ] T022 [P] [US3] Implement standalone fixed-granularity resolution in `utils/config.py`
-- [ ] T023 [US3] Preserve fixed-granularity application for standalone runs in `models/wiring.py`
-- [ ] T024 [US3] Record standalone provenance fields in `training/run.py` and `utils/metrics.py`
+- [X] T022 [P] [US3] Implement standalone fixed-granularity resolution in `utils/config.py`
+- [X] T023 [US3] Preserve fixed-granularity application for standalone runs in `models/wiring.py`
+- [X] T024 [US3] Record standalone provenance fields in `training/run.py` and `utils/metrics.py`
 
 **Checkpoint**: All user stories should now be independently functional
 

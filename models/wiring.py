@@ -150,6 +150,34 @@ def apply_granularity_pattern_to_model(
     return pattern
 
 
+def prime_standalone_granularity_state(
+    model,
+    granularity: str,
+    run_id: str | None = None,
+) -> GranularityPattern:
+    """Record the fixed standalone granularity on a model for provenance."""
+
+    pattern = build_granularity_pattern(
+        pattern_type="single",
+        selected_granularities=(granularity,),
+        layer_count=1,
+        repeatable_source=(
+            str(run_id or ""),
+            "run.sampling_mode=standalone",
+            f"run.granularity={granularity}",
+        ),
+    )
+    target = model.module if hasattr(model, "module") else model
+    target.current_sampling_mode = "standalone"
+    target.current_granularity_pattern = pattern
+    target.current_layer_granularities = [granularity]
+    target.current_granularity = granularity
+    configure_subnetwork = getattr(target, "configure_subnetwork", None)
+    if configure_subnetwork is not None:
+        configure_subnetwork(granularity)
+    return pattern
+
+
 def _normalize_selected_granularities(
     selected_granularities: Sequence[str] | str,
 ) -> tuple[str, ...]:
@@ -212,4 +240,5 @@ __all__ = [
     "build_global_granularity_pattern",
     "build_per_layer_granularity_pattern",
     "apply_granularity_pattern_to_model",
+    "prime_standalone_granularity_state",
 ]

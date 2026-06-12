@@ -1139,6 +1139,8 @@ def _resolve_sampling_mode_defaults(
 
     training["granularity_sampling"] = training_sampling
     model["granularity_sampling_mode"] = canonical_mode
+    run["resolved_run_mode"] = derived_run_sampling_mode
+    model["resolved_sampling_mode"] = canonical_mode
     model["requested_granularity_sampling_alias"] = (
         requested_granularity_sampling_alias
         if requested_granularity_sampling_alias is not None

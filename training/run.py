@@ -28,7 +28,7 @@ from evaluation.validation import (
 from models.ffn import CatLlamaMLP, get_concat_layout_diagnostic, get_ffn_prefix_metadata
 from models.correction import summarize_correction_context_from_config
 from models.granularity import summarize_granularity_pattern_from_config
-from models.wiring import ModifiedLlamaForCausalLM
+from models.wiring import ModifiedLlamaForCausalLM, prime_standalone_granularity_state
 from training.data import (
     build_language_model_dataloader,
     load_and_tokenize_dataset,
@@ -442,7 +442,13 @@ def build_model(config: dict[str, Any]):
         ),
     }
     if config["run"]["model_family"] == "standalone":
-        return LlamaForCausalLM(llama_config)
+        model = LlamaForCausalLM(llama_config)
+        prime_standalone_granularity_state(
+            model,
+            config["run"]["granularity"],
+            run_id=config["run"].get("run_id"),
+        )
+        return model
 
     if config["model"]["variant"] == "cat_llama":
         return ModifiedLlamaForCausalLM(
@@ -2499,6 +2505,14 @@ def build_training_metric_row(
         "model_size_label": _model_shape_label(run),
         "model_shape_label": _model_shape_label(run),
         "sampling_mode": _sampling_mode(run, config["training"]),
+        "resolved_run_mode": run.get(
+            "resolved_run_mode",
+            _sampling_mode(run, config["training"]),
+        ),
+        "resolved_sampling_mode": config["model"].get(
+            "resolved_sampling_mode",
+            config["model"].get("granularity_sampling_mode", "global"),
+        ),
         "granularity_sampling_mode": config["model"].get("granularity_sampling_mode"),
         "granularity": granularity,
         "granularity_pattern_summary": json_artifact_value(
