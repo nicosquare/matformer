@@ -74,9 +74,9 @@
 
 ### Implementation for User Story 2
 
-- [ ] T017 [P] [US2] Implement nested-all iteration over every configured granularity in `training/run.py`
-- [ ] T018 [US2] Update `evaluation/validation.py` and `models/correction.py` so nested-all uses the evaluated granularity and does not activate per-block random sampling
-- [ ] T019 [US2] Record nested-all runtime granularity summaries in `utils/metrics.py`
+- [X] T017 [P] [US2] Implement nested-all iteration over every configured granularity in `training/run.py`
+- [X] T018 [US2] Update `evaluation/validation.py` and `models/correction.py` so nested-all uses the evaluated granularity and does not activate per-block random sampling
+- [X] T019 [US2] Record nested-all runtime granularity summaries in `utils/metrics.py`
 
 **Checkpoint**: User Story 2 should now work independently of any later cleanup
 

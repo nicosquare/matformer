@@ -63,6 +63,7 @@ from utils.metrics import (
     write_metrics_csv,
     write_run_summary,
     write_scaling_results_csv,
+    summarize_runtime_granularity_pattern_from_config,
 )
 from utils.monitoring import group_loss_rows_by_series
 
@@ -296,7 +297,9 @@ def run_training(
         tokens_seen = training_outcome["tokens_seen"]
         target_model = getattr(model, "module", model)
         runtime_pattern = getattr(target_model, "current_granularity_pattern", None)
-        runtime_pattern_summary = summarize_granularity_pattern_from_config(
+        if str(config["run"].get("sampling_mode", "nested-random")) == "nested-all":
+            runtime_pattern = None
+        runtime_pattern_summary = summarize_runtime_granularity_pattern_from_config(
             config,
             runtime_pattern=runtime_pattern,
         )
@@ -1847,8 +1850,10 @@ def train_for_steps(
     stage_name: str = "training",
 ) -> list[dict[str, Any]]:
     training = config["training"]
+    run = config["run"]
     granularities = config["model"]["granularities"]
     model_sampling_mode = str(config["model"].get("granularity_sampling_mode", "global"))
+    run_sampling_mode = str(run.get("sampling_mode", "nested-random"))
     target_model = model.module if hasattr(model, "module") else model
     supports_layer_granularities = hasattr(target_model, "configure_layer_granularities")
     token_budget = training["token_budget"]
@@ -1916,7 +1921,40 @@ def train_for_steps(
                 step_metric_rows_data: list[
                     tuple[str, torch.Tensor, dict[str, Any], dict[str, Any]]
                 ] = []
-                if model_sampling_mode == "per_layer" and supports_layer_granularities:
+                if run_sampling_mode == "nested-all":
+                    selected_granularities = select_training_granularities(
+                        config,
+                        granularities,
+                        device,
+                    )
+                    forward_losses: list[torch.Tensor] = []
+                    for granularity in selected_granularities:
+                        configure_model_granularity(model, granularity)
+                        step_runtime_pattern_summary, step_correction_context = _runtime_granularity_artifacts(
+                            config,
+                            model,
+                        )
+                        outputs = model(
+                            input_ids=batch["input_ids"],
+                            attention_mask=batch.get("attention_mask"),
+                            labels=batch["labels"],
+                        )
+                        forward_losses.append(outputs.loss)
+                        step_metric_rows_data.append(
+                            (
+                                granularity,
+                                outputs.loss,
+                                step_runtime_pattern_summary,
+                                step_correction_context,
+                            )
+                        )
+                    combined_loss = (
+                        forward_losses[0]
+                        if len(forward_losses) == 1
+                        else torch.stack(forward_losses).mean()
+                    )
+                    total_losses = len(forward_losses)
+                elif model_sampling_mode == "per_layer" and supports_layer_granularities:
                     selected_layer_granularities = select_training_layer_granularities(
                         config,
                         granularities,
@@ -2158,6 +2196,9 @@ def select_training_granularities(
     granularities: list[str],
     device: torch.device,
 ) -> list[str]:
+    if str(config["run"].get("sampling_mode", "nested-random")) == "nested-all":
+        return list(granularities)
+
     sampling_mode = config["training"].get("granularity_sampling", "all")
     if sampling_mode == "all":
         return list(granularities)
@@ -2555,7 +2596,9 @@ def _runtime_granularity_artifacts(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     target_model = getattr(model, "module", model)
     runtime_pattern = getattr(target_model, "current_granularity_pattern", None)
-    runtime_pattern_summary = summarize_granularity_pattern_from_config(
+    if str(config["run"].get("sampling_mode", "nested-random")) == "nested-all":
+        runtime_pattern = None
+    runtime_pattern_summary = summarize_runtime_granularity_pattern_from_config(
         config,
         runtime_pattern=runtime_pattern,
     )

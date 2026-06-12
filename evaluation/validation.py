@@ -36,6 +36,12 @@ def configure_model_granularity(model, granularity: str | None) -> None:
         return
 
     target = model.module if hasattr(model, "module") else model
+    if hasattr(target, "current_layer_granularities"):
+        target.current_layer_granularities = None
+    if hasattr(target, "current_granularity_pattern"):
+        target.current_granularity_pattern = None
+    if hasattr(target, "current_sampling_mode"):
+        target.current_sampling_mode = "global"
     configure_subnetwork = getattr(target, "configure_subnetwork", None)
     if configure_subnetwork is not None:
         configure_subnetwork(granularity)

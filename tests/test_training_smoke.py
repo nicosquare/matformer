@@ -64,6 +64,39 @@ class TinyNestedTrainingModel(torch.nn.Module):
         return SimpleNamespace(loss=loss)
 
 
+class TinyNestedRuntimePatternModel(torch.nn.Module):
+    def __init__(self, loss_scale_by_granularity=None):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.tensor(0.5))
+        self.current_granularity = None
+        self.current_layer_granularities = None
+        self.current_granularity_pattern = None
+        self.train_forward_granularities = []
+        self.loss_scale_by_granularity = loss_scale_by_granularity or {
+            "s": 1.0,
+            "m": 2.0,
+            "l": 4.0,
+            "xl": 8.0,
+        }
+
+    def configure_subnetwork(self, granularity):
+        self.current_granularity = granularity
+        self.current_layer_granularities = [granularity]
+        self.current_granularity_pattern = build_granularity_pattern(
+            pattern_type="single",
+            selected_granularities=(granularity,),
+            layer_count=1,
+            repeatable_source=("tiny-nested-runtime-pattern-model", granularity),
+        )
+
+    def forward(self, input_ids, attention_mask=None, labels=None):
+        self.train_forward_granularities.append(self.current_granularity)
+        loss_scale = self.loss_scale_by_granularity[self.current_granularity]
+        loss = self.weight * self.weight.new_tensor(loss_scale)
+        loss = loss + input_ids.float().mean() * 0.0
+        return SimpleNamespace(loss=loss)
+
+
 class FlatParameterRuntimeWrapper(torch.nn.Module):
     def __init__(self, wrapped):
         super().__init__()
@@ -760,6 +793,68 @@ def test_tiny_nested_training_averages_losses_across_all_granularities_for_neste
     assert [row["granularity"] for row in train_rows] == ["s", "m", "l", "xl"]
     assert [float(row["loss"]) for row in train_rows] == [0.5, 1.0, 2.0, 4.0]
     assert float(model.weight.grad.detach().cpu().item()) == pytest.approx(3.75)
+
+
+def test_tiny_nested_training_records_nested_all_summary_even_when_runtime_pattern_stays_single(
+    tmp_path,
+):
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "run.sampling_mode=nested-all",
+            "model.granularity_sampling_mode=global",
+            "run.continuation.enabled=false",
+            "training.max_steps=1",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.gradient_clip_norm=1000",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "outputs.save_checkpoints=false",
+            "evaluation.validation=false",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+    model = TinyNestedRuntimePatternModel()
+
+    result = run_training(
+        config,
+        model=model,
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    with result["metrics_path"].open("r", encoding="utf-8", newline="") as metrics_file:
+        train_rows = [
+            row
+            for row in csv.DictReader(metrics_file)
+            if row["split"] == "train" and row["step"] == "1"
+        ]
+
+    assert model.current_granularity_pattern.pattern_type == "single"
+    assert summary["sampling_mode"] == "nested-all"
+    assert summary["granularity_pattern_summary"]["pattern_type"] == "all_granularities"
+    assert summary["granularity_pattern_summary"]["selected_granularities"] == [
+        "s",
+        "m",
+        "l",
+        "xl",
+    ]
+    assert [row["granularity"] for row in train_rows] == ["s", "m", "l", "xl"]
+    assert all(
+        json.loads(row["granularity_pattern_summary"])["pattern_type"]
+        == "all_granularities"
+        for row in train_rows
+    )
 
 
 def test_training_counts_parameters_before_runtime_wrapping(tmp_path, monkeypatch):

@@ -210,6 +210,27 @@ def write_config_artifact(
     return write_resolved_config(config, output_dir=output_dir)
 
 
+def summarize_runtime_granularity_pattern_from_config(
+    config: Mapping[str, Any],
+    runtime_pattern: Any | None = None,
+) -> dict[str, Any]:
+    """Build a runtime granularity summary that keeps nested-all explicit."""
+
+    run = config.get("run", {})
+    training = config.get("training", {})
+    if not isinstance(run, Mapping):
+        run = {}
+    if not isinstance(training, Mapping):
+        training = {}
+
+    if _sampling_mode(run, training) == "nested-all":
+        return summarize_granularity_pattern_from_config(config)
+    return summarize_granularity_pattern_from_config(
+        config,
+        runtime_pattern=runtime_pattern,
+    )
+
+
 def build_run_summary(
     config: Mapping[str, Any],
     tokens_seen: int | None = None,
