@@ -177,6 +177,58 @@ def test_requested_run_sampling_mode_does_not_force_per_layer_model_mode():
 
 
 @pytest.mark.parametrize(
+    "sampling_mode, expected_pattern_type, selected_granularities, expected_local_correction_active",
+    [
+        ("global", "single", ("m",), False),
+        ("per_layer", "per_layer", ("s", "m"), True),
+    ],
+)
+def test_explicit_model_sampling_modes_preserve_nested_random_run_mode(
+    sampling_mode,
+    expected_pattern_type,
+    selected_granularities,
+    expected_local_correction_active,
+):
+    resolved = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        overrides=[f"model.granularity_sampling_mode={sampling_mode}"],
+    )
+
+    assert resolved["run"]["sampling_mode"] == "nested-random"
+    assert resolved["training"]["granularity_sampling"] == "random"
+    assert resolved["model"]["granularity_sampling_mode"] == sampling_mode
+    assert resolved["model"]["granularity_pattern_provenance"] == {
+        "pattern_type": expected_pattern_type,
+        "scope": "model",
+        "source": "model.granularity_sampling_mode",
+        "requested_alias": None,
+        "layer_count": resolved["model"]["num_layers"],
+        "available_granularities": ["s", "m", "l", "xl"],
+    }
+
+    runtime_pattern = build_granularity_pattern(
+        pattern_type=expected_pattern_type,
+        selected_granularities=selected_granularities,
+        layer_count=resolved["model"]["num_layers"],
+        repeatable_source=(
+            "dmodel256-pilot-comparison-001",
+            f"model.granularity_sampling_mode={sampling_mode}",
+        ),
+    )
+    context = correction_context_from_config(
+        resolved,
+        granularity_pattern=runtime_pattern,
+    )
+
+    assert context.sampling_mode == sampling_mode
+    assert context.local_correction_active is expected_local_correction_active
+    if expected_local_correction_active:
+        assert context.derived_membership_pattern == selected_granularities
+    else:
+        assert context.derived_membership_pattern == ()
+
+
+@pytest.mark.parametrize(
     "alias, expected_mode, expected_sampling_mode",
     [
         ("all", "global", "nested-all"),

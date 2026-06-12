@@ -367,6 +367,118 @@ def test_artifacts_record_sampling_mode_and_pattern_provenance(
 
 
 @pytest.mark.parametrize(
+    "sampling_mode, pattern_builder, pattern_args, expected_pattern_type, expected_local_correction_active",
+    [
+        (
+            "global",
+            build_global_granularity_pattern,
+            {"granularities": ("m",)},
+            "single",
+            False,
+        ),
+        (
+            "per_layer",
+            build_per_layer_granularity_pattern,
+            {"layer_granularities": ["s", "m"]},
+            "per_layer",
+            True,
+        ),
+    ],
+)
+def test_artifacts_record_explicit_nested_random_global_and_per_layer_paths(
+    tmp_path,
+    sampling_mode,
+    pattern_builder,
+    pattern_args,
+    expected_pattern_type,
+    expected_local_correction_active,
+):
+    output_dir = tmp_path / "dmodel256-pilot-comparison-001"
+    config = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        output_dir=output_dir,
+        overrides=[f"model.granularity_sampling_mode={sampling_mode}"],
+    )
+
+    runtime_pattern = pattern_builder(config, **pattern_args)
+    runtime_pattern_summary = json.loads(
+        json.dumps(summarize_granularity_pattern(runtime_pattern))
+    )
+    correction_context = json.loads(
+        json.dumps(
+            summarize_correction_context(
+                correction_context_from_config(
+                    config,
+                    granularity_pattern=runtime_pattern,
+                )
+            )
+        )
+    )
+
+    config_path = write_config_artifact(config)
+    summary = build_run_summary(
+        config,
+        tokens_seen=128,
+        notes=["artifact provenance smoke"],
+        extra_fields={
+            "granularity_pattern_summary": runtime_pattern_summary,
+            "correction_context": correction_context,
+        },
+    )
+    summary_path = write_run_summary(output_dir, summary)
+
+    metric_row = build_training_metric_row(
+        config,
+        step=1,
+        granularity=runtime_pattern.selected_granularities[0],
+        loss=1.25,
+        tokens_seen=8,
+        content_tokens_seen=8,
+        wall_clock_seconds=2.0,
+        peak_memory_bytes=512,
+        granularity_pattern_summary=runtime_pattern_summary,
+        correction_context=correction_context,
+    )
+    metrics_path = write_metrics_csv(output_dir, [metric_row])
+
+    saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved_config["run"]["sampling_mode"] == "nested-random"
+    assert saved_config["model"]["granularity_sampling_mode"] == sampling_mode
+    assert saved_config["model"]["granularity_pattern_provenance"] == {
+        "pattern_type": expected_pattern_type,
+        "scope": "model",
+        "source": "model.granularity_sampling_mode",
+        "requested_alias": None,
+        "layer_count": config["model"]["num_layers"],
+        "available_granularities": ["s", "m", "l", "xl"],
+    }
+
+    saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert saved_summary["sampling_mode"] == "nested-random"
+    assert saved_summary["resolved_run_mode"] == "nested-random"
+    assert saved_summary["resolved_sampling_mode"] == sampling_mode
+    assert saved_summary["granularity_sampling_mode"] == sampling_mode
+    assert saved_summary["granularity_pattern_summary"] == runtime_pattern_summary
+    assert saved_summary["correction_context"] == correction_context
+    assert saved_summary["granularity_pattern_provenance"] == saved_config[
+        "model"
+    ]["granularity_pattern_provenance"]
+    assert correction_context["local_correction_active"] is (
+        expected_local_correction_active
+    )
+
+    with metrics_path.open("r", encoding="utf-8", newline="") as metrics_file:
+        metric_rows = list(csv.DictReader(metrics_file))
+    assert len(metric_rows) == 1
+    assert metric_rows[0]["sampling_mode"] == "nested-random"
+    assert metric_rows[0]["granularity_sampling_mode"] == sampling_mode
+    assert json.loads(metric_rows[0]["granularity_pattern_summary"]) == (
+        runtime_pattern_summary
+    )
+    assert json.loads(metric_rows[0]["correction_context"]) == correction_context
+
+
+@pytest.mark.parametrize(
     "continuation_overrides, expected_state",
     [
         (

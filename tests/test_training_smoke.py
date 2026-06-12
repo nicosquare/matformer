@@ -345,6 +345,68 @@ def _run_slicing_case(tmp_path, monkeypatch, correction_mode):
     }
 
 
+def test_tiny_nested_training_can_sample_one_granularity_for_the_nested_random_global_path(
+    tmp_path,
+    monkeypatch,
+):
+    import training.run as training_run
+
+    output_dir = tmp_path / "dmodel256-pilot-comparison-001"
+    config = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        output_dir=output_dir,
+        overrides=[
+            "model.granularity_sampling_mode=global",
+            "run.continuation.enabled=false",
+            "training.max_steps=1",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "outputs.save_checkpoints=false",
+            "evaluation.validation=false",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+    model = TinyNestedTrainingModel()
+    captured_randrange_values = iter([2])
+    monkeypatch.setattr(
+        training_run.random,
+        "randrange",
+        lambda count: next(captured_randrange_values),
+    )
+
+    result = run_training(
+        config,
+        model=model,
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    with result["metrics_path"].open("r", encoding="utf-8", newline="") as metrics_file:
+        train_rows = [
+            row
+            for row in csv.DictReader(metrics_file)
+            if row["split"] == "train" and row["step"] == "1"
+        ]
+
+    assert summary["sampling_mode"] == "nested-random"
+    assert summary["resolved_sampling_mode"] == "global"
+    assert model.train_forward_granularities == ["l"]
+    assert model.train_forward_layer_granularities == []
+    assert [row["granularity"] for row in train_rows] == ["l"]
+    assert all(
+        json.loads(row["granularity_pattern_summary"])["pattern_type"] == "single"
+        for row in train_rows
+    )
+
+
 def _run_monitoring_smoke_case(tmp_path, run_id: str):
     output_dir = tmp_path / run_id
     config = resolve_run_config(
@@ -682,12 +744,15 @@ def test_tiny_nested_training_can_sample_one_granularity_per_layer_per_batch(
         run_id="debug-nested-001",
         output_dir=output_dir,
         overrides=[
+            "run.sampling_mode=nested-random",
+            "model.granularity_sampling_mode=per_layer",
+            "run.continuation.enabled=false",
             "training.max_steps=1",
             "training.eval_interval=0",
             "training.batch_size_per_process=1",
             "training.learning_rate=0.01",
             "training.scheduler.kwargs.warmup_steps=0",
-            "training.granularity_sampling=random",
+            "outputs.save_checkpoints=false",
             "evaluation.validation=false",
         ],
     )
@@ -708,6 +773,9 @@ def test_tiny_nested_training_can_sample_one_granularity_per_layer_per_batch(
         device="cpu",
     )
 
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    assert summary["sampling_mode"] == "nested-random"
+    assert summary["resolved_sampling_mode"] == "per_layer"
     assert model.train_forward_granularities == []
     assert model.train_forward_layer_granularities == [["s", "m"]]
     with result["metrics_path"].open("r", encoding="utf-8", newline="") as metrics_file:

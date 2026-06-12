@@ -25,6 +25,7 @@ from models.granularity import (
     summarize_granularity_pattern,
 )
 from models.wiring import ModifiedLlamaForCausalLM
+from models.wiring import apply_granularity_pattern_to_model
 from models.wiring import build_global_granularity_pattern
 from utils.config import resolve_run_config
 
@@ -317,6 +318,42 @@ def test_model_configures_all_layer_prefixes():
     ]
     assert layer_widths == [16, 16]
     assert model.ffn_prefix_metadata[-1]["prefix_width"] == config.intermediate_size
+
+
+@pytest.mark.parametrize(
+    "sampling_mode, selected_granularities, expected_layer_granularities, expected_pattern_type",
+    [
+        ("global", ("m",), ["m", "m", "m", "m"], "single"),
+        ("per_layer", ("xl", "s"), ["xl", "s", "xl", "s"], "per_layer"),
+    ],
+)
+def test_apply_granularity_pattern_to_model_covers_global_and_per_layer_paths(
+    sampling_mode,
+    selected_granularities,
+    expected_layer_granularities,
+    expected_pattern_type,
+):
+    config = tiny_llama_config(num_hidden_layers=4)
+    model = ModifiedLlamaForCausalLM(config)
+
+    pattern = apply_granularity_pattern_to_model(
+        model,
+        selected_granularities,
+        sampling_mode=sampling_mode,
+    )
+
+    assert model.current_sampling_mode == sampling_mode
+    assert model.current_granularity_pattern == pattern
+    assert model.current_layer_granularities == expected_layer_granularities
+    assert [
+        layer.current_granularity for layer in model.matformer_layers
+    ] == expected_layer_granularities
+    assert pattern.pattern_type == expected_pattern_type
+    assert pattern.selected_granularities == (
+        tuple(expected_layer_granularities)
+        if sampling_mode == "per_layer"
+        else tuple(selected_granularities)
+    )
 
 
 def test_explicit_global_sampling_path_uses_all_configured_granularities():

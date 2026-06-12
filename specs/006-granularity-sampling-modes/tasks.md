@@ -48,8 +48,8 @@
 
 ### Verification for User Story 1
 
-- [ ] T010 [P] [US1] Add config-resolution coverage for `nested-random`, `global`, and `per_layer` in `tests/test_config.py`
-- [ ] T011 [P] [US1] Add model-wiring, correction, smoke-run, and artifact verification coverage for the explicit global and per-layer paths in `tests/test_matformer_prefixes.py`, `tests/test_training_smoke.py`, and `tests/test_artifacts.py`
+- [X] T010 [P] [US1] Add config-resolution coverage for `nested-random`, `global`, and `per_layer` in `tests/test_config.py`
+- [X] T011 [P] [US1] Add model-wiring, correction, smoke-run, and artifact verification coverage for the explicit global and per-layer paths in `tests/test_matformer_prefixes.py`, `tests/test_training_smoke.py`, and `tests/test_artifacts.py`
 
 ### Implementation for User Story 1
 
