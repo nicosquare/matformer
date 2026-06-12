@@ -251,7 +251,9 @@ def test_legacy_granularity_sampling_alias_resolves_to_canonical_model_mode(
     assert resolved["model"]["requested_granularity_sampling_alias"] == alias
     assert resolved["run"]["sampling_mode"] == expected_sampling_mode
     assert resolved["model"]["granularity_pattern_provenance"] == {
-        "pattern_type": "single" if expected_mode == "global" else "per_layer",
+        "pattern_type": (
+            "all_granularities" if expected_sampling_mode == "nested-all" else "per_layer"
+        ),
         "scope": "model",
         "source": "model.granularity_sampling_mode",
         "requested_alias": alias,
@@ -480,7 +482,10 @@ def test_debug_matrix_resolves_all_standalone_granularities():
     for run_id, (granularity, intermediate_size) in expected.items():
         resolved = by_run_id[run_id]
         assert resolved["run"]["model_family"] == "standalone"
+        assert resolved["run"]["sampling_mode"] == "standalone"
         assert resolved["run"]["granularity"] == granularity
+        assert resolved["training"]["granularity_sampling"] == "all"
+        assert resolved["model"]["granularity_sampling_mode"] == "global"
         assert resolved["model"]["granularities"] == [granularity]
         assert resolved["model"]["intermediate_size"] == intermediate_size
         assert resolved["model"]["matformer_source_intermediate_size"] == 512
@@ -533,6 +538,28 @@ def test_debug_standalone_granularity_must_match_model_granularities():
 
     with pytest.raises(ConfigError, match="exactly one matching granularity"):
         validate_run_config(invalid)
+
+
+@pytest.mark.parametrize(
+    "overrides, error_message",
+    [
+        (
+            ["training.granularity_sampling=random"],
+            "model.granularity_sampling_mode=per_layer requires nested runs",
+        ),
+        (
+            ["model.granularity_sampling_mode=per_layer"],
+            "model.granularity_sampling_mode=per_layer requires nested runs",
+        ),
+    ],
+)
+def test_standalone_rejects_nested_sampling_submodes(overrides, error_message):
+    with pytest.raises(ConfigError, match=error_message):
+        resolve_run_config(
+            "configs/debug_matrix.yaml",
+            run_id="debug-standalone-m-001",
+            overrides=overrides,
+        )
 
 
 def test_matrix_output_root_override_derives_each_run_directory(tmp_path):

@@ -90,8 +90,8 @@
 
 ### Verification for User Story 3
 
-- [ ] T020 [P] [US3] Add standalone config-validation coverage for fixed granularities and rejected nested submodes in `tests/test_config.py`
-- [ ] T021 [P] [US3] Add standalone smoke and artifact reconstruction coverage in `tests/test_model_size.py` and `tests/test_artifacts.py`
+- [X] T020 [P] [US3] Add standalone config-validation coverage for fixed granularities and rejected nested submodes in `tests/test_config.py`
+- [X] T021 [P] [US3] Add standalone smoke and artifact reconstruction coverage in `tests/test_model_size.py` and `tests/test_artifacts.py`
 
 ### Implementation for User Story 3
 

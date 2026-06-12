@@ -332,7 +332,7 @@ def test_artifacts_record_nested_all_sampling_mode_and_pattern_provenance(tmp_pa
             "all",
             "global",
             "nested-all",
-            "single",
+            "all_granularities",
             build_global_granularity_pattern,
             None,
         ),
@@ -442,6 +442,82 @@ def test_artifacts_record_sampling_mode_and_pattern_provenance(
     )
     assert json.loads(metric_rows[0]["correction_context"]) == correction_context
     assert metric_rows[0]["granularity"] == config["model"]["granularities"][0]
+
+
+def test_artifacts_reconstruct_standalone_mode_from_saved_files(tmp_path):
+    output_dir = tmp_path / "debug-standalone-m-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-standalone-m-001",
+        output_dir=output_dir,
+    )
+
+    config_path = write_config_artifact(config)
+    summary = build_run_summary(
+        config,
+        tokens_seen=128,
+        notes=["artifact reconstruction smoke"],
+    )
+    summary_path = write_run_summary(output_dir, summary)
+
+    metric_row = build_training_metric_row(
+        config,
+        step=1,
+        granularity="m",
+        loss=1.25,
+        tokens_seen=8,
+        content_tokens_seen=8,
+        wall_clock_seconds=2.0,
+        peak_memory_bytes=512,
+    )
+    metrics_path = write_metrics_csv(output_dir, [metric_row])
+
+    saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+    saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+    assert saved_config["run"]["sampling_mode"] == "standalone"
+    assert saved_config["run"]["granularity"] == "m"
+    assert saved_config["model"]["granularities"] == ["m"]
+    assert saved_config["model"]["granularity_sampling_mode"] == "global"
+    assert saved_config["model"]["granularity_pattern_provenance"] == {
+        "pattern_type": "single",
+        "scope": "model",
+        "source": "model.granularity_sampling_mode",
+        "requested_alias": None,
+        "layer_count": config["model"]["num_layers"],
+        "available_granularities": ["m"],
+        "active_granularity": "m",
+    }
+
+    assert saved_summary["sampling_mode"] == "standalone"
+    assert saved_summary["resolved_run_mode"] == "standalone"
+    assert saved_summary["resolved_sampling_mode"] == "global"
+    assert saved_summary["granularity_sampling_mode"] == "global"
+    assert saved_summary["granularity_pattern_summary"] == {
+        "pattern_type": "single",
+        "selected_granularities": ["m"],
+        "layer_count": config["model"]["num_layers"],
+        "repeatable_source": [
+            config["run"]["run_id"],
+            "run.sampling_mode=standalone",
+            "model.granularity_sampling_mode=global",
+            "run.granularity=m",
+        ],
+    }
+    assert saved_summary["granularity_pattern_provenance"] == saved_config["model"][
+        "granularity_pattern_provenance"
+    ]
+    assert saved_summary["correction_context"]["local_correction_active"] is False
+
+    with metrics_path.open("r", encoding="utf-8", newline="") as metrics_file:
+        metric_rows = list(csv.DictReader(metrics_file))
+    assert len(metric_rows) == 1
+    assert metric_rows[0]["sampling_mode"] == "standalone"
+    assert metric_rows[0]["granularity_sampling_mode"] == "global"
+    assert metric_rows[0]["granularity"] == "m"
+    assert json.loads(metric_rows[0]["granularity_pattern_summary"]) == (
+        saved_summary["granularity_pattern_summary"]
+    )
 
 
 @pytest.mark.parametrize(
