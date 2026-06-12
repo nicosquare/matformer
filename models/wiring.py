@@ -12,7 +12,6 @@ from models.granularity import (
     MATFORMER_GRANULARITY_ORDER,
     GranularityPattern,
     build_granularity_pattern,
-    expand_layer_granularity_pattern,
 )
 
 
@@ -45,11 +44,11 @@ def build_global_granularity_pattern(
     if not selected_granularities:
         raise ValueError("granularities must be a non-empty sequence")
 
-    layer_count = int(model.get("num_layers") or len(selected_granularities))
+    block_count = int(model.get("num_layers") or len(selected_granularities))
     return build_granularity_pattern(
         pattern_type="single",
         selected_granularities=selected_granularities,
-        layer_count=layer_count,
+        layer_count=block_count,
         repeatable_source=(
             str(run.get("run_id") or ""),
             "model.granularity_sampling_mode=global",
@@ -61,11 +60,7 @@ def build_per_layer_granularity_pattern(
     config: Mapping[str, Any],
     layer_granularities: Sequence[str],
 ) -> GranularityPattern:
-    """Build the explicit per-layer sampling pattern for a run.
-
-    The input sequence is treated as the seed pattern that repeats across the
-    configured transformer layers.
-    """
+    """Build the explicit per-layer sampling pattern for a run."""
 
     model = config.get("model", {})
     run = config.get("run", {})
@@ -81,22 +76,23 @@ def build_per_layer_granularity_pattern(
             "model.granularity_sampling_mode=per_layer"
         )
 
-    seed_granularities = tuple(layer_granularities)
-    if not seed_granularities:
+    selected_granularities = tuple(layer_granularities)
+    if not selected_granularities:
         raise ValueError("layer_granularities must be a non-empty sequence")
 
-    layer_count = int(model.get("num_layers") or len(seed_granularities))
-    selected_granularities = tuple(
-        expand_layer_granularity_pattern(seed_granularities, layer_count)
-    )
+    block_count = int(model.get("num_layers") or len(selected_granularities))
+    if len(selected_granularities) != block_count:
+        raise ValueError(
+            "layer_granularities must contain one granularity per transformer block"
+        )
     return build_granularity_pattern(
         pattern_type="per_layer",
         selected_granularities=selected_granularities,
-        layer_count=layer_count,
+        layer_count=block_count,
         repeatable_source=(
             str(run.get("run_id") or ""),
             "model.granularity_sampling_mode=per_layer",
-            *seed_granularities,
+            *selected_granularities,
         ),
     )
 
@@ -201,7 +197,7 @@ class ModifiedLlamaForCausalLM(LlamaForCausalLM):
         )
 
     def configure_layer_granularities(self, layer_granularities):
-        """Configure a repeating or explicit granularity pattern across layers."""
+        """Configure one sampled granularity per transformer block."""
         apply_granularity_pattern_to_model(
             self,
             layer_granularities,

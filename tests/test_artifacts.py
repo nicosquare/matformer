@@ -367,19 +367,17 @@ def test_artifacts_record_sampling_mode_and_pattern_provenance(
 
 
 @pytest.mark.parametrize(
-    "sampling_mode, pattern_builder, pattern_args, expected_pattern_type, expected_local_correction_active",
+    "sampling_mode, pattern_builder, expected_pattern_type, expected_local_correction_active",
     [
         (
             "global",
             build_global_granularity_pattern,
-            {"granularities": ("m",)},
             "single",
             False,
         ),
         (
             "per_layer",
             build_per_layer_granularity_pattern,
-            {"layer_granularities": ["s", "m"]},
             "per_layer",
             True,
         ),
@@ -389,7 +387,6 @@ def test_artifacts_record_explicit_nested_random_global_and_per_layer_paths(
     tmp_path,
     sampling_mode,
     pattern_builder,
-    pattern_args,
     expected_pattern_type,
     expected_local_correction_active,
 ):
@@ -400,7 +397,14 @@ def test_artifacts_record_explicit_nested_random_global_and_per_layer_paths(
         overrides=[f"model.granularity_sampling_mode={sampling_mode}"],
     )
 
-    runtime_pattern = pattern_builder(config, **pattern_args)
+    if sampling_mode == "global":
+        runtime_pattern = pattern_builder(config, granularities=("m",))
+    else:
+        runtime_pattern = pattern_builder(
+            config,
+            layer_granularities=config["model"]["granularities"]
+            * (config["model"]["num_layers"] // len(config["model"]["granularities"])),
+        )
     runtime_pattern_summary = json.loads(
         json.dumps(summarize_granularity_pattern(runtime_pattern))
     )

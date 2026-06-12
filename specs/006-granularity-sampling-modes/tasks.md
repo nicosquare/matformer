@@ -53,9 +53,9 @@
 
 ### Implementation for User Story 1
 
-- [ ] T012 [P] [US1] Implement explicit `nested-random` global/per-layer pattern application in `models/wiring.py`
-- [ ] T013 [US1] Implement per-layer correction derivation and global-path parity handling in `models/correction.py`
-- [ ] T014 [US1] Record nested-random provenance fields and pattern summaries in `training/run.py` and `utils/metrics.py`
+- [X] T012 [P] [US1] Implement explicit `nested-random` global/per-layer pattern application in `models/wiring.py`
+- [X] T013 [US1] Implement per-layer correction derivation and global-path parity handling in `models/correction.py`
+- [X] T014 [US1] Record nested-random provenance fields and pattern summaries in `training/run.py` and `utils/metrics.py`
 
 **Checkpoint**: User Story 1 should now be fully functional and independently verifiable
 

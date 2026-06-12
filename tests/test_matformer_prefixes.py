@@ -18,7 +18,6 @@ from models.ffn import (
 from models.granularity import (
     MATFORMER_GRANULARITY_ORDER,
     build_granularity_pattern,
-    expand_layer_granularity_pattern,
     get_block_membership_counts,
     get_gradient_membership_correction_scales,
     get_granularity_metadata,
@@ -27,6 +26,7 @@ from models.granularity import (
 from models.wiring import ModifiedLlamaForCausalLM
 from models.wiring import apply_granularity_pattern_to_model
 from models.wiring import build_global_granularity_pattern
+from models.wiring import build_per_layer_granularity_pattern
 from utils.config import resolve_run_config
 
 
@@ -324,7 +324,7 @@ def test_model_configures_all_layer_prefixes():
     "sampling_mode, selected_granularities, expected_layer_granularities, expected_pattern_type",
     [
         ("global", ("m",), ["m", "m", "m", "m"], "single"),
-        ("per_layer", ("xl", "s"), ["xl", "s", "xl", "s"], "per_layer"),
+        ("per_layer", ("xl", "s", "m", "l"), ["xl", "s", "m", "l"], "per_layer"),
     ],
 )
 def test_apply_granularity_pattern_to_model_covers_global_and_per_layer_paths(
@@ -374,7 +374,7 @@ def test_explicit_global_sampling_path_uses_all_configured_granularities():
     )
 
 
-def test_per_layer_sampling_path_repeats_layer_choices_across_blocks():
+def test_per_layer_sampling_path_records_direct_per_block_choices():
     resolved = resolve_run_config(
         "configs/debug_matrix.yaml",
         run_id="debug-nested-001",
@@ -392,35 +392,36 @@ def test_per_layer_sampling_path_repeats_layer_choices_across_blocks():
         "available_granularities": ["s", "m", "l", "xl"],
     }
 
-    pattern = expand_layer_granularity_pattern(["s", "m"], num_layers=4)
+    pattern = build_per_layer_granularity_pattern(resolved, ["s", "m"])
 
-    assert pattern == ["s", "m", "s", "m"]
-    assert len(pattern) == 4
+    assert pattern.selected_granularities == ("s", "m")
+    assert pattern.layer_count == 2
 
 
-def test_layer_granularity_pattern_repeats_across_model_layers():
+def test_per_layer_sampling_pattern_requires_one_choice_per_transformer_block():
+    config = tiny_llama_config(num_hidden_layers=4)
+
+    with pytest.raises(ValueError, match="one granularity per transformer block"):
+        apply_granularity_pattern_to_model(
+            ModifiedLlamaForCausalLM(config),
+            ["s", "m"],
+            sampling_mode="per_layer",
+        )
+
+
+def test_layer_granularity_pattern_applies_directly_to_model_layers():
     config = tiny_llama_config(num_hidden_layers=4)
     model = ModifiedLlamaForCausalLM(config)
 
-    model.configure_layer_granularities(["xl", "s"])
+    model.configure_layer_granularities(["xl", "s", "m", "l"])
 
-    assert model.current_layer_granularities == ["xl", "s", "xl", "s"]
+    assert model.current_layer_granularities == ["xl", "s", "m", "l"]
     assert [
         layer.current_granularity for layer in model.matformer_layers
-    ] == ["xl", "s", "xl", "s"]
+    ] == ["xl", "s", "m", "l"]
     assert [
         layer.current_subset_hd for layer in model.matformer_layers
-    ] == [64, 8, 64, 8]
-
-
-def test_layer_granularity_pattern_rejects_unknown_granularity():
-    with pytest.raises(ValueError, match="Unknown MatFormer granularity"):
-        expand_layer_granularity_pattern(["xl", "tiny"], num_layers=4)
-
-
-def test_layer_granularity_pattern_must_be_non_empty():
-    with pytest.raises(ValueError, match="non-empty"):
-        expand_layer_granularity_pattern([], num_layers=4)
+    ] == [64, 8, 16, 32]
 
 
 def test_gradient_membership_correction_scales_match_configured_granularities():

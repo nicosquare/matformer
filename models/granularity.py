@@ -119,23 +119,6 @@ def get_ffn_prefix_metadata(
     return metadata
 
 
-def expand_layer_granularity_pattern(
-    layer_granularities: Sequence[str],
-    num_layers: int,
-) -> list[str]:
-    if not isinstance(layer_granularities, (list, tuple)) or not layer_granularities:
-        raise ValueError("layer_granularities must be a non-empty list or tuple")
-    if num_layers <= 0:
-        raise ValueError("num_layers must be positive")
-
-    expanded = []
-    for layer_index in range(num_layers):
-        granularity = layer_granularities[layer_index % len(layer_granularities)]
-        validate_granularity(granularity)
-        expanded.append(granularity)
-    return expanded
-
-
 def granularity_block_count(granularity: str) -> int:
     metadata = get_granularity_metadata(granularity)
     smallest_granularity = MATFORMER_GRANULARITY_ORDER[0]
