@@ -24,6 +24,7 @@ Usage:
 Options:
   --repo-root PATH            Repository root; defaults to the sbatch submit directory.
   --output-root PATH          Root for run artifacts; forwarded as OUTPUT_ROOT.
+                              Defaults to OUT when set.
   --run-id RUN_ID             Run id from configs/dmodel256_pilot_comparison.yaml.
   --config PATH               Pilot config path.
   --mode MODE                 nested-random, nested-all, standalone, or comparison.
@@ -158,7 +159,7 @@ fi
 if [[ -n "$OUTPUT_ROOT_ARG" ]]; then
   export OUTPUT_ROOT="$OUTPUT_ROOT_ARG"
 fi
-export OUTPUT_ROOT="${OUTPUT_ROOT:-$ROOT_DIR/outputs}"
+export OUTPUT_ROOT="${OUT:-${OUTPUT_ROOT:-$ROOT_DIR/outputs}}"
 export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 export TORCH_NCCL_ASYNC_ERROR_HANDLING="${TORCH_NCCL_ASYNC_ERROR_HANDLING:-1}"
 unset NCCL_ASYNC_ERROR_HANDLING

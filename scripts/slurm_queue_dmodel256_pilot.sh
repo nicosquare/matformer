@@ -20,6 +20,7 @@ Usage:
 Options:
   --repo-root PATH            Repository root; defaults to the sbatch submit directory.
   --output-root PATH          Root for run artifacts.
+                              Defaults to OUT when set.
   --config PATH               Pilot config path.
   --slurm-script PATH         Slurm launcher used for the actual training jobs.
   --python-bin PATH           Python executable used for the queue helper.
@@ -104,7 +105,7 @@ fi
 if [[ -n "$OUTPUT_ROOT_ARG" ]]; then
   export OUTPUT_ROOT="$OUTPUT_ROOT_ARG"
 fi
-export OUTPUT_ROOT="${OUTPUT_ROOT:-$ROOT_DIR/outputs}"
+export OUTPUT_ROOT="${OUT:-${OUTPUT_ROOT:-$ROOT_DIR/outputs}}"
 
 CONDA_ENV_NAME="${CONDA_ENV_NAME:-elasticnn}"
 DEFAULT_CONDA_PYTHON="$HOME/.conda/envs/$CONDA_ENV_NAME/bin/python"

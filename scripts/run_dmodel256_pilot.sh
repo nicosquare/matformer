@@ -24,7 +24,7 @@ OUTPUT_ARGS=()
 FORWARDED_ARGS=()
 HAS_OUTPUT_ROOT_ARG=false
 OUTPUT_DIR_EXPLICIT=false
-OUTPUT_ROOT_VALUE="${OUTPUT_ROOT:-outputs}"
+OUTPUT_ROOT_VALUE="${OUT:-${OUTPUT_ROOT:-outputs}}"
 
 usage() {
   cat <<'USAGE'
@@ -117,7 +117,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -n "${OUTPUT_ROOT:-}" && "$HAS_OUTPUT_ROOT_ARG" != "true" ]]; then
+if [[ -n "${OUT:-}" && "$HAS_OUTPUT_ROOT_ARG" != "true" ]]; then
+  OUTPUT_ARGS+=(--output-root "$OUT")
+  OUTPUT_ROOT_VALUE="$OUT"
+elif [[ -n "${OUTPUT_ROOT:-}" && "$HAS_OUTPUT_ROOT_ARG" != "true" ]]; then
   OUTPUT_ARGS+=(--output-root "$OUTPUT_ROOT")
   OUTPUT_ROOT_VALUE="$OUTPUT_ROOT"
 fi
@@ -134,9 +137,7 @@ printf 'Mode: %s\n' "$MODE"
 if [[ "$MODE" == "standalone" ]]; then
   printf 'Granularity: %s\n' "$GRANULARITY"
 fi
-if [[ -n "${OUTPUT_ROOT:-}" ]]; then
-  printf 'Output root: %s\n' "$OUTPUT_ROOT"
-fi
+printf 'Output root: %s\n' "$OUTPUT_ROOT_VALUE"
 
 python_command() {
   local -a command_parts
