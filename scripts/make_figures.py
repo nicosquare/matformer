@@ -52,6 +52,10 @@ SCALING_CORRECTION_STYLES = {
     "gmc": {"linestyle": "--", "marker": "s", "shade": 0.2},
     "lmc": {"linestyle": "-.", "marker": "^", "shade": 0.35},
 }
+SCALING_SAMPLING_MARKERS = {
+    "global": "o",
+    "per_block": "D",
+}
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -213,6 +217,16 @@ def enrich_scaling_metadata_from_run_config(
             model_variant = model_variant_from_saved_config(config_cache[config_path])
             if model_variant not in (None, ""):
                 enriched_row["model_variant"] = str(model_variant)
+            resolved_sampling_mode = resolved_sampling_mode_from_saved_config(
+                config_cache[config_path]
+            )
+            if resolved_sampling_mode is not None:
+                enriched_row["resolved_sampling_mode"] = resolved_sampling_mode
+            granularity_sampling_mode = granularity_sampling_mode_from_saved_config(
+                config_cache[config_path]
+            )
+            if granularity_sampling_mode is not None:
+                enriched_row["granularity_sampling_mode"] = granularity_sampling_mode
             membership_correction = (
                 membership_correction_from_saved_config(
                     config_cache[config_path]
@@ -304,6 +318,28 @@ def correction_mode_from_saved_config(config: dict[str, Any]) -> str | None:
     value = model.get("correction_mode")
     if value in (None, ""):
         value = model.get("requested_correction_mode")
+    if value in (None, ""):
+        return None
+    return str(value).strip().lower()
+
+
+def resolved_sampling_mode_from_saved_config(config: dict[str, Any]) -> str | None:
+    model = config.get("model")
+    if not isinstance(model, dict):
+        return None
+    value = model.get("resolved_sampling_mode")
+    if value in (None, ""):
+        value = model.get("granularity_sampling_mode")
+    if value in (None, ""):
+        return None
+    return str(value).strip().lower()
+
+
+def granularity_sampling_mode_from_saved_config(config: dict[str, Any]) -> str | None:
+    model = config.get("model")
+    if not isinstance(model, dict):
+        return None
+    value = model.get("granularity_sampling_mode")
     if value in (None, ""):
         return None
     return str(value).strip().lower()
@@ -978,6 +1014,10 @@ def scaling_curve_label(row: dict[str, str]) -> str:
     if variant_label is not None:
         parts.append(variant_label)
 
+    sampling_label = scaling_curve_sampling_label(row)
+    if sampling_label is not None:
+        parts.append(sampling_label)
+
     correction_label = scaling_curve_correction_label(row)
     if correction_label is not None:
         parts.append(correction_label)
@@ -1019,6 +1059,26 @@ def scaling_curve_variant_label(row: dict[str, str]) -> str | None:
     return normalized
 
 
+def scaling_curve_sampling_label(row: dict[str, str]) -> str | None:
+    sampling_mode = row.get("sampling_mode")
+    if sampling_mode not in {"nested-random", "nested-all"}:
+        return None
+
+    resolved_sampling_mode = row.get("resolved_sampling_mode")
+    if resolved_sampling_mode not in (None, ""):
+        normalized = str(resolved_sampling_mode).strip().lower()
+        if normalized in {"global", "per_block"}:
+            return normalized
+
+    granularity_sampling_mode = row.get("granularity_sampling_mode")
+    if granularity_sampling_mode not in (None, ""):
+        normalized = str(granularity_sampling_mode).strip().lower()
+        if normalized in {"global", "per_block"}:
+            return normalized
+
+    return None
+
+
 def scaling_curve_correction_label(row: dict[str, str]) -> str | None:
     correction_mode = row.get("correction_mode")
     if correction_mode not in (None, ""):
@@ -1051,9 +1111,11 @@ def scaling_curve_correction_label(row: dict[str, str]) -> str | None:
 def scaling_curve_style(rows: list[dict[str, str]]) -> dict[str, Any]:
     group_key = None
     correction_label = None
+    sampling_label = None
     for row in rows:
         group_label = scaling_curve_group_label(row)
         correction_label = scaling_curve_correction_label(row)
+        sampling_label = scaling_curve_sampling_label(row)
         if group_label:
             group_key = group_label
             break
@@ -1066,10 +1128,13 @@ def scaling_curve_style(rows: list[dict[str, str]]) -> dict[str, Any]:
     style = {
         "linewidth": 1.4,
         "linestyle": correction_style["linestyle"],
-        "marker": correction_style["marker"],
         "color": blend_color_toward_white(base_color, correction_style["shade"]),
         "markersize": 5,
     }
+    style["marker"] = SCALING_SAMPLING_MARKERS.get(
+        sampling_label or "",
+        correction_style["marker"],
+    )
     if group_key == "standalone":
         style["linewidth"] = 1.6
     return style

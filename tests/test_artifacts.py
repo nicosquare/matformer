@@ -897,12 +897,14 @@ def test_scaling_curve_label_prefers_correction_mode_when_available():
         "sampling_mode": "nested-random",
         "model_family": "nested",
         "model_variant": "concat",
+        "resolved_sampling_mode": "per_block",
         "correction_mode": "lmc",
     }
     legacy_row = {
         "sampling_mode": "nested-random",
         "model_family": "nested",
         "model_variant": "concat",
+        "granularity_sampling_mode": "global",
         "membership_correction": True,
     }
     standalone_row = {
@@ -913,10 +915,10 @@ def test_scaling_curve_label_prefers_correction_mode_when_available():
     }
 
     assert scaling_curve_label(labeled_row) == (
-        "nested-random / concat / lmc"
+        "nested-random / concat / per_block / lmc"
     )
     assert scaling_curve_label(legacy_row) == (
-        "nested-random / concat / gmc"
+        "nested-random / concat / global / gmc"
     )
     assert scaling_curve_label(standalone_row) == "standalone"
 
@@ -1012,6 +1014,28 @@ def test_scaling_curve_style_groups_family_colors_markers_and_shades():
             }
         ]
     )
+    nested_random_concat_global_style = scaling_curve_style(
+        [
+            {
+                "sampling_mode": "nested-random",
+                "model_family": "nested",
+                "model_variant": "concat",
+                "resolved_sampling_mode": "global",
+                "correction_mode": "none",
+            }
+        ]
+    )
+    nested_random_concat_per_block_style = scaling_curve_style(
+        [
+            {
+                "sampling_mode": "nested-random",
+                "model_family": "nested",
+                "model_variant": "concat",
+                "resolved_sampling_mode": "per_block",
+                "correction_mode": "none",
+            }
+        ]
+    )
     standalone_style = scaling_curve_style(
         [
             {
@@ -1041,6 +1065,9 @@ def test_scaling_curve_style_groups_family_colors_markers_and_shades():
     assert nested_all_slice_gmc_style["marker"] == "s"
     assert nested_random_slice_none_style["marker"] == "o"
     assert nested_random_slice_gmc_style["marker"] == "s"
+    assert nested_random_concat_global_style["marker"] == "o"
+    assert nested_random_concat_per_block_style["marker"] == "D"
+    assert nested_random_concat_global_style["marker"] != nested_random_concat_per_block_style["marker"]
 
     assert nested_all_concat_none_style["linestyle"] == "-"
     assert nested_all_concat_gmc_style["linestyle"] == "--"

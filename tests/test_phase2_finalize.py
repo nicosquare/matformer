@@ -749,6 +749,8 @@ def test_make_figures_enriches_model_variant_from_run_config(tmp_path):
 
     assert enriched_rows[0]["model_variant"] == "concat"
     assert enriched_rows[0]["membership_correction"] is False
+    assert enriched_rows[0]["resolved_sampling_mode"] == "global"
+    assert enriched_rows[0]["granularity_sampling_mode"] == "global"
 
 
 def test_make_figures_defaults_missing_model_variant_for_legacy_configs(tmp_path):
