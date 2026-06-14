@@ -40,17 +40,19 @@ SIZE_PLOT_PANELS = [
     ("nested-all", "slicing"),
     ("nested-all", "concat"),
 ]
-SCALING_GROUP_COLORS = {
-    "nested-all / concat": "tab:blue",
-    "nested-random / concat": "tab:purple",
-    "nested-all / slicing": "tab:orange",
-    "nested-random / slicing": "tab:red",
+SCALING_VARIANT_COLORS = {
+    "concat": "tab:blue",
+    "slicing": "tab:orange",
     "standalone": "tab:green",
 }
 SCALING_CORRECTION_STYLES = {
     "none": {"linestyle": "-", "marker": "o", "shade": 0.0},
     "gmc": {"linestyle": "--", "marker": "s", "shade": 0.2},
     "lmc": {"linestyle": "-.", "marker": "^", "shade": 0.35},
+}
+SCALING_SAMPLING_TONES = {
+    "global": 0.0,
+    "per_block": 0.28,
 }
 SCALING_SAMPLING_MARKERS = {
     "global": "o",
@@ -414,8 +416,9 @@ def plot_metric_vs_size_panel(
         return
 
     grouped = group_scaling_rows(panel_rows)
-    for label, group_rows_for_label in grouped.items():
+    for group_rows_for_label in grouped.values():
         style = scaling_curve_style(group_rows_for_label)
+        legend_label = scaling_curve_display_label(group_rows_for_label)
         points = [
             (to_float(row["non_embedding_parameters"]), to_float(row[metric_name]))
             for row in group_rows_for_label
@@ -426,7 +429,7 @@ def plot_metric_vs_size_panel(
             continue
         points.sort(key=lambda point: point[0])
         xs, ys = zip(*points)
-        axis.plot(xs, ys, label=label, **style)
+        axis.plot(xs, ys, label=legend_label, **style)
 
     standalone_points = [
         (to_float(row["non_embedding_parameters"]), to_float(row[metric_name]))
@@ -1024,6 +1027,28 @@ def scaling_curve_label(row: dict[str, str]) -> str:
     return " / ".join(parts)
 
 
+def scaling_curve_display_label(rows: list[dict[str, str]]) -> str:
+    row = rows[0]
+    family_label = scaling_curve_family_label(row)
+    if family_label == "standalone":
+        return "standalone"
+
+    parts = [family_label]
+    variant_label = scaling_curve_variant_label(row)
+    if variant_label is not None:
+        parts.append(variant_label)
+
+    sampling_label = scaling_curve_sampling_label(row)
+    if sampling_label == "per_block":
+        parts.append("per_block sampling")
+
+    correction_label = scaling_curve_correction_label(row)
+    if correction_label is not None:
+        parts.append(correction_label)
+
+    return " / ".join(parts)
+
+
 def scaling_curve_group_label(row: dict[str, str]) -> str:
     family_label = scaling_curve_family_label(row)
     if family_label == "standalone":
@@ -1124,11 +1149,16 @@ def scaling_curve_style(rows: list[dict[str, str]]) -> dict[str, Any]:
         correction_label or "none",
         SCALING_CORRECTION_STYLES["none"],
     )
-    base_color = SCALING_GROUP_COLORS.get(group_key or "", "tab:gray")
+    variant_label = None if group_key == "standalone" else group_key.split(" / ", 1)[-1]
+    base_color = SCALING_VARIANT_COLORS.get(variant_label or "", "tab:gray")
+    sampling_tone = SCALING_SAMPLING_TONES.get(sampling_label or "global", 0.0)
     style = {
         "linewidth": 1.4,
         "linestyle": correction_style["linestyle"],
-        "color": blend_color_toward_white(base_color, correction_style["shade"]),
+        "color": blend_color_toward_white(
+            base_color,
+            combine_shades(sampling_tone, correction_style["shade"]),
+        ),
         "markersize": 5,
     }
     style["marker"] = SCALING_SAMPLING_MARKERS.get(
@@ -1138,6 +1168,14 @@ def scaling_curve_style(rows: list[dict[str, str]]) -> dict[str, Any]:
     if group_key == "standalone":
         style["linewidth"] = 1.6
     return style
+
+
+def combine_shades(*shades: float) -> float:
+    combined = 0.0
+    for shade in shades:
+        shade = min(max(shade, 0.0), 1.0)
+        combined = 1.0 - (1.0 - combined) * (1.0 - shade)
+    return combined
 
 
 def blend_color_toward_white(color: str, shade: float) -> tuple[float, float, float]:

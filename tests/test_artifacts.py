@@ -6,7 +6,12 @@ import pytest
 import torch
 from datasets import Dataset
 
-from scripts.make_figures import generate_figures, scaling_curve_label, scaling_curve_style
+from scripts.make_figures import (
+    generate_figures,
+    scaling_curve_display_label,
+    scaling_curve_label,
+    scaling_curve_style,
+)
 from models.correction import (
     correction_context_from_config,
     summarize_correction_context,
@@ -923,6 +928,28 @@ def test_scaling_curve_label_prefers_correction_mode_when_available():
     assert scaling_curve_label(standalone_row) == "standalone"
 
 
+def test_scaling_curve_display_label_makes_per_block_sampling_explicit():
+    per_block_row = {
+        "sampling_mode": "nested-random",
+        "model_family": "nested",
+        "model_variant": "concat",
+        "resolved_sampling_mode": "per_block",
+        "correction_mode": "lmc",
+    }
+    global_row = {
+        "sampling_mode": "nested-random",
+        "model_family": "nested",
+        "model_variant": "concat",
+        "granularity_sampling_mode": "global",
+        "membership_correction": True,
+    }
+
+    assert scaling_curve_display_label([per_block_row]) == (
+        "nested-random / concat / per_block sampling / lmc"
+    )
+    assert scaling_curve_display_label([global_row]) == "nested-random / concat / gmc"
+
+
 def test_scaling_curve_style_groups_family_colors_markers_and_shades():
     nested_all_concat_none_style = scaling_curve_style(
         [
@@ -1036,6 +1063,28 @@ def test_scaling_curve_style_groups_family_colors_markers_and_shades():
             }
         ]
     )
+    nested_random_slice_global_style = scaling_curve_style(
+        [
+            {
+                "sampling_mode": "nested-random",
+                "model_family": "nested",
+                "model_variant": "slicing",
+                "resolved_sampling_mode": "global",
+                "correction_mode": "none",
+            }
+        ]
+    )
+    nested_random_slice_per_block_style = scaling_curve_style(
+        [
+            {
+                "sampling_mode": "nested-random",
+                "model_family": "nested",
+                "model_variant": "slicing",
+                "resolved_sampling_mode": "per_block",
+                "correction_mode": "none",
+            }
+        ]
+    )
     standalone_style = scaling_curve_style(
         [
             {
@@ -1055,6 +1104,15 @@ def test_scaling_curve_style_groups_family_colors_markers_and_shades():
         nested_all_slice_none_style["color"],
         nested_random_slice_none_style["color"],
     }
+    assert nested_random_concat_global_style["color"] != nested_random_concat_per_block_style[
+        "color"
+    ]
+    assert nested_random_slice_global_style["color"] != nested_random_slice_per_block_style[
+        "color"
+    ]
+    assert nested_random_concat_per_block_style["color"] != nested_random_slice_per_block_style[
+        "color"
+    ]
 
     assert nested_all_concat_none_style["marker"] == "o"
     assert nested_all_concat_gmc_style["marker"] == "s"
