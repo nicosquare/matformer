@@ -446,7 +446,7 @@ def plot_metric_vs_size_panel(
             ys,
             marker="^",
             s=42,
-            color=SCALING_GROUP_COLORS["standalone"],
+            color=SCALING_VARIANT_COLORS["standalone"],
             label="standalone reference",
             zorder=3,
         )
