@@ -1053,6 +1053,19 @@ def scaling_curve_display_label(rows: list[dict[str, str]]) -> str:
     return " / ".join(parts)
 
 
+def scaling_curve_color_group_label(row: dict[str, str]) -> str:
+    family_label = scaling_curve_family_label(row)
+    if family_label == "standalone":
+        return "standalone"
+
+    variant_label = scaling_curve_variant_label(row) or "slicing"
+    if family_label == "nested-random":
+        sampling_label = scaling_curve_sampling_label(row) or "global"
+        return f"{family_label} / {variant_label} / {sampling_label}"
+
+    return f"{family_label} / {variant_label}"
+
+
 def scaling_curve_group_label(row: dict[str, str]) -> str:
     family_label = scaling_curve_family_label(row)
     if family_label == "standalone":
@@ -1139,6 +1152,7 @@ def scaling_curve_correction_label(row: dict[str, str]) -> str | None:
 
 def scaling_curve_style(rows: list[dict[str, str]]) -> dict[str, Any]:
     group_key = None
+    color_group_key = None
     correction_label = None
     sampling_label = None
     for row in rows:
@@ -1147,13 +1161,14 @@ def scaling_curve_style(rows: list[dict[str, str]]) -> dict[str, Any]:
         sampling_label = scaling_curve_sampling_label(row)
         if group_label:
             group_key = group_label
+            color_group_key = scaling_curve_color_group_label(row)
             break
 
     correction_style = SCALING_CORRECTION_STYLES.get(
         correction_label or "none",
         SCALING_CORRECTION_STYLES["none"],
     )
-    base_color = SCALING_GROUP_COLORS.get(group_key or "", "tab:gray")
+    base_color = SCALING_GROUP_COLORS.get(color_group_key or "", "tab:gray")
     sampling_tone = SCALING_SAMPLING_TONES.get(sampling_label or "global", 0.0)
     style = {
         "linewidth": 1.4,
