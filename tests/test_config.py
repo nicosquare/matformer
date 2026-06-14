@@ -137,7 +137,7 @@ def test_cli_overrides_are_parsed_and_applied():
             "training.max_steps=7",
             "run.seed=123",
             "outputs.save_checkpoints=false",
-            "model.variant=cat_llama",
+            "model.variant=concat",
             "model.correction_mode=none",
             "model.membership_correction=false",
             "training.scheduler.name=constant",
@@ -147,7 +147,7 @@ def test_cli_overrides_are_parsed_and_applied():
     assert resolved["training"]["max_steps"] == 7
     assert resolved["run"]["seed"] == 123
     assert resolved["outputs"]["save_checkpoints"] is False
-    assert resolved["model"]["variant"] == "cat_llama"
+    assert resolved["model"]["variant"] == "concat"
     assert resolved["model"]["membership_correction"] is False
     assert resolved["training"]["scheduler_name"] == "constant"
 
@@ -177,6 +177,58 @@ def test_requested_run_sampling_mode_does_not_force_per_layer_model_mode():
 
 
 @pytest.mark.parametrize(
+    "sampling_mode, expected_pattern_type, selected_granularities, expected_local_correction_active",
+    [
+        ("global", "single", ("m",), False),
+        ("per_layer", "per_layer", ("s", "m"), True),
+    ],
+)
+def test_explicit_model_sampling_modes_preserve_nested_random_run_mode(
+    sampling_mode,
+    expected_pattern_type,
+    selected_granularities,
+    expected_local_correction_active,
+):
+    resolved = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        overrides=[f"model.granularity_sampling_mode={sampling_mode}"],
+    )
+
+    assert resolved["run"]["sampling_mode"] == "nested-random"
+    assert resolved["training"]["granularity_sampling"] == "random"
+    assert resolved["model"]["granularity_sampling_mode"] == sampling_mode
+    assert resolved["model"]["granularity_pattern_provenance"] == {
+        "pattern_type": expected_pattern_type,
+        "scope": "model",
+        "source": "model.granularity_sampling_mode",
+        "requested_alias": None,
+        "layer_count": resolved["model"]["num_layers"],
+        "available_granularities": ["s", "m", "l", "xl"],
+    }
+
+    runtime_pattern = build_granularity_pattern(
+        pattern_type=expected_pattern_type,
+        selected_granularities=selected_granularities,
+        layer_count=resolved["model"]["num_layers"],
+        repeatable_source=(
+            "dmodel256-pilot-comparison-001",
+            f"model.granularity_sampling_mode={sampling_mode}",
+        ),
+    )
+    context = correction_context_from_config(
+        resolved,
+        granularity_pattern=runtime_pattern,
+    )
+
+    assert context.sampling_mode == sampling_mode
+    assert context.local_correction_active is expected_local_correction_active
+    if expected_local_correction_active:
+        assert context.derived_membership_pattern == selected_granularities
+    else:
+        assert context.derived_membership_pattern == ()
+
+
+@pytest.mark.parametrize(
     "alias, expected_mode, expected_sampling_mode",
     [
         ("all", "global", "nested-all"),
@@ -199,7 +251,9 @@ def test_legacy_granularity_sampling_alias_resolves_to_canonical_model_mode(
     assert resolved["model"]["requested_granularity_sampling_alias"] == alias
     assert resolved["run"]["sampling_mode"] == expected_sampling_mode
     assert resolved["model"]["granularity_pattern_provenance"] == {
-        "pattern_type": "single" if expected_mode == "global" else "per_layer",
+        "pattern_type": (
+            "all_granularities" if expected_sampling_mode == "nested-all" else "per_layer"
+        ),
         "scope": "model",
         "source": "model.granularity_sampling_mode",
         "requested_alias": alias,
@@ -428,7 +482,12 @@ def test_debug_matrix_resolves_all_standalone_granularities():
     for run_id, (granularity, intermediate_size) in expected.items():
         resolved = by_run_id[run_id]
         assert resolved["run"]["model_family"] == "standalone"
+        assert resolved["run"]["sampling_mode"] == "standalone"
+        assert resolved["run"]["resolved_run_mode"] == "standalone"
         assert resolved["run"]["granularity"] == granularity
+        assert resolved["training"]["granularity_sampling"] == "all"
+        assert resolved["model"]["granularity_sampling_mode"] == "global"
+        assert resolved["model"]["resolved_sampling_mode"] == "global"
         assert resolved["model"]["granularities"] == [granularity]
         assert resolved["model"]["intermediate_size"] == intermediate_size
         assert resolved["model"]["matformer_source_intermediate_size"] == 512
@@ -483,6 +542,28 @@ def test_debug_standalone_granularity_must_match_model_granularities():
         validate_run_config(invalid)
 
 
+@pytest.mark.parametrize(
+    "overrides, error_message",
+    [
+        (
+            ["training.granularity_sampling=random"],
+            "model.granularity_sampling_mode=per_layer requires nested runs",
+        ),
+        (
+            ["model.granularity_sampling_mode=per_layer"],
+            "model.granularity_sampling_mode=per_layer requires nested runs",
+        ),
+    ],
+)
+def test_standalone_rejects_nested_sampling_submodes(overrides, error_message):
+    with pytest.raises(ConfigError, match=error_message):
+        resolve_run_config(
+            "configs/debug_matrix.yaml",
+            run_id="debug-standalone-m-001",
+            overrides=overrides,
+        )
+
+
 def test_matrix_output_root_override_derives_each_run_directory(tmp_path):
     output_root = tmp_path / "matrix-output"
 
@@ -505,7 +586,7 @@ def test_single_run_defaults_to_outputs_root(tmp_path):
 
     resolved = resolve_run_config(config_path)
 
-    assert resolved["model"]["variant"] == "matformer_llama"
+    assert resolved["model"]["variant"] == "slicing"
     assert resolved["model"]["membership_correction"] is True
     assert resolved["run"]["output_root"] == "outputs"
     assert resolved["training"]["gradient_clip_norm"] == 1.0
@@ -526,9 +607,9 @@ def test_shared_configs_resolve_default_model_variant():
     )
     pilot_resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
 
-    assert debug_resolved["model"]["variant"] == "matformer_llama"
+    assert debug_resolved["model"]["variant"] == "slicing"
     assert debug_resolved["model"]["membership_correction"] is True
-    assert pilot_resolved["model"]["variant"] == "matformer_llama"
+    assert pilot_resolved["model"]["variant"] == "slicing"
     assert pilot_resolved["model"]["membership_correction"] is True
 
 
@@ -538,7 +619,7 @@ def test_shared_configs_resolve_default_model_variant():
         (["model.correction_mode=none", "model.membership_correction=false"], "none", False),
         (["model.correction_mode=gmc"], "gmc", True),
         (
-            ["model.variant=cat_llama", "model.correction_mode=lmc"],
+            ["model.variant=concat", "model.correction_mode=lmc"],
             "lmc",
             True,
         ),
@@ -591,18 +672,18 @@ def test_lmc_is_rejected_for_non_concat_runs():
         )
 
 
-def test_cat_llama_defaults_membership_correction_on():
+def test_concat_defaults_membership_correction_on():
     resolved = resolve_run_config(
         "configs/debug_matrix.yaml",
         run_id="debug-nested-001",
-        overrides=["model.variant=cat_llama"],
+        overrides=["model.variant=concat"],
     )
 
-    assert resolved["model"]["variant"] == "cat_llama"
+    assert resolved["model"]["variant"] == "concat"
     assert resolved["model"]["membership_correction"] is True
 
 
-def test_matformer_llama_allows_disabling_membership_correction():
+def test_slicing_allows_disabling_membership_correction():
     resolved = resolve_run_config(
         "configs/debug_matrix.yaml",
         run_id="debug-nested-001",
@@ -612,7 +693,7 @@ def test_matformer_llama_allows_disabling_membership_correction():
         ],
     )
 
-    assert resolved["model"]["variant"] == "matformer_llama"
+    assert resolved["model"]["variant"] == "slicing"
     assert resolved["model"]["membership_correction"] is False
 
 
@@ -950,6 +1031,8 @@ def test_optimizer_preset_resolution_merges_registry_defaults_and_partial_overri
         "weight_decay": 0.05,
     }
 
+    assert resolved["run"]["sampling_mode"] == "nested-all"
+    assert resolved["model"]["granularity_sampling_mode"] == "global"
     assert training["optimizer_name"] == "adamw"
     assert training["optimizer_kwargs"] == expected_optimizer_kwargs
     assert training["optimizer"] == {

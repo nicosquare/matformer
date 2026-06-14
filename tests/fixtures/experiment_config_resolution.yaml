@@ -6,12 +6,13 @@ run:
   model_size_label: debug
   seed: 42
   output_root: outputs
+  sampling_mode: nested-all
   continuation:
     enabled: false
 
 model:
   base_model_name: debug-llama
-  variant: cat_llama
+  variant: concat
   correction_mode: gmc
   membership_correction: true
   tokenizer_name: hf-internal-testing/llama-tokenizer

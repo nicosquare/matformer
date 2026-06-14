@@ -26,8 +26,9 @@ from evaluation.validation import (
     validation_results_to_metric_rows,
 )
 from models.ffn import CatLlamaMLP, get_concat_layout_diagnostic, get_ffn_prefix_metadata
-from models.correction import correction_context_from_config, summarize_correction_context
-from models.wiring import ModifiedLlamaForCausalLM
+from models.correction import summarize_correction_context_from_config
+from models.granularity import summarize_granularity_pattern_from_config
+from models.wiring import ModifiedLlamaForCausalLM, prime_standalone_granularity_state
 from training.data import (
     build_language_model_dataloader,
     load_and_tokenize_dataset,
@@ -46,6 +47,7 @@ from utils.config import (
     attach_parameter_counts_to_config,
     resolve_run_config,
     resolve_optimizer_kwargs,
+    resolve_sampling_mode_from_config_sections,
     resolve_training_length_for_world_size,
 )
 from utils.heartbeats import HeartbeatCadence, HeartbeatWriter
@@ -62,6 +64,7 @@ from utils.metrics import (
     write_metrics_csv,
     write_run_summary,
     write_scaling_results_csv,
+    summarize_runtime_granularity_pattern_from_config,
 )
 from utils.monitoring import group_loss_rows_by_series
 
@@ -113,14 +116,14 @@ def run_training(
                 model = build_model(config)
             if (
                 distributed_context.is_rank_zero
-                and config["model"]["variant"] == "cat_llama"
+                and config["model"]["variant"] == "concat"
             ):
                 diagnostic = get_concat_layout_diagnostic(
                     config["model"]["intermediate_size"],
                     config["model"]["granularities"],
                     granularity_prefixes=config["model"].get("granularity_prefixes"),
                 )
-                print(f"[cat-llama-diagnostic] {diagnostic}", flush=True)
+                print(f"[concat-diagnostic] {diagnostic}", flush=True)
             parameter_counts_by_granularity = build_artifact_parameter_counts(
                 config,
                 model,
@@ -295,28 +298,24 @@ def run_training(
         tokens_seen = training_outcome["tokens_seen"]
         target_model = getattr(model, "module", model)
         runtime_pattern = getattr(target_model, "current_granularity_pattern", None)
-        if runtime_pattern is not None and hasattr(runtime_pattern, "to_dict"):
-            runtime_pattern_summary = runtime_pattern.to_dict()
-        elif runtime_pattern is not None:
-            runtime_pattern_summary = dict(runtime_pattern)
-        else:
-            runtime_pattern_summary = config["model"].get(
-                "granularity_pattern_provenance",
-                {},
-            )
-        if isinstance(runtime_pattern_summary, dict):
-            repeatable_source = runtime_pattern_summary.get("repeatable_source")
-            if isinstance(repeatable_source, (list, tuple)) and repeatable_source:
-                runtime_pattern_summary["repeatable_source"] = [
-                    config["run"]["run_id"],
-                    *repeatable_source[1:],
-                ]
-        correction_context = summarize_correction_context(
-            correction_context_from_config(
-                config,
-                granularity_pattern=runtime_pattern,
-            )
+        if str(config["run"].get("sampling_mode", "nested-random")) == "nested-all":
+            runtime_pattern = None
+        runtime_pattern_summary = summarize_runtime_granularity_pattern_from_config(
+            config,
+            runtime_pattern=runtime_pattern,
         )
+        correction_context = summarize_correction_context_from_config(
+            config,
+            granularity_pattern=runtime_pattern,
+        )
+        resolved_run_mode = str(config["run"].get("sampling_mode", "nested-random"))
+        config["run"]["resolved_run_mode"] = resolved_run_mode
+        config["model"]["resolved_sampling_mode"] = config["model"].get(
+            "granularity_sampling_mode",
+            "global",
+        )
+        config["model"]["granularity_pattern_summary"] = runtime_pattern_summary
+        config["model"]["correction_context"] = correction_context
         extra_summary_fields = {
             "steps_completed": training_outcome["steps_completed"],
             "stop_reason": training_outcome["stop_reason"],
@@ -324,6 +323,7 @@ def run_training(
             "model_variant": config["model"]["variant"],
             "granularities": config["model"]["granularities"],
             "granularity_sampling": training.get("granularity_sampling", "all"),
+            "resolved_run_mode": resolved_run_mode,
             "resolved_sampling_mode": config["model"].get(
                 "granularity_sampling_mode",
                 "global",
@@ -432,7 +432,7 @@ def build_model(config: dict[str, Any]):
         "membership_correction",
         model_config.get(
             "gradient_membership_correction",
-            model_config["variant"] == "cat_llama",
+            model_config["variant"] == "concat",
         ),
     )
     mlp_kwargs = {
@@ -443,9 +443,15 @@ def build_model(config: dict[str, Any]):
         ),
     }
     if config["run"]["model_family"] == "standalone":
-        return LlamaForCausalLM(llama_config)
+        model = LlamaForCausalLM(llama_config)
+        prime_standalone_granularity_state(
+            model,
+            config["run"]["granularity"],
+            run_id=config["run"].get("run_id"),
+        )
+        return model
 
-    if config["model"]["variant"] == "cat_llama":
+    if config["model"]["variant"] == "concat":
         return ModifiedLlamaForCausalLM(
             llama_config,
             mlp_cls=CatLlamaMLP,
@@ -1851,8 +1857,10 @@ def train_for_steps(
     stage_name: str = "training",
 ) -> list[dict[str, Any]]:
     training = config["training"]
+    run = config["run"]
     granularities = config["model"]["granularities"]
     model_sampling_mode = str(config["model"].get("granularity_sampling_mode", "global"))
+    run_sampling_mode = str(run.get("sampling_mode", "nested-random"))
     target_model = model.module if hasattr(model, "module") else model
     supports_layer_granularities = hasattr(target_model, "configure_layer_granularities")
     token_budget = training["token_budget"]
@@ -1920,7 +1928,40 @@ def train_for_steps(
                 step_metric_rows_data: list[
                     tuple[str, torch.Tensor, dict[str, Any], dict[str, Any]]
                 ] = []
-                if model_sampling_mode == "per_layer" and supports_layer_granularities:
+                if run_sampling_mode == "nested-all":
+                    selected_granularities = select_training_granularities(
+                        config,
+                        granularities,
+                        device,
+                    )
+                    forward_losses: list[torch.Tensor] = []
+                    for granularity in selected_granularities:
+                        configure_model_granularity(model, granularity)
+                        step_runtime_pattern_summary, step_correction_context = _runtime_granularity_artifacts(
+                            config,
+                            model,
+                        )
+                        outputs = model(
+                            input_ids=batch["input_ids"],
+                            attention_mask=batch.get("attention_mask"),
+                            labels=batch["labels"],
+                        )
+                        forward_losses.append(outputs.loss)
+                        step_metric_rows_data.append(
+                            (
+                                granularity,
+                                outputs.loss,
+                                step_runtime_pattern_summary,
+                                step_correction_context,
+                            )
+                        )
+                    combined_loss = (
+                        forward_losses[0]
+                        if len(forward_losses) == 1
+                        else torch.stack(forward_losses).mean()
+                    )
+                    total_losses = len(forward_losses)
+                elif model_sampling_mode == "per_layer" and supports_layer_granularities:
                     selected_layer_granularities = select_training_layer_granularities(
                         config,
                         granularities,
@@ -2104,6 +2145,10 @@ def train_for_steps(
                         step=step,
                         distributed_context=distributed_context,
                     )
+                    validation_runtime_pattern_summary, validation_correction_context = _runtime_granularity_artifacts(
+                        config,
+                        model,
+                    )
                     validation_metric_rows = validation_results_to_metric_rows(
                         validation_results,
                         config,
@@ -2113,8 +2158,8 @@ def train_for_steps(
                         peak_memory_bytes=peak_memory_bytes,
                         tokens_seen=tokens_seen,
                         content_tokens_seen=content_tokens_seen,
-                        granularity_pattern_summary=runtime_pattern_summary,
-                        correction_context=correction_context,
+                        granularity_pattern_summary=validation_runtime_pattern_summary,
+                        correction_context=validation_correction_context,
                     )
                     metrics_rows.extend(validation_metric_rows)
                     if monitoring_session is not None:
@@ -2162,6 +2207,9 @@ def select_training_granularities(
     granularities: list[str],
     device: torch.device,
 ) -> list[str]:
+    if str(config["run"].get("sampling_mode", "nested-random")) == "nested-all":
+        return list(granularities)
+
     sampling_mode = config["training"].get("granularity_sampling", "all")
     if sampling_mode == "all":
         return list(granularities)
@@ -2457,7 +2505,21 @@ def build_training_metric_row(
         "model_family": run["model_family"],
         "model_size_label": _model_shape_label(run),
         "model_shape_label": _model_shape_label(run),
-        "sampling_mode": _sampling_mode(run, config["training"]),
+        "sampling_mode": resolve_sampling_mode_from_config_sections(
+            run,
+            config["training"],
+        ),
+        "resolved_run_mode": run.get(
+            "resolved_run_mode",
+            resolve_sampling_mode_from_config_sections(
+                run,
+                config["training"],
+            ),
+        ),
+        "resolved_sampling_mode": config["model"].get(
+            "resolved_sampling_mode",
+            config["model"].get("granularity_sampling_mode", "global"),
+        ),
         "granularity_sampling_mode": config["model"].get("granularity_sampling_mode"),
         "granularity": granularity,
         "granularity_pattern_summary": json_artifact_value(
@@ -2532,51 +2594,12 @@ def _model_shape_label(run: dict[str, Any]) -> Any:
     return run.get("model_shape_label", run.get("model_size_label"))
 
 
-def _sampling_mode(run: dict[str, Any], training: dict[str, Any]) -> Any:
-    if run.get("sampling_mode") is not None:
-        return run["sampling_mode"]
-    if run.get("model_family") == "standalone":
-        return "standalone"
-    granularity_sampling = training.get("granularity_sampling")
-    if granularity_sampling == "random":
-        return "nested-random"
-    if granularity_sampling == "all":
-        return "nested-all"
-    return granularity_sampling
-
-
 def _default_granularity_pattern_summary(config: dict[str, Any]) -> dict[str, Any]:
-    model = config["model"]
-    run = config["run"]
-    sampling_mode = str(model.get("granularity_sampling_mode", "global"))
-    return {
-        "pattern_type": "single" if sampling_mode == "global" else "per_layer",
-        "selected_granularities": list(model.get("granularities", [])),
-        "layer_count": model.get("num_layers"),
-        "repeatable_source": [
-            str(run.get("run_id") or ""),
-            f"model.granularity_sampling_mode={sampling_mode}",
-        ],
-    }
+    return summarize_granularity_pattern_from_config(config)
 
 
 def _default_correction_context(config: dict[str, Any]) -> dict[str, Any]:
-    model = config["model"]
-    sampling_mode = str(model.get("granularity_sampling_mode", "global"))
-    local_correction_active = (
-        sampling_mode == "per_layer"
-        and model.get("correction_mode") in {"gmc", "lmc"}
-    )
-    return {
-        "correction_mode": model.get("correction_mode"),
-        "sampling_mode": sampling_mode,
-        "local_correction_active": local_correction_active,
-        "derived_membership_pattern": (
-            list(model.get("granularities", []))
-            if local_correction_active
-            else []
-        ),
-    }
+    return summarize_correction_context_from_config(config)
 
 
 def _runtime_granularity_artifacts(
@@ -2585,25 +2608,14 @@ def _runtime_granularity_artifacts(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     target_model = getattr(model, "module", model)
     runtime_pattern = getattr(target_model, "current_granularity_pattern", None)
-    if runtime_pattern is not None and hasattr(runtime_pattern, "to_dict"):
-        runtime_pattern_summary = runtime_pattern.to_dict()
-    elif runtime_pattern is not None:
-        runtime_pattern_summary = dict(runtime_pattern)
-    else:
-        runtime_pattern_summary = _default_granularity_pattern_summary(config)
-
-    if isinstance(runtime_pattern_summary, dict):
-        repeatable_source = runtime_pattern_summary.get("repeatable_source")
-        if isinstance(repeatable_source, (list, tuple)) and repeatable_source:
-            runtime_pattern_summary["repeatable_source"] = [
-                config["run"]["run_id"],
-                *repeatable_source[1:],
-            ]
-
-    correction_context = summarize_correction_context(
-        correction_context_from_config(
-            config,
-            granularity_pattern=runtime_pattern,
-        )
+    if str(config["run"].get("sampling_mode", "nested-random")) == "nested-all":
+        runtime_pattern = None
+    runtime_pattern_summary = summarize_runtime_granularity_pattern_from_config(
+        config,
+        runtime_pattern=runtime_pattern,
+    )
+    correction_context = summarize_correction_context_from_config(
+        config,
+        granularity_pattern=runtime_pattern,
     )
     return runtime_pattern_summary, correction_context

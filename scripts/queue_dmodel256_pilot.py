@@ -107,8 +107,11 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-root",
-        default=os.environ.get("OUTPUT_ROOT", DEFAULT_OUTPUT_ROOT),
-        help="Root directory for run artifacts.",
+        default=os.environ.get(
+            "OUT",
+            os.environ.get("OUTPUT_ROOT", DEFAULT_OUTPUT_ROOT),
+        ),
+        help="Root directory for run artifacts. Defaults to OUT, then OUTPUT_ROOT.",
     )
     parser.add_argument(
         "--token-budget",
@@ -160,106 +163,52 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
 def build_experiment_specs() -> list[ExperimentSpec]:
     specs: list[ExperimentSpec] = []
 
-    for variant, variant_slug in (
-        ("cat_llama", "cat"),
-        ("matformer_llama", "slice"),
-    ):
-        specs.append(
-            ExperimentSpec(
-                label=f"nested-random-{variant_slug}-none-global",
-                run_overrides=("run.model_family=nested",),
-                model_overrides=(
-                    f"model.variant={variant}",
-                    "model.correction_mode=none",
-                    "model.membership_correction=false",
-                    "model.granularity_sampling_mode=global",
-                ),
-            )
-        )
-        specs.append(
-            ExperimentSpec(
-                label=f"nested-random-{variant_slug}-gmc-global",
-                run_overrides=("run.model_family=nested",),
-                model_overrides=(
-                    f"model.variant={variant}",
-                    "model.correction_mode=gmc",
-                    "model.membership_correction=true",
-                    "model.granularity_sampling_mode=global",
-                ),
-            )
-        )
-        specs.append(
-            ExperimentSpec(
-                label=f"nested-random-{variant_slug}-none-per-layer",
-                run_overrides=("run.model_family=nested",),
-                model_overrides=(
-                    f"model.variant={variant}",
-                    "model.correction_mode=none",
-                    "model.membership_correction=false",
-                    "model.granularity_sampling_mode=per_layer",
-                ),
-            )
-        )
-        specs.append(
-            ExperimentSpec(
-                label=f"nested-random-{variant_slug}-gmc-per-layer",
-                run_overrides=("run.model_family=nested",),
-                model_overrides=(
-                    f"model.variant={variant}",
-                    "model.correction_mode=gmc",
-                    "model.membership_correction=true",
-                    "model.granularity_sampling_mode=per_layer",
-                ),
-            )
-        )
-        if variant == "cat_llama":
+    correction_modes_by_variant = {
+        "slicing": ("none", "gmc"),
+        "concat": ("none", "gmc", "lmc"),
+    }
+    sampling_modes = ("global", "per_block")
+
+    for variant, correction_modes in correction_modes_by_variant.items():
+        for correction_mode in correction_modes:
+            membership_correction = correction_mode != "none"
+            for sampling_mode in sampling_modes:
+                specs.append(
+                    ExperimentSpec(
+                        label=(
+                            f"nested-random-{variant}-{correction_mode}-{sampling_mode}"
+                        ),
+                        run_overrides=(
+                            "run.model_family=nested",
+                            "run.sampling_mode=nested-random",
+                        ),
+                        model_overrides=(
+                            f"model.variant={variant}",
+                            f"model.correction_mode={correction_mode}",
+                            f"model.membership_correction={str(membership_correction).lower()}",
+                            f"model.granularity_sampling_mode={sampling_mode}",
+                        ),
+                    )
+                )
+
+    for variant, correction_modes in correction_modes_by_variant.items():
+        for correction_mode in correction_modes:
+            membership_correction = correction_mode != "none"
             specs.append(
                 ExperimentSpec(
-                    label="nested-random-cat-lmc-per-layer",
-                    run_overrides=("run.model_family=nested",),
+                    label=f"nested-all-{variant}-{correction_mode}",
+                    run_overrides=(
+                        "run.model_family=nested",
+                        "run.sampling_mode=nested-all",
+                    ),
                     model_overrides=(
-                        "model.variant=cat_llama",
-                        "model.correction_mode=lmc",
-                        "model.membership_correction=true",
-                        "model.granularity_sampling_mode=per_layer",
+                        f"model.variant={variant}",
+                        f"model.correction_mode={correction_mode}",
+                        f"model.membership_correction={str(membership_correction).lower()}",
+                        "model.granularity_sampling_mode=global",
                     ),
                 )
             )
-
-    for variant, variant_slug in (
-        ("cat_llama", "cat"),
-        ("matformer_llama", "slice"),
-    ):
-        specs.append(
-            ExperimentSpec(
-                label=f"nested-all-{variant_slug}-none-global",
-                run_overrides=(
-                    "run.model_family=nested",
-                    "run.sampling_mode=nested-all",
-                ),
-                model_overrides=(
-                    f"model.variant={variant}",
-                    "model.correction_mode=none",
-                    "model.membership_correction=false",
-                    "model.granularity_sampling_mode=global",
-                ),
-            )
-        )
-        specs.append(
-            ExperimentSpec(
-                label=f"nested-all-{variant_slug}-gmc-global",
-                run_overrides=(
-                    "run.model_family=nested",
-                    "run.sampling_mode=nested-all",
-                ),
-                model_overrides=(
-                    f"model.variant={variant}",
-                    "model.correction_mode=gmc",
-                    "model.membership_correction=true",
-                    "model.granularity_sampling_mode=global",
-                ),
-            )
-        )
 
     for granularity in ("s", "m", "l", "xl"):
         specs.append(

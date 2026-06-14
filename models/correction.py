@@ -128,6 +128,20 @@ def summarize_correction_context(context: CorrectionContext) -> dict[str, Any]:
     return context.to_dict()
 
 
+def summarize_correction_context_from_config(
+    config: Mapping[str, Any],
+    granularity_pattern: GranularityPattern | Sequence[str] | str | None = None,
+) -> dict[str, Any]:
+    """Build a stable correction-context summary from resolved config state."""
+
+    return summarize_correction_context(
+        correction_context_from_config(
+            config,
+            granularity_pattern=granularity_pattern,
+        )
+    )
+
+
 def correction_context_from_config(
     config: Mapping[str, Any],
     granularity_pattern: GranularityPattern | Sequence[str] | str | None = None,
@@ -141,7 +155,10 @@ def correction_context_from_config(
 
     correction_mode = str(model.get("correction_mode", "none"))
     sampling_mode = str(model.get("granularity_sampling_mode", "global"))
-    if sampling_mode not in VALID_SAMPLING_MODES and run.get("sampling_mode"):
+    run_sampling_mode = str(run.get("sampling_mode", ""))
+    if run_sampling_mode == "nested-all":
+        sampling_mode = "global"
+    elif sampling_mode not in VALID_SAMPLING_MODES and run.get("sampling_mode"):
         run_sampling_mode = str(run["sampling_mode"])
         if run_sampling_mode == "nested-random":
             sampling_mode = "per_layer"

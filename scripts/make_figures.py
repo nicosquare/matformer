@@ -34,11 +34,17 @@ PARAMETER_COUNT_FIELDS = [
 ]
 
 LOSS_MOVING_AVERAGE_FRACTION = 0.1
+SIZE_PLOT_PANELS = [
+    ("nested-random", "slicing"),
+    ("nested-random", "concat"),
+    ("nested-all", "slicing"),
+    ("nested-all", "concat"),
+]
 SCALING_GROUP_COLORS = {
-    "nested-all / cat": "tab:blue",
-    "nested-random / cat": "tab:purple",
-    "nested-all / slice": "tab:orange",
-    "nested-random / slice": "tab:red",
+    "nested-all / concat": "tab:blue",
+    "nested-random / concat": "tab:purple",
+    "nested-all / slicing": "tab:orange",
+    "nested-random / slicing": "tab:red",
     "standalone": "tab:green",
 }
 SCALING_CORRECTION_STYLES = {
@@ -142,6 +148,9 @@ def generate_figures(
 
     if metrics_rows:
         figure_paths.extend(plot_loss_over_steps_by_experiment(metrics_rows, output_dir))
+        figure_paths.extend(
+            plot_validation_loss_over_tokens_by_experiment(metrics_rows, output_dir)
+        )
 
     if consistency_rows:
         figure_paths.append(
@@ -314,13 +323,61 @@ def plot_metric_vs_size(
     ylabel: str,
     output_path: Path,
 ) -> Path:
-    figure, axis, legend_axis = create_figure_with_side_legend(
-        plot_width=10,
-        plot_height=5,
-        legend_width=4.8,
+    figure, axes = plt.subplots(
+        2,
+        2,
+        figsize=(14, 11),
+        sharex=True,
+        sharey=False,
     )
-    grouped = group_scaling_rows(rows)
+    for axis, (sampling_mode, variant_label) in zip(axes.flat, SIZE_PLOT_PANELS):
+        plot_metric_vs_size_panel(
+            axis,
+            rows,
+            metric_name=metric_name,
+            ylabel=ylabel,
+            sampling_mode=sampling_mode,
+            variant_label=variant_label,
+        )
 
+    figure.suptitle(f"{ylabel} vs Non-embedding parameters")
+    figure.tight_layout(rect=[0, 0, 1, 0.96])
+    figure.savefig(output_path, bbox_inches="tight")
+    plt.close(figure)
+    return output_path
+
+
+def plot_metric_vs_size_panel(
+    axis,
+    rows: list[dict[str, str]],
+    metric_name: str,
+    ylabel: str,
+    sampling_mode: str,
+    variant_label: str,
+) -> None:
+    panel_rows = [
+        row
+        for row in rows
+        if scaling_curve_family_label(row) == sampling_mode
+        and scaling_curve_variant_label(row) == variant_label
+    ]
+    axis.set_title(f"{sampling_mode} / {variant_label}")
+    axis.set_xlabel("Non-embedding parameters")
+    axis.set_ylabel(ylabel)
+    axis.grid(True, alpha=0.3)
+
+    if not panel_rows:
+        axis.text(
+            0.5,
+            0.5,
+            "No numeric points found",
+            ha="center",
+            va="center",
+            transform=axis.transAxes,
+        )
+        return
+
+    grouped = group_scaling_rows(panel_rows)
     for label, group_rows_for_label in grouped.items():
         style = scaling_curve_style(group_rows_for_label)
         points = [
@@ -335,13 +392,29 @@ def plot_metric_vs_size(
         xs, ys = zip(*points)
         axis.plot(xs, ys, label=label, **style)
 
-    axis.set_xlabel("Non-embedding parameters")
-    axis.set_ylabel(ylabel)
-    axis.grid(True, alpha=0.3)
-    place_legend_on_right(legend_axis, axis)
-    figure.savefig(output_path)
-    plt.close(figure)
-    return output_path
+    standalone_points = [
+        (to_float(row["non_embedding_parameters"]), to_float(row[metric_name]))
+        for row in rows
+        if scaling_curve_family_label(row) == "standalone"
+        and row.get("non_embedding_parameters") not in (None, "")
+        and row.get(metric_name) not in (None, "")
+    ]
+    if standalone_points:
+        standalone_points.sort(key=lambda point: point[0])
+        xs, ys = zip(*standalone_points)
+        axis.scatter(
+            xs,
+            ys,
+            marker="^",
+            s=42,
+            color=SCALING_GROUP_COLORS["standalone"],
+            label="standalone reference",
+            zorder=3,
+        )
+
+    handles, labels = axis.get_legend_handles_labels()
+    if handles:
+        axis.legend(frameon=False, fontsize="small")
 
 
 def plot_metric_over_steps(
@@ -350,10 +423,10 @@ def plot_metric_over_steps(
     ylabel: str,
     output_path: Path,
 ) -> Path:
-    figure, axis, legend_axis = create_figure_with_legend_panel(
-        width=7,
+    figure, axis, legend_axis = create_figure_with_side_legend(
+        plot_width=7,
         plot_height=4,
-        legend_height=1.0,
+        legend_width=2.4,
     )
     grouped = group_rows(rows, ["split", "granularity"])
 
@@ -372,7 +445,7 @@ def plot_metric_over_steps(
     axis.set_xlabel("Step")
     axis.set_ylabel(ylabel)
     axis.grid(True, alpha=0.3)
-    place_legend_in_panel(legend_axis, axis)
+    place_legend_on_right(legend_axis, axis)
     figure.savefig(output_path)
     plt.close(figure)
     return output_path
@@ -388,6 +461,27 @@ def plot_loss_over_steps_by_experiment(rows: list[dict[str, str]], output_dir: P
                 figure_rows,
                 figure_label,
                 output_dir / f"loss_over_steps_{safe_filename_fragment(figure_label)}.png",
+            )
+        )
+    return output_paths
+
+
+def plot_validation_loss_over_tokens_by_experiment(
+    rows: list[dict[str, str]],
+    output_dir: Path,
+) -> list[Path]:
+    output_paths = []
+    grouped = group_loss_rows_by_figure(
+        [row for row in rows if str(row.get("split") or "") == "validation"]
+    )
+    for figure_label in sorted(grouped):
+        figure_rows = grouped[figure_label]
+        output_paths.append(
+            plot_loss_over_tokens_for_experiment(
+                figure_rows,
+                figure_label,
+                output_dir
+                / f"validation_loss_over_tokens_{safe_filename_fragment(figure_label)}.png",
             )
         )
     return output_paths
@@ -478,6 +572,90 @@ def plot_loss_over_steps_for_experiment(
 
     for axis in axes.flat[len(granularity_labels):]:
         axis.set_visible(False)
+
+    figure.suptitle(figure_label)
+    figure.tight_layout(rect=[0, 0, 1, 0.96])
+    figure.savefig(output_path, bbox_inches="tight")
+    plt.close(figure)
+    return output_path
+
+
+def plot_loss_over_tokens_for_experiment(
+    rows: list[dict[str, str]],
+    figure_label: str,
+    output_path: Path,
+) -> Path:
+    granularity_labels = sorted(
+        {str(row["granularity"]) for row in rows if row.get("granularity")},
+        key=granularity_sort_key,
+    )
+    if not granularity_labels:
+        figure, axis = plt.subplots(figsize=(7, 4))
+        axis.text(
+            0.5,
+            0.5,
+            "No granularity metadata found",
+            ha="center",
+            va="center",
+            transform=axis.transAxes,
+        )
+        axis.set_axis_off()
+        figure.suptitle(figure_label)
+        figure.tight_layout(rect=[0, 0, 1, 0.96])
+        figure.savefig(output_path, bbox_inches="tight")
+        plt.close(figure)
+        return output_path
+
+    row_count = len(granularity_labels)
+    figure, axes = plt.subplots(
+        row_count,
+        1,
+        figsize=(8, 4.0 * row_count),
+        squeeze=False,
+    )
+
+    for axis, granularity in zip(axes.flat, granularity_labels):
+        granularity_rows = [row for row in rows if row.get("granularity") == granularity]
+        series = group_loss_subplot_rows(granularity_rows)
+        has_points = False
+
+        for label, group_rows_for_label in series.items():
+            points = [
+                (to_float(row["tokens_seen"]), to_float(row["loss"]))
+                for row in group_rows_for_label
+                if row.get("tokens_seen") not in (None, "") and row.get("loss") not in (None, "")
+            ]
+            if not points:
+                continue
+            has_points = True
+            points.sort(key=lambda point: point[0])
+            xs, ys = zip(*points)
+            axis.plot(
+                xs,
+                ys,
+                marker="o",
+                markersize=3,
+                linewidth=1.1,
+                label=label,
+            )
+
+        axis.set_title(f"Granularity {granularity}")
+        axis.set_xlabel("Tokens seen")
+        axis.set_ylabel("Loss")
+        axis.minorticks_on()
+        axis.grid(True, which="major", alpha=0.28, linewidth=0.6)
+        axis.grid(True, which="minor", alpha=0.14, linewidth=0.35)
+        if has_points:
+            axis.legend(frameon=False, fontsize="small")
+        else:
+            axis.text(
+                0.5,
+                0.5,
+                "No numeric loss points found",
+                ha="center",
+                va="center",
+                transform=axis.transAxes,
+            )
 
     figure.suptitle(figure_label)
     figure.tight_layout(rect=[0, 0, 1, 0.96])
@@ -834,10 +1012,10 @@ def scaling_curve_variant_label(row: dict[str, str]) -> str | None:
     if variant in (None, ""):
         return None
     normalized = str(variant).strip().lower()
-    if normalized == "cat_llama":
-        return "cat"
-    if normalized == "matformer_llama":
-        return "slice"
+    if normalized in {"cat_llama", "cat"}:
+        return "concat"
+    if normalized in {"matformer_llama", "slice"}:
+        return "slicing"
     return normalized
 
 

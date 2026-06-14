@@ -81,8 +81,10 @@ def test_debug_matrix_exposes_nested_run_and_one_phase3_baseline():
     standalone_s = by_run_id["debug-standalone-s-001"]
 
     assert nested["run"]["model_family"] == "nested"
+    assert nested["run"]["sampling_mode"] == "nested-all"
     assert nested["model"]["granularities"] == ["s", "m", "l", "xl"]
     assert standalone_s["run"]["model_family"] == "standalone"
+    assert standalone_s["run"]["sampling_mode"] == "standalone"
     assert standalone_s["run"]["granularity"] == "s"
     assert standalone_s["model"]["granularities"] == ["s"]
 

@@ -16,7 +16,7 @@ def _pilot_summary(
     model_family,
     sampling_mode,
     *,
-    model_variant="matformer_llama",
+    model_variant="slicing",
     granularity=None,
     checkpoint_status="best_eval",
     checkpoint_path="/tmp/pilot/checkpoints/best_eval_step_10.pt",
@@ -113,7 +113,7 @@ def test_pilot_comparison_rows_cover_nested_and_standalone_modes(tmp_path):
                 "dmodel256-nested-all-001",
                 "nested",
                 "nested-all",
-                model_variant="cat_llama",
+                model_variant="concat",
             ),
             _pilot_summary(
                 "dmodel256-standalone-s-001",
@@ -181,7 +181,7 @@ def test_pilot_comparison_rows_cover_nested_and_standalone_modes(tmp_path):
         Path(tmp_path) / "standalone-s" / "checkpoints" / "final.pt"
     )
     assert standalone["effective_world_size"] == 2
-    assert standalone["model_variant"] == "matformer_llama"
+    assert standalone["model_variant"] == "slicing"
 
     nested_random = by_key[
         ("dmodel256-nested-random-001", "nested-random", "s")
@@ -189,8 +189,8 @@ def test_pilot_comparison_rows_cover_nested_and_standalone_modes(tmp_path):
     nested_all = by_key[
         ("dmodel256-nested-all-001", "nested-all", "s")
     ]
-    assert nested_random["model_variant"] == "matformer_llama"
-    assert nested_all["model_variant"] == "cat_llama"
+    assert nested_random["model_variant"] == "slicing"
+    assert nested_all["model_variant"] == "concat"
     assert set(nested_random) == set(nested_all)
 
     assert omitted["run_status"] == "omitted"

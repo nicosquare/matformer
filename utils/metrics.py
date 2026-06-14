@@ -7,8 +7,12 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from utils.config import write_resolved_config
-from models.correction import correction_context_from_config
+from utils.config import (
+    resolve_sampling_mode_from_config_sections,
+    write_resolved_config,
+)
+from models.correction import summarize_correction_context_from_config
+from models.granularity import summarize_granularity_pattern_from_config
 from utils.monitoring import (
     DEFAULT_MONITORING_BACKEND,
     build_monitoring_series_metadata,
@@ -23,6 +27,8 @@ METRICS_COLUMNS = [
     "model_size_label",
     "model_shape_label",
     "sampling_mode",
+    "resolved_run_mode",
+    "resolved_sampling_mode",
     "granularity_sampling_mode",
     "granularity",
     "granularity_pattern_summary",
@@ -115,6 +121,7 @@ RUN_SUMMARY_FIELDS = [
     "family_size_slug",
     "family_resolution_rule",
     "sampling_mode",
+    "resolved_run_mode",
     "resolved_sampling_mode",
     "requested_granularity_sampling_alias",
     "granularity_sampling_mode",
@@ -208,6 +215,27 @@ def write_config_artifact(
     return write_resolved_config(config, output_dir=output_dir)
 
 
+def summarize_runtime_granularity_pattern_from_config(
+    config: Mapping[str, Any],
+    runtime_pattern: Any | None = None,
+) -> dict[str, Any]:
+    """Build a runtime granularity summary that keeps nested-all explicit."""
+
+    run = config.get("run", {})
+    training = config.get("training", {})
+    if not isinstance(run, Mapping):
+        run = {}
+    if not isinstance(training, Mapping):
+        training = {}
+
+    if resolve_sampling_mode_from_config_sections(run, training) == "nested-all":
+        return summarize_granularity_pattern_from_config(config)
+    return summarize_granularity_pattern_from_config(
+        config,
+        runtime_pattern=runtime_pattern,
+    )
+
+
 def build_run_summary(
     config: Mapping[str, Any],
     tokens_seen: int | None = None,
@@ -252,8 +280,15 @@ def build_run_summary(
         "active_size_label": run.get("active_size_label"),
         "family_size_slug": run.get("family_size_slug"),
         "family_resolution_rule": run.get("family_resolution_rule"),
-        "sampling_mode": _sampling_mode(run, training),
-        "resolved_sampling_mode": model.get("granularity_sampling_mode", "global"),
+        "sampling_mode": resolve_sampling_mode_from_config_sections(run, training),
+        "resolved_run_mode": run.get(
+            "resolved_run_mode",
+            resolve_sampling_mode_from_config_sections(run, training),
+        ),
+        "resolved_sampling_mode": model.get(
+            "resolved_sampling_mode",
+            model.get("granularity_sampling_mode", "global"),
+        ),
         "requested_granularity_sampling_alias": model.get(
             "requested_granularity_sampling_alias"
         ),
@@ -666,7 +701,10 @@ def build_scaling_result_rows(
                 "model_family": run["model_family"],
                 "model_size_label": _model_shape_label(run),
                 "model_shape_label": _model_shape_label(run),
-                "sampling_mode": _sampling_mode(run, training),
+                "sampling_mode": resolve_sampling_mode_from_config_sections(
+                    run,
+                    training,
+                ),
                 "model_family_slug": run.get("model_family_slug"),
                 "model_size_slug": run.get("model_size_slug"),
                 "token_budget_slug": run.get("token_budget_slug"),
@@ -1003,6 +1041,8 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "model_size_label": model_shape_label,
         "model_shape_label": model_shape_label,
         "sampling_mode": None,
+        "resolved_run_mode": None,
+        "resolved_sampling_mode": None,
         "granularity_sampling_mode": None,
         "granularity_pattern_summary": None,
         "correction_context": None,
@@ -1046,20 +1086,6 @@ def _model_shape_label(run: Mapping[str, Any]) -> Any:
     return run.get("model_shape_label", run.get("model_size_label"))
 
 
-def _sampling_mode(run: Mapping[str, Any], training: Mapping[str, Any]) -> Any:
-    if run.get("sampling_mode") is not None:
-        return run["sampling_mode"]
-    if run.get("model_family") == "standalone":
-        return "standalone"
-
-    granularity_sampling = training.get("granularity_sampling")
-    if granularity_sampling == "random":
-        return "nested-random"
-    if granularity_sampling == "all":
-        return "nested-all"
-    return granularity_sampling
-
-
 def json_artifact_value(value: Any) -> Any:
     if value is None:
         return None
@@ -1073,10 +1099,13 @@ def _granularity_pattern_provenance(
 ) -> dict[str, Any]:
     model = config.get("model", {})
     run = config.get("run", {})
+    training = config.get("training", {})
     if not isinstance(model, Mapping):
         model = {}
     if not isinstance(run, Mapping):
         run = {}
+    if not isinstance(training, Mapping):
+        training = {}
 
     provenance = model.get("granularity_pattern_provenance")
     if isinstance(provenance, Mapping):
@@ -1085,10 +1114,17 @@ def _granularity_pattern_provenance(
     granularity_sampling_mode = model.get("granularity_sampling_mode")
     if granularity_sampling_mode is None:
         granularity_sampling_mode = "global"
+    resolved_run_mode = _sampling_mode(run, training)
 
     provenance = {
         "pattern_type": (
-            "single" if granularity_sampling_mode == "global" else "per_layer"
+            "all_granularities"
+            if resolved_run_mode == "nested-all"
+            else (
+                "per_layer"
+                if granularity_sampling_mode == "per_layer"
+                else "single"
+            )
         ),
         "scope": "model",
         "source": "model.granularity_sampling_mode",
@@ -1109,31 +1145,25 @@ def _granularity_pattern_summary(
     config: Mapping[str, Any],
 ) -> dict[str, Any]:
     model = config.get("model", {})
-    run = config.get("run", {})
     if not isinstance(model, Mapping):
         model = {}
-    if not isinstance(run, Mapping):
-        run = {}
+    stored_summary = model.get("granularity_pattern_summary")
+    if isinstance(stored_summary, Mapping):
+        return dict(stored_summary)
 
-    sampling_mode = str(model.get("granularity_sampling_mode", "global"))
-    return {
-        "pattern_type": "single" if sampling_mode == "global" else "per_layer",
-        "selected_granularities": list(model.get("granularities", []))
-        if isinstance(model.get("granularities"), list)
-        else [],
-        "layer_count": model.get("num_layers"),
-        "repeatable_source": [
-            str(run.get("run_id") or ""),
-            f"model.granularity_sampling_mode={sampling_mode}",
-        ],
-    }
+    return summarize_granularity_pattern_from_config(config)
 
 
 def _correction_context_summary(
     config: Mapping[str, Any],
 ) -> dict[str, Any]:
-    context = correction_context_from_config(config)
-    return context.to_dict()
+    model = config.get("model", {})
+    if isinstance(model, Mapping):
+        stored_context = model.get("correction_context")
+        if isinstance(stored_context, Mapping):
+            return dict(stored_context)
+
+    return summarize_correction_context_from_config(config)
 
 
 def _summary_granularities(summary: Mapping[str, Any]) -> list[str]:

@@ -1,4 +1,4 @@
-"""FFN helpers and metadata for MatFormer and CatLlama variants."""
+"""FFN helpers and metadata for the slicing and concat variants."""
 
 from __future__ import annotations
 

@@ -175,13 +175,13 @@ def test_dmodel256_pilot_standalone_runs_share_family_folder_key(tmp_path):
     validate_run_config(resolved)
 
 
-def test_dmodel256_pilot_runner_propagates_output_root_env(tmp_path):
+def test_dmodel256_pilot_runner_propagates_out_env(tmp_path):
     output_root = tmp_path / "pilot-output"
 
     args = _capture_dmodel256_pilot_comparison_invocation(
         tmp_path,
         ["--override", "training.max_steps_cap=1"],
-        env_updates={"OUTPUT_ROOT": str(output_root)},
+        env_updates={"OUT": str(output_root)},
     )
 
     assert args[0] == "train.py"
@@ -229,6 +229,46 @@ def test_dmodel256_pilot_runner_declares_default_comparison_scope():
     assert "nested-all" in script_text
     assert "standalone" in script_text
     assert "omitted" in script_text or "omit" in script_text
+    assert "OUT" in script_text
+
+
+def test_queue_dmodel256_pilot_builds_requested_variant_matrix():
+    queue_module = _load_queue_dmodel256_module()
+    specs = queue_module.build_experiment_specs()
+
+    assert len(specs) == 19
+    labels = {spec.label for spec in specs}
+    assert {
+        "nested-random-slicing-none-global",
+        "nested-random-slicing-none-per_block",
+        "nested-random-slicing-gmc-global",
+        "nested-random-slicing-gmc-per_block",
+        "nested-random-concat-lmc-global",
+        "nested-random-concat-lmc-per_block",
+        "nested-all-concat-lmc",
+        "standalone-xl",
+    } <= labels
+    assert all("per_layer" not in spec.label for spec in specs)
+    assert not any(
+        "model.variant=slicing" in spec.model_overrides
+        and "model.correction_mode=lmc" in spec.model_overrides
+        for spec in specs
+    )
+    assert sum(
+        1
+        for spec in specs
+        if "run.sampling_mode=nested-random" in spec.run_overrides
+    ) == 10
+    assert sum(
+        1
+        for spec in specs
+        if "run.sampling_mode=nested-all" in spec.run_overrides
+    ) == 5
+    assert sum(
+        1
+        for spec in specs
+        if "run.model_family=standalone" in spec.run_overrides
+    ) == 4
 
 
 def test_dmodel256_pilot_runner_nested_all_mode_sets_sampling_overrides(tmp_path):
@@ -359,6 +399,49 @@ def test_slurm_dmodel256_pilot_comparison_wrapper_forwards_to_runner(tmp_path):
     assert _has_arg_pair(args, "--override", "run.run_id=dmodel256-pilot-comparison-001")
     assert _has_arg_pair(args, "--output-root", str(output_root))
     assert _has_arg_pair(args, "--override", "training.max_steps_cap=1")
+
+
+def test_slurm_dmodel256_pilot_wrapper_uses_out_env_when_output_root_is_omitted(tmp_path):
+    recorder = tmp_path / "python-recorder.sh"
+    argv_path = tmp_path / "argv.txt"
+
+    recorder.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$@\" > \"$ARGV_FILE\"\n",
+        encoding="utf-8",
+    )
+    recorder.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "ALLOW_LOCAL_SLURM_WRAPPER": "1",
+            "PYTHON_BIN": str(recorder),
+            "ARGV_FILE": str(argv_path),
+            "OUT": str(tmp_path / "slurm-output"),
+        }
+    )
+
+    subprocess.run(
+        [
+            "bash",
+            "scripts/slurm_dmodel256_pilot.sh",
+            "--mode",
+            "nested-random",
+            "--run-id",
+            "dmodel256-nested-random-001",
+            "--override",
+            "training.max_steps_cap=1",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    args = argv_path.read_text(encoding="utf-8").splitlines()
+    assert _has_arg_pair(args, "--output-root", str(tmp_path / "slurm-output"))
 
 
 def test_slurm_dmodel256_pilot_wrapper_forwards_mode_selection_to_runner(tmp_path):
@@ -593,7 +676,9 @@ def test_queue_dmodel256_pilot_skips_completed_runs_and_forwards_overrides(tmp_p
     )
 
     completed_run = next(
-        run for run in queued_runs if run.spec.label == "nested-random-cat-none-global"
+        run
+        for run in queued_runs
+        if run.spec.label == "nested-random-concat-none-global"
     )
     completed_run.run_summary_path.parent.mkdir(parents=True, exist_ok=True)
     completed_run.run_summary_path.write_text(
@@ -653,17 +738,6 @@ def test_queue_dmodel256_pilot_skips_completed_runs_and_forwards_overrides(tmp_p
     assert "training.learning_rate_scale_rule=none" in first_call
     assert "training.max_steps_cap=1" in first_call
     assert "run.model_family=nested" in first_call
-
-
-def test_queue_dmodel256_pilot_excludes_nested_all_lmc():
-    queue_module = _load_queue_dmodel256_module()
-    specs = queue_module.build_experiment_specs()
-
-    assert not any(
-        "run.sampling_mode=nested-all" in spec.run_overrides
-        and "model.correction_mode=lmc" in spec.model_overrides
-        for spec in specs
-    )
 
 
 def test_slurm_queue_dmodel256_pilot_wrapper_invokes_queue_helper(tmp_path):

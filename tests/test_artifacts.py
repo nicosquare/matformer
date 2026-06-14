@@ -125,7 +125,7 @@ def test_write_config_metrics_and_run_summary(tmp_path):
 
     saved_config = json.loads(config_path.read_text(encoding="utf-8"))
     assert saved_config["run"]["run_id"] == "debug-nested-001"
-    assert saved_config["model"]["variant"] == "matformer_llama"
+    assert saved_config["model"]["variant"] == "slicing"
     assert saved_config["training"]["base_learning_rate"] == 0.0003
     assert saved_config["training"]["learning_rate_scale_rule"] == "none"
     assert saved_config["training"]["learning_rate_scale_factor"] == 1.0
@@ -158,7 +158,7 @@ def test_write_config_metrics_and_run_summary(tmp_path):
     saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert saved_summary["status"] == "completed"
     assert saved_summary["tokens_seen"] == 128
-    assert saved_summary["model_variant"] == "matformer_llama"
+    assert saved_summary["model_variant"] == "slicing"
     assert saved_summary["base_learning_rate"] == 0.0003
     assert saved_summary["learning_rate_scale_rule"] == "none"
     assert saved_summary["learning_rate_scale_factor"] == 1.0
@@ -223,6 +223,108 @@ def test_run_summary_includes_default_long_run_metadata(tmp_path):
     assert saved_summary["warmup_completed"] is False
 
 
+def test_run_summary_default_pattern_summary_distinguishes_nested_all(tmp_path):
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=["run.sampling_mode=nested-all"],
+    )
+
+    summary = build_run_summary(config, tokens_seen=0)
+
+    assert summary["sampling_mode"] == "nested-all"
+    assert summary["granularity_pattern_summary"] == {
+        "pattern_type": "all_granularities",
+        "selected_granularities": config["model"]["granularities"],
+        "layer_count": config["model"]["num_layers"],
+        "repeatable_source": [
+            config["run"]["run_id"],
+            "run.sampling_mode=nested-all",
+        "model.granularity_sampling_mode=global",
+        ],
+    }
+
+
+def test_artifacts_record_nested_all_sampling_mode_and_pattern_provenance(tmp_path):
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "run.sampling_mode=nested-all",
+            "model.granularity_sampling_mode=global",
+        ],
+    )
+
+    config_path = write_config_artifact(config)
+    summary = build_run_summary(config, tokens_seen=128, notes=["artifact smoke"])
+    summary_path = write_run_summary(output_dir, summary)
+
+    metric_rows = [
+        build_training_metric_row(
+            config,
+            step=1,
+            granularity=granularity,
+            loss=float(index + 1),
+            tokens_seen=8,
+            content_tokens_seen=8,
+            wall_clock_seconds=2.0,
+            peak_memory_bytes=512,
+        )
+        for index, granularity in enumerate(config["model"]["granularities"])
+    ]
+    metrics_path = write_metrics_csv(output_dir, metric_rows)
+
+    saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved_config["run"]["sampling_mode"] == "nested-all"
+    assert saved_config["model"]["granularity_sampling_mode"] == "global"
+    assert saved_config["model"]["granularity_pattern_provenance"] == {
+        "pattern_type": "all_granularities",
+        "scope": "model",
+        "source": "model.granularity_sampling_mode",
+        "requested_alias": None,
+        "layer_count": config["model"]["num_layers"],
+        "available_granularities": ["s", "m", "l", "xl"],
+    }
+
+    saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert saved_summary["sampling_mode"] == "nested-all"
+    assert saved_summary["resolved_run_mode"] == "nested-all"
+    assert saved_summary["resolved_sampling_mode"] == "global"
+    assert saved_summary["granularity_pattern_summary"] == {
+        "pattern_type": "all_granularities",
+        "selected_granularities": config["model"]["granularities"],
+        "layer_count": config["model"]["num_layers"],
+        "repeatable_source": [
+            config["run"]["run_id"],
+            "run.sampling_mode=nested-all",
+            "model.granularity_sampling_mode=global",
+        ],
+    }
+    assert saved_summary["granularity_pattern_provenance"] == saved_config["model"][
+        "granularity_pattern_provenance"
+    ]
+    assert saved_summary["correction_context"]["local_correction_active"] is False
+
+    with metrics_path.open("r", encoding="utf-8", newline="") as metrics_file:
+        rows = list(csv.DictReader(metrics_file))
+    assert [row["granularity"] for row in rows] == config["model"]["granularities"]
+    assert {row["sampling_mode"] for row in rows} == {"nested-all"}
+    assert {row["granularity_sampling_mode"] for row in rows} == {"global"}
+    assert all(
+        json.loads(row["granularity_pattern_summary"])["pattern_type"]
+        == "all_granularities"
+        for row in rows
+    )
+    assert all(
+        json.loads(row["correction_context"])["local_correction_active"] is False
+        for row in rows
+    )
+
+
 @pytest.mark.parametrize(
     "alias, expected_mode, expected_sampling_mode, expected_pattern_type, pattern_builder, layer_granularities",
     [
@@ -230,7 +332,7 @@ def test_run_summary_includes_default_long_run_metadata(tmp_path):
             "all",
             "global",
             "nested-all",
-            "single",
+            "all_granularities",
             build_global_granularity_pattern,
             None,
         ),
@@ -340,6 +442,202 @@ def test_artifacts_record_sampling_mode_and_pattern_provenance(
     )
     assert json.loads(metric_rows[0]["correction_context"]) == correction_context
     assert metric_rows[0]["granularity"] == config["model"]["granularities"][0]
+
+
+def test_artifacts_reconstruct_standalone_mode_from_saved_files(tmp_path):
+    output_dir = tmp_path / "debug-standalone-m-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-standalone-m-001",
+        output_dir=output_dir,
+    )
+
+    config_path = write_config_artifact(config)
+    summary = build_run_summary(
+        config,
+        tokens_seen=128,
+        notes=["artifact reconstruction smoke"],
+    )
+    summary_path = write_run_summary(output_dir, summary)
+
+    metric_row = build_training_metric_row(
+        config,
+        step=1,
+        granularity="m",
+        loss=1.25,
+        tokens_seen=8,
+        content_tokens_seen=8,
+        wall_clock_seconds=2.0,
+        peak_memory_bytes=512,
+    )
+    metrics_path = write_metrics_csv(output_dir, [metric_row])
+
+    saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+    saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+    assert saved_config["run"]["sampling_mode"] == "standalone"
+    assert saved_config["run"]["resolved_run_mode"] == "standalone"
+    assert saved_config["run"]["granularity"] == "m"
+    assert saved_config["model"]["granularities"] == ["m"]
+    assert saved_config["model"]["granularity_sampling_mode"] == "global"
+    assert saved_config["model"]["resolved_sampling_mode"] == "global"
+    assert saved_config["model"]["granularity_pattern_provenance"] == {
+        "pattern_type": "single",
+        "scope": "model",
+        "source": "model.granularity_sampling_mode",
+        "requested_alias": None,
+        "layer_count": config["model"]["num_layers"],
+        "available_granularities": ["m"],
+        "active_granularity": "m",
+    }
+
+    assert saved_summary["sampling_mode"] == "standalone"
+    assert saved_summary["resolved_run_mode"] == "standalone"
+    assert saved_summary["resolved_sampling_mode"] == "global"
+    assert saved_summary["granularity_sampling_mode"] == "global"
+    assert saved_summary["granularity_pattern_summary"] == {
+        "pattern_type": "single",
+        "selected_granularities": ["m"],
+        "layer_count": config["model"]["num_layers"],
+        "repeatable_source": [
+            config["run"]["run_id"],
+            "run.sampling_mode=standalone",
+            "model.granularity_sampling_mode=global",
+            "run.granularity=m",
+        ],
+    }
+    assert saved_summary["granularity_pattern_provenance"] == saved_config["model"][
+        "granularity_pattern_provenance"
+    ]
+    assert saved_summary["correction_context"]["local_correction_active"] is False
+
+    with metrics_path.open("r", encoding="utf-8", newline="") as metrics_file:
+        metric_rows = list(csv.DictReader(metrics_file))
+    assert len(metric_rows) == 1
+    assert metric_rows[0]["sampling_mode"] == "standalone"
+    assert metric_rows[0]["resolved_run_mode"] == "standalone"
+    assert metric_rows[0]["resolved_sampling_mode"] == "global"
+    assert metric_rows[0]["granularity_sampling_mode"] == "global"
+    assert metric_rows[0]["granularity"] == "m"
+    assert json.loads(metric_rows[0]["granularity_pattern_summary"]) == (
+        saved_summary["granularity_pattern_summary"]
+    )
+
+
+@pytest.mark.parametrize(
+    "sampling_mode, pattern_builder, expected_pattern_type, expected_local_correction_active",
+    [
+        (
+            "global",
+            build_global_granularity_pattern,
+            "single",
+            False,
+        ),
+        (
+            "per_layer",
+            build_per_layer_granularity_pattern,
+            "per_layer",
+            True,
+        ),
+    ],
+)
+def test_artifacts_record_explicit_nested_random_global_and_per_layer_paths(
+    tmp_path,
+    sampling_mode,
+    pattern_builder,
+    expected_pattern_type,
+    expected_local_correction_active,
+):
+    output_dir = tmp_path / "dmodel256-pilot-comparison-001"
+    config = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        output_dir=output_dir,
+        overrides=[f"model.granularity_sampling_mode={sampling_mode}"],
+    )
+
+    if sampling_mode == "global":
+        runtime_pattern = pattern_builder(config, granularities=("m",))
+    else:
+        runtime_pattern = pattern_builder(
+            config,
+            layer_granularities=config["model"]["granularities"]
+            * (config["model"]["num_layers"] // len(config["model"]["granularities"])),
+        )
+    runtime_pattern_summary = json.loads(
+        json.dumps(summarize_granularity_pattern(runtime_pattern))
+    )
+    correction_context = json.loads(
+        json.dumps(
+            summarize_correction_context(
+                correction_context_from_config(
+                    config,
+                    granularity_pattern=runtime_pattern,
+                )
+            )
+        )
+    )
+
+    config_path = write_config_artifact(config)
+    summary = build_run_summary(
+        config,
+        tokens_seen=128,
+        notes=["artifact provenance smoke"],
+        extra_fields={
+            "granularity_pattern_summary": runtime_pattern_summary,
+            "correction_context": correction_context,
+        },
+    )
+    summary_path = write_run_summary(output_dir, summary)
+
+    metric_row = build_training_metric_row(
+        config,
+        step=1,
+        granularity=runtime_pattern.selected_granularities[0],
+        loss=1.25,
+        tokens_seen=8,
+        content_tokens_seen=8,
+        wall_clock_seconds=2.0,
+        peak_memory_bytes=512,
+        granularity_pattern_summary=runtime_pattern_summary,
+        correction_context=correction_context,
+    )
+    metrics_path = write_metrics_csv(output_dir, [metric_row])
+
+    saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved_config["run"]["sampling_mode"] == "nested-random"
+    assert saved_config["model"]["granularity_sampling_mode"] == sampling_mode
+    assert saved_config["model"]["granularity_pattern_provenance"] == {
+        "pattern_type": expected_pattern_type,
+        "scope": "model",
+        "source": "model.granularity_sampling_mode",
+        "requested_alias": None,
+        "layer_count": config["model"]["num_layers"],
+        "available_granularities": ["s", "m", "l", "xl"],
+    }
+
+    saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert saved_summary["sampling_mode"] == "nested-random"
+    assert saved_summary["resolved_run_mode"] == "nested-random"
+    assert saved_summary["resolved_sampling_mode"] == sampling_mode
+    assert saved_summary["granularity_sampling_mode"] == sampling_mode
+    assert saved_summary["granularity_pattern_summary"] == runtime_pattern_summary
+    assert saved_summary["correction_context"] == correction_context
+    assert saved_summary["granularity_pattern_provenance"] == saved_config[
+        "model"
+    ]["granularity_pattern_provenance"]
+    assert correction_context["local_correction_active"] is (
+        expected_local_correction_active
+    )
+
+    with metrics_path.open("r", encoding="utf-8", newline="") as metrics_file:
+        metric_rows = list(csv.DictReader(metrics_file))
+    assert len(metric_rows) == 1
+    assert metric_rows[0]["sampling_mode"] == "nested-random"
+    assert metric_rows[0]["granularity_sampling_mode"] == sampling_mode
+    assert json.loads(metric_rows[0]["granularity_pattern_summary"]) == (
+        runtime_pattern_summary
+    )
+    assert json.loads(metric_rows[0]["correction_context"]) == correction_context
 
 
 @pytest.mark.parametrize(
@@ -498,7 +796,7 @@ def test_write_failed_run_summary_records_failure_note(tmp_path):
     saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert saved_summary["status"] == "failed"
     assert saved_summary["tokens_seen"] == 64
-    assert saved_summary["model_variant"] == "matformer_llama"
+    assert saved_summary["model_variant"] == "slicing"
     assert saved_summary["notes"] == ["CUDA out of memory during debug smoke"]
 
 
@@ -515,7 +813,7 @@ def test_baseline_and_cat_run_summaries_share_schema_and_differ_by_variant(tmp_p
         "configs/debug_matrix.yaml",
         run_id="debug-nested-001",
         output_dir=cat_output_dir,
-        overrides=["model.variant=cat_llama"],
+        overrides=["model.variant=concat"],
     )
 
     baseline_summary = build_run_summary(
@@ -530,8 +828,8 @@ def test_baseline_and_cat_run_summaries_share_schema_and_differ_by_variant(tmp_p
     )
 
     assert set(baseline_summary) == set(cat_summary)
-    assert baseline_summary["model_variant"] == "matformer_llama"
-    assert cat_summary["model_variant"] == "cat_llama"
+    assert baseline_summary["model_variant"] == "slicing"
+    assert cat_summary["model_variant"] == "concat"
     assert baseline_summary["model_family"] == cat_summary["model_family"] == "nested"
 
 
@@ -598,78 +896,78 @@ def test_scaling_curve_label_prefers_correction_mode_when_available():
     labeled_row = {
         "sampling_mode": "nested-random",
         "model_family": "nested",
-        "model_variant": "cat_llama",
+        "model_variant": "concat",
         "correction_mode": "lmc",
     }
     legacy_row = {
         "sampling_mode": "nested-random",
         "model_family": "nested",
-        "model_variant": "cat_llama",
+        "model_variant": "concat",
         "membership_correction": True,
     }
     standalone_row = {
         "sampling_mode": "standalone",
         "model_family": "standalone",
-        "model_variant": "matformer_llama",
+        "model_variant": "slicing",
         "membership_correction": False,
     }
 
     assert scaling_curve_label(labeled_row) == (
-        "nested-random / cat / lmc"
+        "nested-random / concat / lmc"
     )
     assert scaling_curve_label(legacy_row) == (
-        "nested-random / cat / gmc"
+        "nested-random / concat / gmc"
     )
     assert scaling_curve_label(standalone_row) == "standalone"
 
 
 def test_scaling_curve_style_groups_family_colors_markers_and_shades():
-    nested_all_cat_none_style = scaling_curve_style(
+    nested_all_concat_none_style = scaling_curve_style(
         [
             {
                 "sampling_mode": "nested-all",
                 "model_family": "nested",
-                "model_variant": "cat_llama",
+                "model_variant": "concat",
                 "correction_mode": "none",
             }
         ]
     )
-    nested_all_cat_gmc_style = scaling_curve_style(
+    nested_all_concat_gmc_style = scaling_curve_style(
         [
             {
                 "sampling_mode": "nested-all",
                 "model_family": "nested",
-                "model_variant": "cat_llama",
+                "model_variant": "concat",
                 "membership_correction": True,
             }
         ]
     )
-    nested_all_cat_lmc_style = scaling_curve_style(
+    nested_all_concat_lmc_style = scaling_curve_style(
         [
             {
                 "sampling_mode": "nested-all",
                 "model_family": "nested",
-                "model_variant": "cat_llama",
+                "model_variant": "concat",
                 "correction_mode": "lmc",
             }
         ]
     )
-    nested_random_cat_none_style = scaling_curve_style(
+    nested_random_concat_none_style = scaling_curve_style(
         [
             {
                 "sampling_mode": "nested-random",
                 "model_family": "nested",
-                "model_variant": "cat_llama",
+                "model_variant": "concat",
                 "correction_mode": "none",
             }
         ]
     )
-    nested_random_cat_gmc_style = scaling_curve_style(
+    nested_random_concat_gmc_style = scaling_curve_style(
         [
             {
                 "sampling_mode": "nested-random",
                 "model_family": "nested",
-                "model_variant": "cat_llama",
+                "model_variant": "concat",
                 "membership_correction": True,
             }
         ]
@@ -679,7 +977,7 @@ def test_scaling_curve_style_groups_family_colors_markers_and_shades():
             {
                 "sampling_mode": "nested-all",
                 "model_family": "nested",
-                "model_variant": "matformer_llama",
+                "model_variant": "slicing",
                 "correction_mode": "none",
             }
         ]
@@ -689,7 +987,7 @@ def test_scaling_curve_style_groups_family_colors_markers_and_shades():
             {
                 "sampling_mode": "nested-all",
                 "model_family": "nested",
-                "model_variant": "matformer_llama",
+                "model_variant": "slicing",
                 "membership_correction": True,
             }
         ]
@@ -699,7 +997,7 @@ def test_scaling_curve_style_groups_family_colors_markers_and_shades():
             {
                 "sampling_mode": "nested-random",
                 "model_family": "nested",
-                "model_variant": "matformer_llama",
+                "model_variant": "slicing",
                 "correction_mode": "none",
             }
         ]
@@ -709,7 +1007,7 @@ def test_scaling_curve_style_groups_family_colors_markers_and_shades():
             {
                 "sampling_mode": "nested-random",
                 "model_family": "nested",
-                "model_variant": "matformer_llama",
+                "model_variant": "slicing",
                 "membership_correction": True,
             }
         ]
@@ -719,36 +1017,36 @@ def test_scaling_curve_style_groups_family_colors_markers_and_shades():
             {
                 "sampling_mode": "standalone",
                 "model_family": "standalone",
-                "model_variant": "matformer_llama",
+                "model_variant": "slicing",
             }
         ]
     )
 
-    assert nested_all_cat_none_style["color"] != nested_random_cat_none_style["color"]
+    assert nested_all_concat_none_style["color"] != nested_random_concat_none_style["color"]
     assert nested_all_slice_none_style["color"] != nested_random_slice_none_style["color"]
-    assert nested_all_cat_none_style["color"] != nested_all_slice_none_style["color"]
+    assert nested_all_concat_none_style["color"] != nested_all_slice_none_style["color"]
     assert standalone_style["color"] not in {
-        nested_all_cat_none_style["color"],
-        nested_random_cat_none_style["color"],
+        nested_all_concat_none_style["color"],
+        nested_random_concat_none_style["color"],
         nested_all_slice_none_style["color"],
         nested_random_slice_none_style["color"],
     }
 
-    assert nested_all_cat_none_style["marker"] == "o"
-    assert nested_all_cat_gmc_style["marker"] == "s"
-    assert nested_all_cat_lmc_style["marker"] == "^"
-    assert nested_random_cat_none_style["marker"] == "o"
-    assert nested_random_cat_gmc_style["marker"] == "s"
+    assert nested_all_concat_none_style["marker"] == "o"
+    assert nested_all_concat_gmc_style["marker"] == "s"
+    assert nested_all_concat_lmc_style["marker"] == "^"
+    assert nested_random_concat_none_style["marker"] == "o"
+    assert nested_random_concat_gmc_style["marker"] == "s"
     assert nested_all_slice_none_style["marker"] == "o"
     assert nested_all_slice_gmc_style["marker"] == "s"
     assert nested_random_slice_none_style["marker"] == "o"
     assert nested_random_slice_gmc_style["marker"] == "s"
 
-    assert nested_all_cat_none_style["linestyle"] == "-"
-    assert nested_all_cat_gmc_style["linestyle"] == "--"
-    assert nested_all_cat_lmc_style["linestyle"] == "-."
-    assert nested_random_cat_none_style["linestyle"] == "-"
-    assert nested_random_cat_gmc_style["linestyle"] == "--"
+    assert nested_all_concat_none_style["linestyle"] == "-"
+    assert nested_all_concat_gmc_style["linestyle"] == "--"
+    assert nested_all_concat_lmc_style["linestyle"] == "-."
+    assert nested_random_concat_none_style["linestyle"] == "-"
+    assert nested_random_concat_gmc_style["linestyle"] == "--"
     assert nested_all_slice_none_style["linestyle"] == "-"
     assert nested_all_slice_gmc_style["linestyle"] == "--"
     assert nested_random_slice_none_style["linestyle"] == "-"

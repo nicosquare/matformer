@@ -9,6 +9,7 @@ from typing import Any, Iterable, Mapping
 import torch
 import torch.distributed as dist
 
+from utils.config import resolve_sampling_mode_from_config_sections
 from utils.metrics import json_artifact_value
 
 
@@ -36,6 +37,12 @@ def configure_model_granularity(model, granularity: str | None) -> None:
         return
 
     target = model.module if hasattr(model, "module") else model
+    if hasattr(target, "current_layer_granularities"):
+        target.current_layer_granularities = None
+    if hasattr(target, "current_granularity_pattern"):
+        target.current_granularity_pattern = None
+    if hasattr(target, "current_sampling_mode"):
+        target.current_sampling_mode = "global"
     configure_subnetwork = getattr(target, "configure_subnetwork", None)
     if configure_subnetwork is not None:
         configure_subnetwork(granularity)
@@ -131,7 +138,21 @@ def validation_results_to_metric_rows(
                 "model_family": run["model_family"],
                 "model_size_label": _model_shape_label(run),
                 "model_shape_label": _model_shape_label(run),
-                "sampling_mode": _sampling_mode(run, config.get("training", {})),
+                "sampling_mode": resolve_sampling_mode_from_config_sections(
+                    run,
+                    config.get("training", {}),
+                ),
+                "resolved_run_mode": run.get(
+                    "resolved_run_mode",
+                    resolve_sampling_mode_from_config_sections(
+                        run,
+                        config.get("training", {}),
+                    ),
+                ),
+                "resolved_sampling_mode": config["model"].get(
+                    "resolved_sampling_mode",
+                    config["model"].get("granularity_sampling_mode", "global"),
+                ),
                 "granularity_sampling_mode": config["model"].get(
                     "granularity_sampling_mode"
                 ),
@@ -264,31 +285,38 @@ def _model_shape_label(run: dict[str, Any]) -> Any:
     return run.get("model_shape_label", run.get("model_size_label"))
 
 
-def _sampling_mode(run: dict[str, Any], training: dict[str, Any]) -> Any:
-    if run.get("sampling_mode") is not None:
-        return run["sampling_mode"]
-    if run.get("model_family") == "standalone":
-        return "standalone"
-    granularity_sampling = training.get("granularity_sampling")
-    if granularity_sampling == "random":
-        return "nested-random"
-    if granularity_sampling == "all":
-        return "nested-all"
-    return granularity_sampling
-
-
 def _default_granularity_pattern_summary(config: dict[str, Any]) -> dict[str, Any]:
     model = config["model"]
     run = config["run"]
+    training = config.get("training", {})
+    if not isinstance(training, dict):
+        training = {}
+    resolved_run_mode = _sampling_mode(run, training)
     sampling_mode = str(model.get("granularity_sampling_mode", "global"))
+    if resolved_run_mode == "nested-all":
+        pattern_type = "all_granularities"
+    elif sampling_mode == "per_layer":
+        pattern_type = "per_layer"
+    else:
+        pattern_type = "single"
+
+    selected_granularities = list(model.get("granularities", []))
+    if resolved_run_mode == "standalone" and run.get("granularity") is not None:
+        selected_granularities = [str(run["granularity"])]
+
+    repeatable_source = [
+        str(run.get("run_id") or ""),
+        f"run.sampling_mode={resolved_run_mode}",
+        f"model.granularity_sampling_mode={sampling_mode}",
+    ]
+    if resolved_run_mode == "standalone" and run.get("granularity") is not None:
+        repeatable_source.append(f"run.granularity={run['granularity']}")
+
     return {
-        "pattern_type": "single" if sampling_mode == "global" else "per_layer",
-        "selected_granularities": list(model.get("granularities", [])),
+        "pattern_type": pattern_type,
+        "selected_granularities": selected_granularities,
         "layer_count": model.get("num_layers"),
-        "repeatable_source": [
-            str(run.get("run_id") or ""),
-            f"model.granularity_sampling_mode={sampling_mode}",
-        ],
+        "repeatable_source": repeatable_source,
     }
 
 

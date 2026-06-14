@@ -1,4 +1,5 @@
 import torch.nn as nn
+import pytest
 from transformers import LlamaConfig, LlamaForCausalLM
 
 from models.ffn import CatLlamaMLP, ModifiedLlamaMLP
@@ -133,25 +134,49 @@ def test_matformer_active_prefix_counts_are_granularity_specific():
     assert s_counts["non_embedding_parameters"] < xl_counts["non_embedding_parameters"]
 
 
-def test_standalone_model_builds_fixed_width_llama_baseline():
+@pytest.mark.parametrize(
+    "run_id, granularity, expected_intermediate_size",
+    [
+        ("debug-standalone-s-001", "s", 64),
+        ("debug-standalone-m-001", "m", 128),
+        ("debug-standalone-l-001", "l", 256),
+        ("debug-standalone-xl-001", "xl", 512),
+    ],
+)
+def test_standalone_model_builds_fixed_width_llama_baselines(
+    tmp_path,
+    run_id,
+    granularity,
+    expected_intermediate_size,
+):
     config = resolve_run_config(
         "configs/debug_matrix.yaml",
-        run_id="debug-standalone-s-001",
+        run_id=run_id,
+        output_dir=tmp_path / run_id,
     )
+
+    assert config["run"]["model_family"] == "standalone"
+    assert config["run"]["granularity"] == granularity
+    assert config["run"]["resolved_run_mode"] == "standalone"
+    assert config["model"]["granularities"] == [granularity]
+    assert config["model"]["resolved_sampling_mode"] == "global"
 
     model = build_model(config)
 
     assert isinstance(model, LlamaForCausalLM)
     assert not isinstance(model, ModifiedLlamaForCausalLM)
-    assert model.config.intermediate_size == 64
+    assert model.config.intermediate_size == expected_intermediate_size
     assert not hasattr(model, "configure_subnetwork")
+    assert model.current_sampling_mode == "standalone"
+    assert model.current_granularity_pattern.pattern_type == "single"
+    assert model.current_granularity_pattern.selected_granularities == (granularity,)
 
 
-def test_cat_llama_build_passes_configured_granularities_to_membership_correction():
+def test_concat_build_passes_configured_granularities_to_membership_correction():
     config = {
         "run": {"model_family": "nested"},
         "model": {
-            "variant": "cat_llama",
+            "variant": "concat",
             "granularities": ["m", "xl"],
             "membership_correction": False,
             "vocab_size_assumption": 32,
@@ -176,7 +201,7 @@ def test_modified_llama_build_passes_membership_correction_configuration():
     config = {
         "run": {"model_family": "nested"},
         "model": {
-            "variant": "matformer_llama",
+            "variant": "slicing",
             "granularities": ["m", "xl"],
             "membership_correction": True,
             "vocab_size_assumption": 32,

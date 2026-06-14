@@ -483,16 +483,28 @@ def test_make_figures_writes_one_loss_figure_per_experiment_group(tmp_path):
     figure_names = {path.name for path in figure_paths}
     assert "loss_over_steps_debug_nested_001.png" in figure_names
     assert "loss_over_steps_debug_standalone_001.png" in figure_names
+    assert "validation_loss_over_tokens_debug_nested_001.png" in figure_names
+    assert "validation_loss_over_tokens_debug_standalone_001.png" in figure_names
     assert "loss_over_steps.png" not in figure_names
     assert "loss_over_steps_grid.png" not in figure_names
     assert "ppl_over_steps.png" in figure_names
 
     nested_path = tmp_path / "figures" / "loss_over_steps_debug_nested_001.png"
     standalone_path = tmp_path / "figures" / "loss_over_steps_debug_standalone_001.png"
+    validation_nested_path = (
+        tmp_path / "figures" / "validation_loss_over_tokens_debug_nested_001.png"
+    )
+    validation_standalone_path = (
+        tmp_path / "figures" / "validation_loss_over_tokens_debug_standalone_001.png"
+    )
     assert nested_path.exists()
     assert nested_path.stat().st_size > 0
     assert standalone_path.exists()
     assert standalone_path.stat().st_size > 0
+    assert validation_nested_path.exists()
+    assert validation_nested_path.stat().st_size > 0
+    assert validation_standalone_path.exists()
+    assert validation_standalone_path.stat().st_size > 0
 
 
 def test_make_figures_plots_grouped_consistency_metrics_and_skips_deferred_rows(tmp_path):
@@ -711,7 +723,7 @@ def test_make_figures_enriches_model_variant_from_run_config(tmp_path):
         run_id="debug-nested-001",
         output_dir=output_dir / "debug-nested-001",
         overrides=[
-            "model.variant=cat_llama",
+            "model.variant=concat",
             "model.correction_mode=none",
             "model.membership_correction=false",
         ],
@@ -735,7 +747,7 @@ def test_make_figures_enriches_model_variant_from_run_config(tmp_path):
 
     enriched_rows = enrich_scaling_metadata_from_run_config(output_dir, rows)
 
-    assert enriched_rows[0]["model_variant"] == "cat_llama"
+    assert enriched_rows[0]["model_variant"] == "concat"
     assert enriched_rows[0]["membership_correction"] is False
 
 
@@ -801,25 +813,25 @@ def test_make_figures_groups_scaling_curves_by_sampling_mode_and_variant():
         {
             "model_family": "nested",
             "sampling_mode": "nested-random",
-            "model_variant": "matformer_llama",
+            "model_variant": "slicing",
             "granularity": "s",
         },
         {
             "model_family": "nested",
             "sampling_mode": "nested-random",
-            "model_variant": "matformer_llama",
+            "model_variant": "slicing",
             "granularity": "xl",
         },
         {
             "model_family": "nested",
             "sampling_mode": "nested-random",
-            "model_variant": "cat_llama",
+            "model_variant": "concat",
             "granularity": "s",
         },
         {
             "model_family": "nested",
             "sampling_mode": "nested-random",
-            "model_variant": "cat_llama",
+            "model_variant": "concat",
             "granularity": "xl",
         },
     ]
@@ -827,10 +839,10 @@ def test_make_figures_groups_scaling_curves_by_sampling_mode_and_variant():
     grouped = group_scaling_rows(rows)
 
     assert set(grouped) == {
-        "nested-random / matformer_llama",
-        "nested-random / cat_llama",
+        "nested-random / slicing",
+        "nested-random / concat",
     }
-    assert [row["granularity"] for row in grouped["nested-random / cat_llama"]] == [
+    assert [row["granularity"] for row in grouped["nested-random / concat"]] == [
         "s",
         "xl",
     ]
@@ -841,28 +853,28 @@ def test_make_figures_groups_scaling_curves_by_sampling_mode_variant_and_members
         {
             "model_family": "nested",
             "sampling_mode": "nested-random",
-            "model_variant": "matformer_llama",
+            "model_variant": "slicing",
             "membership_correction": True,
             "granularity": "s",
         },
         {
             "model_family": "nested",
             "sampling_mode": "nested-random",
-            "model_variant": "matformer_llama",
+            "model_variant": "slicing",
             "membership_correction": True,
             "granularity": "xl",
         },
         {
             "model_family": "nested",
             "sampling_mode": "nested-random",
-            "model_variant": "cat_llama",
+            "model_variant": "concat",
             "membership_correction": False,
             "granularity": "s",
         },
         {
             "model_family": "nested",
             "sampling_mode": "nested-random",
-            "model_variant": "cat_llama",
+            "model_variant": "concat",
             "membership_correction": False,
             "granularity": "xl",
         },
@@ -871,23 +883,18 @@ def test_make_figures_groups_scaling_curves_by_sampling_mode_variant_and_members
     grouped = group_scaling_rows(rows)
 
     assert set(grouped) == {
-        "nested-random / matformer_llama / membership_correction=on",
-        "nested-random / cat_llama / membership_correction=off",
+        "nested-random / slicing / gmc",
+        "nested-random / concat",
     }
-    assert scaling_curve_style(
-        grouped["nested-random / matformer_llama / membership_correction=on"]
-    ) == {
-        "marker": "o",
-        "linestyle": "-",
-        "linewidth": 1.4,
-    }
-    assert scaling_curve_style(
-        grouped["nested-random / cat_llama / membership_correction=off"]
-    ) == {
-        "marker": "s",
-        "linestyle": "--",
-        "linewidth": 1.2,
-    }
+    slicing_style = scaling_curve_style(grouped["nested-random / slicing / gmc"])
+    concat_style = scaling_curve_style(grouped["nested-random / concat"])
+
+    assert slicing_style["marker"] == "s"
+    assert slicing_style["linestyle"] == "--"
+    assert slicing_style["linewidth"] == 1.4
+    assert concat_style["marker"] == "o"
+    assert concat_style["linestyle"] == "-"
+    assert concat_style["linewidth"] == 1.4
 
 
 def test_loss_moving_average_window_size_scales_with_point_count():
