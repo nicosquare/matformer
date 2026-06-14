@@ -1095,24 +1095,29 @@ def test_scaling_curve_style_groups_family_colors_markers_and_shades():
         ]
     )
 
-    assert nested_all_concat_none_style["color"] != nested_random_concat_none_style["color"]
-    assert nested_all_slice_none_style["color"] != nested_random_slice_none_style["color"]
-    assert nested_all_concat_none_style["color"] != nested_all_slice_none_style["color"]
-    assert standalone_style["color"] not in {
-        nested_all_concat_none_style["color"],
-        nested_random_concat_none_style["color"],
-        nested_all_slice_none_style["color"],
-        nested_random_slice_none_style["color"],
-    }
-    assert nested_random_concat_global_style["color"] != nested_random_concat_per_block_style[
-        "color"
-    ]
     assert nested_random_slice_global_style["color"] != nested_random_slice_per_block_style[
         "color"
     ]
-    assert nested_random_concat_per_block_style["color"] != nested_random_slice_per_block_style[
+    assert nested_random_concat_global_style["color"] != nested_random_concat_per_block_style[
         "color"
     ]
+    assert nested_random_slice_global_style["color"] != nested_random_concat_global_style[
+        "color"
+    ]
+    assert nested_random_slice_per_block_style["color"] != nested_random_concat_per_block_style[
+        "color"
+    ]
+    assert nested_all_concat_none_style["color"] != nested_all_slice_none_style["color"]
+    assert nested_all_concat_none_style["color"] != nested_random_concat_global_style["color"]
+    assert nested_all_slice_none_style["color"] != nested_random_slice_global_style["color"]
+    assert standalone_style["color"] not in {
+        nested_all_concat_none_style["color"],
+        nested_all_slice_none_style["color"],
+        nested_random_concat_global_style["color"],
+        nested_random_concat_per_block_style["color"],
+        nested_random_slice_global_style["color"],
+        nested_random_slice_per_block_style["color"],
+    }
 
     assert nested_all_concat_none_style["marker"] == "o"
     assert nested_all_concat_gmc_style["marker"] == "s"
@@ -1125,6 +1130,8 @@ def test_scaling_curve_style_groups_family_colors_markers_and_shades():
     assert nested_random_slice_gmc_style["marker"] == "s"
     assert nested_random_concat_global_style["marker"] == "o"
     assert nested_random_concat_per_block_style["marker"] == "D"
+    assert nested_random_slice_global_style["marker"] == "o"
+    assert nested_random_slice_per_block_style["marker"] == "D"
     assert nested_random_concat_global_style["marker"] != nested_random_concat_per_block_style["marker"]
 
     assert nested_all_concat_none_style["linestyle"] == "-"

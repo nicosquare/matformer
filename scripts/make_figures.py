@@ -40,10 +40,14 @@ SIZE_PLOT_PANELS = [
     ("nested-all", "slicing"),
     ("nested-all", "concat"),
 ]
-SCALING_VARIANT_COLORS = {
-    "concat": "tab:blue",
-    "slicing": "tab:orange",
-    "standalone": "tab:green",
+SCALING_GROUP_COLORS = {
+    "nested-random / slicing / global": "tab:blue",
+    "nested-random / slicing / per_block": "tab:cyan",
+    "nested-random / concat / global": "tab:orange",
+    "nested-random / concat / per_block": "tab:red",
+    "nested-all / slicing": "tab:purple",
+    "nested-all / concat": "tab:green",
+    "standalone": "tab:brown",
 }
 SCALING_CORRECTION_STYLES = {
     "none": {"linestyle": "-", "marker": "o", "shade": 0.0},
@@ -446,7 +450,7 @@ def plot_metric_vs_size_panel(
             ys,
             marker="^",
             s=42,
-            color=SCALING_VARIANT_COLORS["standalone"],
+            color=SCALING_GROUP_COLORS["standalone"],
             label="standalone reference",
             zorder=3,
         )
@@ -1149,8 +1153,7 @@ def scaling_curve_style(rows: list[dict[str, str]]) -> dict[str, Any]:
         correction_label or "none",
         SCALING_CORRECTION_STYLES["none"],
     )
-    variant_label = None if group_key == "standalone" else group_key.split(" / ", 1)[-1]
-    base_color = SCALING_VARIANT_COLORS.get(variant_label or "", "tab:gray")
+    base_color = SCALING_GROUP_COLORS.get(group_key or "", "tab:gray")
     sampling_tone = SCALING_SAMPLING_TONES.get(sampling_label or "global", 0.0)
     style = {
         "linewidth": 1.4,
