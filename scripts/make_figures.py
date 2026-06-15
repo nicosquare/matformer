@@ -402,7 +402,7 @@ def plot_metric_vs_size(
 
     figure.suptitle(f"{ylabel} vs Non-embedding parameters")
     figure.tight_layout(rect=[0, 0, 1, 0.96])
-    figure.savefig(output_path, bbox_inches="tight")
+    figure.savefig(output_path, bbox_inches="tight", dpi=300)
     plt.close(figure)
     return output_path
 
@@ -515,7 +515,7 @@ def plot_metric_over_steps(
     axis.set_ylabel(ylabel)
     axis.grid(True, alpha=0.3)
     place_legend_on_right(legend_axis, axis)
-    figure.savefig(output_path)
+    figure.savefig(output_path, dpi=300)
     plt.close(figure)
     return output_path
 
@@ -578,7 +578,7 @@ def plot_loss_over_steps_for_experiment(
         axis.set_axis_off()
         figure.suptitle(figure_label)
         figure.tight_layout(rect=[0, 0, 1, 0.96])
-        figure.savefig(output_path, bbox_inches="tight")
+        figure.savefig(output_path, bbox_inches="tight", dpi=300)
         plt.close(figure)
         return output_path
 
@@ -644,7 +644,7 @@ def plot_loss_over_steps_for_experiment(
 
     figure.suptitle(figure_label)
     figure.tight_layout(rect=[0, 0, 1, 0.96])
-    figure.savefig(output_path, bbox_inches="tight")
+    figure.savefig(output_path, bbox_inches="tight", dpi=300)
     plt.close(figure)
     return output_path
 
@@ -671,7 +671,7 @@ def plot_loss_over_tokens_for_experiment(
         axis.set_axis_off()
         figure.suptitle(figure_label)
         figure.tight_layout(rect=[0, 0, 1, 0.96])
-        figure.savefig(output_path, bbox_inches="tight")
+        figure.savefig(output_path, bbox_inches="tight", dpi=300)
         plt.close(figure)
         return output_path
 
@@ -728,7 +728,7 @@ def plot_loss_over_tokens_for_experiment(
 
     figure.suptitle(figure_label)
     figure.tight_layout(rect=[0, 0, 1, 0.96])
-    figure.savefig(output_path, bbox_inches="tight")
+    figure.savefig(output_path, bbox_inches="tight", dpi=300)
     plt.close(figure)
     return output_path
 
@@ -754,7 +754,7 @@ def plot_consistency_results(rows: list[dict[str, str]], output_path: Path) -> P
         )
         axis.set_axis_off()
         figure.tight_layout()
-        figure.savefig(output_path, bbox_inches="tight")
+        figure.savefig(output_path, bbox_inches="tight", dpi=300)
         plt.close(figure)
         return output_path
 
@@ -803,7 +803,7 @@ def plot_consistency_results(rows: list[dict[str, str]], output_path: Path) -> P
     axis.set_ylabel("Metric value")
     axis.grid(True, axis="y", alpha=0.3)
     place_legend_on_right(legend_axis, axis)
-    figure.savefig(output_path)
+    figure.savefig(output_path, dpi=300)
     plt.close(figure)
     return output_path
 
