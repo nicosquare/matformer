@@ -63,7 +63,7 @@ As a maintainer, I can reason about granularity metadata, FFN behavior, correcti
 
 ### Functional Requirements
 
-- **FR-001**: The model MUST expose sampling mode as an explicit configuration with at least `global` and `per_layer` options.
+- **FR-001**: The model MUST expose sampling mode as an explicit configuration with at least `global` and `per_block` options.
 - **FR-002**: Global sampling MUST select one granularity for the entire forward pass and apply it consistently to every eligible layer in that pass.
 - **FR-003**: Per-layer sampling MUST select one granularity independently for each transformer block or FFN layer during a single forward pass.
 - **FR-004**: The current global granularity behavior MUST remain available as a named, explicit mode rather than only as an implicit fallback.

@@ -3,7 +3,7 @@
 ## 1. Sampling-Mode Configuration Surface
 
 - **Decision**: Introduce a dedicated model-level `granularity_sampling_mode`
-  with explicit values `global` and `per_layer`, and treat the legacy
+  with explicit values `global` and `per_block`, and treat the legacy
   `training.granularity_sampling` field as a compatibility alias that resolves
   into the canonical mode.
 - **Rationale**: The repository already uses `training.granularity_sampling`
@@ -52,7 +52,7 @@
 
 - **Decision**: Preserve the existing global correction path for
   `granularity_sampling_mode=global`, and derive local GMC/LMC behavior from
-  the sampled per-layer pattern when `granularity_sampling_mode=per_layer`.
+  the sampled per-block pattern when `granularity_sampling_mode=per_block`.
 - **Rationale**: The feature explicitly asks for the current behavior to remain
   first-class while adding a new experimental option. Local correction should
   be tied to the new mode so that global parity remains easy to test.

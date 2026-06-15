@@ -6,7 +6,14 @@ import pytest
 import torch
 from datasets import Dataset
 
-from scripts.make_figures import generate_figures, scaling_curve_label, scaling_curve_style
+from scripts.make_figures import (
+    blend_color_toward_white,
+    generate_figures,
+    scaling_curve_color_group_label,
+    scaling_curve_display_label,
+    scaling_curve_label,
+    scaling_curve_style,
+)
 from models.correction import (
     correction_context_from_config,
     summarize_correction_context,
@@ -14,7 +21,7 @@ from models.correction import (
 from models.granularity import summarize_granularity_pattern
 from models.wiring import (
     build_global_granularity_pattern,
-    build_per_layer_granularity_pattern,
+    build_per_block_granularity_pattern,
 )
 from utils.config import resolve_all_run_configs, resolve_run_config
 from utils.metrics import (
@@ -338,10 +345,10 @@ def test_artifacts_record_nested_all_sampling_mode_and_pattern_provenance(tmp_pa
         ),
         (
             "random",
-            "per_layer",
+            "per_block",
             "nested-random",
-            "per_layer",
-            build_per_layer_granularity_pattern,
+            "per_block",
+            build_per_block_granularity_pattern,
             ["s", "m"],
         ),
     ],
@@ -534,14 +541,14 @@ def test_artifacts_reconstruct_standalone_mode_from_saved_files(tmp_path):
             False,
         ),
         (
-            "per_layer",
-            build_per_layer_granularity_pattern,
-            "per_layer",
+            "per_block",
+            build_per_block_granularity_pattern,
+            "per_block",
             True,
         ),
     ],
 )
-def test_artifacts_record_explicit_nested_random_global_and_per_layer_paths(
+def test_artifacts_record_explicit_nested_random_global_and_per_block_paths(
     tmp_path,
     sampling_mode,
     pattern_builder,
@@ -897,12 +904,14 @@ def test_scaling_curve_label_prefers_correction_mode_when_available():
         "sampling_mode": "nested-random",
         "model_family": "nested",
         "model_variant": "concat",
+        "resolved_sampling_mode": "per_block",
         "correction_mode": "lmc",
     }
     legacy_row = {
         "sampling_mode": "nested-random",
         "model_family": "nested",
         "model_variant": "concat",
+        "granularity_sampling_mode": "global",
         "membership_correction": True,
     }
     standalone_row = {
@@ -913,12 +922,34 @@ def test_scaling_curve_label_prefers_correction_mode_when_available():
     }
 
     assert scaling_curve_label(labeled_row) == (
-        "nested-random / concat / lmc"
+        "nested-random / concat / per_block / lmc"
     )
     assert scaling_curve_label(legacy_row) == (
-        "nested-random / concat / gmc"
+        "nested-random / concat / global / gmc"
     )
     assert scaling_curve_label(standalone_row) == "standalone"
+
+
+def test_scaling_curve_display_label_makes_per_block_sampling_explicit():
+    per_block_row = {
+        "sampling_mode": "nested-random",
+        "model_family": "nested",
+        "model_variant": "concat",
+        "resolved_sampling_mode": "per_block",
+        "correction_mode": "lmc",
+    }
+    global_row = {
+        "sampling_mode": "nested-random",
+        "model_family": "nested",
+        "model_variant": "concat",
+        "granularity_sampling_mode": "global",
+        "membership_correction": True,
+    }
+
+    assert scaling_curve_display_label([per_block_row]) == (
+        "nested-random / concat / per_block sampling / lmc"
+    )
+    assert scaling_curve_display_label([global_row]) == "nested-random / concat / gmc"
 
 
 def test_scaling_curve_style_groups_family_colors_markers_and_shades():
@@ -1012,6 +1043,50 @@ def test_scaling_curve_style_groups_family_colors_markers_and_shades():
             }
         ]
     )
+    nested_random_concat_global_style = scaling_curve_style(
+        [
+            {
+                "sampling_mode": "nested-random",
+                "model_family": "nested",
+                "model_variant": "concat",
+                "resolved_sampling_mode": "global",
+                "correction_mode": "none",
+            }
+        ]
+    )
+    nested_random_concat_per_block_style = scaling_curve_style(
+        [
+            {
+                "sampling_mode": "nested-random",
+                "model_family": "nested",
+                "model_variant": "concat",
+                "resolved_sampling_mode": "per_block",
+                "correction_mode": "none",
+            }
+        ]
+    )
+    nested_random_slice_global_style = scaling_curve_style(
+        [
+            {
+                "sampling_mode": "nested-random",
+                "model_family": "nested",
+                "model_variant": "slicing",
+                "resolved_sampling_mode": "global",
+                "correction_mode": "none",
+            }
+        ]
+    )
+    nested_random_slice_per_block_style = scaling_curve_style(
+        [
+            {
+                "sampling_mode": "nested-random",
+                "model_family": "nested",
+                "model_variant": "slicing",
+                "resolved_sampling_mode": "per_block",
+                "correction_mode": "none",
+            }
+        ]
+    )
     standalone_style = scaling_curve_style(
         [
             {
@@ -1022,14 +1097,93 @@ def test_scaling_curve_style_groups_family_colors_markers_and_shades():
         ]
     )
 
-    assert nested_all_concat_none_style["color"] != nested_random_concat_none_style["color"]
-    assert nested_all_slice_none_style["color"] != nested_random_slice_none_style["color"]
-    assert nested_all_concat_none_style["color"] != nested_all_slice_none_style["color"]
+    assert scaling_curve_color_group_label(
+        {
+            "sampling_mode": "nested-random",
+            "model_family": "nested",
+            "model_variant": "slicing",
+            "resolved_sampling_mode": "global",
+        }
+    ) == "nested-random / slicing / global"
+    assert scaling_curve_color_group_label(
+        {
+            "sampling_mode": "nested-random",
+            "model_family": "nested",
+            "model_variant": "slicing",
+            "resolved_sampling_mode": "per_block",
+        }
+    ) == "nested-random / slicing / per_block"
+    assert scaling_curve_color_group_label(
+        {
+            "sampling_mode": "nested-random",
+            "model_family": "nested",
+            "model_variant": "concat",
+            "resolved_sampling_mode": "global",
+        }
+    ) == "nested-random / concat / global"
+    assert scaling_curve_color_group_label(
+        {
+            "sampling_mode": "nested-random",
+            "model_family": "nested",
+            "model_variant": "concat",
+            "resolved_sampling_mode": "per_block",
+        }
+    ) == "nested-random / concat / per_block"
+    assert scaling_curve_color_group_label(
+        {
+            "sampling_mode": "nested-all",
+            "model_family": "nested",
+            "model_variant": "slicing",
+        }
+    ) == "nested-all / slicing"
+    assert scaling_curve_color_group_label(
+        {
+            "sampling_mode": "nested-all",
+            "model_family": "nested",
+            "model_variant": "concat",
+        }
+    ) == "nested-all / concat"
+    assert scaling_curve_color_group_label(
+        {
+            "sampling_mode": "standalone",
+            "model_family": "standalone",
+            "model_variant": "slicing",
+        }
+    ) == "standalone"
+
+    assert nested_random_slice_global_style["color"] == blend_color_toward_white(
+        "tab:blue",
+        0.0,
+    )
+    assert nested_random_slice_per_block_style["color"] == blend_color_toward_white(
+        "tab:cyan",
+        0.28,
+    )
+    assert nested_random_concat_global_style["color"] == blend_color_toward_white(
+        "tab:orange",
+        0.0,
+    )
+    assert nested_random_concat_per_block_style["color"] == blend_color_toward_white(
+        "tab:red",
+        0.28,
+    )
+    assert nested_all_slice_none_style["color"] == blend_color_toward_white(
+        "tab:purple",
+        0.0,
+    )
+    assert nested_all_concat_none_style["color"] == blend_color_toward_white(
+        "tab:green",
+        0.0,
+    )
+    assert standalone_style["color"] == blend_color_toward_white("tab:brown", 0.0)
+
     assert standalone_style["color"] not in {
         nested_all_concat_none_style["color"],
-        nested_random_concat_none_style["color"],
         nested_all_slice_none_style["color"],
-        nested_random_slice_none_style["color"],
+        nested_random_concat_global_style["color"],
+        nested_random_concat_per_block_style["color"],
+        nested_random_slice_global_style["color"],
+        nested_random_slice_per_block_style["color"],
     }
 
     assert nested_all_concat_none_style["marker"] == "o"
@@ -1041,6 +1195,11 @@ def test_scaling_curve_style_groups_family_colors_markers_and_shades():
     assert nested_all_slice_gmc_style["marker"] == "s"
     assert nested_random_slice_none_style["marker"] == "o"
     assert nested_random_slice_gmc_style["marker"] == "s"
+    assert nested_random_concat_global_style["marker"] == "o"
+    assert nested_random_concat_per_block_style["marker"] == "D"
+    assert nested_random_slice_global_style["marker"] == "o"
+    assert nested_random_slice_per_block_style["marker"] == "D"
+    assert nested_random_concat_global_style["marker"] != nested_random_concat_per_block_style["marker"]
 
     assert nested_all_concat_none_style["linestyle"] == "-"
     assert nested_all_concat_gmc_style["linestyle"] == "--"

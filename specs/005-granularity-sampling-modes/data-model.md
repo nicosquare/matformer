@@ -5,7 +5,7 @@
 Represents the explicit model-level choice for how granularity is selected.
 
 **Fields**
-- `mode`: Either `global` or `per_layer`.
+- `mode`: Either `global` or `per_block`.
 - `scope`: Always model-wide for this feature; describes whether one granularity
   applies to the full pass or to each transformer block.
 - `source`: The resolved config field that selected the mode.
@@ -16,9 +16,9 @@ Represents the explicit model-level choice for how granularity is selected.
 - Consumed by model assembly and correction logic.
 
 **Validation Rules**
-- `mode` must be one of `global` or `per_layer`.
+- `mode` must be one of `global` or `per_block`.
 - `global` must preserve the current whole-model behavior.
-- `per_layer` must enable per-block sampling and local correction derivation.
+- `per_block` must enable per-block sampling and local correction derivation.
 - A legacy alias, when present, must resolve into one of the canonical modes
   before any model or correction logic runs.
 
@@ -39,7 +39,7 @@ canonical sampling mode.
 
 **Validation Rules**
 - `all` must resolve to `global`.
-- `random` must resolve to `per_layer`.
+- `random` must resolve to `per_block`.
 - Downstream components must consume only `resolved_mode`, not the legacy alias.
 
 ## Granularity Pattern
@@ -47,7 +47,7 @@ canonical sampling mode.
 Represents the granularity choices actually used during a forward pass.
 
 **Fields**
-- `pattern_type`: `single` for global sampling or `per_layer` for block-wise
+- `pattern_type`: `single` for global sampling or `per_block` for block-wise
   sampling.
 - `selected_granularities`: The chosen granularity for the pass or the ordered
   list of per-layer choices.
@@ -84,7 +84,7 @@ Represents the correction behavior that accompanies a sampling decision.
 - Saved with the run summary so the correction choice can be reconstructed.
 
 **Validation Rules**
-- Local correction may be active only when `sampling_mode=per_layer`.
+- Local correction may be active only when `sampling_mode=per_block`.
 - Global sampling must use the existing global correction behavior.
 - A per-layer pattern must drive the local correction interpretation.
 

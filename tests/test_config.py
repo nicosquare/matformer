@@ -168,7 +168,7 @@ def test_granularity_sampling_mode_validation():
         )
 
 
-def test_requested_run_sampling_mode_does_not_force_per_layer_model_mode():
+def test_requested_run_sampling_mode_does_not_force_per_block_model_mode():
     resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
 
     assert resolved["run"]["sampling_mode"] == "nested-random"
@@ -180,7 +180,7 @@ def test_requested_run_sampling_mode_does_not_force_per_layer_model_mode():
     "sampling_mode, expected_pattern_type, selected_granularities, expected_local_correction_active",
     [
         ("global", "single", ("m",), False),
-        ("per_layer", "per_layer", ("s", "m"), True),
+        ("per_block", "per_block", ("s", "m"), True),
     ],
 )
 def test_explicit_model_sampling_modes_preserve_nested_random_run_mode(
@@ -232,7 +232,7 @@ def test_explicit_model_sampling_modes_preserve_nested_random_run_mode(
     "alias, expected_mode, expected_sampling_mode",
     [
         ("all", "global", "nested-all"),
-        ("random", "per_layer", "nested-random"),
+        ("random", "per_block", "nested-random"),
     ],
 )
 def test_legacy_granularity_sampling_alias_resolves_to_canonical_model_mode(
@@ -252,7 +252,7 @@ def test_legacy_granularity_sampling_alias_resolves_to_canonical_model_mode(
     assert resolved["run"]["sampling_mode"] == expected_sampling_mode
     assert resolved["model"]["granularity_pattern_provenance"] == {
         "pattern_type": (
-            "all_granularities" if expected_sampling_mode == "nested-all" else "per_layer"
+            "all_granularities" if expected_sampling_mode == "nested-all" else "per_block"
         ),
         "scope": "model",
         "source": "model.granularity_sampling_mode",
@@ -267,10 +267,10 @@ def test_legacy_granularity_sampling_alias_resolves_to_canonical_model_mode(
     "overrides, expected_active",
     [
         (["model.granularity_sampling_mode=global", "model.correction_mode=gmc"], False),
-        (["model.granularity_sampling_mode=per_layer", "model.correction_mode=gmc"], True),
+        (["model.granularity_sampling_mode=per_block", "model.correction_mode=gmc"], True),
         (
             [
-                "model.granularity_sampling_mode=per_layer",
+                "model.granularity_sampling_mode=per_block",
                 "model.correction_mode=none",
                 "model.membership_correction=false",
             ],
@@ -278,7 +278,7 @@ def test_legacy_granularity_sampling_alias_resolves_to_canonical_model_mode(
         ),
     ],
 )
-def test_per_layer_sampling_controls_local_correction_activation(
+def test_per_block_sampling_controls_local_correction_activation(
     overrides,
     expected_active,
 ):
@@ -289,7 +289,7 @@ def test_per_layer_sampling_controls_local_correction_activation(
     )
 
     pattern = build_granularity_pattern(
-        pattern_type="per_layer",
+        pattern_type="per_block",
         selected_granularities=("s", "m", "l", "xl"),
         layer_count=resolved["model"]["num_layers"],
     )
@@ -547,11 +547,11 @@ def test_debug_standalone_granularity_must_match_model_granularities():
     [
         (
             ["training.granularity_sampling=random"],
-            "model.granularity_sampling_mode=per_layer requires nested runs",
+            "model.granularity_sampling_mode=per_block requires nested runs",
         ),
         (
-            ["model.granularity_sampling_mode=per_layer"],
-            "model.granularity_sampling_mode=per_layer requires nested runs",
+            ["model.granularity_sampling_mode=per_block"],
+            "model.granularity_sampling_mode=per_block requires nested runs",
         ),
     ],
 )

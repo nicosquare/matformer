@@ -35,10 +35,10 @@ class TinyNestedTrainingModel(torch.nn.Module):
         self.current_granularity = None
         self.current_layer_granularities = list(granularities)
         self.current_granularity_pattern = build_granularity_pattern(
-            pattern_type="per_layer",
+            pattern_type="per_block",
             selected_granularities=tuple(self.current_layer_granularities),
             layer_count=len(self.current_layer_granularities),
-            repeatable_source=("tiny-nested-training-model", "per_layer"),
+            repeatable_source=("tiny-nested-training-model", "per_block"),
         )
 
     def forward(self, input_ids, attention_mask=None, labels=None):
@@ -905,7 +905,7 @@ def test_training_counts_parameters_before_runtime_wrapping(tmp_path, monkeypatc
     assert {row["total_parameters"] for row in rows} == {"1"}
 
 
-def test_tiny_nested_training_can_sample_one_granularity_per_layer_per_batch(
+def test_tiny_nested_training_can_sample_one_granularity_per_block_per_batch(
     tmp_path,
     monkeypatch,
 ):
@@ -918,7 +918,7 @@ def test_tiny_nested_training_can_sample_one_granularity_per_layer_per_batch(
         output_dir=output_dir,
         overrides=[
             "run.sampling_mode=nested-random",
-            "model.granularity_sampling_mode=per_layer",
+            "model.granularity_sampling_mode=per_block",
             "run.continuation.enabled=false",
             "training.max_steps=1",
             "training.eval_interval=0",
@@ -948,7 +948,7 @@ def test_tiny_nested_training_can_sample_one_granularity_per_layer_per_batch(
 
     summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
     assert summary["sampling_mode"] == "nested-random"
-    assert summary["resolved_sampling_mode"] == "per_layer"
+    assert summary["resolved_sampling_mode"] == "per_block"
     assert model.train_forward_granularities == []
     assert model.train_forward_layer_granularities == [["s", "m"]]
     with result["metrics_path"].open("r", encoding="utf-8", newline="") as metrics_file:
@@ -959,7 +959,7 @@ def test_tiny_nested_training_can_sample_one_granularity_per_layer_per_batch(
         ]
     assert [row["granularity"] for row in train_rows] == ["s", "m"]
     assert all(
-        json.loads(row["granularity_pattern_summary"])["pattern_type"] == "per_layer"
+        json.loads(row["granularity_pattern_summary"])["pattern_type"] == "per_block"
         for row in train_rows
     )
 

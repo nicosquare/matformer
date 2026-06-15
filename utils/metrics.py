@@ -1121,8 +1121,8 @@ def _granularity_pattern_provenance(
             "all_granularities"
             if resolved_run_mode == "nested-all"
             else (
-                "per_layer"
-                if granularity_sampling_mode == "per_layer"
+                "per_block"
+                if granularity_sampling_mode == "per_block"
                 else "single"
             )
         ),

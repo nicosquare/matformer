@@ -50,7 +50,7 @@ python train.py \
   --config configs/debug_matrix.yaml \
   --run-id debug-nested-001 \
   --output-root "$OUTPUT_ROOT" \
-  --override model.granularity_sampling_mode=per_layer
+  --override model.granularity_sampling_mode=per_block
 ```
 
 Expected result:

@@ -30,7 +30,7 @@
 **CRITICAL**: No user story work should begin until this phase is complete
 
 - [X] T004 Add explicit model-level sampling-mode config resolution and legacy `training.granularity_sampling` alias handling in `utils/config.py`
-- [X] T005 [P] Add validation rules for `global` and `per_layer` sampling modes plus legacy alias resolution and their interaction with `model.correction_mode` in `utils/config.py`
+- [X] T005 [P] Add validation rules for `global` and `per_block` sampling modes plus legacy alias resolution and their interaction with `model.correction_mode` in `utils/config.py`
 - [X] T006 [P] Add run-metadata fields for requested legacy alias, resolved sampling mode, and granularity-pattern provenance in `utils/config.py` and `utils/metrics.py`
 - [X] T007 Introduce shared granularity-pattern data structures and helpers in `models/granularity.py`
 - [X] T008 Introduce shared correction-context helpers for global vs per-layer activation in `models/correction.py`
@@ -65,7 +65,7 @@
 
 **Goal**: Enable per-layer sampling so each transformer block can receive its own granularity choice and local correction interpretation
 
-**Independent Test**: A debug run with `model.granularity_sampling_mode=per_layer` produces a block-wise granularity pattern and activates local GMC/LMC only in that mode
+**Independent Test**: A debug run with `model.granularity_sampling_mode=per_block` produces a block-wise granularity pattern and activates local GMC/LMC only in that mode
 
 ### Verification for User Story 2
 

@@ -248,7 +248,6 @@ def test_queue_dmodel256_pilot_builds_requested_variant_matrix():
         "nested-all-concat-lmc",
         "standalone-xl",
     } <= labels
-    assert all("per_layer" not in spec.label for spec in specs)
     assert not any(
         "model.variant=slicing" in spec.model_overrides
         and "model.correction_mode=lmc" in spec.model_overrides

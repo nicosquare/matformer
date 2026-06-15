@@ -8,7 +8,7 @@
 Refactor the MatFormer model code into a shallow `models/` package with clear
 boundaries for granularity metadata, FFN implementations, correction logic, and
 model assembly. Add an explicit model-level granularity sampling mode with
-named `global` and `per_layer` behavior, keep the current whole-model path as
+named `global` and `per_block` behavior, keep the current whole-model path as
 a first-class configuration, and derive local GMC/LMC only when per-layer
 sampling is active. Treat the legacy `training.granularity_sampling` input as a
 compatibility alias that resolves into the new canonical mode rather than as a
@@ -32,7 +32,7 @@ FFN correction semantics, and run-metadata provenance
 **Datasets/Data Assumptions**: existing debug and d_model=256 pilot configs,
 no dataset redesign, and no distributed validation in this feature  
 **Configuration Inputs**: YAML configs plus `--override` values; add a
-model-level `granularity_sampling_mode` with `global` and `per_layer` options,
+model-level `granularity_sampling_mode` with `global` and `per_block` options,
 and resolve legacy `training.granularity_sampling` inputs through a
 compatibility alias into the canonical mode  
 **Experiment Outputs**: `config.json`, `run_summary.json`, `metrics.csv`,

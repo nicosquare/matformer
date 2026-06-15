@@ -26,7 +26,7 @@ from models.granularity import (
 from models.wiring import ModifiedLlamaForCausalLM
 from models.wiring import apply_granularity_pattern_to_model
 from models.wiring import build_global_granularity_pattern
-from models.wiring import build_per_layer_granularity_pattern
+from models.wiring import build_per_block_granularity_pattern
 from utils.config import resolve_run_config
 
 
@@ -119,12 +119,12 @@ def test_concat_block_metadata_can_be_derived_from_config_prefix_map():
 def test_granularity_metadata_helpers_build_stable_pattern_summaries():
     metadata = get_granularity_metadata("l")
     pattern = build_granularity_pattern(
-        pattern_type="per_layer",
+        pattern_type="per_block",
         selected_granularities=("s", "m", "l"),
         layer_count=3,
         repeatable_source=(
             "debug-nested-001",
-            "model.granularity_sampling_mode=per_layer",
+            "model.granularity_sampling_mode=per_block",
         ),
     )
 
@@ -133,20 +133,20 @@ def test_granularity_metadata_helpers_build_stable_pattern_summaries():
         "ffn_ratio": 2.0,
         "full_intermediate_fraction": 0.5,
     }
-    assert pattern.pattern_type == "per_layer"
+    assert pattern.pattern_type == "per_block"
     assert pattern.selected_granularities == ("s", "m", "l")
     assert pattern.layer_count == 3
     assert pattern.repeatable_source == (
         "debug-nested-001",
-        "model.granularity_sampling_mode=per_layer",
+        "model.granularity_sampling_mode=per_block",
     )
     assert summarize_granularity_pattern(pattern) == {
-        "pattern_type": "per_layer",
+        "pattern_type": "per_block",
         "selected_granularities": ("s", "m", "l"),
         "layer_count": 3,
         "repeatable_source": (
             "debug-nested-001",
-            "model.granularity_sampling_mode=per_layer",
+            "model.granularity_sampling_mode=per_block",
         ),
     }
 
@@ -324,10 +324,10 @@ def test_model_configures_all_layer_prefixes():
     "sampling_mode, selected_granularities, expected_layer_granularities, expected_pattern_type",
     [
         ("global", ("m",), ["m", "m", "m", "m"], "single"),
-        ("per_layer", ("xl", "s", "m", "l"), ["xl", "s", "m", "l"], "per_layer"),
+        ("per_block", ("xl", "s", "m", "l"), ["xl", "s", "m", "l"], "per_block"),
     ],
 )
-def test_apply_granularity_pattern_to_model_covers_global_and_per_layer_paths(
+def test_apply_granularity_pattern_to_model_covers_global_and_per_block_paths(
     sampling_mode,
     selected_granularities,
     expected_layer_granularities,
@@ -351,7 +351,7 @@ def test_apply_granularity_pattern_to_model_covers_global_and_per_layer_paths(
     assert pattern.pattern_type == expected_pattern_type
     assert pattern.selected_granularities == (
         tuple(expected_layer_granularities)
-        if sampling_mode == "per_layer"
+        if sampling_mode == "per_block"
         else tuple(selected_granularities)
     )
 
@@ -374,17 +374,17 @@ def test_explicit_global_sampling_path_uses_all_configured_granularities():
     )
 
 
-def test_per_layer_sampling_path_records_direct_per_block_choices():
+def test_per_block_sampling_path_records_direct_per_block_choices():
     resolved = resolve_run_config(
         "configs/debug_matrix.yaml",
         run_id="debug-nested-001",
-        overrides=["model.granularity_sampling_mode=per_layer"],
+        overrides=["model.granularity_sampling_mode=per_block"],
     )
 
-    assert resolved["model"]["granularity_sampling_mode"] == "per_layer"
+    assert resolved["model"]["granularity_sampling_mode"] == "per_block"
     assert resolved["run"]["sampling_mode"] == "nested-random"
     assert resolved["model"]["granularity_pattern_provenance"] == {
-        "pattern_type": "per_layer",
+        "pattern_type": "per_block",
         "scope": "model",
         "source": "model.granularity_sampling_mode",
         "requested_alias": None,
@@ -392,20 +392,20 @@ def test_per_layer_sampling_path_records_direct_per_block_choices():
         "available_granularities": ["s", "m", "l", "xl"],
     }
 
-    pattern = build_per_layer_granularity_pattern(resolved, ["s", "m"])
+    pattern = build_per_block_granularity_pattern(resolved, ["s", "m"])
 
     assert pattern.selected_granularities == ("s", "m")
     assert pattern.layer_count == 2
 
 
-def test_per_layer_sampling_pattern_requires_one_choice_per_transformer_block():
+def test_per_block_sampling_pattern_requires_one_choice_per_transformer_block():
     config = tiny_llama_config(num_hidden_layers=4)
 
     with pytest.raises(ValueError, match="one granularity per transformer block"):
         apply_granularity_pattern_to_model(
             ModifiedLlamaForCausalLM(config),
             ["s", "m"],
-            sampling_mode="per_layer",
+            sampling_mode="per_block",
         )
 
 

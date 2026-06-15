@@ -23,7 +23,7 @@ VALID_GRANULARITIES = {"s", "m", "l", "xl"}
 VALID_MODEL_TOPOLOGIES = {"nested", "standalone"}
 VALID_MODEL_VARIANTS = {"slicing", "concat"}
 VALID_CORRECTION_MODES = {"none", "gmc", "lmc"}
-VALID_MODEL_GRANULARITY_SAMPLING_MODES = {"global", "per_layer"}
+VALID_MODEL_GRANULARITY_SAMPLING_MODES = {"global", "per_block"}
 VALID_LEARNING_RATE_SCALE_RULES = {"none", "linear", "sqrt"}
 VALID_OPTIMIZER_NAMES = {"adamw", "sgd"}
 VALID_COMPLETION_LABELS = {"debug", "run"}
@@ -366,8 +366,6 @@ def _normalize_model_granularity_sampling_mode(raw_mode: Any) -> str:
         raise ConfigError(
             "model.granularity_sampling_mode must be a non-empty string"
         )
-    if granularity_sampling_mode == "per_block":
-        granularity_sampling_mode = "per_layer"
     if granularity_sampling_mode not in VALID_MODEL_GRANULARITY_SAMPLING_MODES:
         raise ConfigError(
             "model.granularity_sampling_mode must be one of "
@@ -1143,7 +1141,7 @@ def _resolve_sampling_mode_defaults(
         derived_run_sampling_mode = run_sampling_mode
     elif legacy_alias_mode == "global":
         derived_run_sampling_mode = "nested-all"
-    elif explicit_model_mode == "per_layer" or legacy_alias_mode == "per_layer":
+    elif explicit_model_mode == "per_block" or legacy_alias_mode == "per_block":
         derived_run_sampling_mode = "nested-random"
     elif run_sampling_mode is not None:
         derived_run_sampling_mode = run_sampling_mode
@@ -1155,7 +1153,7 @@ def _resolve_sampling_mode_defaults(
     if (
         requested_run_sampling_mode is not None
         and derived_run_sampling_mode in {"nested-all", "standalone"}
-        and legacy_alias_mode == "per_layer"
+        and legacy_alias_mode == "per_block"
         and explicit_override_keys is not None
         and "run.sampling_mode" in explicit_override_keys
     ):
@@ -1165,11 +1163,11 @@ def _resolve_sampling_mode_defaults(
         )
     if derived_run_sampling_mode in {"nested-all", "standalone"} and canonical_mode != "global":
         raise ConfigError(
-            "model.granularity_sampling_mode=per_layer requires nested runs"
+            "model.granularity_sampling_mode=per_block requires nested runs"
         )
     if model_family == "standalone" and canonical_mode != "global":
         raise ConfigError(
-            "model.granularity_sampling_mode=per_layer requires nested runs"
+            "model.granularity_sampling_mode=per_block requires nested runs"
         )
 
     training_sampling = _granularity_sampling_alias_from_mode(
@@ -1212,7 +1210,7 @@ def _granularity_sampling_mode_from_legacy_alias(alias: str) -> str:
         )
     return {
         "all": "global",
-        "random": "per_layer",
+        "random": "per_block",
     }[alias]
 
 
@@ -1224,7 +1222,7 @@ def _granularity_sampling_alias_from_mode(mode: str) -> str:
         )
     return {
         "global": "all",
-        "per_layer": "random",
+        "per_block": "random",
     }[mode]
 
 
@@ -1234,7 +1232,7 @@ def _granularity_sampling_mode_from_run_sampling_mode(run_sampling_mode: str) ->
             f"run.sampling_mode must be one of {sorted(VALID_SAMPLING_MODES)}"
         )
     return {
-        "nested-random": "per_layer",
+        "nested-random": "per_block",
         "nested-all": "global",
         "standalone": "global",
     }[run_sampling_mode]
@@ -1254,7 +1252,7 @@ def _build_granularity_pattern_provenance(
             else (
                 "single"
                 if granularity_sampling_mode == "global"
-                else "per_layer"
+                else "per_block"
             )
         ),
         "scope": "model",

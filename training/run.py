@@ -1961,7 +1961,7 @@ def train_for_steps(
                         else torch.stack(forward_losses).mean()
                     )
                     total_losses = len(forward_losses)
-                elif model_sampling_mode == "per_layer" and supports_layer_granularities:
+                elif model_sampling_mode == "per_block" and supports_layer_granularities:
                     selected_layer_granularities = select_training_layer_granularities(
                         config,
                         granularities,

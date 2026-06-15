@@ -42,7 +42,7 @@ from models.wiring import (
     apply_granularity_pattern_to_model,
     build_global_granularity_pattern,
     ModifiedLlamaForCausalLM,
-    build_per_layer_granularity_pattern,
+    build_per_block_granularity_pattern,
 )
 
 __all__ = [
@@ -83,6 +83,6 @@ __all__ = [
     "summarize_granularity_pattern_from_config",
     "summarize_granularity_pattern",
     "build_global_granularity_pattern",
-    "build_per_layer_granularity_pattern",
+    "build_per_block_granularity_pattern",
     "apply_granularity_pattern_to_model",
 ]
