@@ -9,7 +9,7 @@
 
 ### Session 2026-06-12
 
-- Q: Should the canonical nested-random submode be named `per_block` or `per_layer`? → A: `per_block`
+- Q: Should the canonical nested-random submode be named `per_block`? → A: `per_block`
 
 ## User Scenarios & Testing *(mandatory)*
 

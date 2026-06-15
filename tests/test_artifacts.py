@@ -21,7 +21,7 @@ from models.correction import (
 from models.granularity import summarize_granularity_pattern
 from models.wiring import (
     build_global_granularity_pattern,
-    build_per_layer_granularity_pattern,
+    build_per_block_granularity_pattern,
 )
 from utils.config import resolve_all_run_configs, resolve_run_config
 from utils.metrics import (
@@ -345,10 +345,10 @@ def test_artifacts_record_nested_all_sampling_mode_and_pattern_provenance(tmp_pa
         ),
         (
             "random",
-            "per_layer",
+            "per_block",
             "nested-random",
-            "per_layer",
-            build_per_layer_granularity_pattern,
+            "per_block",
+            build_per_block_granularity_pattern,
             ["s", "m"],
         ),
     ],
@@ -541,14 +541,14 @@ def test_artifacts_reconstruct_standalone_mode_from_saved_files(tmp_path):
             False,
         ),
         (
-            "per_layer",
-            build_per_layer_granularity_pattern,
-            "per_layer",
+            "per_block",
+            build_per_block_granularity_pattern,
+            "per_block",
             True,
         ),
     ],
 )
-def test_artifacts_record_explicit_nested_random_global_and_per_layer_paths(
+def test_artifacts_record_explicit_nested_random_global_and_per_block_paths(
     tmp_path,
     sampling_mode,
     pattern_builder,

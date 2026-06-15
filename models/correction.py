@@ -10,7 +10,7 @@ from models.granularity import GranularityPattern
 
 
 VALID_CORRECTION_MODES = {"none", "gmc", "lmc"}
-VALID_SAMPLING_MODES = {"global", "per_layer"}
+VALID_SAMPLING_MODES = {"global", "per_block"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,7 +32,7 @@ def should_activate_local_correction(
 ) -> bool:
     validate_correction_mode(correction_mode)
     validate_sampling_mode(sampling_mode)
-    return sampling_mode == "per_layer" and correction_mode in {"gmc", "lmc"}
+    return sampling_mode == "per_block" and correction_mode in {"gmc", "lmc"}
 
 
 def validate_correction_mode(correction_mode: str) -> None:
@@ -94,7 +94,7 @@ def build_local_correction_context_from_pattern(
 
     return build_correction_context(
         correction_mode,
-        "per_layer",
+        "per_block",
         derived_membership_pattern=derive_local_membership_pattern(
             granularity_pattern
         ),
@@ -107,7 +107,7 @@ def build_correction_context_from_pattern(
     granularity_pattern: GranularityPattern | Sequence[str] | str | None = None,
 ) -> CorrectionContext:
     derived_membership_pattern: Sequence[Any] | None
-    if sampling_mode == "per_layer":
+    if sampling_mode == "per_block":
         derived_membership_pattern = derive_local_membership_pattern(
             granularity_pattern
         )
@@ -161,10 +161,10 @@ def correction_context_from_config(
     elif sampling_mode not in VALID_SAMPLING_MODES and run.get("sampling_mode"):
         run_sampling_mode = str(run["sampling_mode"])
         if run_sampling_mode == "nested-random":
-            sampling_mode = "per_layer"
+            sampling_mode = "per_block"
         else:
             sampling_mode = "global"
-    if sampling_mode == "per_layer":
+    if sampling_mode == "per_block":
         return build_local_correction_context_from_pattern(
             correction_mode,
             granularity_pattern=granularity_pattern,

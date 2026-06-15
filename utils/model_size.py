@@ -170,7 +170,7 @@ def estimate_llama_total_parameters(model: Mapping[str, Any]) -> int:
 
     embedding_parameters = vocab_size * hidden_size
     lm_head_parameters = 0 if tie_word_embeddings else vocab_size * hidden_size
-    per_layer_parameters = (
+    per_block_parameters = (
         4 * hidden_size * hidden_size
         + 3 * hidden_size * intermediate_size
         + 2 * hidden_size
@@ -179,7 +179,7 @@ def estimate_llama_total_parameters(model: Mapping[str, Any]) -> int:
     return (
         embedding_parameters
         + lm_head_parameters
-        + (num_layers * per_layer_parameters)
+        + (num_layers * per_block_parameters)
         + final_norm_parameters
     )
 

@@ -34,11 +34,19 @@ PARAMETER_COUNT_FIELDS = [
 ]
 
 LOSS_MOVING_AVERAGE_FRACTION = 0.1
-SIZE_PLOT_PANELS = [
-    ("nested-random", "slicing"),
-    ("nested-random", "concat"),
-    ("nested-all", "slicing"),
-    ("nested-all", "concat"),
+SIZE_PLOT_PANELS_DEFAULT = [
+    ("nested-random", "slicing", None),
+    ("nested-random", "concat", None),
+    ("nested-all", "slicing", None),
+    ("nested-all", "concat", None),
+]
+SIZE_PLOT_PANELS_WITH_SAMPLING = [
+    ("nested-random", "slicing", "global"),
+    ("nested-random", "concat", "global"),
+    ("nested-random", "slicing", "per_block"),
+    ("nested-random", "concat", "per_block"),
+    ("nested-all", "slicing", None),
+    ("nested-all", "concat", None),
 ]
 SCALING_GROUP_COLORS = {
     "nested-random / slicing / global": "tab:blue",
@@ -120,6 +128,7 @@ def generate_figures(
                 metric_name="loss",
                 ylabel="Loss",
                 output_path=output_dir / "loss_vs_size.png",
+                panel_specs=SIZE_PLOT_PANELS_WITH_SAMPLING,
             )
         )
         figure_paths.append(
@@ -128,6 +137,7 @@ def generate_figures(
                 metric_name="perplexity",
                 ylabel="Perplexity",
                 output_path=output_dir / "ppl_vs_size.png",
+                panel_specs=SIZE_PLOT_PANELS_WITH_SAMPLING,
             )
         )
         if any(row.get("average_downstream_accuracy") for row in scaling_rows):
@@ -364,15 +374,22 @@ def plot_metric_vs_size(
     metric_name: str,
     ylabel: str,
     output_path: Path,
+    panel_specs: list[tuple[str, str, str | None]] | None = None,
 ) -> Path:
+    panel_specs = panel_specs or SIZE_PLOT_PANELS_DEFAULT
+    column_count = 2 if len(panel_specs) > 1 else 1
+    row_count = math.ceil(len(panel_specs) / column_count)
     figure, axes = plt.subplots(
-        2,
-        2,
-        figsize=(14, 11),
+        row_count,
+        column_count,
+        figsize=(14, 5.2 * row_count),
         sharex=True,
         sharey=False,
     )
-    for axis, (sampling_mode, variant_label) in zip(axes.flat, SIZE_PLOT_PANELS):
+    for axis, (sampling_mode, variant_label, sampling_label) in zip(
+        axes.flat,
+        panel_specs,
+    ):
         plot_metric_vs_size_panel(
             axis,
             rows,
@@ -380,6 +397,7 @@ def plot_metric_vs_size(
             ylabel=ylabel,
             sampling_mode=sampling_mode,
             variant_label=variant_label,
+            sampling_label=sampling_label,
         )
 
     figure.suptitle(f"{ylabel} vs Non-embedding parameters")
@@ -396,14 +414,22 @@ def plot_metric_vs_size_panel(
     ylabel: str,
     sampling_mode: str,
     variant_label: str,
+    sampling_label: str | None = None,
 ) -> None:
     panel_rows = [
         row
         for row in rows
         if scaling_curve_family_label(row) == sampling_mode
         and scaling_curve_variant_label(row) == variant_label
+        and panel_sampling_matches(
+            scaling_curve_sampling_label(row),
+            sampling_label,
+        )
     ]
-    axis.set_title(f"{sampling_mode} / {variant_label}")
+    panel_title = f"{sampling_mode} / {variant_label}"
+    if sampling_label is not None:
+        panel_title = f"{panel_title} / {sampling_label}"
+    axis.set_title(panel_title)
     axis.set_xlabel("Non-embedding parameters")
     axis.set_ylabel(ylabel)
     axis.grid(True, alpha=0.3)
@@ -1148,6 +1174,17 @@ def scaling_curve_correction_label(row: dict[str, str]) -> str | None:
         else:
             enabled = bool(raw_value)
     return "gmc" if enabled else None
+
+
+def panel_sampling_matches(
+    actual_sampling_label: str | None,
+    expected_sampling_label: str | None,
+) -> bool:
+    if expected_sampling_label is None:
+        return True
+    if expected_sampling_label == "global":
+        return actual_sampling_label in (None, "global")
+    return actual_sampling_label == expected_sampling_label
 
 
 def scaling_curve_style(rows: list[dict[str, str]]) -> dict[str, Any]:

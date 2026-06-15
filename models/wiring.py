@@ -56,11 +56,11 @@ def build_global_granularity_pattern(
     )
 
 
-def build_per_layer_granularity_pattern(
+def build_per_block_granularity_pattern(
     config: Mapping[str, Any],
     layer_granularities: Sequence[str],
 ) -> GranularityPattern:
-    """Build the explicit per-layer sampling pattern for a run."""
+    """Build the explicit per-block sampling pattern for a run."""
 
     model = config.get("model", {})
     run = config.get("run", {})
@@ -70,10 +70,10 @@ def build_per_layer_granularity_pattern(
         run = {}
 
     sampling_mode = model.get("granularity_sampling_mode")
-    if sampling_mode not in (None, "per_layer"):
+    if sampling_mode not in (None, "per_block"):
         raise ValueError(
-            "build_per_layer_granularity_pattern requires "
-            "model.granularity_sampling_mode=per_layer"
+            "build_per_block_granularity_pattern requires "
+            "model.granularity_sampling_mode=per_block"
         )
 
     selected_granularities = tuple(layer_granularities)
@@ -86,12 +86,12 @@ def build_per_layer_granularity_pattern(
             "layer_granularities must contain one granularity per transformer block"
         )
     return build_granularity_pattern(
-        pattern_type="per_layer",
+        pattern_type="per_block",
         selected_granularities=selected_granularities,
         layer_count=block_count,
         repeatable_source=(
             str(run.get("run_id") or ""),
-            "model.granularity_sampling_mode=per_layer",
+            "model.granularity_sampling_mode=per_block",
             *selected_granularities,
         ),
     )
@@ -128,14 +128,14 @@ def apply_granularity_pattern_to_model(
             config,
             granularities=granularities,
         )
-    elif sampling_mode == "per_layer":
-        pattern = build_per_layer_granularity_pattern(
+    elif sampling_mode == "per_block":
+        pattern = build_per_block_granularity_pattern(
             config,
             layer_granularities=granularities,
         )
     else:
         raise ValueError(
-            "sampling_mode must be one of {'global', 'per_layer'}"
+            "sampling_mode must be one of {'global', 'per_block'}"
         )
 
     target.current_sampling_mode = sampling_mode
@@ -229,7 +229,7 @@ class ModifiedLlamaForCausalLM(LlamaForCausalLM):
         apply_granularity_pattern_to_model(
             self,
             layer_granularities,
-            sampling_mode="per_layer",
+            sampling_mode="per_block",
         )
 
 
@@ -238,7 +238,7 @@ __all__ = [
     "CatLlamaMLP",
     "ModifiedLlamaMLP",
     "build_global_granularity_pattern",
-    "build_per_layer_granularity_pattern",
+    "build_per_block_granularity_pattern",
     "apply_granularity_pattern_to_model",
     "prime_standalone_granularity_state",
 ]

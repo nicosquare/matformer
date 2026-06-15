@@ -295,8 +295,8 @@ def _default_granularity_pattern_summary(config: dict[str, Any]) -> dict[str, An
     sampling_mode = str(model.get("granularity_sampling_mode", "global"))
     if resolved_run_mode == "nested-all":
         pattern_type = "all_granularities"
-    elif sampling_mode == "per_layer":
-        pattern_type = "per_layer"
+    elif sampling_mode == "per_block":
+        pattern_type = "per_block"
     else:
         pattern_type = "single"
 
@@ -324,7 +324,7 @@ def _default_correction_context(config: dict[str, Any]) -> dict[str, Any]:
     model = config["model"]
     sampling_mode = str(model.get("granularity_sampling_mode", "global"))
     local_correction_active = (
-        sampling_mode == "per_layer"
+        sampling_mode == "per_block"
         and model.get("correction_mode") in {"gmc", "lmc"}
     )
     return {
