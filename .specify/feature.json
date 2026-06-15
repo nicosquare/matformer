@@ -1,3 +1,3 @@
 {
-  "feature_directory": "specs/006-granularity-sampling-modes"
+  "feature_directory": "specs/007-adaptive-per-block-sampling"
 }
