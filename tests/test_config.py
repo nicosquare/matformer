@@ -176,6 +176,31 @@ def test_requested_run_sampling_mode_does_not_force_per_block_model_mode():
     assert resolved["model"]["granularity_sampling_mode"] == "global"
 
 
+def test_explicit_nested_random_mode_keeps_legacy_alias_stable_for_adaptive():
+    resolved = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        overrides=[
+            "run.sampling_mode=nested-random",
+            "training.granularity_sampling=random",
+            "model.granularity_sampling_mode=adaptive_per_block",
+        ],
+    )
+
+    assert resolved["run"]["sampling_mode"] == "nested-random"
+    assert resolved["training"]["granularity_sampling"] == "random"
+    assert resolved["model"]["granularity_sampling_mode"] == "adaptive_per_block"
+    assert resolved["model"]["requested_granularity_sampling_alias"] == "random"
+    assert resolved["model"]["resolved_sampling_mode"] == "adaptive_per_block"
+    assert resolved["model"]["granularity_pattern_provenance"] == {
+        "pattern_type": "per_block",
+        "scope": "model",
+        "source": "model.granularity_sampling_mode",
+        "requested_alias": "random",
+        "layer_count": resolved["model"]["num_layers"],
+        "available_granularities": ["s", "m", "l", "xl"],
+    }
+
+
 @pytest.mark.parametrize(
     "sampling_mode, expected_pattern_type, selected_granularities, expected_local_correction_active",
     [
@@ -590,6 +615,30 @@ def test_standalone_rejects_nested_sampling_submodes(overrides, error_message):
         resolve_run_config(
             "configs/debug_matrix.yaml",
             run_id="debug-standalone-m-001",
+            overrides=overrides,
+        )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        [
+            "run.sampling_mode=nested-all",
+            "model.granularity_sampling_mode=adaptive_per_block",
+        ],
+        [
+            "training.granularity_sampling=all",
+            "model.granularity_sampling_mode=adaptive_per_block",
+        ],
+    ],
+)
+def test_adaptive_per_block_rejects_non_nested_random_pairings(overrides):
+    with pytest.raises(
+        ConfigError,
+        match="model.granularity_sampling_mode=adaptive_per_block requires nested-random runs",
+    ):
+        resolve_run_config(
+            "configs/dmodel256_pilot_comparison.yaml",
             overrides=overrides,
         )
 

@@ -39,7 +39,7 @@
 
 ### Verification for User Story 1
 
-- [ ] T006 [P] [US1] Add regression tests for valid nested-random mode resolution, legacy alias normalization, and invalid adaptive pairings in `tests/test_config.py`
+- [X] T006 [P] [US1] Add regression tests for valid nested-random mode resolution, legacy alias normalization, and invalid adaptive pairings in `tests/test_config.py`
 
 ### Implementation for User Story 1
 
