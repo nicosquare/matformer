@@ -306,6 +306,9 @@ def build_legacy_model(config, model_variant):
 
 def main():
     args = parse_args()
+    from training.run import ensure_single_process_runtime
+
+    ensure_single_process_runtime()
     if args.config:
         from training.run import run_from_config_path
 

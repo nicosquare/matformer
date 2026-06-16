@@ -181,6 +181,7 @@ def test_requested_run_sampling_mode_does_not_force_per_block_model_mode():
     [
         ("global", "single", ("m",), False),
         ("per_block", "per_block", ("s", "m"), True),
+        ("adaptive_per_block", "per_block", ("s", "m"), True),
     ],
 )
 def test_explicit_model_sampling_modes_preserve_nested_random_run_mode(
@@ -226,6 +227,31 @@ def test_explicit_model_sampling_modes_preserve_nested_random_run_mode(
         assert context.derived_membership_pattern == selected_granularities
     else:
         assert context.derived_membership_pattern == ()
+    if sampling_mode == "adaptive_per_block":
+        assert resolved["model"]["adaptive_sampler_strategy"] == "thompson"
+        assert resolved["model"]["adaptive_sampler_exploration_scale"] == 1.0
+        assert resolved["model"]["adaptive_sampler_decay_rate"] == 0.0
+        assert resolved["model"]["adaptive_sampler_reward_penalty_weight"] == 1.0
+
+
+def test_adaptive_sampler_controls_override_and_validate():
+    resolved = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        overrides=[
+            "model.granularity_sampling_mode=adaptive_per_block",
+            "model.adaptive_sampler_strategy=ucb",
+            "model.adaptive_sampler_exploration_scale=2.5",
+            "model.adaptive_sampler_decay_rate=0.125",
+            "model.adaptive_sampler_reward_penalty_weight=0.75",
+        ],
+    )
+
+    assert resolved["run"]["sampling_mode"] == "nested-random"
+    assert resolved["model"]["granularity_sampling_mode"] == "adaptive_per_block"
+    assert resolved["model"]["adaptive_sampler_strategy"] == "ucb"
+    assert resolved["model"]["adaptive_sampler_exploration_scale"] == 2.5
+    assert resolved["model"]["adaptive_sampler_decay_rate"] == 0.125
+    assert resolved["model"]["adaptive_sampler_reward_penalty_weight"] == 0.75
 
 
 @pytest.mark.parametrize(
@@ -552,6 +578,10 @@ def test_debug_standalone_granularity_must_match_model_granularities():
         (
             ["model.granularity_sampling_mode=per_block"],
             "model.granularity_sampling_mode=per_block requires nested runs",
+        ),
+        (
+            ["model.granularity_sampling_mode=adaptive_per_block"],
+            "model.granularity_sampling_mode=adaptive_per_block requires nested-random runs",
         ),
     ],
 )

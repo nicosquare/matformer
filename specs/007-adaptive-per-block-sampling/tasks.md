@@ -21,11 +21,11 @@
 
 **CRITICAL**: No user story work should begin until this phase is complete.
 
-- [ ] T002 Update `utils/config.py` to resolve and validate `adaptive_per_block`, `model.adaptive_sampler_strategy`, `model.adaptive_sampler_exploration_scale`, `model.adaptive_sampler_decay_rate`, and `model.adaptive_sampler_reward_penalty_weight`
-- [ ] T003 [P] Update `models/correction.py` and `models/granularity.py` to keep correction context and runtime pattern summaries stable for explicit `global`, `per_block`, and `adaptive_per_block` resolution
-- [ ] T004 [P] Update `models/wiring.py` and `training/run.py` to carry resolved sampling mode and runtime provenance through model setup and training-state initialization
-- [ ] T005 [P] Add foundational mode-resolution coverage in `tests/test_config.py` for explicit `global`, random `per_block`, adaptive `per_block`, and legacy `nested-all` / `standalone` normalization plus `training.granularity_sampling` alias stability
-- [ ] T022 [P] Update `train.py` and `training/run.py` to reject distributed or multi-process execution paths before any training setup begins
+- [X] T002 Update `utils/config.py` to resolve and validate `adaptive_per_block`, `model.adaptive_sampler_strategy`, `model.adaptive_sampler_exploration_scale`, `model.adaptive_sampler_decay_rate`, and `model.adaptive_sampler_reward_penalty_weight`
+- [X] T003 [P] Update `models/correction.py` and `models/granularity.py` to keep correction context and runtime pattern summaries stable for explicit `global`, `per_block`, and `adaptive_per_block` resolution
+- [X] T004 [P] Update `models/wiring.py` and `training/run.py` to carry resolved sampling mode and runtime provenance through model setup and training-state initialization
+- [X] T005 [P] Add foundational mode-resolution coverage in `tests/test_config.py` for explicit `global`, random `per_block`, adaptive `per_block`, and legacy `nested-all` / `standalone` normalization plus `training.granularity_sampling` alias stability
+- [X] T022 [P] Update `train.py` and `training/run.py` to reject distributed or multi-process execution paths before any training setup begins
 
 **Checkpoint**: Foundation ready - user story implementation can now begin.
 

@@ -23,7 +23,12 @@ VALID_GRANULARITIES = {"s", "m", "l", "xl"}
 VALID_MODEL_TOPOLOGIES = {"nested", "standalone"}
 VALID_MODEL_VARIANTS = {"slicing", "concat"}
 VALID_CORRECTION_MODES = {"none", "gmc", "lmc"}
-VALID_MODEL_GRANULARITY_SAMPLING_MODES = {"global", "per_block"}
+VALID_MODEL_GRANULARITY_SAMPLING_MODES = {
+    "global",
+    "per_block",
+    "adaptive_per_block",
+}
+VALID_ADAPTIVE_SAMPLER_STRATEGIES = {"thompson", "ucb"}
 VALID_LEARNING_RATE_SCALE_RULES = {"none", "linear", "sqrt"}
 VALID_OPTIMIZER_NAMES = {"adamw", "sgd"}
 VALID_COMPLETION_LABELS = {"debug", "run"}
@@ -204,6 +209,7 @@ def resolve_run_config(
         requested_run_sampling_mode=requested_run_sampling_mode,
         explicit_override_keys=explicit_override_keys,
     )
+    _resolve_adaptive_sampler_defaults(resolved)
     _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
     _resolve_parameter_reporting_defaults(resolved)
     _resolve_long_run_defaults(resolved)
@@ -242,6 +248,7 @@ def resolve_all_run_configs(
             requested_run_sampling_mode=requested_run_sampling_mode,
             explicit_override_keys=explicit_override_keys,
         )
+        _resolve_adaptive_sampler_defaults(resolved)
         _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
         _resolve_parameter_reporting_defaults(resolved)
         _resolve_long_run_defaults(resolved)
@@ -269,6 +276,7 @@ def resolve_all_run_configs(
             requested_granularity_sampling_alias=requested_granularity_sampling_alias,
             requested_run_sampling_mode=requested_run_sampling_mode,
         )
+        _resolve_adaptive_sampler_defaults(resolved)
         _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
         _resolve_parameter_reporting_defaults(resolved)
         _resolve_long_run_defaults(resolved)
@@ -373,6 +381,30 @@ def _normalize_model_granularity_sampling_mode(raw_mode: Any) -> str:
         )
 
     return granularity_sampling_mode
+
+
+def _normalize_adaptive_sampler_strategy(raw_strategy: Any) -> str:
+    if not isinstance(raw_strategy, str):
+        raise ConfigError("model.adaptive_sampler_strategy must be a string")
+
+    strategy = raw_strategy.strip()
+    if not strategy:
+        raise ConfigError(
+            "model.adaptive_sampler_strategy must be a non-empty string"
+        )
+    if strategy not in VALID_ADAPTIVE_SAMPLER_STRATEGIES:
+        raise ConfigError(
+            "model.adaptive_sampler_strategy must be one of "
+            f"{sorted(VALID_ADAPTIVE_SAMPLER_STRATEGIES)}"
+        )
+    return strategy
+
+
+def _nonnegative_finite_float(value: Any, field_name: str) -> float:
+    number = _nonnegative_float(value, field_name)
+    if not math.isfinite(number):
+        raise ConfigError(f"{field_name} must be finite")
+    return number
 
 
 def write_resolved_config(
@@ -642,6 +674,38 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             raise ConfigError(
                 "model.correction_mode and model.membership_correction must not disagree"
             )
+
+    if granularity_sampling_mode == "adaptive_per_block":
+        if run.get("sampling_mode") != "nested-random":
+            raise ConfigError(
+                "model.granularity_sampling_mode=adaptive_per_block requires "
+                "nested-random runs"
+            )
+        _require_fields(
+            model,
+            "model",
+            [
+                "adaptive_sampler_strategy",
+                "adaptive_sampler_exploration_scale",
+                "adaptive_sampler_decay_rate",
+                "adaptive_sampler_reward_penalty_weight",
+            ],
+        )
+        _normalize_adaptive_sampler_strategy(
+            model["adaptive_sampler_strategy"]
+        )
+        _nonnegative_finite_float(
+            model["adaptive_sampler_exploration_scale"],
+            "model.adaptive_sampler_exploration_scale",
+        )
+        _nonnegative_finite_float(
+            model["adaptive_sampler_decay_rate"],
+            "model.adaptive_sampler_decay_rate",
+        )
+        _nonnegative_finite_float(
+            model["adaptive_sampler_reward_penalty_weight"],
+            "model.adaptive_sampler_reward_penalty_weight",
+        )
 
     if "d_model" in model and "hidden_size" in model:
         if _positive_int(model["d_model"], "model.d_model") != _positive_int(
@@ -1120,20 +1184,10 @@ def _resolve_sampling_mode_defaults(
                 configured_run_sampling_mode
             )
 
-    candidate_modes: list[str] = []
     if explicit_model_mode is not None:
-        candidate_modes.append(explicit_model_mode)
-    if legacy_alias_mode is not None:
-        candidate_modes.append(legacy_alias_mode)
-
-    if candidate_modes:
-        canonical_mode = candidate_modes[0]
-        for candidate_mode in candidate_modes[1:]:
-            if candidate_mode != canonical_mode:
-                raise ConfigError(
-                    "model.granularity_sampling_mode, training.granularity_sampling, "
-                    "and run.sampling_mode conflicts"
-                )
+        canonical_mode = explicit_model_mode
+    elif legacy_alias_mode is not None:
+        canonical_mode = legacy_alias_mode
     else:
         canonical_mode = "global"
 
@@ -1141,7 +1195,7 @@ def _resolve_sampling_mode_defaults(
         derived_run_sampling_mode = run_sampling_mode
     elif legacy_alias_mode == "global":
         derived_run_sampling_mode = "nested-all"
-    elif explicit_model_mode == "per_block" or legacy_alias_mode == "per_block":
+    elif canonical_mode in {"per_block", "adaptive_per_block"} or legacy_alias_mode == "per_block":
         derived_run_sampling_mode = "nested-random"
     elif run_sampling_mode is not None:
         derived_run_sampling_mode = run_sampling_mode
@@ -1150,22 +1204,41 @@ def _resolve_sampling_mode_defaults(
     else:
         derived_run_sampling_mode = "nested-random"
 
-    if (
-        requested_run_sampling_mode is not None
-        and derived_run_sampling_mode in {"nested-all", "standalone"}
-        and legacy_alias_mode == "per_block"
-        and explicit_override_keys is not None
-        and "run.sampling_mode" in explicit_override_keys
-    ):
+    if requested_run_sampling_mode is not None and requested_granularity_sampling_alias is not None:
+        expected_alias = _granularity_sampling_alias_from_mode(
+            _granularity_sampling_mode_from_run_sampling_mode(derived_run_sampling_mode)
+        )
+        if requested_granularity_sampling_alias != expected_alias:
+            raise ConfigError(
+                "run.sampling_mode conflicts with training.granularity_sampling; "
+                f"run.sampling_mode={derived_run_sampling_mode} requires "
+                f"training.granularity_sampling={expected_alias}"
+            )
+
+    if canonical_mode == "adaptive_per_block" and derived_run_sampling_mode != "nested-random":
         raise ConfigError(
-            "model.granularity_sampling_mode, training.granularity_sampling, "
-            "and run.sampling_mode conflicts"
+            "model.granularity_sampling_mode=adaptive_per_block requires "
+            "nested-random runs"
+        )
+    if canonical_mode == "per_block" and derived_run_sampling_mode != "nested-random":
+        raise ConfigError(
+            "model.granularity_sampling_mode=per_block requires nested runs"
         )
     if derived_run_sampling_mode in {"nested-all", "standalone"} and canonical_mode != "global":
+        if canonical_mode == "adaptive_per_block":
+            raise ConfigError(
+                "model.granularity_sampling_mode=adaptive_per_block requires "
+                "nested-random runs"
+            )
         raise ConfigError(
             "model.granularity_sampling_mode=per_block requires nested runs"
         )
     if model_family == "standalone" and canonical_mode != "global":
+        if canonical_mode == "adaptive_per_block":
+            raise ConfigError(
+                "model.granularity_sampling_mode=adaptive_per_block requires "
+                "nested-random runs"
+            )
         raise ConfigError(
             "model.granularity_sampling_mode=per_block requires nested runs"
         )
@@ -1189,6 +1262,48 @@ def _resolve_sampling_mode_defaults(
         model,
         run,
         requested_granularity_sampling_alias=requested_granularity_sampling_alias,
+    )
+
+
+def _resolve_adaptive_sampler_defaults(config: dict[str, Any]) -> None:
+    model = config.setdefault("model", {})
+    if not isinstance(model, dict):
+        return
+
+    adaptive_fields_requested = any(
+        field in model
+        for field in (
+            "adaptive_sampler_strategy",
+            "adaptive_sampler_exploration_scale",
+            "adaptive_sampler_decay_rate",
+            "adaptive_sampler_reward_penalty_weight",
+        )
+    )
+    if model.get("granularity_sampling_mode") != "adaptive_per_block" and not adaptive_fields_requested:
+        return
+
+    strategy = model.get("adaptive_sampler_strategy", "thompson")
+    exploration_scale = model.get("adaptive_sampler_exploration_scale", 1.0)
+    decay_rate = model.get("adaptive_sampler_decay_rate", 0.0)
+    reward_penalty_weight = model.get(
+        "adaptive_sampler_reward_penalty_weight",
+        1.0,
+    )
+
+    model["adaptive_sampler_strategy"] = _normalize_adaptive_sampler_strategy(
+        strategy
+    )
+    model["adaptive_sampler_exploration_scale"] = _nonnegative_finite_float(
+        exploration_scale,
+        "model.adaptive_sampler_exploration_scale",
+    )
+    model["adaptive_sampler_decay_rate"] = _nonnegative_finite_float(
+        decay_rate,
+        "model.adaptive_sampler_decay_rate",
+    )
+    model["adaptive_sampler_reward_penalty_weight"] = _nonnegative_finite_float(
+        reward_penalty_weight,
+        "model.adaptive_sampler_reward_penalty_weight",
     )
 
 
@@ -1223,6 +1338,7 @@ def _granularity_sampling_alias_from_mode(mode: str) -> str:
     return {
         "global": "all",
         "per_block": "random",
+        "adaptive_per_block": "random",
     }[mode]
 
 

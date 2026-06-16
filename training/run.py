@@ -9,6 +9,7 @@ load_dotenv()
 import copy
 from contextlib import contextmanager
 import random
+import os
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -28,7 +29,11 @@ from evaluation.validation import (
 from models.ffn import CatLlamaMLP, get_concat_layout_diagnostic, get_ffn_prefix_metadata
 from models.correction import summarize_correction_context_from_config
 from models.granularity import summarize_granularity_pattern_from_config
-from models.wiring import ModifiedLlamaForCausalLM, prime_standalone_granularity_state
+from models.wiring import (
+    ModifiedLlamaForCausalLM,
+    prime_standalone_granularity_state,
+    record_runtime_sampling_provenance,
+)
 from training.data import (
     build_language_model_dataloader,
     load_and_tokenize_dataset,
@@ -84,6 +89,19 @@ def run_from_config_path(
     return run_training(config)
 
 
+def ensure_single_process_runtime() -> None:
+    raw_world_size = os.environ.get("WORLD_SIZE", "1")
+    try:
+        world_size = int(raw_world_size)
+    except (TypeError, ValueError):
+        world_size = 1
+
+    if world_size > 1:
+        raise ConfigError(
+            "single-process only: distributed or multi-process execution is not supported"
+        )
+
+
 def run_training(
     config: dict[str, Any],
     model=None,
@@ -91,6 +109,7 @@ def run_training(
     tokenized_dataset=None,
     device: torch.device | str | None = None,
 ) -> dict[str, Any]:
+    ensure_single_process_runtime()
     run = config["run"]
     training = config["training"]
     output_dir = Path(run["output_dir"])
@@ -114,6 +133,7 @@ def run_training(
         with heartbeat_stage(heartbeat_writer, "model_initialization"):
             if model is None:
                 model = build_model(config)
+            record_runtime_sampling_provenance(model, config)
             if (
                 distributed_context.is_rank_zero
                 and config["model"]["variant"] == "concat"
@@ -1172,6 +1192,11 @@ def save_model_checkpoint(
             "warmup_completed": run_state.get("warmup_completed", False),
             "warmup_completion_step": run_state.get("warmup_completion_step"),
             "warmup_transition_reason": run_state.get("warmup_transition_reason"),
+            "resolved_run_mode": run_state.get("resolved_run_mode"),
+            "resolved_sampling_mode": run_state.get("resolved_sampling_mode"),
+            "granularity_pattern_provenance": run_state.get(
+                "granularity_pattern_provenance"
+            ),
             "latest_checkpoint_path": run_state.get("latest_checkpoint_path"),
             "model_state_dict": model_state_dict,
             "optimizer_state_dict": optimizer_state_dict,
@@ -1212,6 +1237,12 @@ def checkpoint_state_dict(model, distributed_context=None) -> dict[str, Any]:
 
 def build_initial_continuation_state(config: dict[str, Any]) -> dict[str, Any]:
     output_dir = Path(config["run"]["output_dir"])
+    run = config.get("run", {})
+    model = config.get("model", {})
+    if not isinstance(run, Mapping):
+        run = {}
+    if not isinstance(model, Mapping):
+        model = {}
     return {
         "status": "fresh",
         "latest_checkpoint_path": None,
@@ -1227,6 +1258,24 @@ def build_initial_continuation_state(config: dict[str, Any]) -> dict[str, Any]:
         "warmup_completion_step": None,
         "warmup_transition_reason": None,
         "output_dir": str(output_dir),
+        "resolved_run_mode": str(
+            run.get(
+                "resolved_run_mode",
+                resolve_sampling_mode_from_config_sections(
+                    run,
+                    config.get("training", {}),
+                ),
+            )
+        ),
+        "resolved_sampling_mode": str(
+            model.get(
+                "resolved_sampling_mode",
+                model.get("granularity_sampling_mode", "global"),
+            )
+        ),
+        "granularity_pattern_provenance": copy.deepcopy(
+            model.get("granularity_pattern_provenance")
+        ),
     }
 
 
@@ -1327,6 +1376,11 @@ def load_checkpoint_state(
         "warmup_completed": bool(checkpoint.get("warmup_completed", False)),
         "warmup_completion_step": checkpoint.get("warmup_completion_step"),
         "warmup_transition_reason": checkpoint.get("warmup_transition_reason"),
+        "resolved_run_mode": checkpoint.get("resolved_run_mode"),
+        "resolved_sampling_mode": checkpoint.get("resolved_sampling_mode"),
+        "granularity_pattern_provenance": checkpoint.get(
+            "granularity_pattern_provenance"
+        ),
     }
     if output_dir is not None:
         state["output_dir"] = str(output_dir)

@@ -10,7 +10,7 @@ from models.granularity import GranularityPattern
 
 
 VALID_CORRECTION_MODES = {"none", "gmc", "lmc"}
-VALID_SAMPLING_MODES = {"global", "per_block"}
+VALID_SAMPLING_MODES = {"global", "per_block", "adaptive_per_block"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,7 +32,10 @@ def should_activate_local_correction(
 ) -> bool:
     validate_correction_mode(correction_mode)
     validate_sampling_mode(sampling_mode)
-    return sampling_mode == "per_block" and correction_mode in {"gmc", "lmc"}
+    return sampling_mode in {"per_block", "adaptive_per_block"} and correction_mode in {
+        "gmc",
+        "lmc",
+    }
 
 
 def validate_correction_mode(correction_mode: str) -> None:
@@ -107,7 +110,7 @@ def build_correction_context_from_pattern(
     granularity_pattern: GranularityPattern | Sequence[str] | str | None = None,
 ) -> CorrectionContext:
     derived_membership_pattern: Sequence[Any] | None
-    if sampling_mode == "per_block":
+    if sampling_mode in {"per_block", "adaptive_per_block"}:
         derived_membership_pattern = derive_local_membership_pattern(
             granularity_pattern
         )

@@ -11,7 +11,7 @@ from datasets import Dataset
 
 from models.granularity import build_granularity_pattern
 from training.run import run_training
-from utils.config import resolve_run_config
+from utils.config import ConfigError, resolve_run_config
 from utils.monitoring import group_loss_rows_by_series
 
 
@@ -1251,7 +1251,7 @@ def test_budgeted_training_stops_at_token_budget_before_manual_step_cap(
     assert {row["content_tokens_seen"] for row in train_rows} == {"2"}
 
 
-def test_config_driven_training_uses_distributed_fsdp_path_when_enabled(
+def test_config_driven_training_rejects_multi_process_execution_before_setup(
     tmp_path,
     monkeypatch,
 ):
@@ -1284,26 +1284,11 @@ def test_config_driven_training_uses_distributed_fsdp_path_when_enabled(
 
     import training.run as training_run
 
-    prepare_calls = []
-    wrap_calls = []
-
     def fake_prepare_distributed_context(*args, **kwargs):
-        prepare_calls.append((args, kwargs))
-        return SimpleNamespace(
-            enabled=True,
-            rank=0,
-            local_rank=0,
-            world_size=2,
-            is_rank_zero=True,
-            strategy="fsdp",
-            device=torch.device("cpu"),
-        )
+        raise AssertionError("prepare_distributed_context should not be called")
 
     def fake_wrap_model_for_distributed(*args, **kwargs):
-        wrap_calls.append((args, kwargs))
-        model = args[0] if args else kwargs["model"]
-        model.fsdp_wrapped = True
-        return model
+        raise AssertionError("wrap_model_for_distributed should not be called")
 
     monkeypatch.setattr(
         training_run,
@@ -1316,24 +1301,16 @@ def test_config_driven_training_uses_distributed_fsdp_path_when_enabled(
         fake_wrap_model_for_distributed,
     )
 
-    result = run_training(
-        config,
-        model=TinyNestedTrainingModel(),
-        tokenized_dataset=tokenized_dataset,
-        device="cpu",
-    )
-
-    assert prepare_calls
-    assert wrap_calls
-    assert wrap_calls[0][0][0].fsdp_wrapped is True
-
-    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
-    assert summary["effective_world_size"] == 2
-    assert summary["distributed_strategy"] == "fsdp"
-    assert summary["distributed_rank"] == 0
-    assert summary["distributed_local_rank"] == 0
-    assert summary["distributed_world_size"] == 2
-    assert summary["distributed_fsdp_config"] == {}
+    with pytest.raises(
+        ConfigError,
+        match="single-process only: distributed or multi-process execution is not supported",
+    ):
+        run_training(
+            config,
+            model=TinyNestedTrainingModel(),
+            tokenized_dataset=tokenized_dataset,
+            device="cpu",
+        )
 
 
 def test_monitoring_smoke_groups_nested_and_standalone_runs_by_series(
