@@ -11,7 +11,7 @@
 
 **Purpose**: Create the shared module and export surface for the new adaptive sampler.
 
-- [ ] T001 [P] Create the adaptive sampler module scaffold and export it from `models/adaptive_sampler.py` and `models/__init__.py`
+- [X] T001 [P] Create the adaptive sampler module scaffold and export it from `models/adaptive_sampler.py` and `models/__init__.py`
 
 ---
 

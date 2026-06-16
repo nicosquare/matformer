@@ -13,6 +13,14 @@ from models.correction import (
     summarize_correction_context,
     summarize_correction_context_from_config,
 )
+from models.adaptive_sampler import (
+    VALID_ADAPTIVE_SAMPLER_STRATEGIES,
+    AdaptiveSamplerBlockStat,
+    AdaptiveSamplerState,
+    build_adaptive_sampler_state,
+    summarize_adaptive_sampler_state,
+    validate_adaptive_sampler_strategy,
+)
 from models.ffn import CatLlamaMLP, ModifiedLlamaMLP
 from models.granularity import (
     MATFORMER_GRANULARITY_DISPLAY_NAMES,
@@ -57,6 +65,12 @@ __all__ = [
     "should_activate_local_correction",
     "summarize_correction_context",
     "summarize_correction_context_from_config",
+    "VALID_ADAPTIVE_SAMPLER_STRATEGIES",
+    "AdaptiveSamplerBlockStat",
+    "AdaptiveSamplerState",
+    "build_adaptive_sampler_state",
+    "summarize_adaptive_sampler_state",
+    "validate_adaptive_sampler_strategy",
     "MATFORMER_GRANULARITY_DISPLAY_NAMES",
     "MATFORMER_GRANULARITY_ORDER",
     "GranularityMetadata",
