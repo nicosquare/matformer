@@ -532,28 +532,43 @@ def test_artifacts_reconstruct_standalone_mode_from_saved_files(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "sampling_mode, pattern_builder, expected_pattern_type, expected_local_correction_active",
+    "sampling_mode, pattern_builder, expected_pattern_type, expected_local_correction_active, expected_adaptive_sampler",
     [
         (
             "global",
             build_global_granularity_pattern,
             "single",
             False,
+            None,
         ),
         (
             "per_block",
             build_per_block_granularity_pattern,
             "per_block",
             True,
+            None,
+        ),
+        (
+            "adaptive_per_block",
+            build_per_block_granularity_pattern,
+            "per_block",
+            True,
+            {
+                "adaptive_sampler_strategy": "thompson",
+                "adaptive_sampler_exploration_scale": 1.0,
+                "adaptive_sampler_decay_rate": 0.0,
+                "adaptive_sampler_reward_penalty_weight": 1.0,
+            },
         ),
     ],
 )
-def test_artifacts_record_explicit_nested_random_global_and_per_block_paths(
+def test_artifacts_record_explicit_nested_random_global_per_block_and_adaptive_paths(
     tmp_path,
     sampling_mode,
     pattern_builder,
     expected_pattern_type,
     expected_local_correction_active,
+    expected_adaptive_sampler,
 ):
     output_dir = tmp_path / "dmodel256-pilot-comparison-001"
     config = resolve_run_config(
@@ -612,7 +627,12 @@ def test_artifacts_record_explicit_nested_random_global_and_per_block_paths(
 
     saved_config = json.loads(config_path.read_text(encoding="utf-8"))
     assert saved_config["run"]["sampling_mode"] == "nested-random"
+    assert saved_config["run"]["output_root"] == config["run"]["output_root"]
+    assert saved_config["run"]["output_dir"] == str(output_dir)
+    assert saved_config["model"]["correction_mode"] == "gmc"
+    assert saved_config["model"]["membership_correction"] is True
     assert saved_config["model"]["granularity_sampling_mode"] == sampling_mode
+    assert saved_config["model"]["resolved_sampling_mode"] == sampling_mode
     assert saved_config["model"]["granularity_pattern_provenance"] == {
         "pattern_type": expected_pattern_type,
         "scope": "model",
@@ -621,17 +641,32 @@ def test_artifacts_record_explicit_nested_random_global_and_per_block_paths(
         "layer_count": config["model"]["num_layers"],
         "available_granularities": ["s", "m", "l", "xl"],
     }
+    if expected_adaptive_sampler is None:
+        assert "adaptive_sampler_strategy" not in saved_config["model"]
+        assert "adaptive_sampler_exploration_scale" not in saved_config["model"]
+        assert "adaptive_sampler_decay_rate" not in saved_config["model"]
+        assert "adaptive_sampler_reward_penalty_weight" not in saved_config["model"]
+    else:
+        for field_name, expected_value in expected_adaptive_sampler.items():
+            assert saved_config["model"][field_name] == expected_value
 
     saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert saved_summary["sampling_mode"] == "nested-random"
     assert saved_summary["resolved_run_mode"] == "nested-random"
     assert saved_summary["resolved_sampling_mode"] == sampling_mode
     assert saved_summary["granularity_sampling_mode"] == sampling_mode
+    assert saved_summary["correction_mode"] == "gmc"
+    assert saved_summary["membership_correction"] is True
+    assert saved_summary["output_root"] == config["run"]["output_root"]
+    assert saved_summary["output_dir"] == str(output_dir)
     assert saved_summary["granularity_pattern_summary"] == runtime_pattern_summary
     assert saved_summary["correction_context"] == correction_context
     assert saved_summary["granularity_pattern_provenance"] == saved_config[
         "model"
     ]["granularity_pattern_provenance"]
+    assert saved_summary["granularity_pattern_summary"]["repeatable_source"][1] == (
+        f"model.granularity_sampling_mode={sampling_mode}"
+    )
     assert correction_context["local_correction_active"] is (
         expected_local_correction_active
     )

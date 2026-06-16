@@ -93,3 +93,14 @@ Reasoning:
   sampled per-layer patterns?
 - Should the correction logic operate at the layer level, or should it be
   aggregated over the whole sampled pattern?
+
+## Next Feature Note
+
+The adaptive sampler theory has been detached into a dedicated note:
+[notes/adaptive_per_block_proposal.md](/home/nicolas.avila/dev/references/matformer/notes/adaptive_per_block_proposal.md)
+
+This discussion note now stays focused on the core vision:
+
+- explicit `nested-random + global` versus `nested-random + per_block`
+- the shape of the current correction behavior
+- the open design questions we want to preserve for the next feature

@@ -423,7 +423,7 @@ def summarize_granularity_pattern_from_config(
 
     if resolved_run_mode == "nested-all":
         pattern_type = "all_granularities"
-    elif sampling_mode == "per_block":
+    elif sampling_mode in {"per_block", "adaptive_per_block"}:
         pattern_type = "per_block"
     else:
         pattern_type = "single"

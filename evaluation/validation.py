@@ -126,62 +126,70 @@ def validation_results_to_metric_rows(
     content_tokens_seen: int | None = None,
     granularity_pattern_summary: dict[str, Any] | None = None,
     correction_context: dict[str, Any] | None = None,
+    adaptive_artifacts: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     run = config["run"]
+    model = config.get("model", {})
+    if not isinstance(model, Mapping):
+        model = {}
+    training = config.get("training", {})
+    if not isinstance(training, Mapping):
+        training = {}
     rows = []
     for result in results:
-        rows.append(
-            {
-                "run_id": run["run_id"],
-                "step": step,
-                "split": split,
-                "model_family": run["model_family"],
-                "model_size_label": _model_shape_label(run),
-                "model_shape_label": _model_shape_label(run),
-                "sampling_mode": resolve_sampling_mode_from_config_sections(
+        row = {
+            "run_id": run["run_id"],
+            "step": step,
+            "split": split,
+            "model_family": run["model_family"],
+            "model_size_label": _model_shape_label(run),
+            "model_shape_label": _model_shape_label(run),
+            "sampling_mode": resolve_sampling_mode_from_config_sections(
+                run,
+                training,
+            ),
+            "resolved_run_mode": run.get(
+                "resolved_run_mode",
+                resolve_sampling_mode_from_config_sections(
                     run,
-                    config.get("training", {}),
+                    training,
                 ),
-                "resolved_run_mode": run.get(
-                    "resolved_run_mode",
-                    resolve_sampling_mode_from_config_sections(
-                        run,
-                        config.get("training", {}),
-                    ),
-                ),
-                "resolved_sampling_mode": config["model"].get(
-                    "resolved_sampling_mode",
-                    config["model"].get("granularity_sampling_mode", "global"),
-                ),
-                "granularity_sampling_mode": config["model"].get(
-                    "granularity_sampling_mode"
-                ),
-                "granularity": result["granularity"],
-                "granularity_pattern_summary": json_artifact_value(
-                    granularity_pattern_summary
-                    if granularity_pattern_summary is not None
-                    else _default_granularity_pattern_summary(config)
-                ),
-                "correction_context": json_artifact_value(
-                    correction_context
-                    if correction_context is not None
-                    else _default_correction_context(config)
-                ),
-                "loss": result["loss"],
-                "perplexity": result["perplexity"],
-                "tokens_seen": (
-                    result["tokens_seen"] if tokens_seen is None else tokens_seen
-                ),
-                "content_tokens_seen": (
-                    result["tokens_seen"]
-                    if content_tokens_seen is None
-                    else content_tokens_seen
-                ),
-                "wall_clock_seconds": wall_clock_seconds,
-                "tokens_per_second": tokens_per_second,
-                "peak_memory_bytes": peak_memory_bytes,
-            }
-        )
+            ),
+            "resolved_sampling_mode": model.get(
+                "resolved_sampling_mode",
+                model.get("granularity_sampling_mode", "global"),
+            ),
+            "granularity_sampling_mode": model.get(
+                "granularity_sampling_mode"
+            ),
+            "granularity": result["granularity"],
+            "granularity_pattern_summary": json_artifact_value(
+                granularity_pattern_summary
+                if granularity_pattern_summary is not None
+                else _default_granularity_pattern_summary(config)
+            ),
+            "correction_context": json_artifact_value(
+                correction_context
+                if correction_context is not None
+                else _default_correction_context(config)
+            ),
+            "loss": result["loss"],
+            "perplexity": result["perplexity"],
+            "tokens_seen": (
+                result["tokens_seen"] if tokens_seen is None else tokens_seen
+            ),
+            "content_tokens_seen": (
+                result["tokens_seen"]
+                if content_tokens_seen is None
+                else content_tokens_seen
+            ),
+            "wall_clock_seconds": wall_clock_seconds,
+            "tokens_per_second": tokens_per_second,
+            "peak_memory_bytes": peak_memory_bytes,
+        }
+        if adaptive_artifacts:
+            row.update(adaptive_artifacts)
+        rows.append(row)
     return rows
 
 
@@ -286,12 +294,16 @@ def _model_shape_label(run: dict[str, Any]) -> Any:
 
 
 def _default_granularity_pattern_summary(config: dict[str, Any]) -> dict[str, Any]:
-    model = config["model"]
-    run = config["run"]
+    model = config.get("model", {})
+    run = config.get("run", {})
+    if not isinstance(model, Mapping):
+        model = {}
+    if not isinstance(run, Mapping):
+        run = {}
     training = config.get("training", {})
-    if not isinstance(training, dict):
+    if not isinstance(training, Mapping):
         training = {}
-    resolved_run_mode = _sampling_mode(run, training)
+    resolved_run_mode = resolve_sampling_mode_from_config_sections(run, training)
     sampling_mode = str(model.get("granularity_sampling_mode", "global"))
     if resolved_run_mode == "nested-all":
         pattern_type = "all_granularities"
@@ -321,7 +333,9 @@ def _default_granularity_pattern_summary(config: dict[str, Any]) -> dict[str, An
 
 
 def _default_correction_context(config: dict[str, Any]) -> dict[str, Any]:
-    model = config["model"]
+    model = config.get("model", {})
+    if not isinstance(model, Mapping):
+        model = {}
     sampling_mode = str(model.get("granularity_sampling_mode", "global"))
     local_correction_active = (
         sampling_mode == "per_block"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -70,10 +71,10 @@ def build_per_block_granularity_pattern(
         run = {}
 
     sampling_mode = model.get("granularity_sampling_mode")
-    if sampling_mode not in (None, "per_block"):
+    if sampling_mode not in (None, "per_block", "adaptive_per_block"):
         raise ValueError(
             "build_per_block_granularity_pattern requires "
-            "model.granularity_sampling_mode=per_block"
+            "model.granularity_sampling_mode=per_block or adaptive_per_block"
         )
 
     selected_granularities = tuple(layer_granularities)
@@ -91,7 +92,7 @@ def build_per_block_granularity_pattern(
         layer_count=block_count,
         repeatable_source=(
             str(run.get("run_id") or ""),
-            "model.granularity_sampling_mode=per_block",
+            f"model.granularity_sampling_mode={sampling_mode or 'per_block'}",
             *selected_granularities,
         ),
     )
@@ -128,14 +129,14 @@ def apply_granularity_pattern_to_model(
             config,
             granularities=granularities,
         )
-    elif sampling_mode == "per_block":
+    elif sampling_mode in {"per_block", "adaptive_per_block"}:
         pattern = build_per_block_granularity_pattern(
             config,
             layer_granularities=granularities,
         )
     else:
         raise ValueError(
-            "sampling_mode must be one of {'global', 'per_block'}"
+            "sampling_mode must be one of {'global', 'per_block', 'adaptive_per_block'}"
         )
 
     target.current_sampling_mode = sampling_mode
@@ -148,6 +149,31 @@ def apply_granularity_pattern_to_model(
     for layer, granularity in zip(layers, configured_granularities):
         layer.configure_subnetwork(granularity)
     return pattern
+
+
+def record_runtime_sampling_provenance(model, config: Mapping[str, Any]) -> None:
+    """Attach resolved sampling provenance to the live model object."""
+
+    target = model.module if hasattr(model, "module") else model
+    run = config.get("run", {})
+    model_config = config.get("model", {})
+    if not isinstance(run, Mapping):
+        run = {}
+    if not isinstance(model_config, Mapping):
+        model_config = {}
+
+    target.resolved_run_mode = str(run.get("resolved_run_mode") or run.get("sampling_mode") or "nested-random")
+    target.resolved_sampling_mode = str(
+        model_config.get(
+            "resolved_sampling_mode",
+            model_config.get("granularity_sampling_mode", "global"),
+        )
+    )
+    target.granularity_pattern_provenance = copy.deepcopy(
+        model_config.get("granularity_pattern_provenance")
+    )
+    if run.get("model_family") == "nested":
+        target.current_sampling_mode = target.resolved_sampling_mode
 
 
 def prime_standalone_granularity_state(

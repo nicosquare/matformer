@@ -11,7 +11,7 @@ from datasets import Dataset
 
 from models.granularity import build_granularity_pattern
 from training.run import run_training
-from utils.config import resolve_run_config
+from utils.config import ConfigError, resolve_run_config
 from utils.monitoring import group_loss_rows_by_series
 
 
@@ -1251,7 +1251,7 @@ def test_budgeted_training_stops_at_token_budget_before_manual_step_cap(
     assert {row["content_tokens_seen"] for row in train_rows} == {"2"}
 
 
-def test_config_driven_training_uses_distributed_fsdp_path_when_enabled(
+def test_config_driven_training_rejects_multi_process_execution_before_setup(
     tmp_path,
     monkeypatch,
 ):
@@ -1284,26 +1284,11 @@ def test_config_driven_training_uses_distributed_fsdp_path_when_enabled(
 
     import training.run as training_run
 
-    prepare_calls = []
-    wrap_calls = []
-
     def fake_prepare_distributed_context(*args, **kwargs):
-        prepare_calls.append((args, kwargs))
-        return SimpleNamespace(
-            enabled=True,
-            rank=0,
-            local_rank=0,
-            world_size=2,
-            is_rank_zero=True,
-            strategy="fsdp",
-            device=torch.device("cpu"),
-        )
+        raise AssertionError("prepare_distributed_context should not be called")
 
     def fake_wrap_model_for_distributed(*args, **kwargs):
-        wrap_calls.append((args, kwargs))
-        model = args[0] if args else kwargs["model"]
-        model.fsdp_wrapped = True
-        return model
+        raise AssertionError("wrap_model_for_distributed should not be called")
 
     monkeypatch.setattr(
         training_run,
@@ -1316,24 +1301,202 @@ def test_config_driven_training_uses_distributed_fsdp_path_when_enabled(
         fake_wrap_model_for_distributed,
     )
 
-    result = run_training(
-        config,
-        model=TinyNestedTrainingModel(),
+    with pytest.raises(
+        ConfigError,
+        match="single-process only: distributed or multi-process execution is not supported",
+    ):
+        run_training(
+            config,
+            model=TinyNestedTrainingModel(),
+            tokenized_dataset=tokenized_dataset,
+            device="cpu",
+        )
+
+
+def test_run_training_rejects_invalid_adaptive_pairing_before_setup(
+    tmp_path,
+    monkeypatch,
+):
+    import training.run as training_run
+
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "training.token_budget=4",
+            "training.max_steps_cap=1",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "evaluation.validation=false",
+        ],
+    )
+    config["run"]["sampling_mode"] = "nested-all"
+    config["model"]["granularity_sampling_mode"] = "adaptive_per_block"
+
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3, 4], [5, 6, 7, 8]],
+            "attention_mask": [[1, 1, 1, 1], [1, 1, 1, 1]],
+        }
+    )
+
+    def fake_prepare_distributed_context(*args, **kwargs):
+        raise AssertionError("prepare_distributed_context should not be called")
+
+    def fake_wrap_model_for_distributed(*args, **kwargs):
+        raise AssertionError("wrap_model_for_distributed should not be called")
+
+    monkeypatch.setattr(
+        training_run,
+        "prepare_distributed_context",
+        fake_prepare_distributed_context,
+    )
+    monkeypatch.setattr(
+        training_run,
+        "wrap_model_for_distributed",
+        fake_wrap_model_for_distributed,
+    )
+
+    with pytest.raises(
+        ConfigError,
+        match="model.granularity_sampling_mode=adaptive_per_block requires nested-random runs",
+    ):
+        run_training(
+            config,
+            model=TinyNestedTrainingModel(),
+            tokenized_dataset=tokenized_dataset,
+            device="cpu",
+        )
+
+
+@pytest.mark.xfail(
+    reason="Adaptive per-block runtime wiring lands in T013/T014",
+    strict=False,
+)
+def test_adaptive_per_block_smoke_shifts_patterns_and_resumes_from_checkpoint(
+    tmp_path,
+    monkeypatch,
+):
+    import training.run as training_run
+
+    output_dir = tmp_path / "debug-nested-001"
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+
+    fresh_pattern_calls = {"count": 0}
+
+    def fake_select_training_layer_granularities(config, granularities, device):
+        resume_count = int(config["run"].get("continuation", {}).get("resume_count", 0))
+        if resume_count > 0:
+            return ["m", "l"]
+
+        fresh_pattern_calls["count"] += 1
+        if fresh_pattern_calls["count"] == 1:
+            return ["s", "m"]
+        return ["m", "l"]
+
+    monkeypatch.setattr(
+        training_run,
+        "select_training_layer_granularities",
+        fake_select_training_layer_granularities,
+    )
+    monkeypatch.setattr(
+        training_run,
+        "select_training_granularities",
+        lambda *args, **kwargs: pytest.fail(
+            "adaptive_per_block should use per-block selection"
+        ),
+    )
+
+    first_config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "run.sampling_mode=nested-random",
+            "model.granularity_sampling_mode=adaptive_per_block",
+            "run.continuation.enabled=true",
+            "training.max_steps=2",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "training.token_budget=16",
+            "outputs.save_checkpoints=true",
+            "evaluation.validation=false",
+        ],
+    )
+
+    first_model = TinyNestedTrainingModel()
+    first_result = run_training(
+        first_config,
+        model=first_model,
         tokenized_dataset=tokenized_dataset,
         device="cpu",
     )
 
-    assert prepare_calls
-    assert wrap_calls
-    assert wrap_calls[0][0][0].fsdp_wrapped is True
+    first_summary = json.loads(first_result["summary_path"].read_text(encoding="utf-8"))
+    assert first_summary["resolved_sampling_mode"] == "adaptive_per_block"
+    assert first_summary["continuation_state"]["status"] == "fresh"
+    assert first_model.train_forward_layer_granularities == [
+        ["s", "m"],
+        ["m", "l"],
+    ]
 
-    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
-    assert summary["effective_world_size"] == 2
-    assert summary["distributed_strategy"] == "fsdp"
-    assert summary["distributed_rank"] == 0
-    assert summary["distributed_local_rank"] == 0
-    assert summary["distributed_world_size"] == 2
-    assert summary["distributed_fsdp_config"] == {}
+    with first_result["metrics_path"].open(
+        "r",
+        encoding="utf-8",
+        newline="",
+    ) as metrics_file:
+        first_train_rows = [
+            row for row in csv.DictReader(metrics_file) if row["split"] == "train"
+        ]
+    assert [
+        json.loads(row["granularity_pattern_summary"])["selected_granularities"]
+        for row in first_train_rows
+    ] == [["s", "m"], ["m", "l"]]
+
+    resumed_config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "run.sampling_mode=nested-random",
+            "model.granularity_sampling_mode=adaptive_per_block",
+            "run.continuation.enabled=true",
+            "training.max_steps=3",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "training.token_budget=16",
+            "outputs.save_checkpoints=true",
+            "evaluation.validation=false",
+        ],
+    )
+
+    resumed_model = TinyNestedTrainingModel()
+    resumed_result = run_training(
+        resumed_config,
+        model=resumed_model,
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    resumed_summary = json.loads(
+        resumed_result["summary_path"].read_text(encoding="utf-8")
+    )
+    assert resumed_summary["continuation_state"]["status"] == "resumed"
+    assert resumed_summary["continuation_state"]["resume_count"] == 1
+    assert resumed_model.train_forward_layer_granularities[0] == ["m", "l"]
 
 
 def test_monitoring_smoke_groups_nested_and_standalone_runs_by_series(

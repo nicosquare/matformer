@@ -322,6 +322,9 @@ def main():
         )
         return
 
+    from training.run import ensure_single_process_runtime
+
+    ensure_single_process_runtime()
     distributed, rank, _, world_size, device = setup_distributed()
     set_random_seed(args.seed)
 

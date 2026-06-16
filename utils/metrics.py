@@ -11,6 +11,7 @@ from utils.config import (
     resolve_sampling_mode_from_config_sections,
     write_resolved_config,
 )
+from models.adaptive_sampler import build_adaptive_sampler_artifact_fields
 from models.correction import summarize_correction_context_from_config
 from models.granularity import summarize_granularity_pattern_from_config
 from utils.monitoring import (
@@ -30,9 +31,24 @@ METRICS_COLUMNS = [
     "resolved_run_mode",
     "resolved_sampling_mode",
     "granularity_sampling_mode",
+    "correction_mode",
+    "membership_correction",
     "granularity",
     "granularity_pattern_summary",
     "correction_context",
+    "sampler_strategy",
+    "adaptive_sampler_strategy",
+    "adaptive_sampler_exploration_scale",
+    "adaptive_sampler_decay_rate",
+    "adaptive_sampler_reward_penalty_weight",
+    "sampler_state",
+    "adaptive_sampler_state",
+    "adaptive_sampler_previous_loss",
+    "adaptive_sampler_previous_pattern",
+    "adaptive_reward_summary",
+    "adaptive_correction_penalty_summary",
+    "reward",
+    "correction_penalty",
     "loss",
     "perplexity",
     "tokens_seen",
@@ -40,6 +56,11 @@ METRICS_COLUMNS = [
     "wall_clock_seconds",
     "tokens_per_second",
     "peak_memory_bytes",
+    "output_root",
+    "output_dir",
+    "metrics_path",
+    "scaling_results_path",
+    "extraction_metadata_path",
 ]
 
 TASK_RESULTS_COLUMNS = [
@@ -128,6 +149,15 @@ RUN_SUMMARY_FIELDS = [
     "granularity_pattern_provenance",
     "granularity_pattern_summary",
     "correction_context",
+    "adaptive_sampler_strategy",
+    "adaptive_sampler_exploration_scale",
+    "adaptive_sampler_decay_rate",
+    "adaptive_sampler_reward_penalty_weight",
+    "adaptive_sampler_state",
+    "adaptive_sampler_previous_loss",
+    "adaptive_sampler_previous_pattern",
+    "adaptive_reward_summary",
+    "adaptive_correction_penalty_summary",
     "model_family_slug",
     "model_size_slug",
     "token_budget_slug",
@@ -176,6 +206,9 @@ RUN_SUMMARY_FIELDS = [
     "checkpoint_metric_value",
     "checkpoint_selection_step",
     "checkpoint_unavailable_reason",
+    "metrics_path",
+    "scaling_results_path",
+    "extraction_metadata_path",
     "notes",
 ]
 
@@ -296,6 +329,7 @@ def build_run_summary(
         "granularity_pattern_provenance": _granularity_pattern_provenance(config),
         "granularity_pattern_summary": _granularity_pattern_summary(config),
         "correction_context": _correction_context_summary(config),
+        **build_adaptive_sampler_artifact_fields(config),
         "completion_label": run["completion_label"],
         "model_family_slug": run.get("model_family_slug"),
         "model_size_slug": run.get("model_size_slug"),
@@ -1044,8 +1078,23 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "resolved_run_mode": None,
         "resolved_sampling_mode": None,
         "granularity_sampling_mode": None,
+        "correction_mode": None,
+        "membership_correction": None,
         "granularity_pattern_summary": None,
         "correction_context": None,
+        "sampler_strategy": None,
+        "adaptive_sampler_strategy": None,
+        "adaptive_sampler_exploration_scale": None,
+        "adaptive_sampler_decay_rate": None,
+        "adaptive_sampler_reward_penalty_weight": None,
+        "sampler_state": None,
+        "adaptive_sampler_state": None,
+        "adaptive_sampler_previous_loss": None,
+        "adaptive_sampler_previous_pattern": None,
+        "adaptive_reward_summary": None,
+        "adaptive_correction_penalty_summary": None,
+        "reward": None,
+        "correction_penalty": None,
         "model_family_slug": None,
         "model_variant": None,
         "model_size_slug": None,
@@ -1068,10 +1117,27 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "checkpoint_metric": None,
         "run_status": normalized_row.get("status"),
         "omit_reason": None,
+        "output_root": None,
+        "output_dir": None,
+        "metrics_path": None,
+        "scaling_results_path": None,
+        "extraction_metadata_path": None,
     }
 
     for key, value in defaults.items():
         normalized_row.setdefault(key, value)
+
+    for key in (
+        "granularity_pattern_summary",
+        "correction_context",
+        "sampler_state",
+        "adaptive_sampler_state",
+        "adaptive_sampler_previous_pattern",
+        "adaptive_reward_summary",
+        "adaptive_correction_penalty_summary",
+    ):
+        if normalized_row.get(key) is not None:
+            normalized_row[key] = json_artifact_value(normalized_row[key])
 
     return normalized_row
 
