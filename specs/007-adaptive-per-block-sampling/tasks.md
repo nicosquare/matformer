@@ -65,9 +65,9 @@
 
 ### Implementation for User Story 2
 
-- [ ] T012 [P] [US2] Implement `models/adaptive_sampler.py` with per-block statistics, Thompson/UCB scoring, decay, and reward-update helpers
-- [ ] T013 [US2] Integrate adaptive pattern selection and state updates into `training/run.py` so each step chooses one granularity per transformer block and applies the sampled pattern to the model
-- [ ] T014 [US2] Add adaptive sampler checkpoint and resume plumbing in `training/run.py` so saved runs restore sampler history before training continues
+- [X] T012 [P] [US2] Implement `models/adaptive_sampler.py` with per-block statistics, Thompson/UCB scoring, decay, and reward-update helpers
+- [X] T013 [US2] Integrate adaptive pattern selection and state updates into `training/run.py` so each step chooses one granularity per transformer block and applies the sampled pattern to the model
+- [X] T014 [US2] Add adaptive sampler checkpoint and resume plumbing in `training/run.py` so saved runs restore sampler history before training continues
 
 **Checkpoint**: User Story 2 should now be independently functional and resumable.
 

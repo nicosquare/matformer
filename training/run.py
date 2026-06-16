@@ -27,6 +27,16 @@ from evaluation.validation import (
     validation_results_to_metric_rows,
 )
 from models.ffn import CatLlamaMLP, get_concat_layout_diagnostic, get_ffn_prefix_metadata
+from models.adaptive_sampler import (
+    build_adaptive_reward_record,
+    build_adaptive_sampler_state,
+    AdaptiveSamplerState,
+    coerce_adaptive_sampler_state,
+    normalize_adaptive_sampler_state,
+    select_adaptive_sampler_layer_granularities,
+    summarize_adaptive_sampler_state,
+    update_adaptive_sampler_state,
+)
 from models.correction import summarize_correction_context_from_config
 from models.granularity import summarize_granularity_pattern_from_config
 from models.wiring import (
@@ -1200,6 +1210,25 @@ def save_model_checkpoint(
             "granularity_pattern_provenance": run_state.get(
                 "granularity_pattern_provenance"
             ),
+            "adaptive_sampler_state": run_state.get("adaptive_sampler_state"),
+            "adaptive_sampler_previous_loss": run_state.get(
+                "adaptive_sampler_previous_loss"
+            ),
+            "adaptive_sampler_previous_pattern": run_state.get(
+                "adaptive_sampler_previous_pattern"
+            ),
+            "adaptive_sampler_strategy": run_state.get(
+                "adaptive_sampler_strategy"
+            ),
+            "adaptive_sampler_exploration_scale": run_state.get(
+                "adaptive_sampler_exploration_scale"
+            ),
+            "adaptive_sampler_decay_rate": run_state.get(
+                "adaptive_sampler_decay_rate"
+            ),
+            "adaptive_sampler_reward_penalty_weight": run_state.get(
+                "adaptive_sampler_reward_penalty_weight"
+            ),
             "latest_checkpoint_path": run_state.get("latest_checkpoint_path"),
             "model_state_dict": model_state_dict,
             "optimizer_state_dict": optimizer_state_dict,
@@ -1279,7 +1308,252 @@ def build_initial_continuation_state(config: dict[str, Any]) -> dict[str, Any]:
         "granularity_pattern_provenance": copy.deepcopy(
             model.get("granularity_pattern_provenance")
         ),
+        "adaptive_sampler_state": _build_initial_adaptive_sampler_state(config),
+        "adaptive_sampler_previous_loss": None,
+        "adaptive_sampler_previous_pattern": None,
+        "adaptive_sampler_strategy": model.get(
+            "adaptive_sampler_strategy",
+            None,
+        ),
+        "adaptive_sampler_exploration_scale": model.get(
+            "adaptive_sampler_exploration_scale",
+            None,
+        ),
+        "adaptive_sampler_decay_rate": model.get(
+            "adaptive_sampler_decay_rate",
+            None,
+        ),
+        "adaptive_sampler_reward_penalty_weight": model.get(
+            "adaptive_sampler_reward_penalty_weight",
+            None,
+        ),
     }
+
+
+def _build_initial_adaptive_sampler_state(
+    config: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    model = config.get("model", {})
+    if not isinstance(model, Mapping):
+        model = {}
+    if model.get("granularity_sampling_mode") != "adaptive_per_block":
+        return None
+
+    state = build_adaptive_sampler_state(
+        strategy_name=str(model.get("adaptive_sampler_strategy", "thompson")),
+        exploration_scale=float(model.get("adaptive_sampler_exploration_scale", 1.0)),
+        decay_rate=float(model.get("adaptive_sampler_decay_rate", 0.0)),
+    )
+    normalized_state = normalize_adaptive_sampler_state(
+        state,
+        block_count=int(model["num_layers"]),
+        granularities=model.get("granularities"),
+    )
+    return summarize_adaptive_sampler_state(normalized_state)
+
+
+def _populate_adaptive_sampler_state_metadata(
+    state: dict[str, Any],
+    config: Mapping[str, Any],
+) -> None:
+    model = config.get("model", {})
+    if not isinstance(model, Mapping):
+        model = {}
+
+    if model.get("granularity_sampling_mode") == "adaptive_per_block":
+        state["adaptive_sampler_state"] = _build_initial_adaptive_sampler_state(
+            config
+        )
+    else:
+        state.setdefault("adaptive_sampler_state", None)
+    state["adaptive_sampler_previous_loss"] = None
+    state["adaptive_sampler_previous_pattern"] = None
+    state["adaptive_sampler_strategy"] = model.get(
+        "adaptive_sampler_strategy"
+    )
+    state["adaptive_sampler_exploration_scale"] = model.get(
+        "adaptive_sampler_exploration_scale"
+    )
+    state["adaptive_sampler_decay_rate"] = model.get(
+        "adaptive_sampler_decay_rate"
+    )
+    state["adaptive_sampler_reward_penalty_weight"] = model.get(
+        "adaptive_sampler_reward_penalty_weight"
+    )
+
+
+def _validate_loaded_adaptive_sampler_state(
+    state: Mapping[str, Any],
+    config: Mapping[str, Any],
+    checkpoint_path: Path,
+) -> None:
+    model = config.get("model", {})
+    if not isinstance(model, Mapping):
+        model = {}
+    if model.get("granularity_sampling_mode") != "adaptive_per_block":
+        return
+
+    expected_strategy = str(model.get("adaptive_sampler_strategy", "thompson"))
+    expected_exploration_scale = float(
+        model.get("adaptive_sampler_exploration_scale", 1.0)
+    )
+    expected_decay_rate = float(model.get("adaptive_sampler_decay_rate", 0.0))
+    expected_reward_penalty_weight = float(
+        model.get("adaptive_sampler_reward_penalty_weight", 1.0)
+    )
+
+    if state.get("adaptive_sampler_strategy") not in (None, expected_strategy):
+        raise ConfigError(
+            "Checkpoint adaptive sampler strategy does not match the current config "
+            f"for {checkpoint_path}"
+        )
+    if state.get("adaptive_sampler_exploration_scale") not in (
+        None,
+        expected_exploration_scale,
+    ):
+        raise ConfigError(
+            "Checkpoint adaptive sampler exploration scale does not match the current config "
+            f"for {checkpoint_path}"
+        )
+    if state.get("adaptive_sampler_decay_rate") not in (None, expected_decay_rate):
+        raise ConfigError(
+            "Checkpoint adaptive sampler decay rate does not match the current config "
+            f"for {checkpoint_path}"
+        )
+    if state.get("adaptive_sampler_reward_penalty_weight") not in (
+        None,
+        expected_reward_penalty_weight,
+    ):
+        raise ConfigError(
+            "Checkpoint adaptive sampler reward penalty weight does not match the current config "
+            f"for {checkpoint_path}"
+        )
+
+    adaptive_state = coerce_adaptive_sampler_state(state.get("adaptive_sampler_state"))
+    if adaptive_state is None:
+        raise ConfigError(
+            "Checkpoint is missing adaptive sampler state required for resume "
+            f"at {checkpoint_path}"
+        )
+
+    normalize_adaptive_sampler_state(
+        adaptive_state,
+        block_count=int(model["num_layers"]),
+        granularities=model.get("granularities"),
+    )
+
+
+def _prepare_adaptive_sampler_runtime_state(
+    config: Mapping[str, Any],
+    run_state: dict[str, Any],
+) -> AdaptiveSamplerState | None:
+    model = config.get("model", {})
+    if not isinstance(model, Mapping):
+        model = {}
+    if model.get("granularity_sampling_mode") != "adaptive_per_block":
+        run_state.pop("adaptive_sampler_state", None)
+        return None
+
+    adaptive_state = coerce_adaptive_sampler_state(
+        run_state.get("adaptive_sampler_state")
+    )
+    if adaptive_state is None:
+        adaptive_state = build_adaptive_sampler_state(
+            strategy_name=str(model.get("adaptive_sampler_strategy", "thompson")),
+            exploration_scale=float(model.get("adaptive_sampler_exploration_scale", 1.0)),
+            decay_rate=float(model.get("adaptive_sampler_decay_rate", 0.0)),
+        )
+
+    normalized_state = normalize_adaptive_sampler_state(
+        adaptive_state,
+        block_count=int(model["num_layers"]),
+        granularities=model.get("granularities"),
+    )
+    run_state["adaptive_sampler_state"] = summarize_adaptive_sampler_state(
+        normalized_state
+    )
+    run_state["adaptive_sampler_strategy"] = normalized_state.strategy_name
+    run_state["adaptive_sampler_exploration_scale"] = (
+        normalized_state.exploration_scale
+    )
+    run_state["adaptive_sampler_decay_rate"] = normalized_state.decay_rate
+    run_state["adaptive_sampler_reward_penalty_weight"] = float(
+        model.get("adaptive_sampler_reward_penalty_weight", 1.0)
+    )
+    if run_state.get("adaptive_sampler_previous_pattern") is not None:
+        run_state["adaptive_sampler_previous_pattern"] = [
+            str(granularity)
+            for granularity in run_state["adaptive_sampler_previous_pattern"]
+        ]
+    return normalized_state
+
+
+def _pattern_change_penalty(
+    previous_pattern: Sequence[str] | None,
+    current_pattern: Sequence[str],
+) -> float:
+    if not previous_pattern:
+        return 0.0
+
+    previous = [str(granularity) for granularity in previous_pattern]
+    current = [str(granularity) for granularity in current_pattern]
+    if not current:
+        return 0.0
+
+    difference_count = sum(
+        1 for previous_granularity, current_granularity in zip(previous, current)
+        if previous_granularity != current_granularity
+    )
+    difference_count += abs(len(previous) - len(current))
+    return difference_count / max(len(current), len(previous), 1)
+
+
+def _update_adaptive_sampler_runtime_state(
+    config: Mapping[str, Any],
+    run_state: dict[str, Any],
+    adaptive_sampler_state: AdaptiveSamplerState,
+    *,
+    phase: str,
+    latest_loss: float,
+    selected_layer_granularities: Sequence[str],
+    step: int,
+    epoch: int,
+) -> None:
+    previous_loss = run_state.get("adaptive_sampler_previous_loss")
+    previous_pattern = run_state.get("adaptive_sampler_previous_pattern")
+    reward_penalty_weight = float(
+        run_state.get(
+            "adaptive_sampler_reward_penalty_weight",
+            config.get("model", {}).get("adaptive_sampler_reward_penalty_weight", 1.0),
+        )
+    )
+    correction_penalty = _pattern_change_penalty(
+        previous_pattern,
+        selected_layer_granularities,
+    )
+    reward_record = build_adaptive_reward_record(
+        previous_loss=float(previous_loss) if previous_loss is not None else None,
+        current_loss=latest_loss,
+        correction_penalty=correction_penalty,
+        reward_penalty_weight=reward_penalty_weight,
+        phase=phase,
+        step=step,
+        epoch=epoch,
+    )
+    if previous_loss is not None:
+        adaptive_sampler_state = update_adaptive_sampler_state(
+            adaptive_sampler_state,
+            reward_record,
+            sampled_pattern=list(selected_layer_granularities),
+        )
+
+    run_state["adaptive_sampler_previous_loss"] = latest_loss
+    run_state["adaptive_sampler_previous_pattern"] = [
+        str(granularity) for granularity in selected_layer_granularities
+    ]
+    run_state["adaptive_sampler_state"] = summarize_adaptive_sampler_state(
+        adaptive_sampler_state
+    )
 
 
 def load_run_continuation_state(
@@ -1295,6 +1569,7 @@ def load_run_continuation_state(
         model,
         optimizer,
         scheduler,
+        config=config,
         fallback_tokens_per_step=int(config["training"]["expected_tokens_per_step"]),
         distributed_context=distributed_context,
         output_dir=config["run"]["output_dir"],
@@ -1307,6 +1582,7 @@ def load_checkpoint_state(
     model,
     optimizer,
     scheduler,
+    config: Mapping[str, Any] | None = None,
     fallback_tokens_per_step: int | None = None,
     distributed_context=None,
     output_dir: str | Path | None = None,
@@ -1333,6 +1609,8 @@ def load_checkpoint_state(
             state["output_dir"] = str(output_dir)
         if run_id is not None:
             state["run_id"] = str(run_id)
+        if config is not None:
+            _populate_adaptive_sampler_state_metadata(state, config)
         return state
 
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
@@ -1384,11 +1662,28 @@ def load_checkpoint_state(
         "granularity_pattern_provenance": checkpoint.get(
             "granularity_pattern_provenance"
         ),
+        "adaptive_sampler_state": checkpoint.get("adaptive_sampler_state"),
+        "adaptive_sampler_previous_loss": checkpoint.get(
+            "adaptive_sampler_previous_loss"
+        ),
+        "adaptive_sampler_previous_pattern": checkpoint.get(
+            "adaptive_sampler_previous_pattern"
+        ),
+        "adaptive_sampler_strategy": checkpoint.get("adaptive_sampler_strategy"),
+        "adaptive_sampler_exploration_scale": checkpoint.get(
+            "adaptive_sampler_exploration_scale"
+        ),
+        "adaptive_sampler_decay_rate": checkpoint.get("adaptive_sampler_decay_rate"),
+        "adaptive_sampler_reward_penalty_weight": checkpoint.get(
+            "adaptive_sampler_reward_penalty_weight"
+        ),
     }
     if output_dir is not None:
         state["output_dir"] = str(output_dir)
     if run_id is not None:
         state["run_id"] = str(run_id)
+    if config is not None:
+        _validate_loaded_adaptive_sampler_state(state, config, checkpoint_path)
     return state
 
 
@@ -1957,6 +2252,11 @@ def train_for_steps(
     if continuation_latest_checkpoint_policy(config)["enabled"] and not run_state.get("latest_checkpoint_path"):
         run_state["latest_checkpoint_path"] = str(latest_checkpoint_path)
 
+    adaptive_sampler_state = _prepare_adaptive_sampler_runtime_state(
+        config,
+        run_state,
+    )
+
     model.train()
     with heartbeat_stage(heartbeat_writer, stage_name):
         while step < max_steps and tokens_seen < token_budget:
@@ -2011,13 +2311,49 @@ def train_for_steps(
                                 step_runtime_pattern_summary,
                                 step_correction_context,
                             )
-                        )
+                    )
                     combined_loss = (
                         forward_losses[0]
                         if len(forward_losses) == 1
                         else torch.stack(forward_losses).mean()
                     )
                     total_losses = len(forward_losses)
+                elif model_sampling_mode == "adaptive_per_block" and supports_layer_granularities:
+                    if adaptive_sampler_state is None:
+                        raise ConfigError(
+                            "adaptive_per_block runs require adaptive sampler state"
+                        )
+                    selected_layer_granularities = select_adaptive_sampler_layer_granularities(
+                        adaptive_sampler_state,
+                        block_count=int(config["model"]["num_layers"]),
+                        step=step,
+                        phase=stage_name,
+                        granularities=granularities,
+                    )
+                    configure_model_layer_granularities(
+                        model,
+                        selected_layer_granularities,
+                    )
+                    step_runtime_pattern_summary, step_correction_context = _runtime_granularity_artifacts(
+                        config,
+                        model,
+                    )
+                    outputs = model(
+                        input_ids=batch["input_ids"],
+                        attention_mask=batch.get("attention_mask"),
+                        labels=batch["labels"],
+                    )
+                    combined_loss = outputs.loss
+                    for granularity in selected_layer_granularities:
+                        step_metric_rows_data.append(
+                            (
+                                granularity,
+                                combined_loss,
+                                step_runtime_pattern_summary,
+                                step_correction_context,
+                            )
+                        )
+                    total_losses = 1
                 elif model_sampling_mode == "per_block" and supports_layer_granularities:
                     selected_layer_granularities = select_training_layer_granularities(
                         config,
@@ -2099,6 +2435,20 @@ def train_for_steps(
                 elapsed = time.time() - start_time
                 peak_memory_bytes = current_peak_memory_bytes(device)
                 latest_loss = float(combined_loss.detach().cpu().item())
+                if model_sampling_mode == "adaptive_per_block" and adaptive_sampler_state is not None:
+                    _update_adaptive_sampler_runtime_state(
+                        config,
+                        run_state,
+                        adaptive_sampler_state,
+                        phase=stage_name,
+                        latest_loss=latest_loss,
+                        selected_layer_granularities=selected_layer_granularities,
+                        step=step,
+                        epoch=current_epoch,
+                    )
+                elif model_sampling_mode != "adaptive_per_block":
+                    run_state.pop("adaptive_sampler_previous_loss", None)
+                    run_state.pop("adaptive_sampler_previous_pattern", None)
                 tokens_per_second = tokens_seen / elapsed if elapsed > 0 else None
                 step_metric_rows = []
                 run_state.update(

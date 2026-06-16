@@ -71,10 +71,6 @@ def _build_sample_state(strategy_name: str, exploration_scale: float, decay_rate
     return state
 
 
-@pytest.mark.xfail(
-    reason="Adaptive sampler scoring helpers are implemented in T012",
-    strict=False,
-)
 def test_thompson_scoring_prefers_the_historical_mean_when_exploration_is_zero():
     import models.adaptive_sampler as adaptive_sampler
 
@@ -91,10 +87,6 @@ def test_thompson_scoring_prefers_the_historical_mean_when_exploration_is_zero()
     assert scores["s"] > scores["m"] > scores["l"] > scores["xl"]
 
 
-@pytest.mark.xfail(
-    reason="Adaptive sampler scoring and decay helpers are implemented in T012",
-    strict=False,
-)
 def test_ucb_scoring_and_reward_updates_follow_the_bandit_plan():
     import models.adaptive_sampler as adaptive_sampler
 
