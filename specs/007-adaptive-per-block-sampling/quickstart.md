@@ -75,3 +75,24 @@ Check these files in the run directory:
 
 The saved artifacts should make the selected mode and strategy obvious without
 reading stdout.
+
+## 6. Validate the adaptive artifact trail
+
+Run the adaptive mode once more, then inspect the saved config and summary
+without relying on logs:
+
+```bash
+python train.py \
+  --config configs/debug_matrix.yaml \
+  --run-id debug-nested-001 \
+  --override model.granularity_sampling_mode=adaptive_per_block \
+  --override model.adaptive_sampler_strategy=thompson
+
+jq '.model.granularity_sampling_mode, .model.adaptive_sampler_strategy, .model.granularity_pattern_provenance' \
+  outputs/*/debug-nested-001/config.json
+
+jq '.adaptive_sampler_strategy, .adaptive_sampler_state, .adaptive_reward_summary, .adaptive_correction_penalty_summary' \
+  outputs/*/debug-nested-001/run_summary.json
+
+head -n 2 outputs/*/debug-nested-001/metrics.csv
+```

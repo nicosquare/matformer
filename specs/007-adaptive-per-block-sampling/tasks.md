@@ -86,8 +86,8 @@
 ### Implementation for User Story 3
 
 - [X] T016 [P] [US3] Extend `utils/metrics.py` to write adaptive strategy, reward summary, correction-penalty summary, sampler-state fields, correction mode, membership flags, sampler hyperparameters, correction context, and output locations into `config.json`, `run_summary.json`, and `metrics.csv`
-- [ ] T017 [US3] Thread adaptive provenance through `training/run.py` so the artifact writers receive the resolved mode, sampled pattern, reward, sampler-state values, correction mode, membership flags, sampler hyperparameters, correction context, and output locations for each step
-- [ ] T018 [US3] Update `specs/007-adaptive-per-block-sampling/quickstart.md` and `README.md` with the final adaptive-mode validation and artifact inspection commands
+- [X] T017 [US3] Thread adaptive provenance through `training/run.py` so the artifact writers receive the resolved mode, sampled pattern, reward, sampler-state values, correction mode, membership flags, sampler hyperparameters, correction context, and output locations for each step
+- [X] T018 [US3] Update `specs/007-adaptive-per-block-sampling/quickstart.md` and `README.md` with the final adaptive-mode validation and artifact inspection commands
 
 **Checkpoint**: All user stories should now be independently functional.
 

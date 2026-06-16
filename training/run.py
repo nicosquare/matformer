@@ -367,6 +367,7 @@ def run_training(
             **build_monitoring_summary_fields(config, metrics_rows),
             **checkpoint_summary_fields,
             **distributed_summary_fields(distributed_context),
+            **_runtime_summary_adaptive_fields(config, run_state),
         }
         if metrics_path is not None:
             extra_summary_fields["metrics_path"] = str(metrics_path)
@@ -1217,6 +1218,10 @@ def save_model_checkpoint(
             "adaptive_sampler_previous_pattern": run_state.get(
                 "adaptive_sampler_previous_pattern"
             ),
+            "adaptive_reward_summary": run_state.get("adaptive_reward_summary"),
+            "adaptive_correction_penalty_summary": run_state.get(
+                "adaptive_correction_penalty_summary"
+            ),
             "adaptive_sampler_strategy": run_state.get(
                 "adaptive_sampler_strategy"
             ),
@@ -1311,6 +1316,8 @@ def build_initial_continuation_state(config: dict[str, Any]) -> dict[str, Any]:
         "adaptive_sampler_state": _build_initial_adaptive_sampler_state(config),
         "adaptive_sampler_previous_loss": None,
         "adaptive_sampler_previous_pattern": None,
+        "adaptive_reward_summary": None,
+        "adaptive_correction_penalty_summary": None,
         "adaptive_sampler_strategy": model.get(
             "adaptive_sampler_strategy",
             None,
@@ -1368,6 +1375,8 @@ def _populate_adaptive_sampler_state_metadata(
         state.setdefault("adaptive_sampler_state", None)
     state["adaptive_sampler_previous_loss"] = None
     state["adaptive_sampler_previous_pattern"] = None
+    state["adaptive_reward_summary"] = None
+    state["adaptive_correction_penalty_summary"] = None
     state["adaptive_sampler_strategy"] = model.get(
         "adaptive_sampler_strategy"
     )
@@ -1547,6 +1556,14 @@ def _update_adaptive_sampler_runtime_state(
             sampled_pattern=list(selected_layer_granularities),
         )
 
+    run_state["adaptive_reward_summary"] = dict(reward_record)
+    run_state["adaptive_correction_penalty_summary"] = {
+        "correction_penalty": correction_penalty,
+        "reward_penalty_weight": reward_penalty_weight,
+        "normalized_correction_penalty": reward_record[
+            "normalized_correction_penalty"
+        ],
+    }
     run_state["adaptive_sampler_previous_loss"] = latest_loss
     run_state["adaptive_sampler_previous_pattern"] = [
         str(granularity) for granularity in selected_layer_granularities
@@ -1668,6 +1685,10 @@ def load_checkpoint_state(
         ),
         "adaptive_sampler_previous_pattern": checkpoint.get(
             "adaptive_sampler_previous_pattern"
+        ),
+        "adaptive_reward_summary": checkpoint.get("adaptive_reward_summary"),
+        "adaptive_correction_penalty_summary": checkpoint.get(
+            "adaptive_correction_penalty_summary"
         ),
         "adaptive_sampler_strategy": checkpoint.get("adaptive_sampler_strategy"),
         "adaptive_sampler_exploration_scale": checkpoint.get(
@@ -2449,7 +2470,13 @@ def train_for_steps(
                 elif model_sampling_mode != "adaptive_per_block":
                     run_state.pop("adaptive_sampler_previous_loss", None)
                     run_state.pop("adaptive_sampler_previous_pattern", None)
+                    run_state.pop("adaptive_reward_summary", None)
+                    run_state.pop("adaptive_correction_penalty_summary", None)
                 tokens_per_second = tokens_seen / elapsed if elapsed > 0 else None
+                adaptive_artifacts = _runtime_step_artifact_fields(
+                    config,
+                    run_state,
+                )
                 step_metric_rows = []
                 run_state.update(
                     {
@@ -2504,6 +2531,7 @@ def train_for_steps(
                             peak_memory_bytes=peak_memory_bytes,
                             granularity_pattern_summary=step_runtime_pattern_summary,
                             correction_context=step_correction_context,
+                            adaptive_artifacts=adaptive_artifacts,
                         )
                     )
                 metrics_rows.extend(step_metric_rows)
@@ -2567,6 +2595,10 @@ def train_for_steps(
                         content_tokens_seen=content_tokens_seen,
                         granularity_pattern_summary=validation_runtime_pattern_summary,
                         correction_context=validation_correction_context,
+                        adaptive_artifacts=_runtime_step_artifact_fields(
+                            config,
+                            run_state,
+                        ),
                     )
                     metrics_rows.extend(validation_metric_rows)
                     if monitoring_session is not None:
@@ -2811,6 +2843,10 @@ def append_final_validation_if_needed(
         content_tokens_seen=content_tokens_seen,
         granularity_pattern_summary=runtime_pattern_summary,
         correction_context=correction_context,
+        adaptive_artifacts=_runtime_step_artifact_fields(
+            config,
+            run_state if run_state is not None else {},
+        ),
     )
     metrics_rows.extend(validation_metric_rows)
     if monitoring_session is not None:
@@ -2902,10 +2938,17 @@ def build_training_metric_row(
     peak_memory_bytes: int,
     granularity_pattern_summary: dict[str, Any] | None = None,
     correction_context: dict[str, Any] | None = None,
+    adaptive_artifacts: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     run = config["run"]
+    model = config.get("model", {})
+    if not isinstance(model, Mapping):
+        model = {}
+    training = config.get("training", {})
+    if not isinstance(training, Mapping):
+        training = {}
     tokens_per_second = tokens_seen / wall_clock_seconds if wall_clock_seconds > 0 else None
-    return {
+    row = {
         "run_id": run["run_id"],
         "step": step,
         "split": "train",
@@ -2914,31 +2957,31 @@ def build_training_metric_row(
         "model_shape_label": _model_shape_label(run),
         "sampling_mode": resolve_sampling_mode_from_config_sections(
             run,
-            config["training"],
+            training,
         ),
         "resolved_run_mode": run.get(
             "resolved_run_mode",
             resolve_sampling_mode_from_config_sections(
                 run,
-                config["training"],
+                training,
             ),
         ),
-        "resolved_sampling_mode": config["model"].get(
+        "resolved_sampling_mode": model.get(
             "resolved_sampling_mode",
-            config["model"].get("granularity_sampling_mode", "global"),
+            model.get("granularity_sampling_mode", "global"),
         ),
-        "granularity_sampling_mode": config["model"].get("granularity_sampling_mode"),
+        "granularity_sampling_mode": model.get("granularity_sampling_mode"),
         "granularity": granularity,
         "granularity_pattern_summary": json_artifact_value(
             granularity_pattern_summary
             if granularity_pattern_summary is not None
-            else config["model"].get("granularity_pattern_summary")
+            else model.get("granularity_pattern_summary")
             or _default_granularity_pattern_summary(config)
         ),
         "correction_context": json_artifact_value(
             correction_context
             if correction_context is not None
-            else config["model"].get("correction_context")
+            else model.get("correction_context")
             or _default_correction_context(config)
         ),
         "loss": loss,
@@ -2949,6 +2992,9 @@ def build_training_metric_row(
         "tokens_per_second": tokens_per_second,
         "peak_memory_bytes": peak_memory_bytes,
     }
+    if adaptive_artifacts:
+        row.update(adaptive_artifacts)
+    return row
 
 
 def select_training_granularity(granularities: list[str], step: int) -> str:
@@ -3026,3 +3072,99 @@ def _runtime_granularity_artifacts(
         granularity_pattern=runtime_pattern,
     )
     return runtime_pattern_summary, correction_context
+
+
+def _runtime_step_artifact_fields(
+    config: dict[str, Any],
+    run_state: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    run = config.get("run", {})
+    model = config.get("model", {})
+    if not isinstance(run, Mapping):
+        run = {}
+    if not isinstance(model, Mapping):
+        model = {}
+    if run_state is None or not isinstance(run_state, Mapping):
+        run_state = {}
+
+    output_dir_value = run.get("output_dir")
+    output_dir = Path(str(output_dir_value)) if output_dir_value else None
+    reward_summary = run_state.get("adaptive_reward_summary")
+    correction_penalty_summary = run_state.get(
+        "adaptive_correction_penalty_summary"
+    )
+
+    return {
+        "correction_mode": model.get("correction_mode"),
+        "membership_correction": model.get("membership_correction"),
+        "sampler_strategy": model.get("adaptive_sampler_strategy"),
+        "adaptive_sampler_strategy": model.get("adaptive_sampler_strategy"),
+        "adaptive_sampler_exploration_scale": model.get(
+            "adaptive_sampler_exploration_scale"
+        ),
+        "adaptive_sampler_decay_rate": model.get("adaptive_sampler_decay_rate"),
+        "adaptive_sampler_reward_penalty_weight": model.get(
+            "adaptive_sampler_reward_penalty_weight"
+        ),
+        "sampler_state": run_state.get("adaptive_sampler_state"),
+        "adaptive_sampler_state": run_state.get("adaptive_sampler_state"),
+        "adaptive_sampler_previous_loss": run_state.get(
+            "adaptive_sampler_previous_loss"
+        ),
+        "adaptive_sampler_previous_pattern": run_state.get(
+            "adaptive_sampler_previous_pattern"
+        ),
+        "adaptive_reward_summary": reward_summary,
+        "adaptive_correction_penalty_summary": correction_penalty_summary,
+        "reward": (
+            reward_summary.get("reward")
+            if isinstance(reward_summary, Mapping)
+            else None
+        ),
+        "correction_penalty": (
+            correction_penalty_summary.get("correction_penalty")
+            if isinstance(correction_penalty_summary, Mapping)
+            else None
+        ),
+        "output_root": run.get("output_root"),
+        "output_dir": run.get("output_dir"),
+        "metrics_path": str(output_dir / "metrics.csv") if output_dir else None,
+        "scaling_results_path": (
+            str(output_dir / "scaling_results.csv") if output_dir else None
+        ),
+        "extraction_metadata_path": (
+            str(output_dir / "extraction_metadata.json")
+            if output_dir and run.get("model_family") == "nested"
+            else None
+        ),
+    }
+
+
+def _runtime_summary_adaptive_fields(
+    config: dict[str, Any],
+    run_state: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    step_fields = _runtime_step_artifact_fields(config, run_state)
+    return {
+        "adaptive_sampler_strategy": step_fields.get("adaptive_sampler_strategy"),
+        "adaptive_sampler_exploration_scale": step_fields.get(
+            "adaptive_sampler_exploration_scale"
+        ),
+        "adaptive_sampler_decay_rate": step_fields.get(
+            "adaptive_sampler_decay_rate"
+        ),
+        "adaptive_sampler_reward_penalty_weight": step_fields.get(
+            "adaptive_sampler_reward_penalty_weight"
+        ),
+        "adaptive_sampler_state": step_fields.get("adaptive_sampler_state"),
+        "adaptive_sampler_previous_loss": step_fields.get(
+            "adaptive_sampler_previous_loss"
+        ),
+        "adaptive_sampler_previous_pattern": step_fields.get(
+            "adaptive_sampler_previous_pattern"
+        ),
+        "adaptive_reward_summary": step_fields.get("adaptive_reward_summary"),
+        "adaptive_correction_penalty_summary": step_fields.get(
+            "adaptive_correction_penalty_summary"
+        ),
+    }

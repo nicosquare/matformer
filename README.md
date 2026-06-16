@@ -178,6 +178,25 @@ derives internal `training.granularity_sampling` and standalone
 `model.granularities` from those public fields, so use the mode flags rather
 than manually overriding training/model internals for the pilot comparison.
 
+For the adaptive per-block path, run the nested-random mode with the adaptive
+sampler enabled, then inspect the saved artifacts directly:
+
+```bash
+python train.py \
+  --config configs/debug_matrix.yaml \
+  --run-id debug-nested-001 \
+  --override model.granularity_sampling_mode=adaptive_per_block \
+  --override model.adaptive_sampler_strategy=thompson
+
+jq '.model.granularity_sampling_mode, .model.adaptive_sampler_strategy, .model.granularity_pattern_provenance' \
+  outputs/*/debug-nested-001/config.json
+
+jq '.adaptive_sampler_strategy, .adaptive_sampler_state, .adaptive_reward_summary, .adaptive_correction_penalty_summary' \
+  outputs/*/debug-nested-001/run_summary.json
+
+head -n 2 outputs/*/debug-nested-001/metrics.csv
+```
+
 To request a different single-node GPU count, override the Slurm resource
 request at submission time:
 
