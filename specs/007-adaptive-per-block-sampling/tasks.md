@@ -43,8 +43,8 @@
 
 ### Implementation for User Story 1
 
-- [ ] T007 [P] [US1] Update `models/correction.py` so `adaptive_per_block` uses the same local-correction activation rules as the baseline per-block path
-- [ ] T008 [P] [US1] Update `models/granularity.py` and `models/wiring.py` so global and random per-block provenance stay unchanged while adaptive resolves to its own per-block pattern summary
+- [X] T007 [P] [US1] Update `models/correction.py` so `adaptive_per_block` uses the same local-correction activation rules as the baseline per-block path
+- [X] T008 [P] [US1] Update `models/granularity.py` and `models/wiring.py` so global and random per-block provenance stay unchanged while adaptive resolves to its own per-block pattern summary
 - [ ] T009 [US1] Update `training/run.py` and `train.py` to fail fast on unsupported `adaptive_per_block` pairings before any training step begins
 - [ ] T021 [P] Add a single-process-only startup guard regression test in `tests/test_training_smoke.py` for distributed or multi-process execution paths
 
