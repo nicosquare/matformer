@@ -60,8 +60,8 @@
 
 ### Verification for User Story 2
 
-- [ ] T010 [P] [US2] Add unit tests for Thompson/UCB scoring, decay, and reward updates in `tests/test_adaptive_sampler.py`
-- [ ] T011 [P] [US2] Add smoke coverage for adaptive pattern shifts and resume behavior in `tests/test_training_smoke.py`
+- [X] T010 [P] [US2] Add unit tests for Thompson/UCB scoring, decay, and reward updates in `tests/test_adaptive_sampler.py`
+- [X] T011 [P] [US2] Add smoke coverage for adaptive pattern shifts and resume behavior in `tests/test_training_smoke.py`
 
 ### Implementation for User Story 2
 

@@ -1373,6 +1373,132 @@ def test_run_training_rejects_invalid_adaptive_pairing_before_setup(
         )
 
 
+@pytest.mark.xfail(
+    reason="Adaptive per-block runtime wiring lands in T013/T014",
+    strict=False,
+)
+def test_adaptive_per_block_smoke_shifts_patterns_and_resumes_from_checkpoint(
+    tmp_path,
+    monkeypatch,
+):
+    import training.run as training_run
+
+    output_dir = tmp_path / "debug-nested-001"
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+
+    fresh_pattern_calls = {"count": 0}
+
+    def fake_select_training_layer_granularities(config, granularities, device):
+        resume_count = int(config["run"].get("continuation", {}).get("resume_count", 0))
+        if resume_count > 0:
+            return ["m", "l"]
+
+        fresh_pattern_calls["count"] += 1
+        if fresh_pattern_calls["count"] == 1:
+            return ["s", "m"]
+        return ["m", "l"]
+
+    monkeypatch.setattr(
+        training_run,
+        "select_training_layer_granularities",
+        fake_select_training_layer_granularities,
+    )
+    monkeypatch.setattr(
+        training_run,
+        "select_training_granularities",
+        lambda *args, **kwargs: pytest.fail(
+            "adaptive_per_block should use per-block selection"
+        ),
+    )
+
+    first_config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "run.sampling_mode=nested-random",
+            "model.granularity_sampling_mode=adaptive_per_block",
+            "run.continuation.enabled=true",
+            "training.max_steps=2",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "training.token_budget=16",
+            "outputs.save_checkpoints=true",
+            "evaluation.validation=false",
+        ],
+    )
+
+    first_model = TinyNestedTrainingModel()
+    first_result = run_training(
+        first_config,
+        model=first_model,
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    first_summary = json.loads(first_result["summary_path"].read_text(encoding="utf-8"))
+    assert first_summary["resolved_sampling_mode"] == "adaptive_per_block"
+    assert first_summary["continuation_state"]["status"] == "fresh"
+    assert first_model.train_forward_layer_granularities == [
+        ["s", "m"],
+        ["m", "l"],
+    ]
+
+    with first_result["metrics_path"].open(
+        "r",
+        encoding="utf-8",
+        newline="",
+    ) as metrics_file:
+        first_train_rows = [
+            row for row in csv.DictReader(metrics_file) if row["split"] == "train"
+        ]
+    assert [
+        json.loads(row["granularity_pattern_summary"])["selected_granularities"]
+        for row in first_train_rows
+    ] == [["s", "m"], ["m", "l"]]
+
+    resumed_config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "run.sampling_mode=nested-random",
+            "model.granularity_sampling_mode=adaptive_per_block",
+            "run.continuation.enabled=true",
+            "training.max_steps=3",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "training.token_budget=16",
+            "outputs.save_checkpoints=true",
+            "evaluation.validation=false",
+        ],
+    )
+
+    resumed_model = TinyNestedTrainingModel()
+    resumed_result = run_training(
+        resumed_config,
+        model=resumed_model,
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    resumed_summary = json.loads(
+        resumed_result["summary_path"].read_text(encoding="utf-8")
+    )
+    assert resumed_summary["continuation_state"]["status"] == "resumed"
+    assert resumed_summary["continuation_state"]["resume_count"] == 1
+    assert resumed_model.train_forward_layer_granularities[0] == ["m", "l"]
+
+
 def test_monitoring_smoke_groups_nested_and_standalone_runs_by_series(
     tmp_path,
     monkeypatch,
