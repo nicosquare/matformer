@@ -522,7 +522,9 @@ def plot_metric_over_steps(
 
 def plot_loss_over_steps_by_experiment(rows: list[dict[str, str]], output_dir: Path) -> list[Path]:
     output_paths = []
-    grouped = group_loss_rows_by_figure(rows)
+    grouped = group_loss_rows_by_figure(
+        [row for row in rows if str(row.get("split") or "") == "train"]
+    )
     for figure_label in sorted(grouped):
         figure_rows = grouped[figure_label]
         output_paths.append(
@@ -561,89 +563,83 @@ def plot_loss_over_steps_for_experiment(
     figure_label: str,
     output_path: Path,
 ) -> Path:
-    granularity_labels = sorted(
-        {str(row["granularity"]) for row in rows if row.get("granularity")},
-        key=granularity_sort_key,
+    trace_description = loss_trace_description(rows)
+    trace_kind = loss_trace_kind(rows)
+    figure, axis, legend_axis = create_figure_with_side_legend(
+        plot_width=10,
+        plot_height=5,
+        legend_width=4.8,
     )
-    if not granularity_labels:
-        figure, axis = plt.subplots(figsize=(7, 4))
+    series = group_loss_trace_rows(rows, trace_kind)
+    if not series:
         axis.text(
             0.5,
             0.5,
-            "No granularity metadata found",
+            "No numeric loss points found",
             ha="center",
             va="center",
             transform=axis.transAxes,
         )
         axis.set_axis_off()
         figure.suptitle(figure_label)
-        figure.tight_layout(rect=[0, 0, 1, 0.96])
+        if trace_description:
+            figure.text(
+                0.5,
+                0.01,
+                trace_description,
+                ha="center",
+                va="bottom",
+                fontsize="small",
+            )
+        figure.tight_layout(rect=[0, 0.03, 1, 0.96] if trace_description else [0, 0, 1, 0.96])
         figure.savefig(output_path, bbox_inches="tight", dpi=300)
         plt.close(figure)
         return output_path
 
-    column_count = 1
-    row_count = len(granularity_labels)
+    for label, group_rows_for_label in sorted(series.items(), key=lambda item: loss_trace_series_sort_key(item[0], trace_kind)):
+        points = [
+            (to_float(row["step"]), to_float(row["loss"]))
+            for row in group_rows_for_label
+            if row.get("step") not in (None, "") and row.get("loss") not in (None, "")
+        ]
+        if not points:
+            continue
+        points.sort(key=lambda point: point[0])
+        xs, ys = zip(*points)
+        smoothed_ys = moving_average(
+            list(ys),
+            window_size=loss_moving_average_window_size(len(ys)),
+        )
+        axis.plot(
+            xs,
+            smoothed_ys,
+            marker="o",
+            markersize=3,
+            linewidth=1.0,
+            label=label,
+        )
 
-    figure, axes = plt.subplots(
-        row_count,
-        column_count,
-        figsize=(8, 3.6 * row_count),
-        squeeze=False,
-    )
+    axis.set_xlabel("Step")
+    axis.set_ylabel("Loss")
+    axis.minorticks_on()
+    axis.grid(True, which="major", alpha=0.28, linewidth=0.6)
+    axis.grid(True, which="minor", alpha=0.14, linewidth=0.35)
+    if trace_description:
+        axis.set_title(figure_label)
+        figure.text(
+            0.5,
+            0.01,
+            trace_description,
+            ha="center",
+            va="bottom",
+            fontsize="small",
+        )
+    else:
+        axis.set_title(figure_label)
 
-    for axis, granularity in zip(axes.flat, granularity_labels):
-        granularity_rows = [row for row in rows if row.get("granularity") == granularity]
-        series = group_loss_subplot_rows(granularity_rows)
-        has_points = False
-
-        for label, group_rows_for_label in series.items():
-            points = [
-                (to_float(row["step"]), to_float(row["loss"]))
-                for row in group_rows_for_label
-                if row.get("step") not in (None, "") and row.get("loss") not in (None, "")
-            ]
-            if not points:
-                continue
-            has_points = True
-            points.sort(key=lambda point: point[0])
-            xs, ys = zip(*points)
-            smoothed_ys = moving_average(
-                list(ys),
-                window_size=loss_moving_average_window_size(len(ys)),
-            )
-            axis.plot(
-                xs,
-                smoothed_ys,
-                marker="o",
-                markersize=3,
-                linewidth=1.0,
-                label=label,
-            )
-
-        axis.set_title(f"Granularity {granularity}")
-        axis.set_xlabel("Step")
-        axis.set_ylabel("Loss")
-        axis.minorticks_on()
-        axis.grid(True, which="major", alpha=0.28, linewidth=0.6)
-        axis.grid(True, which="minor", alpha=0.14, linewidth=0.35)
-        if has_points:
-            axis.legend(frameon=False, fontsize="small")
-        else:
-            axis.text(
-                0.5,
-                0.5,
-                "No numeric loss points found",
-                ha="center",
-                va="center",
-                transform=axis.transAxes,
-            )
-
-    for axis in axes.flat[len(granularity_labels):]:
-        axis.set_visible(False)
-
+    place_legend_on_right(legend_axis, axis)
     figure.suptitle(figure_label)
-    figure.tight_layout(rect=[0, 0, 1, 0.96])
+    figure.tight_layout(rect=[0, 0.03, 1, 0.96] if trace_description else [0, 0, 1, 0.96])
     figure.savefig(output_path, bbox_inches="tight", dpi=300)
     plt.close(figure)
     return output_path
@@ -654,12 +650,14 @@ def plot_loss_over_tokens_for_experiment(
     figure_label: str,
     output_path: Path,
 ) -> Path:
-    granularity_labels = sorted(
-        {str(row["granularity"]) for row in rows if row.get("granularity")},
-        key=granularity_sort_key,
+    trace_description = loss_trace_description(rows, validation=True)
+    figure, axis, legend_axis = create_figure_with_side_legend(
+        plot_width=10,
+        plot_height=5,
+        legend_width=4.8,
     )
-    if not granularity_labels:
-        figure, axis = plt.subplots(figsize=(7, 4))
+    series = group_loss_trace_rows(rows, "granularity")
+    if not series:
         axis.text(
             0.5,
             0.5,
@@ -670,64 +668,58 @@ def plot_loss_over_tokens_for_experiment(
         )
         axis.set_axis_off()
         figure.suptitle(figure_label)
-        figure.tight_layout(rect=[0, 0, 1, 0.96])
+        if trace_description:
+            figure.text(
+                0.5,
+                0.01,
+                trace_description,
+                ha="center",
+                va="bottom",
+                fontsize="small",
+            )
+        figure.tight_layout(rect=[0, 0.03, 1, 0.96] if trace_description else [0, 0, 1, 0.96])
         figure.savefig(output_path, bbox_inches="tight", dpi=300)
         plt.close(figure)
         return output_path
 
-    row_count = len(granularity_labels)
-    figure, axes = plt.subplots(
-        row_count,
-        1,
-        figsize=(8, 4.0 * row_count),
-        squeeze=False,
-    )
+    for label, group_rows_for_label in sorted(series.items(), key=lambda item: loss_trace_series_sort_key(item[0], "granularity")):
+        points = [
+            (to_float(row["tokens_seen"]), to_float(row["loss"]))
+            for row in group_rows_for_label
+            if row.get("tokens_seen") not in (None, "") and row.get("loss") not in (None, "")
+        ]
+        if not points:
+            continue
+        points.sort(key=lambda point: point[0])
+        xs, ys = zip(*points)
+        axis.plot(
+            xs,
+            ys,
+            marker="o",
+            markersize=3,
+            linewidth=1.1,
+            label=label,
+        )
 
-    for axis, granularity in zip(axes.flat, granularity_labels):
-        granularity_rows = [row for row in rows if row.get("granularity") == granularity]
-        series = group_loss_subplot_rows(granularity_rows)
-        has_points = False
+    axis.set_xlabel("Tokens seen")
+    axis.set_ylabel("Loss")
+    axis.minorticks_on()
+    axis.grid(True, which="major", alpha=0.28, linewidth=0.6)
+    axis.grid(True, which="minor", alpha=0.14, linewidth=0.35)
+    axis.set_title(figure_label)
+    if trace_description:
+        figure.text(
+            0.5,
+            0.01,
+            trace_description,
+            ha="center",
+            va="bottom",
+            fontsize="small",
+        )
 
-        for label, group_rows_for_label in series.items():
-            points = [
-                (to_float(row["tokens_seen"]), to_float(row["loss"]))
-                for row in group_rows_for_label
-                if row.get("tokens_seen") not in (None, "") and row.get("loss") not in (None, "")
-            ]
-            if not points:
-                continue
-            has_points = True
-            points.sort(key=lambda point: point[0])
-            xs, ys = zip(*points)
-            axis.plot(
-                xs,
-                ys,
-                marker="o",
-                markersize=3,
-                linewidth=1.1,
-                label=label,
-            )
-
-        axis.set_title(f"Granularity {granularity}")
-        axis.set_xlabel("Tokens seen")
-        axis.set_ylabel("Loss")
-        axis.minorticks_on()
-        axis.grid(True, which="major", alpha=0.28, linewidth=0.6)
-        axis.grid(True, which="minor", alpha=0.14, linewidth=0.35)
-        if has_points:
-            axis.legend(frameon=False, fontsize="small")
-        else:
-            axis.text(
-                0.5,
-                0.5,
-                "No numeric loss points found",
-                ha="center",
-                va="center",
-                transform=axis.transAxes,
-            )
-
+    place_legend_on_right(legend_axis, axis)
     figure.suptitle(figure_label)
-    figure.tight_layout(rect=[0, 0, 1, 0.96])
+    figure.tight_layout(rect=[0, 0.03, 1, 0.96] if trace_description else [0, 0, 1, 0.96])
     figure.savefig(output_path, bbox_inches="tight", dpi=300)
     plt.close(figure)
     return output_path
@@ -982,9 +974,24 @@ def experiment_label(row: dict[str, str]) -> str:
 
 
 def loss_figure_label(row: dict[str, str]) -> str:
-    if row.get("model_family") == "standalone":
-        return standalone_figure_label(row)
-    return experiment_label(row)
+    family_label = scaling_curve_family_label(row)
+    if family_label == "unknown":
+        resolved_run_mode = str(row.get("resolved_run_mode") or "")
+        if resolved_run_mode in {"nested-random", "nested-all", "standalone"}:
+            family_label = resolved_run_mode
+    if family_label == "standalone":
+        return "standalone"
+
+    variant_label = scaling_curve_variant_label(row) or "slicing"
+    if family_label == "nested-random":
+        sampling_label = scaling_curve_sampling_label(row) or str(
+            row.get("resolved_sampling_mode")
+            or row.get("granularity_sampling_mode")
+            or "global"
+        )
+        return f"{family_label} / {variant_label} / {sampling_label}"
+
+    return f"{family_label} / {variant_label}"
 
 
 def standalone_figure_label(row: dict[str, str]) -> str:
@@ -1017,19 +1024,46 @@ def normalize_standalone_run_id(run_id: str, granularity: str) -> str:
     return run_id
 
 
-def group_loss_subplot_rows(rows: list[dict[str, str]]) -> dict[str, list[dict[str, str]]]:
+def loss_trace_kind(rows: list[dict[str, str]]) -> str:
+    resolved_run_mode = _first_row_value(rows, "resolved_run_mode")
+    resolved_sampling_mode = _first_row_value(rows, "resolved_sampling_mode")
+    if resolved_run_mode == "nested-random" and resolved_sampling_mode in {
+        "global",
+        "per_block",
+        "adaptive_per_block",
+    }:
+        return "run"
+    return "granularity"
+
+
+def group_loss_trace_rows(
+    rows: list[dict[str, str]],
+    trace_kind: str,
+) -> dict[str, list[dict[str, str]]]:
     run_ids = {str(row["run_id"]) for row in rows if row.get("run_id") not in (None, "")}
     include_run_id = len(run_ids) > 1
     grouped: dict[str, list[dict[str, str]]] = {}
 
     for row in rows:
-        label_parts = [str(row.get("split") or "unknown-split")]
-        if include_run_id:
-            label_parts.append(str(row.get("run_id") or "unknown-run"))
-        label = " / ".join(label_parts)
+        if trace_kind == "run":
+            label = str(row.get("run_id") or "unknown-run")
+        else:
+            label_parts = []
+            if include_run_id:
+                label_parts.append(str(row.get("run_id") or "unknown-run"))
+            label_parts.append(str(row.get("granularity") or "unknown-granularity"))
+            label = " / ".join(label_parts)
         grouped.setdefault(label, []).append(row)
 
     return grouped
+
+
+def loss_trace_series_sort_key(label: str, trace_kind: str) -> tuple[int, str]:
+    if trace_kind == "run":
+        return (0, label)
+    _, _, granularity = label.rpartition(" / ")
+    granularity_rank = granularity_sort_key(granularity)[0] if granularity else 99
+    return (granularity_rank, label)
 
 
 def safe_filename_fragment(value: str) -> str:
@@ -1254,6 +1288,7 @@ def create_figure_with_side_legend(
     axis = figure.add_subplot(grid[0])
     legend_axis = figure.add_subplot(grid[1])
     legend_axis.set_axis_off()
+    legend_axis.set_in_layout(False)
     return figure, axis, legend_axis
 
 
@@ -1330,6 +1365,87 @@ def loss_moving_average_window_size(point_count: int) -> int:
     if window_size > point_count:
         window_size = point_count if point_count % 2 == 1 else point_count - 1
     return max(1, window_size)
+
+
+def loss_trace_description(
+    rows: list[dict[str, str]],
+    *,
+    validation: bool = False,
+) -> str:
+    if not rows:
+        return ""
+
+    resolved_run_mode = _first_row_value(rows, "resolved_run_mode")
+    resolved_sampling_mode = _first_row_value(rows, "resolved_sampling_mode")
+    sampling_mode = _first_row_value(rows, "sampling_mode")
+
+    if validation:
+        return (
+            "Validation evaluates each granularity independently, so each "
+            "curve is a per-granularity validation loss trace."
+        )
+
+    if resolved_run_mode == "nested-all":
+        return (
+            "nested-all evaluates every configured granularity on each step, "
+            "so these are per-granularity training loss traces."
+        )
+    if resolved_run_mode == "standalone":
+        return (
+            "standalone keeps one fixed granularity for the whole run, so "
+            "each curve is a fixed-granularity training loss trace."
+        )
+    if resolved_sampling_mode == "per_block":
+        return (
+            "nested-random + per_block logs one shared step loss across the "
+            "selected granularities for each step."
+        )
+    if resolved_sampling_mode == "adaptive_per_block":
+        return (
+            "nested-random + adaptive_per_block logs one shared step loss "
+            "across the selected granularities for each step."
+        )
+    if resolved_sampling_mode == "global" or sampling_mode == "global":
+        return (
+            "nested-random + global samples one granularity per step, so each "
+            "curve is a sampled training loss trace."
+        )
+    return ""
+
+
+def loss_trace_panel_suffix(
+    rows: list[dict[str, str]],
+    *,
+    validation: bool = False,
+) -> str:
+    if not rows:
+        return ""
+
+    resolved_run_mode = _first_row_value(rows, "resolved_run_mode")
+    resolved_sampling_mode = _first_row_value(rows, "resolved_sampling_mode")
+    sampling_mode = _first_row_value(rows, "sampling_mode")
+
+    if validation:
+        return "validation loss"
+    if resolved_run_mode == "nested-all":
+        return "training loss"
+    if resolved_run_mode == "standalone":
+        return "fixed training loss"
+    if resolved_sampling_mode == "per_block":
+        return "shared step loss"
+    if resolved_sampling_mode == "adaptive_per_block":
+        return "adaptive shared step loss"
+    if resolved_sampling_mode == "global" or sampling_mode == "global":
+        return "sampled training loss"
+    return ""
+
+
+def _first_row_value(rows: list[dict[str, str]], key: str) -> str:
+    for row in rows:
+        value = row.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
 
 
 def to_float_or_none(value: Any) -> float | None:

@@ -10,7 +10,10 @@ from scripts.make_figures import (
     enrich_scaling_metadata_from_run_config,
     generate_figures,
     group_scaling_rows,
+    loss_figure_label,
     loss_moving_average_window_size,
+    loss_trace_description,
+    loss_trace_panel_suffix,
     refresh_scaling_parameter_counts,
     scaling_curve_style,
     with_default_model_variant,
@@ -332,6 +335,23 @@ def test_make_figures_writes_one_loss_figure_per_experiment_group(tmp_path):
             {
                 "run_id": "debug-nested-001",
                 "step": 1,
+                "split": "train",
+                "model_family": "nested",
+                "model_size_label": "debug",
+                "model_shape_label": "debug-shape",
+                "sampling_mode": "nested-random",
+                "granularity": "s",
+                "loss": 2.2,
+                "perplexity": 9.0,
+                "tokens_seen": 128,
+                "content_tokens_seen": 128,
+                "wall_clock_seconds": 1.0,
+                "tokens_per_second": 128.0,
+                "peak_memory_bytes": 2048,
+            },
+            {
+                "run_id": "debug-nested-001",
+                "step": 1,
                 "split": "validation",
                 "model_family": "nested",
                 "model_size_label": "debug",
@@ -405,6 +425,23 @@ def test_make_figures_writes_one_loss_figure_per_experiment_group(tmp_path):
             {
                 "run_id": "debug-standalone-s-001",
                 "step": 1,
+                "split": "train",
+                "model_family": "standalone",
+                "model_size_label": "debug",
+                "model_shape_label": "debug-shape",
+                "sampling_mode": "standalone",
+                "granularity": "s",
+                "loss": 2.5,
+                "perplexity": 12.2,
+                "tokens_seen": 128,
+                "content_tokens_seen": 128,
+                "wall_clock_seconds": 1.0,
+                "tokens_per_second": 128.0,
+                "peak_memory_bytes": 2048,
+            },
+            {
+                "run_id": "debug-standalone-s-001",
+                "step": 1,
                 "split": "validation",
                 "model_family": "standalone",
                 "model_size_label": "debug",
@@ -441,6 +478,23 @@ def test_make_figures_writes_one_loss_figure_per_experiment_group(tmp_path):
     write_metrics_csv(
         third_run_dir,
         [
+            {
+                "run_id": "debug-standalone-m-001",
+                "step": 1,
+                "split": "train",
+                "model_family": "standalone",
+                "model_size_label": "debug",
+                "model_shape_label": "debug-shape",
+                "sampling_mode": "standalone",
+                "granularity": "m",
+                "loss": 2.7,
+                "perplexity": 14.9,
+                "tokens_seen": 128,
+                "content_tokens_seen": 128,
+                "wall_clock_seconds": 1.0,
+                "tokens_per_second": 128.0,
+                "peak_memory_bytes": 2048,
+            },
             {
                 "run_id": "debug-standalone-m-001",
                 "step": 1,
@@ -481,21 +535,19 @@ def test_make_figures_writes_one_loss_figure_per_experiment_group(tmp_path):
     figure_paths = generate_figures(tmp_path, tmp_path / "figures")
 
     figure_names = {path.name for path in figure_paths}
-    assert "loss_over_steps_debug_nested_001.png" in figure_names
-    assert "loss_over_steps_debug_standalone_001.png" in figure_names
-    assert "validation_loss_over_tokens_debug_nested_001.png" in figure_names
-    assert "validation_loss_over_tokens_debug_standalone_001.png" in figure_names
-    assert "loss_over_steps.png" not in figure_names
-    assert "loss_over_steps_grid.png" not in figure_names
+    assert "loss_over_steps_nested_random_slicing_global.png" in figure_names
+    assert "loss_over_steps_standalone.png" in figure_names
+    assert "validation_loss_over_tokens_nested_random_slicing_global.png" in figure_names
+    assert "validation_loss_over_tokens_standalone.png" in figure_names
     assert "ppl_over_steps.png" in figure_names
 
-    nested_path = tmp_path / "figures" / "loss_over_steps_debug_nested_001.png"
-    standalone_path = tmp_path / "figures" / "loss_over_steps_debug_standalone_001.png"
+    nested_path = tmp_path / "figures" / "loss_over_steps_nested_random_slicing_global.png"
+    standalone_path = tmp_path / "figures" / "loss_over_steps_standalone.png"
     validation_nested_path = (
-        tmp_path / "figures" / "validation_loss_over_tokens_debug_nested_001.png"
+        tmp_path / "figures" / "validation_loss_over_tokens_nested_random_slicing_global.png"
     )
     validation_standalone_path = (
-        tmp_path / "figures" / "validation_loss_over_tokens_debug_standalone_001.png"
+        tmp_path / "figures" / "validation_loss_over_tokens_standalone.png"
     )
     assert nested_path.exists()
     assert nested_path.stat().st_size > 0
@@ -505,6 +557,62 @@ def test_make_figures_writes_one_loss_figure_per_experiment_group(tmp_path):
     assert validation_nested_path.stat().st_size > 0
     assert validation_standalone_path.exists()
     assert validation_standalone_path.stat().st_size > 0
+
+
+def test_make_figures_classifies_loss_traces_by_sampling_mode():
+    global_rows = [
+        {
+            "split": "train",
+            "resolved_run_mode": "nested-random",
+            "resolved_sampling_mode": "global",
+        }
+    ]
+    per_block_rows = [
+        {
+            "split": "train",
+            "resolved_run_mode": "nested-random",
+            "resolved_sampling_mode": "per_block",
+        }
+    ]
+    nested_all_rows = [
+        {
+            "split": "train",
+            "resolved_run_mode": "nested-all",
+            "resolved_sampling_mode": "global",
+        }
+    ]
+    standalone_rows = [
+        {
+            "split": "train",
+            "resolved_run_mode": "standalone",
+            "resolved_sampling_mode": "global",
+        }
+    ]
+    validation_rows = [
+        {
+            "split": "validation",
+            "resolved_run_mode": "nested-random",
+            "resolved_sampling_mode": "global",
+        }
+    ]
+
+    assert loss_figure_label(global_rows[0]) == "nested-random / slicing / global"
+    assert loss_trace_panel_suffix(global_rows) == "sampled training loss"
+    assert "nested-random + global" in loss_trace_description(global_rows)
+    assert loss_figure_label(per_block_rows[0]) == "nested-random / slicing / per_block"
+    assert loss_trace_panel_suffix(per_block_rows) == "shared step loss"
+    assert "per_block" in loss_trace_description(per_block_rows)
+    assert loss_figure_label(nested_all_rows[0]) == "nested-all / slicing"
+    assert loss_trace_panel_suffix(nested_all_rows) == "training loss"
+    assert "nested-all" in loss_trace_description(nested_all_rows)
+    assert loss_figure_label(standalone_rows[0]) == "standalone"
+    assert loss_trace_panel_suffix(standalone_rows) == "fixed training loss"
+    assert "standalone" in loss_trace_description(standalone_rows)
+    assert loss_trace_panel_suffix(validation_rows, validation=True) == "validation loss"
+    assert "Validation evaluates each granularity independently" in loss_trace_description(
+        validation_rows,
+        validation=True,
+    )
 
 
 def test_make_figures_plots_grouped_consistency_metrics_and_skips_deferred_rows(tmp_path):
