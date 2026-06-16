@@ -1313,6 +1313,66 @@ def test_config_driven_training_rejects_multi_process_execution_before_setup(
         )
 
 
+def test_run_training_rejects_invalid_adaptive_pairing_before_setup(
+    tmp_path,
+    monkeypatch,
+):
+    import training.run as training_run
+
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "training.token_budget=4",
+            "training.max_steps_cap=1",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "evaluation.validation=false",
+        ],
+    )
+    config["run"]["sampling_mode"] = "nested-all"
+    config["model"]["granularity_sampling_mode"] = "adaptive_per_block"
+
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3, 4], [5, 6, 7, 8]],
+            "attention_mask": [[1, 1, 1, 1], [1, 1, 1, 1]],
+        }
+    )
+
+    def fake_prepare_distributed_context(*args, **kwargs):
+        raise AssertionError("prepare_distributed_context should not be called")
+
+    def fake_wrap_model_for_distributed(*args, **kwargs):
+        raise AssertionError("wrap_model_for_distributed should not be called")
+
+    monkeypatch.setattr(
+        training_run,
+        "prepare_distributed_context",
+        fake_prepare_distributed_context,
+    )
+    monkeypatch.setattr(
+        training_run,
+        "wrap_model_for_distributed",
+        fake_wrap_model_for_distributed,
+    )
+
+    with pytest.raises(
+        ConfigError,
+        match="model.granularity_sampling_mode=adaptive_per_block requires nested-random runs",
+    ):
+        run_training(
+            config,
+            model=TinyNestedTrainingModel(),
+            tokenized_dataset=tokenized_dataset,
+            device="cpu",
+        )
+
+
 def test_monitoring_smoke_groups_nested_and_standalone_runs_by_series(
     tmp_path,
     monkeypatch,

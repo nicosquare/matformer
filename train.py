@@ -306,9 +306,6 @@ def build_legacy_model(config, model_variant):
 
 def main():
     args = parse_args()
-    from training.run import ensure_single_process_runtime
-
-    ensure_single_process_runtime()
     if args.config:
         from training.run import run_from_config_path
 
@@ -325,6 +322,9 @@ def main():
         )
         return
 
+    from training.run import ensure_single_process_runtime
+
+    ensure_single_process_runtime()
     distributed, rank, _, world_size, device = setup_distributed()
     set_random_seed(args.seed)
 

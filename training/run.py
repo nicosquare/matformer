@@ -54,6 +54,7 @@ from utils.config import (
     resolve_optimizer_kwargs,
     resolve_sampling_mode_from_config_sections,
     resolve_training_length_for_world_size,
+    validate_run_config,
 )
 from utils.heartbeats import HeartbeatCadence, HeartbeatWriter
 from utils.metrics import (
@@ -80,6 +81,7 @@ def run_from_config_path(
     overrides: list[str] | None = None,
     output_dir: str | Path | None = None,
 ) -> dict[str, Any]:
+    ensure_single_process_runtime()
     config = resolve_run_config(
         config_path,
         run_id=run_id,
@@ -110,6 +112,7 @@ def run_training(
     device: torch.device | str | None = None,
 ) -> dict[str, Any]:
     ensure_single_process_runtime()
+    validate_run_config(config)
     run = config["run"]
     training = config["training"]
     output_dir = Path(run["output_dir"])
