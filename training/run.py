@@ -29,6 +29,7 @@ from evaluation.validation import (
 from models.ffn import CatLlamaMLP, get_concat_layout_diagnostic, get_ffn_prefix_metadata
 from models.adaptive_sampler import (
     build_adaptive_reward_record,
+    build_adaptive_sampler_artifact_fields,
     build_adaptive_sampler_state,
     AdaptiveSamplerState,
     coerce_adaptive_sampler_state,
@@ -367,7 +368,7 @@ def run_training(
             **build_monitoring_summary_fields(config, metrics_rows),
             **checkpoint_summary_fields,
             **distributed_summary_fields(distributed_context),
-            **_runtime_summary_adaptive_fields(config, run_state),
+            **build_adaptive_sampler_artifact_fields(config, run_state),
         }
         if metrics_path is not None:
             extra_summary_fields["metrics_path"] = str(metrics_path)
@@ -2473,7 +2474,7 @@ def train_for_steps(
                     run_state.pop("adaptive_reward_summary", None)
                     run_state.pop("adaptive_correction_penalty_summary", None)
                 tokens_per_second = tokens_seen / elapsed if elapsed > 0 else None
-                adaptive_artifacts = _runtime_step_artifact_fields(
+                adaptive_artifacts = build_adaptive_sampler_artifact_fields(
                     config,
                     run_state,
                 )
@@ -2595,7 +2596,7 @@ def train_for_steps(
                         content_tokens_seen=content_tokens_seen,
                         granularity_pattern_summary=validation_runtime_pattern_summary,
                         correction_context=validation_correction_context,
-                        adaptive_artifacts=_runtime_step_artifact_fields(
+                        adaptive_artifacts=build_adaptive_sampler_artifact_fields(
                             config,
                             run_state,
                         ),
@@ -2843,7 +2844,7 @@ def append_final_validation_if_needed(
         content_tokens_seen=content_tokens_seen,
         granularity_pattern_summary=runtime_pattern_summary,
         correction_context=correction_context,
-        adaptive_artifacts=_runtime_step_artifact_fields(
+        adaptive_artifacts=build_adaptive_sampler_artifact_fields(
             config,
             run_state if run_state is not None else {},
         ),
@@ -3073,98 +3074,3 @@ def _runtime_granularity_artifacts(
     )
     return runtime_pattern_summary, correction_context
 
-
-def _runtime_step_artifact_fields(
-    config: dict[str, Any],
-    run_state: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    run = config.get("run", {})
-    model = config.get("model", {})
-    if not isinstance(run, Mapping):
-        run = {}
-    if not isinstance(model, Mapping):
-        model = {}
-    if run_state is None or not isinstance(run_state, Mapping):
-        run_state = {}
-
-    output_dir_value = run.get("output_dir")
-    output_dir = Path(str(output_dir_value)) if output_dir_value else None
-    reward_summary = run_state.get("adaptive_reward_summary")
-    correction_penalty_summary = run_state.get(
-        "adaptive_correction_penalty_summary"
-    )
-
-    return {
-        "correction_mode": model.get("correction_mode"),
-        "membership_correction": model.get("membership_correction"),
-        "sampler_strategy": model.get("adaptive_sampler_strategy"),
-        "adaptive_sampler_strategy": model.get("adaptive_sampler_strategy"),
-        "adaptive_sampler_exploration_scale": model.get(
-            "adaptive_sampler_exploration_scale"
-        ),
-        "adaptive_sampler_decay_rate": model.get("adaptive_sampler_decay_rate"),
-        "adaptive_sampler_reward_penalty_weight": model.get(
-            "adaptive_sampler_reward_penalty_weight"
-        ),
-        "sampler_state": run_state.get("adaptive_sampler_state"),
-        "adaptive_sampler_state": run_state.get("adaptive_sampler_state"),
-        "adaptive_sampler_previous_loss": run_state.get(
-            "adaptive_sampler_previous_loss"
-        ),
-        "adaptive_sampler_previous_pattern": run_state.get(
-            "adaptive_sampler_previous_pattern"
-        ),
-        "adaptive_reward_summary": reward_summary,
-        "adaptive_correction_penalty_summary": correction_penalty_summary,
-        "reward": (
-            reward_summary.get("reward")
-            if isinstance(reward_summary, Mapping)
-            else None
-        ),
-        "correction_penalty": (
-            correction_penalty_summary.get("correction_penalty")
-            if isinstance(correction_penalty_summary, Mapping)
-            else None
-        ),
-        "output_root": run.get("output_root"),
-        "output_dir": run.get("output_dir"),
-        "metrics_path": str(output_dir / "metrics.csv") if output_dir else None,
-        "scaling_results_path": (
-            str(output_dir / "scaling_results.csv") if output_dir else None
-        ),
-        "extraction_metadata_path": (
-            str(output_dir / "extraction_metadata.json")
-            if output_dir and run.get("model_family") == "nested"
-            else None
-        ),
-    }
-
-
-def _runtime_summary_adaptive_fields(
-    config: dict[str, Any],
-    run_state: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    step_fields = _runtime_step_artifact_fields(config, run_state)
-    return {
-        "adaptive_sampler_strategy": step_fields.get("adaptive_sampler_strategy"),
-        "adaptive_sampler_exploration_scale": step_fields.get(
-            "adaptive_sampler_exploration_scale"
-        ),
-        "adaptive_sampler_decay_rate": step_fields.get(
-            "adaptive_sampler_decay_rate"
-        ),
-        "adaptive_sampler_reward_penalty_weight": step_fields.get(
-            "adaptive_sampler_reward_penalty_weight"
-        ),
-        "adaptive_sampler_state": step_fields.get("adaptive_sampler_state"),
-        "adaptive_sampler_previous_loss": step_fields.get(
-            "adaptive_sampler_previous_loss"
-        ),
-        "adaptive_sampler_previous_pattern": step_fields.get(
-            "adaptive_sampler_previous_pattern"
-        ),
-        "adaptive_reward_summary": step_fields.get("adaptive_reward_summary"),
-        "adaptive_correction_penalty_summary": step_fields.get(
-            "adaptive_correction_penalty_summary"
-        ),
-    }

@@ -1204,41 +1204,32 @@ def _resolve_sampling_mode_defaults(
     else:
         derived_run_sampling_mode = "nested-random"
 
-    if canonical_mode == "adaptive_per_block" and derived_run_sampling_mode != "nested-random":
+    def _raise_granularity_sampling_conflict(requirement: str) -> None:
         raise ConfigError(
-            "model.granularity_sampling_mode=adaptive_per_block requires "
-            "nested-random runs"
+            f"model.granularity_sampling_mode={canonical_mode} conflicts with {requirement}"
         )
+
+    if canonical_mode == "adaptive_per_block" and derived_run_sampling_mode != "nested-random":
+        _raise_granularity_sampling_conflict("nested-random runs")
     if (
         canonical_mode == "adaptive_per_block"
         and requested_granularity_sampling_alias is not None
         and requested_granularity_sampling_alias != "random"
     ):
-        raise ConfigError(
-            "model.granularity_sampling_mode=adaptive_per_block requires "
-            "nested-random runs"
-        )
+        _raise_granularity_sampling_conflict("nested-random runs")
     if canonical_mode == "per_block" and derived_run_sampling_mode != "nested-random":
-        raise ConfigError(
-            "model.granularity_sampling_mode=per_block requires nested runs"
-        )
+        _raise_granularity_sampling_conflict("nested runs")
     if derived_run_sampling_mode in {"nested-all", "standalone"} and canonical_mode != "global":
-        if canonical_mode == "adaptive_per_block":
-            raise ConfigError(
-                "model.granularity_sampling_mode=adaptive_per_block requires "
-                "nested-random runs"
-            )
-        raise ConfigError(
-            "model.granularity_sampling_mode=per_block requires nested runs"
+        _raise_granularity_sampling_conflict(
+            "nested-random runs"
+            if canonical_mode == "adaptive_per_block"
+            else "nested runs"
         )
     if model_family == "standalone" and canonical_mode != "global":
-        if canonical_mode == "adaptive_per_block":
-            raise ConfigError(
-                "model.granularity_sampling_mode=adaptive_per_block requires "
-                "nested-random runs"
-            )
-        raise ConfigError(
-            "model.granularity_sampling_mode=per_block requires nested runs"
+        _raise_granularity_sampling_conflict(
+            "nested-random runs"
+            if canonical_mode == "adaptive_per_block"
+            else "nested runs"
         )
     if requested_run_sampling_mode is not None and requested_granularity_sampling_alias is not None:
         expected_alias = _granularity_sampling_alias_from_mode(

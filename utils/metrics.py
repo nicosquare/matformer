@@ -11,6 +11,7 @@ from utils.config import (
     resolve_sampling_mode_from_config_sections,
     write_resolved_config,
 )
+from models.adaptive_sampler import build_adaptive_sampler_artifact_fields
 from models.correction import summarize_correction_context_from_config
 from models.granularity import summarize_granularity_pattern_from_config
 from utils.monitoring import (
@@ -328,7 +329,7 @@ def build_run_summary(
         "granularity_pattern_provenance": _granularity_pattern_provenance(config),
         "granularity_pattern_summary": _granularity_pattern_summary(config),
         "correction_context": _correction_context_summary(config),
-        **_adaptive_sampler_artifact_summary(config),
+        **build_adaptive_sampler_artifact_fields(config),
         "completion_label": run["completion_label"],
         "model_family_slug": run.get("model_family_slug"),
         "model_size_slug": run.get("model_size_slug"),
@@ -1229,90 +1230,6 @@ def _correction_context_summary(
             return dict(stored_context)
 
     return summarize_correction_context_from_config(config)
-
-
-def _adaptive_sampler_artifact_summary(
-    config: Mapping[str, Any],
-) -> dict[str, Any]:
-    model = config.get("model", {})
-    run = config.get("run", {})
-    if not isinstance(model, Mapping):
-        model = {}
-    if not isinstance(run, Mapping):
-        run = {}
-
-    return {
-        "adaptive_sampler_strategy": _first_present_mapping_value(
-            run,
-            model,
-            key="adaptive_sampler_strategy",
-        ),
-        "adaptive_sampler_exploration_scale": _first_present_mapping_value(
-            run,
-            model,
-            key="adaptive_sampler_exploration_scale",
-        ),
-        "adaptive_sampler_decay_rate": _first_present_mapping_value(
-            run,
-            model,
-            key="adaptive_sampler_decay_rate",
-        ),
-        "adaptive_sampler_reward_penalty_weight": _first_present_mapping_value(
-            run,
-            model,
-            key="adaptive_sampler_reward_penalty_weight",
-        ),
-        "adaptive_sampler_state": _first_present_mapping_value(
-            run,
-            model,
-            key="adaptive_sampler_state",
-        ),
-        "adaptive_sampler_previous_loss": _first_present_mapping_value(
-            run,
-            model,
-            key="adaptive_sampler_previous_loss",
-        ),
-        "adaptive_sampler_previous_pattern": _first_present_mapping_value(
-            run,
-            model,
-            key="adaptive_sampler_previous_pattern",
-        ),
-        "adaptive_reward_summary": _first_present_mapping_value(
-            run,
-            model,
-            key="adaptive_reward_summary",
-        ),
-        "adaptive_correction_penalty_summary": _first_present_mapping_value(
-            run,
-            model,
-            key="adaptive_correction_penalty_summary",
-        ),
-        "metrics_path": _first_present_mapping_value(
-            run,
-            model,
-            key="metrics_path",
-        ),
-        "scaling_results_path": _first_present_mapping_value(
-            run,
-            model,
-            key="scaling_results_path",
-        ),
-        "extraction_metadata_path": _first_present_mapping_value(
-            run,
-            model,
-            key="extraction_metadata_path",
-        ),
-    }
-
-
-def _first_present_mapping_value(
-    *mappings: Mapping[str, Any],
-    key: str,
-) -> Any:
-    for mapping in mappings:
-        if isinstance(mapping, Mapping) and mapping.get(key) is not None:
-            return mapping.get(key)
-    return None
 
 
 def _summary_granularities(summary: Mapping[str, Any]) -> list[str]:

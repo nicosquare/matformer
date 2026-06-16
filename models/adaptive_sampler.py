@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 import hashlib
 import math
 import random
+from pathlib import Path
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -400,6 +401,90 @@ def summarize_adaptive_sampler_state(
     return coerced_state.to_dict()
 
 
+def build_adaptive_sampler_artifact_fields(
+    config: Mapping[str, Any],
+    run_state: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Summarize adaptive sampler provenance for config and run artifacts."""
+
+    model = config.get("model", {})
+    run = config.get("run", {})
+    if not isinstance(model, Mapping):
+        model = {}
+    if not isinstance(run, Mapping):
+        run = {}
+    if run_state is None or not isinstance(run_state, Mapping):
+        run_state = {}
+
+    output_dir_value = run.get("output_dir")
+    output_dir = Path(str(output_dir_value)) if output_dir_value else None
+
+    reward_summary = _first_present_mapping_value(
+        run_state,
+        model,
+        key="adaptive_reward_summary",
+    )
+    correction_penalty_summary = _first_present_mapping_value(
+        run_state,
+        model,
+        key="adaptive_correction_penalty_summary",
+    )
+    sampler_state = _first_present_mapping_value(
+        run_state,
+        model,
+        key="adaptive_sampler_state",
+    )
+
+    return {
+        "correction_mode": model.get("correction_mode"),
+        "membership_correction": model.get("membership_correction"),
+        "sampler_strategy": model.get("adaptive_sampler_strategy"),
+        "adaptive_sampler_strategy": model.get("adaptive_sampler_strategy"),
+        "adaptive_sampler_exploration_scale": model.get(
+            "adaptive_sampler_exploration_scale"
+        ),
+        "adaptive_sampler_decay_rate": model.get("adaptive_sampler_decay_rate"),
+        "adaptive_sampler_reward_penalty_weight": model.get(
+            "adaptive_sampler_reward_penalty_weight"
+        ),
+        "sampler_state": sampler_state,
+        "adaptive_sampler_state": sampler_state,
+        "adaptive_sampler_previous_loss": _first_present_mapping_value(
+            run_state,
+            model,
+            key="adaptive_sampler_previous_loss",
+        ),
+        "adaptive_sampler_previous_pattern": _first_present_mapping_value(
+            run_state,
+            model,
+            key="adaptive_sampler_previous_pattern",
+        ),
+        "adaptive_reward_summary": reward_summary,
+        "adaptive_correction_penalty_summary": correction_penalty_summary,
+        "reward": (
+            reward_summary.get("reward")
+            if isinstance(reward_summary, Mapping)
+            else None
+        ),
+        "correction_penalty": (
+            correction_penalty_summary.get("correction_penalty")
+            if isinstance(correction_penalty_summary, Mapping)
+            else None
+        ),
+        "output_root": run.get("output_root"),
+        "output_dir": run.get("output_dir"),
+        "metrics_path": str(output_dir / "metrics.csv") if output_dir else None,
+        "scaling_results_path": (
+            str(output_dir / "scaling_results.csv") if output_dir else None
+        ),
+        "extraction_metadata_path": (
+            str(output_dir / "extraction_metadata.json")
+            if output_dir and run.get("model_family") == "nested"
+            else None
+        ),
+    }
+
+
 def _coerce_block_stat(raw_stat: Any) -> AdaptiveSamplerBlockStat:
     if isinstance(raw_stat, AdaptiveSamplerBlockStat):
         return raw_stat
@@ -449,6 +534,16 @@ def _normalize_sampled_pattern(
             for block_index, granularity in sampled_pattern.items()
         ]
     return [(block_index, str(granularity)) for block_index, granularity in enumerate(sampled_pattern)]
+
+
+def _first_present_mapping_value(
+    *mappings: Mapping[str, Any],
+    key: str,
+) -> Any:
+    for mapping in mappings:
+        if isinstance(mapping, Mapping) and key in mapping:
+            return mapping[key]
+    return None
 
 
 def _mean_factor(
@@ -518,4 +613,5 @@ __all__ = [
     "build_adaptive_reward_record",
     "update_adaptive_sampler_state",
     "summarize_adaptive_sampler_state",
+    "build_adaptive_sampler_artifact_fields",
 ]

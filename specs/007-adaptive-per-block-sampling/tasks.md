@@ -97,8 +97,8 @@
 
 **Purpose**: Final cleanup and validation that affect multiple user stories.
 
-- [ ] T019 [P] Clean up duplicated provenance handling and keep the shallow code paths readable in `models/adaptive_sampler.py`, `training/run.py`, and `utils/metrics.py`
-- [ ] T020 [P] Run the focused validation commands from `specs/007-adaptive-per-block-sampling/quickstart.md` and fix any regressions in `tests/test_config.py`, `tests/test_adaptive_sampler.py`, `tests/test_artifacts.py`, and `tests/test_training_smoke.py`
+- [X] T019 [P] Clean up duplicated provenance handling and keep the shallow code paths readable in `models/adaptive_sampler.py`, `training/run.py`, and `utils/metrics.py`
+- [X] T020 [P] Run the focused validation commands from `specs/007-adaptive-per-block-sampling/quickstart.md` and fix any regressions in `tests/test_config.py`, `tests/test_adaptive_sampler.py`, `tests/test_artifacts.py`, and `tests/test_training_smoke.py`
 
 ---
 

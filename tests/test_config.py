@@ -198,6 +198,7 @@ def test_explicit_nested_random_mode_keeps_legacy_alias_stable_for_adaptive():
         "requested_alias": "random",
         "layer_count": resolved["model"]["num_layers"],
         "available_granularities": ["s", "m", "l", "xl"],
+        "active_granularity": None,
     }
 
 
@@ -598,15 +599,15 @@ def test_debug_standalone_granularity_must_match_model_granularities():
     [
         (
             ["training.granularity_sampling=random"],
-            "model.granularity_sampling_mode=per_block requires nested runs",
+            "model.granularity_sampling_mode=per_block conflicts with nested runs",
         ),
         (
             ["model.granularity_sampling_mode=per_block"],
-            "model.granularity_sampling_mode=per_block requires nested runs",
+            "model.granularity_sampling_mode=per_block conflicts with nested runs",
         ),
         (
             ["model.granularity_sampling_mode=adaptive_per_block"],
-            "model.granularity_sampling_mode=adaptive_per_block requires nested-random runs",
+            "model.granularity_sampling_mode=adaptive_per_block conflicts with nested-random runs",
         ),
     ],
 )
@@ -635,7 +636,7 @@ def test_standalone_rejects_nested_sampling_submodes(overrides, error_message):
 def test_adaptive_per_block_rejects_non_nested_random_pairings(overrides):
     with pytest.raises(
         ConfigError,
-        match="model.granularity_sampling_mode=adaptive_per_block requires nested-random runs",
+        match="model.granularity_sampling_mode=adaptive_per_block conflicts with nested-random runs",
     ):
         resolve_run_config(
             "configs/dmodel256_pilot_comparison.yaml",
