@@ -81,7 +81,7 @@
 
 ### Verification for User Story 3
 
-- [ ] T015 [P] [US3] Update `tests/test_artifacts.py` to assert artifact distinguishability for `nested-random + global`, `nested-random + per_block`, and `nested-random + adaptive_per_block`, including correction mode, membership flags, sampler hyperparameters, correction context, and output locations
+- [X] T015 [P] [US3] Update `tests/test_artifacts.py` to assert artifact distinguishability for `nested-random + global`, `nested-random + per_block`, and `nested-random + adaptive_per_block`, including correction mode, membership flags, sampler hyperparameters, correction context, and output locations
 
 ### Implementation for User Story 3
 
