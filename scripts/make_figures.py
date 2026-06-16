@@ -639,7 +639,7 @@ def plot_loss_over_steps_for_experiment(
 
     place_legend_on_right(legend_axis, axis)
     figure.suptitle(figure_label)
-    figure.tight_layout(rect=[0, 0.03, 1, 0.96] if trace_description else [0, 0, 1, 0.96])
+    finalize_side_legend_figure(figure, trace_description=trace_description)
     figure.savefig(output_path, bbox_inches="tight", dpi=300)
     plt.close(figure)
     return output_path
@@ -677,7 +677,7 @@ def plot_loss_over_tokens_for_experiment(
                 va="bottom",
                 fontsize="small",
             )
-        figure.tight_layout(rect=[0, 0.03, 1, 0.96] if trace_description else [0, 0, 1, 0.96])
+        finalize_side_legend_figure(figure, trace_description=trace_description)
         figure.savefig(output_path, bbox_inches="tight", dpi=300)
         plt.close(figure)
         return output_path
@@ -719,7 +719,7 @@ def plot_loss_over_tokens_for_experiment(
 
     place_legend_on_right(legend_axis, axis)
     figure.suptitle(figure_label)
-    figure.tight_layout(rect=[0, 0.03, 1, 0.96] if trace_description else [0, 0, 1, 0.96])
+    finalize_side_legend_figure(figure, trace_description=trace_description)
     figure.savefig(output_path, bbox_inches="tight", dpi=300)
     plt.close(figure)
     return output_path
@@ -745,7 +745,7 @@ def plot_consistency_results(rows: list[dict[str, str]], output_path: Path) -> P
             transform=axis.transAxes,
         )
         axis.set_axis_off()
-        figure.tight_layout()
+        finalize_side_legend_figure(figure, trace_description="")
         figure.savefig(output_path, bbox_inches="tight", dpi=300)
         plt.close(figure)
         return output_path
@@ -798,6 +798,17 @@ def plot_consistency_results(rows: list[dict[str, str]], output_path: Path) -> P
     figure.savefig(output_path, dpi=300)
     plt.close(figure)
     return output_path
+
+
+def finalize_side_legend_figure(figure, *, trace_description: str) -> None:
+    # GridSpec + a hidden legend axis triggers tight_layout warnings in Matplotlib.
+    # Use explicit margins instead; bbox_inches='tight' handles the final crop.
+    figure.subplots_adjust(
+        left=0.08,
+        right=0.98,
+        top=0.88 if trace_description else 0.92,
+        bottom=0.14 if trace_description else 0.11,
+    )
 
 
 def write_medium_trend_report(rows: list[dict[str, Any]], output_path: Path) -> Path:
