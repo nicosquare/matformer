@@ -46,14 +46,22 @@ SIZE_PLOT_PANELS_WITH_SAMPLING = [
     ("nested-random", "concat", "global"),
     ("nested-random", "slicing", "per_block"),
     ("nested-random", "concat", "per_block"),
+    ("nested-random", "slicing", "adaptive_per_block_thompson"),
+    ("nested-random", "concat", "adaptive_per_block_thompson"),
+    ("nested-random", "slicing", "adaptive_per_block_ucb"),
+    ("nested-random", "concat", "adaptive_per_block_ucb"),
     ("nested-all", "slicing", None),
     ("nested-all", "concat", None),
 ]
 SCALING_GROUP_COLORS = {
     "nested-random / slicing / global": "tab:blue",
     "nested-random / slicing / per_block": "tab:cyan",
+    "nested-random / slicing / adaptive_per_block_thompson": "tab:green",
+    "nested-random / slicing / adaptive_per_block_ucb": "tab:olive",
     "nested-random / concat / global": "tab:orange",
     "nested-random / concat / per_block": "tab:red",
+    "nested-random / concat / adaptive_per_block_thompson": "tab:purple",
+    "nested-random / concat / adaptive_per_block_ucb": "tab:pink",
     "nested-all / slicing": "tab:purple",
     "nested-all / concat": "tab:green",
     "standalone": "tab:brown",
@@ -66,10 +74,14 @@ SCALING_CORRECTION_STYLES = {
 SCALING_SAMPLING_TONES = {
     "global": 0.0,
     "per_block": 0.28,
+    "adaptive_per_block_thompson": 0.4,
+    "adaptive_per_block_ucb": 0.55,
 }
 SCALING_SAMPLING_MARKERS = {
     "global": "o",
     "per_block": "D",
+    "adaptive_per_block_thompson": "P",
+    "adaptive_per_block_ucb": "X",
 }
 
 
@@ -79,6 +91,7 @@ def main(argv: list[str] | None = None) -> None:
         args.input,
         args.output,
         refresh_counts=not args.no_refresh_counts,
+        dpi=args.dpi,
     )
     for path in figure_paths:
         print(path)
@@ -96,6 +109,12 @@ def parse_args(argv: list[str] | None = None):
             "of recomputing counts from each run's config.json."
         ),
     )
+    parser.add_argument(
+        "--dpi",
+        type=int,
+        default=300,
+        help="DPI to use when saving figures.",
+    )
     return parser.parse_args(argv)
 
 
@@ -103,6 +122,7 @@ def generate_figures(
     input_root: str | Path,
     output_dir: str | Path,
     refresh_counts: bool = True,
+    dpi: int = 300,
 ) -> list[Path]:
     input_root = Path(input_root)
     output_dir = Path(output_dir)
@@ -113,8 +133,6 @@ def generate_figures(
     scaling_rows = enrich_scaling_metadata_from_run_config(input_root, scaling_rows)
     if refresh_counts:
         scaling_rows = refresh_scaling_parameter_counts(input_root, scaling_rows)
-    metrics_rows = read_csv_artifacts(input_root, "metrics.csv")
-    metrics_rows = enrich_metrics_metadata_from_run_config(input_root, metrics_rows)
     task_result_rows = read_csv_artifacts(input_root, "task_results.csv")
     consistency_rows = read_csv_artifacts(input_root, "consistency_results.csv")
 
@@ -124,31 +142,34 @@ def generate_figures(
         scaling_rows = aggregate_scaling_summary(scaling_rows, task_result_rows)
 
     if scaling_rows:
-        figure_paths.append(
+        figure_paths.extend(
             plot_metric_vs_size(
                 scaling_rows,
                 metric_name="loss",
                 ylabel="Loss",
                 output_path=output_dir / "loss_vs_size.png",
                 panel_specs=SIZE_PLOT_PANELS_WITH_SAMPLING,
+                dpi=dpi,
             )
         )
-        figure_paths.append(
+        figure_paths.extend(
             plot_metric_vs_size(
                 scaling_rows,
                 metric_name="perplexity",
                 ylabel="Perplexity",
                 output_path=output_dir / "ppl_vs_size.png",
                 panel_specs=SIZE_PLOT_PANELS_WITH_SAMPLING,
+                dpi=dpi,
             )
         )
         if any(row.get("average_downstream_accuracy") for row in scaling_rows):
-            figure_paths.append(
+            figure_paths.extend(
                 plot_metric_vs_size(
                     scaling_rows,
                     metric_name="average_downstream_accuracy",
                     ylabel="Average downstream accuracy",
                     output_path=output_dir / "accuracy_vs_size.png",
+                    dpi=dpi,
                 )
             )
         figure_paths.append(
@@ -158,19 +179,38 @@ def generate_figures(
             )
         )
 
-    if metrics_rows and not scaling_rows:
+    if scaling_rows:
+        metrics_rows = read_csv_artifacts_filtered(
+            input_root,
+            "metrics.csv",
+            row_filter=validation_split_filter,
+        )
+        metrics_rows = enrich_metrics_metadata_from_run_config(input_root, metrics_rows)
+        figure_paths.extend(
+            plot_validation_loss_over_tokens_by_experiment(
+                metrics_rows,
+                output_dir,
+                dpi=dpi,
+            )
+        )
+        figure_paths.extend(
+            plot_validation_loss_over_tokens_by_granularity_comparison(
+                metrics_rows,
+                output_dir,
+                dpi=dpi,
+            )
+        )
+    else:
+        metrics_rows = read_csv_artifacts(input_root, "metrics.csv")
+        metrics_rows = enrich_metrics_metadata_from_run_config(input_root, metrics_rows)
         figure_paths.append(
             plot_metric_over_steps(
                 metrics_rows,
                 metric_name="perplexity",
                 ylabel="Perplexity",
                 output_path=output_dir / "ppl_over_steps.png",
+                dpi=dpi,
             )
-        )
-
-    if metrics_rows:
-        figure_paths.extend(
-            plot_validation_loss_over_tokens_by_experiment(metrics_rows, output_dir)
         )
 
     if consistency_rows:
@@ -178,6 +218,7 @@ def generate_figures(
             plot_consistency_results(
                 consistency_rows,
                 output_dir / "consistency_vs_size.png",
+                dpi=dpi,
             )
         )
 
@@ -185,13 +226,27 @@ def generate_figures(
 
 
 def read_csv_artifacts(input_root: Path, filename: str) -> list[dict[str, str]]:
+    return read_csv_artifacts_filtered(input_root, filename, row_filter=None)
+
+
+def read_csv_artifacts_filtered(
+    input_root: Path,
+    filename: str,
+    row_filter: Any | None,
+) -> list[dict[str, str]]:
     rows = []
     for path in sorted(input_root.rglob(filename)):
         with path.open("r", encoding="utf-8", newline="") as csv_file:
             for row in csv.DictReader(csv_file):
+                if row_filter is not None and not row_filter(row):
+                    continue
                 row["_source_csv"] = str(path)
                 rows.append(row)
     return rows
+
+
+def validation_split_filter(row: dict[str, str]) -> bool:
+    return str(row.get("split") or "") == "validation"
 
 
 def refresh_scaling_parameter_counts(
@@ -256,6 +311,11 @@ def enrich_scaling_metadata_from_run_config(
             )
             if correction_mode is not None:
                 enriched_row["correction_mode"] = correction_mode
+            adaptive_sampler_strategy = adaptive_sampler_strategy_from_saved_config(
+                config_cache[config_path]
+            )
+            if adaptive_sampler_strategy is not None:
+                enriched_row["adaptive_sampler_strategy"] = adaptive_sampler_strategy
         enriched_rows.append(enriched_row)
 
     return enriched_rows
@@ -298,6 +358,11 @@ def enrich_metrics_metadata_from_run_config(
             )
             if correction_mode is not None:
                 enriched_row["correction_mode"] = correction_mode
+            adaptive_sampler_strategy = adaptive_sampler_strategy_from_saved_config(
+                config_cache[config_path]
+            )
+            if adaptive_sampler_strategy is not None:
+                enriched_row["adaptive_sampler_strategy"] = adaptive_sampler_strategy
         enriched_rows.append(enriched_row)
 
     return enriched_rows
@@ -382,6 +447,16 @@ def correction_mode_from_saved_config(config: dict[str, Any]) -> str | None:
     return str(value).strip().lower()
 
 
+def adaptive_sampler_strategy_from_saved_config(config: dict[str, Any]) -> str | None:
+    model = config.get("model")
+    if not isinstance(model, dict):
+        return None
+    value = model.get("adaptive_sampler_strategy")
+    if value in (None, ""):
+        return None
+    return str(value).strip().lower()
+
+
 def resolved_sampling_mode_from_saved_config(config: dict[str, Any]) -> str | None:
     model = config.get("model")
     if not isinstance(model, dict):
@@ -418,7 +493,8 @@ def plot_metric_vs_size(
     ylabel: str,
     output_path: Path,
     panel_specs: list[tuple[str, str, str | None]] | None = None,
-) -> Path:
+    dpi: int = 300,
+) -> list[Path]:
     panel_specs = panel_specs or SIZE_PLOT_PANELS_DEFAULT
     column_count = 2 if len(panel_specs) > 1 else 1
     row_count = math.ceil(len(panel_specs) / column_count)
@@ -429,8 +505,10 @@ def plot_metric_vs_size(
         sharex=True,
         sharey=False,
     )
+    axes_list = flatten_axes(axes)
+
     for axis, (sampling_mode, variant_label, sampling_label) in zip(
-        axes.flat,
+        axes_list,
         panel_specs,
     ):
         plot_metric_vs_size_panel(
@@ -443,11 +521,133 @@ def plot_metric_vs_size(
             sampling_label=sampling_label,
         )
 
+    row_limits = metric_row_limits_for_panel_specs(
+        axes_list,
+        panel_specs,
+        column_count,
+    )
+    for row_index, row_limit in enumerate(row_limits):
+        if row_limit is None:
+            continue
+        start = row_index * column_count
+        end = min(start + column_count, len(axes_list))
+        for axis in axes_list[start:end]:
+            axis.set_ylim(*row_limit)
+
     figure.suptitle(f"{ylabel} vs Non-embedding parameters")
     figure.tight_layout(rect=[0, 0, 1, 0.96])
-    figure.savefig(output_path, bbox_inches="tight", dpi=300)
+    figure.savefig(output_path, bbox_inches="tight", dpi=dpi)
+    plt.close(figure)
+
+    output_paths = [output_path]
+    for panel_spec in panel_specs:
+        panel_path = output_path.with_name(
+            f"{output_path.stem}__{safe_filename_fragment(panel_spec_label(*panel_spec))}.png"
+        )
+        output_paths.append(
+            plot_metric_vs_size_panel_figure(
+                rows,
+                metric_name=metric_name,
+                ylabel=ylabel,
+                panel_spec=panel_spec,
+                output_path=panel_path,
+                dpi=dpi,
+            )
+        )
+
+    return output_paths
+
+
+def flatten_axes(axes) -> list[Any]:
+    if hasattr(axes, "flat"):
+        return list(axes.flat)
+    return [axes]
+
+
+def metric_row_limits_for_panel_specs(
+    axes_list: list[Any],
+    panel_specs: list[tuple[str, str, str | None]],
+    column_count: int,
+) -> list[tuple[float, float] | None]:
+    row_limits: list[tuple[float, float] | None] = []
+    row_count = math.ceil(len(panel_specs) / column_count)
+    for row_index in range(row_count):
+        start = row_index * column_count
+        end = min(start + column_count, len(axes_list))
+        row_axes = axes_list[start:end]
+        row_values: list[float] = []
+        for axis in row_axes:
+            row_values.extend(axis_numeric_y_values(axis))
+        if not row_values:
+            row_limits.append(None)
+            continue
+        row_min = min(row_values)
+        row_max = max(row_values)
+        row_limits.append(padded_limits(row_min, row_max))
+    return row_limits
+
+
+def axis_numeric_y_values(axis) -> list[float]:
+    values: list[float] = []
+    for line in axis.get_lines():
+        for y_value in line.get_ydata():
+            y = to_float_or_none(y_value)
+            if y is not None and math.isfinite(y):
+                values.append(y)
+    for collection in axis.collections:
+        if not hasattr(collection, "get_offsets"):
+            continue
+        offsets = collection.get_offsets()
+        for _, y_value in offsets:
+            y = to_float_or_none(y_value)
+            if y is not None and math.isfinite(y):
+                values.append(y)
+    return values
+
+
+def padded_limits(min_value: float, max_value: float) -> tuple[float, float]:
+    if min_value == max_value:
+        if min_value == 0.0:
+            return (-1.0, 1.0)
+        padding = abs(min_value) * 0.05
+        return (min_value - padding, max_value + padding)
+    padding = (max_value - min_value) * 0.08
+    return (min_value - padding, max_value + padding)
+
+
+def plot_metric_vs_size_panel_figure(
+    rows: list[dict[str, str]],
+    metric_name: str,
+    ylabel: str,
+    panel_spec: tuple[str, str, str | None],
+    output_path: Path,
+    dpi: int = 300,
+) -> Path:
+    figure, axis = plt.subplots(figsize=(7.2, 5.0))
+    plot_metric_vs_size_panel(
+        axis,
+        rows,
+        metric_name=metric_name,
+        ylabel=ylabel,
+        sampling_mode=panel_spec[0],
+        variant_label=panel_spec[1],
+        sampling_label=panel_spec[2],
+    )
+    figure.tight_layout()
+    figure.savefig(output_path, bbox_inches="tight", dpi=dpi)
     plt.close(figure)
     return output_path
+
+
+def panel_spec_label(
+    sampling_mode: str,
+    variant_label: str,
+    sampling_label: str | None,
+) -> str:
+    parts = [sampling_mode, variant_label]
+    if sampling_label is not None:
+        parts.append(sampling_label)
+    return " / ".join(parts)
 
 
 def plot_metric_vs_size_panel(
@@ -534,6 +734,7 @@ def plot_metric_over_steps(
     metric_name: str,
     ylabel: str,
     output_path: Path,
+    dpi: int = 300,
 ) -> Path:
     figure, axis, legend_axis = create_figure_with_side_legend(
         plot_width=7,
@@ -558,7 +759,7 @@ def plot_metric_over_steps(
     axis.set_ylabel(ylabel)
     axis.grid(True, alpha=0.3)
     place_legend_on_right(legend_axis, axis)
-    figure.savefig(output_path, dpi=300)
+    figure.savefig(output_path, dpi=dpi)
     plt.close(figure)
     return output_path
 
@@ -566,6 +767,7 @@ def plot_metric_over_steps(
 def plot_validation_loss_over_tokens_by_experiment(
     rows: list[dict[str, str]],
     output_dir: Path,
+    dpi: int = 300,
 ) -> list[Path]:
     output_paths = []
     grouped = group_loss_rows_by_figure(
@@ -579,14 +781,284 @@ def plot_validation_loss_over_tokens_by_experiment(
                 figure_label,
                 output_dir
                 / f"validation_loss_over_tokens_{safe_filename_fragment(figure_label)}.png",
+                dpi=dpi,
             )
         )
     return output_paths
+
+
+def plot_validation_loss_over_tokens_by_granularity_comparison(
+    rows: list[dict[str, str]],
+    output_dir: Path,
+    dpi: int = 300,
+) -> list[Path]:
+    comparison_rows = [
+        row
+        for row in rows
+        if str(row.get("split") or "") == "validation"
+        and validation_variant_key(row) == "none"
+        and validation_comparison_method_key(row) is not None
+    ]
+    if not comparison_rows:
+        return []
+
+    return [
+        plot_validation_loss_over_tokens_by_granularity_comparison_figure(
+            comparison_rows,
+            output_dir / "validation_loss_over_tokens_granularity_comparison.png",
+            dpi=dpi,
+        )
+    ]
+
+
+def plot_validation_loss_over_tokens_by_granularity_comparison_figure(
+    rows: list[dict[str, str]],
+    output_path: Path,
+    dpi: int = 300,
+) -> Path:
+    granularity_rows = [
+        row for row in rows
+        if row.get("granularity") not in (None, "")
+    ]
+
+    granularity_labels = sorted(
+        {str(row["granularity"]) for row in granularity_rows},
+        key=granularity_sort_key,
+    )
+
+    if not granularity_labels:
+        figure, axis = plt.subplots(figsize=(12, 4))
+        axis.text(
+            0.5,
+            0.5,
+            "No granularity metadata found",
+            ha="center",
+            va="center",
+            transform=axis.transAxes,
+        )
+        axis.set_axis_off()
+        figure.suptitle("Validation loss comparison by granularity", fontsize=16)
+        figure.savefig(output_path, dpi=dpi, bbox_inches="tight")
+        plt.close(figure)
+        return output_path
+
+    figure_height = max(3.0, 2.5 * len(granularity_labels))
+    figure, axes = plt.subplots(
+        len(granularity_labels),
+        1,
+        figsize=(14, figure_height),
+        sharex=True,
+    )
+
+    if len(granularity_labels) == 1:
+        axes = [axes]
+
+    method_keys = validation_comparison_method_order(rows)
+    method_styles = validation_comparison_styles(method_keys)
+    method_labels = {
+        method_key: validation_comparison_display_label(method_key)
+        for method_key in method_keys
+    }
+    legend_handles = [
+        Line2D(
+            [0],
+            [0],
+            color=method_styles[method_key]["color"],
+            marker=method_styles[method_key]["marker"],
+            linestyle=method_styles[method_key]["linestyle"],
+            linewidth=method_styles[method_key]["linewidth"],
+            markersize=method_styles[method_key]["markersize"],
+            label=method_labels[method_key],
+        )
+        for method_key in method_keys
+    ]
+
+    for axis, granularity in zip(axes, granularity_labels):
+        sub_rows = [
+            row
+            for row in granularity_rows
+            if str(row.get("granularity") or "") == granularity
+        ]
+        method_groups = group_validation_rows_by_method(sub_rows)
+
+        if not method_groups:
+            axis.text(
+                0.5,
+                0.5,
+                "No numeric validation points found",
+                ha="center",
+                va="center",
+                transform=axis.transAxes,
+            )
+            axis.set_axis_off()
+            continue
+
+        for method_key in method_keys:
+            method_rows = method_groups.get(method_key)
+            if not method_rows:
+                continue
+
+            points = [
+                (
+                    to_float(row["tokens_seen"]),
+                    to_float(row["loss"]),
+                )
+                for row in method_rows
+                if row.get("tokens_seen") not in (None, "")
+                and row.get("loss") not in (None, "")
+            ]
+
+            if not points:
+                continue
+
+            points.sort(key=lambda point: point[0])
+            xs, ys = zip(*points)
+            axis.plot(
+                xs,
+                ys,
+                label=method_labels[method_key],
+                **method_styles[method_key],
+            )
+
+        axis.set_title(granularity, fontsize=11, pad=6)
+        axis.set_ylabel("Loss")
+        axis.grid(True, which="major", alpha=0.30, linewidth=0.6)
+        axis.minorticks_on()
+        axis.grid(True, which="minor", alpha=0.15, linewidth=0.3)
+        axis.set_axisbelow(True)
+
+    axes[-1].set_xlabel("Tokens seen")
+    figure.suptitle(
+        "Validation loss: standalone vs uncorrected nested-random methods",
+        fontsize=16,
+        y=0.98,
+    )
+
+    if legend_handles:
+        figure.legend(
+            handles=legend_handles,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.01),
+            ncol=3,
+            frameon=False,
+        )
+
+    figure.subplots_adjust(
+        left=0.08,
+        right=0.98,
+        top=0.92,
+        bottom=0.11,
+        hspace=0.35,
+    )
+    figure.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    plt.close(figure)
+    return output_path
+
+
+def group_validation_rows_by_method(
+    rows: list[dict[str, str]],
+) -> dict[str, list[dict[str, str]]]:
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for row in rows:
+        method_key = validation_comparison_method_key(row)
+        if method_key is None:
+            continue
+        grouped.setdefault(method_key, []).append(row)
+    return grouped
+
+
+def validation_comparison_method_key(row: dict[str, str]) -> str | None:
+    family_label = scaling_curve_family_label(row)
+    if family_label == "standalone":
+        return "standalone"
+    if family_label != "nested-random":
+        return None
+
+    variant_label = scaling_curve_variant_label(row)
+    if variant_label not in {"slicing", "concat"}:
+        return None
+
+    sampling_label = scaling_curve_sampling_label(row)
+    if sampling_label not in {
+        "global",
+        "per_block",
+        "adaptive_per_block_thompson",
+        "adaptive_per_block_ucb",
+    }:
+        return None
+
+    return f"nested-random / {variant_label} / {sampling_label}"
+
+
+def validation_comparison_method_order(rows: list[dict[str, str]]) -> list[str]:
+    preferred = [
+        "standalone",
+        "nested-random / slicing / global",
+        "nested-random / concat / global",
+        "nested-random / slicing / per_block",
+        "nested-random / concat / per_block",
+        "nested-random / slicing / adaptive_per_block_thompson",
+        "nested-random / concat / adaptive_per_block_thompson",
+        "nested-random / slicing / adaptive_per_block_ucb",
+        "nested-random / concat / adaptive_per_block_ucb",
+    ]
+    present = {validation_comparison_method_key(row) for row in rows}
+    return [label for label in preferred if label in present]
+
+
+def validation_comparison_display_label(method_key: str) -> str:
+    if method_key == "standalone":
+        return "standalone"
+    _, variant_label, sampling_label = method_key.split(" / ")
+    return f"{variant_label} / {display_sampling_label_for_curve(sampling_label) or sampling_label}"
+
+
+def validation_comparison_styles(method_keys: list[str]) -> dict[str, dict[str, Any]]:
+    variant_colors = {
+        "standalone": "tab:brown",
+        "slicing": "tab:blue",
+        "concat": "tab:orange",
+    }
+    sampling_linestyles = {
+        "global": "-",
+        "per_block": "--",
+        "adaptive_per_block_thompson": "-.",
+        "adaptive_per_block_ucb": ":",
+    }
+    sampling_markers = {
+        "global": "o",
+        "per_block": "s",
+        "adaptive_per_block_thompson": "^",
+        "adaptive_per_block_ucb": "D",
+    }
+    styles: dict[str, dict[str, Any]] = {}
+    for method_key in method_keys:
+        if method_key == "standalone":
+            styles[method_key] = {
+                "color": variant_colors["standalone"],
+                "marker": "o",
+                "linestyle": "-",
+                "linewidth": 1.5,
+                "markersize": 3.5,
+            }
+            continue
+
+        _, variant_label, sampling_label = method_key.split(" / ")
+        styles[method_key] = {
+            "color": variant_colors.get(variant_label, "tab:gray"),
+            "marker": sampling_markers.get(sampling_label, "o"),
+            "linestyle": sampling_linestyles.get(sampling_label, "-"),
+            "linewidth": 1.4,
+            "markersize": 3.5,
+        }
+    return styles
+
 
 def plot_loss_over_tokens_for_experiment(
     rows: list[dict[str, str]],
     figure_label: str,
     output_path: Path,
+    dpi: int = 300,
 ) -> Path:
     granularity_rows = [
         row for row in rows
@@ -613,11 +1085,7 @@ def plot_loss_over_tokens_for_experiment(
 
         figure.suptitle(figure_label, fontsize=16)
 
-        figure.savefig(
-            output_path,
-            dpi=300,
-            bbox_inches="tight",
-        )
+        figure.savefig(output_path, dpi=dpi, bbox_inches="tight")
         plt.close(figure)
         return output_path
 
@@ -758,7 +1226,7 @@ def plot_loss_over_tokens_for_experiment(
 
     figure.savefig(
         output_path,
-        dpi=300,
+        dpi=dpi,
         bbox_inches="tight",
     )
 
@@ -816,7 +1284,11 @@ def validation_variant_key(row: dict[str, str]) -> str:
     return correction_label or "none"
 
 
-def plot_consistency_results(rows: list[dict[str, str]], output_path: Path) -> Path:
+def plot_consistency_results(
+    rows: list[dict[str, str]],
+    output_path: Path,
+    dpi: int = 300,
+) -> Path:
     figure, axis, legend_axis = create_figure_with_side_legend(
         plot_width=10,
         plot_height=5,
@@ -837,7 +1309,7 @@ def plot_consistency_results(rows: list[dict[str, str]], output_path: Path) -> P
         )
         axis.set_axis_off()
         finalize_side_legend_figure(figure, trace_description="")
-        figure.savefig(output_path, bbox_inches="tight", dpi=300)
+        figure.savefig(output_path, bbox_inches="tight", dpi=dpi)
         plt.close(figure)
         return output_path
 
@@ -886,7 +1358,7 @@ def plot_consistency_results(rows: list[dict[str, str]], output_path: Path) -> P
     axis.set_ylabel("Metric value")
     axis.grid(True, axis="y", alpha=0.3)
     place_legend_on_right(legend_axis, axis)
-    figure.savefig(output_path, dpi=300)
+    figure.savefig(output_path, dpi=dpi)
     plt.close(figure)
     return output_path
 
@@ -1205,8 +1677,9 @@ def scaling_curve_display_label(rows: list[dict[str, str]]) -> str:
         parts.append(variant_label)
 
     sampling_label = scaling_curve_sampling_label(row)
-    if sampling_label == "per_block":
-        parts.append("per_block sampling")
+    display_sampling_label = display_sampling_label_for_curve(sampling_label)
+    if display_sampling_label is not None:
+        parts.append(display_sampling_label)
 
     correction_label = scaling_curve_correction_label(row)
     if correction_label is not None:
@@ -1273,14 +1746,45 @@ def scaling_curve_sampling_label(row: dict[str, str]) -> str | None:
         normalized = str(resolved_sampling_mode).strip().lower()
         if normalized in {"global", "per_block"}:
             return normalized
+        if normalized == "adaptive_per_block":
+            strategy = adaptive_sampler_strategy_for_row(row)
+            if strategy in {"thompson", "ucb"}:
+                return f"adaptive_per_block_{strategy}"
+            return normalized
 
     granularity_sampling_mode = row.get("granularity_sampling_mode")
     if granularity_sampling_mode not in (None, ""):
         normalized = str(granularity_sampling_mode).strip().lower()
         if normalized in {"global", "per_block"}:
             return normalized
+        if normalized == "adaptive_per_block":
+            strategy = adaptive_sampler_strategy_for_row(row)
+            if strategy in {"thompson", "ucb"}:
+                return f"adaptive_per_block_{strategy}"
+            return normalized
 
     return None
+
+
+def adaptive_sampler_strategy_for_row(row: dict[str, str]) -> str | None:
+    value = row.get("adaptive_sampler_strategy")
+    if value in (None, ""):
+        return None
+    return str(value).strip().lower()
+
+
+def display_sampling_label_for_curve(sampling_label: str | None) -> str | None:
+    if sampling_label is None:
+        return None
+    if sampling_label == "global":
+        return "global"
+    if sampling_label == "per_block":
+        return "per_block sampling"
+    if sampling_label == "adaptive_per_block_thompson":
+        return "adaptive per-block thompson"
+    if sampling_label == "adaptive_per_block_ucb":
+        return "adaptive per-block ucb"
+    return sampling_label
 
 
 def scaling_curve_correction_label(row: dict[str, str]) -> str | None:

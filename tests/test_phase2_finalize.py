@@ -7,6 +7,7 @@ import torch
 from datasets import Dataset
 
 from scripts.make_figures import (
+    display_sampling_label_for_curve,
     enrich_metrics_metadata_from_run_config,
     enrich_scaling_metadata_from_run_config,
     generate_figures,
@@ -17,6 +18,9 @@ from scripts.make_figures import (
     loss_trace_panel_suffix,
     refresh_scaling_parameter_counts,
     scaling_curve_style,
+    scaling_curve_sampling_label,
+    validation_comparison_display_label,
+    validation_comparison_method_key,
     validation_variant_display_labels,
     validation_variant_order,
     with_default_model_variant,
@@ -570,6 +574,22 @@ def test_make_figures_classifies_loss_traces_by_sampling_mode():
             "resolved_sampling_mode": "per_block",
         }
     ]
+    adaptive_thompson_rows = [
+        {
+            "split": "train",
+            "resolved_run_mode": "nested-random",
+            "resolved_sampling_mode": "adaptive_per_block",
+            "adaptive_sampler_strategy": "thompson",
+        }
+    ]
+    adaptive_ucb_rows = [
+        {
+            "split": "train",
+            "resolved_run_mode": "nested-random",
+            "resolved_sampling_mode": "adaptive_per_block",
+            "adaptive_sampler_strategy": "ucb",
+        }
+    ]
     nested_all_rows = [
         {
             "split": "train",
@@ -598,6 +618,18 @@ def test_make_figures_classifies_loss_traces_by_sampling_mode():
     assert loss_figure_label(per_block_rows[0]) == "nested-random / slicing / per_block"
     assert loss_trace_panel_suffix(per_block_rows) == "shared step loss"
     assert "per_block" in loss_trace_description(per_block_rows)
+    assert scaling_curve_sampling_label(adaptive_thompson_rows[0]) == (
+        "adaptive_per_block_thompson"
+    )
+    assert loss_figure_label(adaptive_thompson_rows[0]) == (
+        "nested-random / slicing / adaptive_per_block_thompson"
+    )
+    assert scaling_curve_sampling_label(adaptive_ucb_rows[0]) == (
+        "adaptive_per_block_ucb"
+    )
+    assert loss_figure_label(adaptive_ucb_rows[0]) == (
+        "nested-random / slicing / adaptive_per_block_ucb"
+    )
     assert loss_figure_label(nested_all_rows[0]) == "nested-all / slicing"
     assert loss_trace_panel_suffix(nested_all_rows) == "training loss"
     assert "nested-all" in loss_trace_description(nested_all_rows)
@@ -1009,6 +1041,65 @@ def test_make_figures_groups_scaling_curves_by_sampling_mode_and_variant():
         "s",
         "xl",
     ]
+
+
+def test_make_figures_groups_scaling_curves_by_adaptive_sampling_strategy():
+    rows = [
+        {
+            "model_family": "nested",
+            "sampling_mode": "nested-random",
+            "model_variant": "slicing",
+            "resolved_sampling_mode": "adaptive_per_block",
+            "adaptive_sampler_strategy": "thompson",
+            "granularity": "s",
+        },
+        {
+            "model_family": "nested",
+            "sampling_mode": "nested-random",
+            "model_variant": "slicing",
+            "resolved_sampling_mode": "adaptive_per_block",
+            "adaptive_sampler_strategy": "ucb",
+            "granularity": "xl",
+        },
+    ]
+
+    grouped = group_scaling_rows(rows)
+
+    assert set(grouped) == {
+        "nested-random / slicing / adaptive_per_block_thompson",
+        "nested-random / slicing / adaptive_per_block_ucb",
+    }
+    assert [row["granularity"] for row in grouped[
+        "nested-random / slicing / adaptive_per_block_thompson"
+    ]] == ["s"]
+
+
+def test_make_figures_builds_validation_comparison_method_labels():
+    adaptive_row = {
+        "split": "validation",
+        "sampling_mode": "nested-random",
+        "model_family": "nested",
+        "model_variant": "concat",
+        "resolved_sampling_mode": "adaptive_per_block",
+        "adaptive_sampler_strategy": "ucb",
+        "correction_mode": "none",
+    }
+    standalone_row = {
+        "split": "validation",
+        "sampling_mode": "standalone",
+        "model_family": "standalone",
+        "model_variant": "slicing",
+        "correction_mode": "none",
+    }
+
+    assert validation_comparison_method_key(adaptive_row) == (
+        "nested-random / concat / adaptive_per_block_ucb"
+    )
+    assert validation_comparison_display_label(
+        "nested-random / concat / adaptive_per_block_ucb"
+    ) == "concat / adaptive per-block ucb"
+    assert validation_comparison_method_key(standalone_row) == "standalone"
+    assert validation_comparison_display_label("standalone") == "standalone"
 
 
 def test_make_figures_groups_scaling_curves_by_sampling_mode_variant_and_membership_correction():
