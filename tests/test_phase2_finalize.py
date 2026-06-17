@@ -7,6 +7,7 @@ import torch
 from datasets import Dataset
 
 from scripts.make_figures import (
+    enrich_metrics_metadata_from_run_config,
     enrich_scaling_metadata_from_run_config,
     generate_figures,
     group_scaling_rows,
@@ -535,24 +536,17 @@ def test_make_figures_writes_one_loss_figure_per_experiment_group(tmp_path):
     figure_paths = generate_figures(tmp_path, tmp_path / "figures")
 
     figure_names = {path.name for path in figure_paths}
-    assert "loss_over_steps_nested_random_slicing_global.png" in figure_names
-    assert "loss_over_steps_standalone.png" in figure_names
+    assert not any(name.startswith("loss_over_steps_") for name in figure_names)
     assert "validation_loss_over_tokens_nested_random_slicing_global.png" in figure_names
     assert "validation_loss_over_tokens_standalone.png" in figure_names
     assert "ppl_over_steps.png" in figure_names
 
-    nested_path = tmp_path / "figures" / "loss_over_steps_nested_random_slicing_global.png"
-    standalone_path = tmp_path / "figures" / "loss_over_steps_standalone.png"
     validation_nested_path = (
         tmp_path / "figures" / "validation_loss_over_tokens_nested_random_slicing_global.png"
     )
     validation_standalone_path = (
         tmp_path / "figures" / "validation_loss_over_tokens_standalone.png"
     )
-    assert nested_path.exists()
-    assert nested_path.stat().st_size > 0
-    assert standalone_path.exists()
-    assert standalone_path.stat().st_size > 0
     assert validation_nested_path.exists()
     assert validation_nested_path.stat().st_size > 0
     assert validation_standalone_path.exists()
@@ -859,6 +853,48 @@ def test_make_figures_enriches_model_variant_from_run_config(tmp_path):
     assert enriched_rows[0]["membership_correction"] is False
     assert enriched_rows[0]["resolved_sampling_mode"] == "global"
     assert enriched_rows[0]["granularity_sampling_mode"] == "global"
+
+
+def test_make_figures_enriches_metrics_metadata_from_run_config(tmp_path):
+    output_dir = tmp_path / "outputs"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir / "debug-nested-001",
+        overrides=[
+            "model.variant=concat",
+            "model.correction_mode=lmc",
+            "model.membership_correction=true",
+            "model.granularity_sampling_mode=per_block",
+        ],
+    )
+    config_path = Path(config["run"]["output_dir"]) / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(config, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    rows = [
+        {
+            "run_id": "debug-nested-001",
+            "model_family": "nested",
+            "model_size_label": "debug",
+            "model_shape_label": "debug-shape",
+            "sampling_mode": "nested-random",
+            "resolved_sampling_mode": "global",
+            "granularity_sampling_mode": "global",
+            "granularity": "s",
+            "_source_csv": str(Path(config["run"]["output_dir"]) / "metrics.csv"),
+        }
+    ]
+
+    enriched_rows = enrich_metrics_metadata_from_run_config(output_dir, rows)
+
+    assert enriched_rows[0]["model_variant"] == "concat"
+    assert enriched_rows[0]["resolved_sampling_mode"] == "per_block"
+    assert enriched_rows[0]["granularity_sampling_mode"] == "per_block"
+    assert enriched_rows[0]["correction_mode"] == "lmc"
 
 
 def test_make_figures_defaults_missing_model_variant_for_legacy_configs(tmp_path):

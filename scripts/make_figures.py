@@ -20,6 +20,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import to_rgb
+from matplotlib.lines import Line2D
 
 
 PARAMETER_COUNT_FIELDS = [
@@ -113,6 +114,7 @@ def generate_figures(
     if refresh_counts:
         scaling_rows = refresh_scaling_parameter_counts(input_root, scaling_rows)
     metrics_rows = read_csv_artifacts(input_root, "metrics.csv")
+    metrics_rows = enrich_metrics_metadata_from_run_config(input_root, metrics_rows)
     task_result_rows = read_csv_artifacts(input_root, "task_results.csv")
     consistency_rows = read_csv_artifacts(input_root, "consistency_results.csv")
 
@@ -167,7 +169,6 @@ def generate_figures(
         )
 
     if metrics_rows:
-        figure_paths.extend(plot_loss_over_steps_by_experiment(metrics_rows, output_dir))
         figure_paths.extend(
             plot_validation_loss_over_tokens_by_experiment(metrics_rows, output_dir)
         )
@@ -247,6 +248,48 @@ def enrich_scaling_metadata_from_run_config(
                 membership_correction_from_saved_config(
                     config_cache[config_path]
                 )
+            )
+            if membership_correction is not None:
+                enriched_row["membership_correction"] = membership_correction
+            correction_mode = correction_mode_from_saved_config(
+                config_cache[config_path]
+            )
+            if correction_mode is not None:
+                enriched_row["correction_mode"] = correction_mode
+        enriched_rows.append(enriched_row)
+
+    return enriched_rows
+
+
+def enrich_metrics_metadata_from_run_config(
+    input_root: Path,
+    rows: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    config_cache: dict[Path, dict[str, Any]] = {}
+    enriched_rows = []
+
+    for row in rows:
+        enriched_row = dict(row)
+        config_path = config_path_for_scaling_row(input_root, row)
+        if config_path is not None:
+            if config_path not in config_cache:
+                with config_path.open("r", encoding="utf-8") as config_file:
+                    config_cache[config_path] = json.load(config_file)
+            model_variant = model_variant_from_saved_config(config_cache[config_path])
+            if model_variant not in (None, ""):
+                enriched_row["model_variant"] = str(model_variant)
+            resolved_sampling_mode = resolved_sampling_mode_from_saved_config(
+                config_cache[config_path]
+            )
+            if resolved_sampling_mode is not None:
+                enriched_row["resolved_sampling_mode"] = resolved_sampling_mode
+            granularity_sampling_mode = granularity_sampling_mode_from_saved_config(
+                config_cache[config_path]
+            )
+            if granularity_sampling_mode is not None:
+                enriched_row["granularity_sampling_mode"] = granularity_sampling_mode
+            membership_correction = membership_correction_from_saved_config(
+                config_cache[config_path]
             )
             if membership_correction is not None:
                 enriched_row["membership_correction"] = membership_correction
@@ -520,23 +563,6 @@ def plot_metric_over_steps(
     return output_path
 
 
-def plot_loss_over_steps_by_experiment(rows: list[dict[str, str]], output_dir: Path) -> list[Path]:
-    output_paths = []
-    grouped = group_loss_rows_by_figure(
-        [row for row in rows if str(row.get("split") or "") == "train"]
-    )
-    for figure_label in sorted(grouped):
-        figure_rows = grouped[figure_label]
-        output_paths.append(
-            plot_loss_over_steps_for_experiment(
-                figure_rows,
-                figure_label,
-                output_dir / f"loss_over_steps_{safe_filename_fragment(figure_label)}.png",
-            )
-        )
-    return output_paths
-
-
 def plot_validation_loss_over_tokens_by_experiment(
     rows: list[dict[str, str]],
     output_dir: Path,
@@ -558,106 +584,23 @@ def plot_validation_loss_over_tokens_by_experiment(
     return output_paths
 
 
-def plot_loss_over_steps_for_experiment(
-    rows: list[dict[str, str]],
-    figure_label: str,
-    output_path: Path,
-) -> Path:
-    trace_description = loss_trace_description(rows)
-    trace_kind = loss_trace_kind(rows)
-    figure, axis, legend_axis = create_figure_with_side_legend(
-        plot_width=10,
-        plot_height=5,
-        legend_width=4.8,
-    )
-    series = group_loss_trace_rows(rows, trace_kind)
-    if not series:
-        axis.text(
-            0.5,
-            0.5,
-            "No numeric loss points found",
-            ha="center",
-            va="center",
-            transform=axis.transAxes,
-        )
-        axis.set_axis_off()
-        figure.suptitle(figure_label)
-        if trace_description:
-            figure.text(
-                0.5,
-                0.01,
-                trace_description,
-                ha="center",
-                va="bottom",
-                fontsize="small",
-            )
-        figure.tight_layout(rect=[0, 0.03, 1, 0.96] if trace_description else [0, 0, 1, 0.96])
-        figure.savefig(output_path, bbox_inches="tight", dpi=300)
-        plt.close(figure)
-        return output_path
-
-    for label, group_rows_for_label in sorted(series.items(), key=lambda item: loss_trace_series_sort_key(item[0], trace_kind)):
-        points = [
-            (to_float(row["step"]), to_float(row["loss"]))
-            for row in group_rows_for_label
-            if row.get("step") not in (None, "") and row.get("loss") not in (None, "")
-        ]
-        if not points:
-            continue
-        points.sort(key=lambda point: point[0])
-        xs, ys = zip(*points)
-        smoothed_ys = moving_average(
-            list(ys),
-            window_size=loss_moving_average_window_size(len(ys)),
-        )
-        axis.plot(
-            xs,
-            smoothed_ys,
-            marker="o",
-            markersize=3,
-            linewidth=1.0,
-            label=label,
-        )
-
-    axis.set_xlabel("Step")
-    axis.set_ylabel("Loss")
-    axis.minorticks_on()
-    axis.grid(True, which="major", alpha=0.28, linewidth=0.6)
-    axis.grid(True, which="minor", alpha=0.14, linewidth=0.35)
-    if trace_description:
-        axis.set_title(figure_label)
-        figure.text(
-            0.5,
-            0.01,
-            trace_description,
-            ha="center",
-            va="bottom",
-            fontsize="small",
-        )
-    else:
-        axis.set_title(figure_label)
-
-    place_legend_on_right(legend_axis, axis)
-    figure.suptitle(figure_label)
-    finalize_side_legend_figure(figure, trace_description=trace_description)
-    figure.savefig(output_path, bbox_inches="tight", dpi=300)
-    plt.close(figure)
-    return output_path
-
-
 def plot_loss_over_tokens_for_experiment(
     rows: list[dict[str, str]],
     figure_label: str,
     output_path: Path,
 ) -> Path:
-    trace_description = loss_trace_description(rows, validation=True)
-    figure, axis, legend_axis = create_figure_with_side_legend(
-        plot_width=10,
-        plot_height=5,
-        legend_width=4.8,
+    granularity_rows = [
+        row for row in rows if row.get("granularity") not in (None, "")
+    ]
+    granularity_labels = sorted(
+        {str(row["granularity"]) for row in granularity_rows},
+        key=granularity_sort_key,
     )
-    series = group_loss_trace_rows(rows, "granularity")
-    if not series:
+    figure_height = max(3.2, 2.7 * max(len(granularity_labels), 1))
+    figure = plt.figure(figsize=(14, figure_height))
+
+    if not granularity_labels:
+        axis = figure.add_subplot(111)
         axis.text(
             0.5,
             0.5,
@@ -668,61 +611,167 @@ def plot_loss_over_tokens_for_experiment(
         )
         axis.set_axis_off()
         figure.suptitle(figure_label)
-        if trace_description:
-            figure.text(
-                0.5,
-                0.01,
-                trace_description,
-                ha="center",
-                va="bottom",
-                fontsize="small",
-            )
-        finalize_side_legend_figure(figure, trace_description=trace_description)
         figure.savefig(output_path, bbox_inches="tight", dpi=300)
         plt.close(figure)
         return output_path
 
-    for label, group_rows_for_label in sorted(series.items(), key=lambda item: loss_trace_series_sort_key(item[0], "granularity")):
-        points = [
-            (to_float(row["tokens_seen"]), to_float(row["loss"]))
-            for row in group_rows_for_label
-            if row.get("tokens_seen") not in (None, "") and row.get("loss") not in (None, "")
-        ]
-        if not points:
-            continue
-        points.sort(key=lambda point: point[0])
-        xs, ys = zip(*points)
-        axis.plot(
-            xs,
-            ys,
-            marker="o",
-            markersize=3,
-            linewidth=1.1,
-            label=label,
-        )
+    if len(granularity_labels) == 1:
+        subfigures = [figure.subfigures(1, 1)]
+    else:
+        subfigures = list(figure.subfigures(len(granularity_labels), 1, hspace=0.08))
 
-    axis.set_xlabel("Tokens seen")
-    axis.set_ylabel("Loss")
-    axis.minorticks_on()
-    axis.grid(True, which="major", alpha=0.28, linewidth=0.6)
-    axis.grid(True, which="minor", alpha=0.14, linewidth=0.35)
-    axis.set_title(figure_label)
-    if trace_description:
-        figure.text(
-            0.5,
-            0.01,
-            trace_description,
-            ha="center",
-            va="bottom",
+    variant_display_labels = validation_variant_display_labels(rows)
+    variant_keys = list(variant_display_labels)
+    variant_styles = validation_variant_styles(variant_keys)
+    legend_handles = [
+        Line2D(
+            [0],
+            [0],
+            color=variant_styles[variant_key]["color"],
+            marker=variant_styles[variant_key]["marker"],
+            linestyle=variant_styles[variant_key]["linestyle"],
+            linewidth=variant_styles[variant_key]["linewidth"],
+            markersize=variant_styles[variant_key]["markersize"],
+            label=variant_display_labels[variant_key],
+        )
+        for variant_key in variant_keys
+    ]
+
+    for subfig, granularity in zip(subfigures, granularity_labels):
+        axis = subfig.subplots()
+        sub_rows = [
+            row
+            for row in granularity_rows
+            if str(row.get("granularity") or "") == granularity
+        ]
+        variant_groups = group_validation_rows_by_variant(sub_rows)
+        if not variant_groups:
+            axis.text(
+                0.5,
+                0.5,
+                "No numeric validation points found",
+                ha="center",
+                va="center",
+                transform=axis.transAxes,
+            )
+            axis.set_axis_off()
+            subfig.suptitle(granularity)
+            continue
+
+        for variant_key in variant_keys:
+            variant_rows = variant_groups.get(variant_key)
+            if not variant_rows:
+                continue
+            points = [
+                (to_float(row["tokens_seen"]), to_float(row["loss"]))
+                for row in variant_rows
+                if row.get("tokens_seen") not in (None, "")
+                and row.get("loss") not in (None, "")
+            ]
+            if not points:
+                continue
+            points.sort(key=lambda point: point[0])
+            xs, ys = zip(*points)
+            style = variant_styles[variant_key]
+            axis.plot(
+                xs,
+                ys,
+                label=variant_display_labels[variant_key],
+                **style,
+            )
+
+        axis.grid(True, which="major", alpha=0.28, linewidth=0.6)
+        axis.grid(True, which="minor", alpha=0.14, linewidth=0.35)
+        axis.minorticks_on()
+        axis.set_axisbelow(True)
+        subfig.suptitle(granularity)
+
+    figure.suptitle(figure_label)
+    figure.supxlabel("Tokens seen")
+    figure.supylabel("Validation loss")
+    if legend_handles:
+        figure.legend(
+            handles=legend_handles,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.01),
+            ncol=min(len(legend_handles), 4),
+            frameon=False,
             fontsize="small",
         )
-
-    place_legend_on_right(legend_axis, axis)
-    figure.suptitle(figure_label)
-    finalize_side_legend_figure(figure, trace_description=trace_description)
+    figure.subplots_adjust(left=0.08, right=0.98, top=0.9, bottom=0.13)
     figure.savefig(output_path, bbox_inches="tight", dpi=300)
     plt.close(figure)
     return output_path
+
+
+def group_validation_rows_by_variant(
+    rows: list[dict[str, str]],
+) -> dict[str, list[dict[str, str]]]:
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for row in rows:
+        grouped.setdefault(validation_variant_key(row), []).append(row)
+    return grouped
+
+
+def validation_variant_key(row: dict[str, str]) -> str:
+    run_id = row.get("run_id")
+    if run_id not in (None, ""):
+        return str(run_id)
+    return validation_variant_base_label(row)
+
+
+def validation_variant_base_label(row: dict[str, str]) -> str:
+    for key in ("model_size_label", "model_shape_label"):
+        value = row.get(key)
+        if value not in (None, ""):
+            return str(value)
+    run_id = row.get("run_id")
+    if run_id not in (None, ""):
+        return str(run_id)
+    return "unknown"
+
+
+def validation_variant_display_labels(rows: list[dict[str, str]]) -> dict[str, str]:
+    run_to_base_label: dict[str, str] = {}
+    base_label_counts: dict[str, int] = {}
+    run_order: list[str] = []
+
+    for row in rows:
+        variant_key = validation_variant_key(row)
+        if variant_key not in run_to_base_label:
+            run_order.append(variant_key)
+            base_label = validation_variant_base_label(row)
+            run_to_base_label[variant_key] = base_label
+            base_label_counts[base_label] = base_label_counts.get(base_label, 0) + 1
+
+    display_labels: dict[str, str] = {}
+    for variant_key in run_order:
+        base_label = run_to_base_label[variant_key]
+        if base_label_counts.get(base_label, 0) > 1:
+            display_labels[variant_key] = (
+                f"{base_label} ({safe_filename_fragment(variant_key)})"
+            )
+        else:
+            display_labels[variant_key] = base_label
+    return display_labels
+
+
+def validation_variant_styles(variant_keys: list[str]) -> dict[str, dict[str, Any]]:
+    prop_cycle = plt.rcParams.get("axes.prop_cycle")
+    colors = list(prop_cycle.by_key().get("color", [])) if prop_cycle else []
+    if not colors:
+        colors = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
+    markers = ["o", "s", "^", "D", "v", "P", "X", "*"]
+    styles: dict[str, dict[str, Any]] = {}
+    for index, variant_key in enumerate(variant_keys):
+        styles[variant_key] = {
+            "color": colors[index % len(colors)],
+            "marker": markers[index % len(markers)],
+            "linestyle": "-",
+            "linewidth": 1.4,
+            "markersize": 3.5,
+        }
+    return styles
 
 
 def plot_consistency_results(rows: list[dict[str, str]], output_path: Path) -> Path:
