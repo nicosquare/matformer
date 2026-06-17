@@ -17,6 +17,8 @@ from scripts.make_figures import (
     loss_trace_panel_suffix,
     refresh_scaling_parameter_counts,
     scaling_curve_style,
+    validation_variant_display_labels,
+    validation_variant_order,
     with_default_model_variant,
 )
 from train import parse_args
@@ -607,6 +609,21 @@ def test_make_figures_classifies_loss_traces_by_sampling_mode():
         validation_rows,
         validation=True,
     )
+
+
+def test_make_figures_uses_compact_validation_legend_labels():
+    rows = [
+        {"sampling_mode": "nested-random", "correction_mode": "none"},
+        {"sampling_mode": "nested-random", "correction_mode": "gmc"},
+        {"sampling_mode": "nested-random", "correction_mode": "lmc"},
+    ]
+
+    assert validation_variant_order(rows) == ["none", "gmc", "lmc"]
+    assert validation_variant_display_labels(rows) == {
+        "none": "none",
+        "gmc": "gmc",
+        "lmc": "lmc",
+    }
 
 
 def test_make_figures_plots_grouped_consistency_metrics_and_skips_deferred_rows(tmp_path):

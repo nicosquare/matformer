@@ -596,7 +596,7 @@ def plot_loss_over_tokens_for_experiment(
         {str(row["granularity"]) for row in granularity_rows},
         key=granularity_sort_key,
     )
-    figure_height = max(3.2, 2.7 * max(len(granularity_labels), 1))
+    figure_height = max(3.8, 2.75 * max(len(granularity_labels), 1))
     figure = plt.figure(figsize=(14, figure_height))
 
     if not granularity_labels:
@@ -610,7 +610,7 @@ def plot_loss_over_tokens_for_experiment(
             transform=axis.transAxes,
         )
         axis.set_axis_off()
-        figure.suptitle(figure_label)
+        figure.suptitle(figure_label, y=0.985)
         figure.savefig(output_path, bbox_inches="tight", dpi=300)
         plt.close(figure)
         return output_path
@@ -621,7 +621,7 @@ def plot_loss_over_tokens_for_experiment(
         subfigures = list(figure.subfigures(len(granularity_labels), 1, hspace=0.08))
 
     variant_display_labels = validation_variant_display_labels(rows)
-    variant_keys = list(variant_display_labels)
+    variant_keys = validation_variant_order(rows)
     variant_styles = validation_variant_styles(variant_keys)
     legend_handles = [
         Line2D(
@@ -635,10 +635,11 @@ def plot_loss_over_tokens_for_experiment(
             label=variant_display_labels[variant_key],
         )
         for variant_key in variant_keys
-    ]
+        ]
 
     for subfig, granularity in zip(subfigures, granularity_labels):
         axis = subfig.subplots()
+        axis.set_yscale("log", nonpositive="clip")
         sub_rows = [
             row
             for row in granularity_rows
@@ -655,7 +656,7 @@ def plot_loss_over_tokens_for_experiment(
                 transform=axis.transAxes,
             )
             axis.set_axis_off()
-            subfig.suptitle(granularity)
+            subfig.suptitle(granularity, y=0.98)
             continue
 
         for variant_key in variant_keys:
@@ -680,25 +681,45 @@ def plot_loss_over_tokens_for_experiment(
                 **style,
             )
 
+        positive_values = [
+            value
+            for value in (
+                to_float_or_none(row.get("loss"))
+                for row in sub_rows
+            )
+            if value is not None and value > 0
+        ]
+        if positive_values:
+            minimum_positive = min(positive_values)
+            axis.set_ylim(bottom=max(minimum_positive / 1.8, 1e-6))
+
         axis.grid(True, which="major", alpha=0.28, linewidth=0.6)
         axis.grid(True, which="minor", alpha=0.14, linewidth=0.35)
         axis.minorticks_on()
         axis.set_axisbelow(True)
-        subfig.suptitle(granularity)
+        subfig.suptitle(granularity, y=0.98)
 
-    figure.suptitle(figure_label)
+    figure.suptitle(figure_label, y=0.985, fontsize=15)
+    figure.text(
+        0.5,
+        0.955,
+        "Validation loss by granularity and correction mode",
+        ha="center",
+        va="top",
+        fontsize="small",
+    )
     figure.supxlabel("Tokens seen")
     figure.supylabel("Validation loss")
     if legend_handles:
         figure.legend(
             handles=legend_handles,
             loc="lower center",
-            bbox_to_anchor=(0.5, 0.01),
+            bbox_to_anchor=(0.5, 0.025),
             ncol=min(len(legend_handles), 4),
             frameon=False,
             fontsize="small",
         )
-    figure.subplots_adjust(left=0.08, right=0.98, top=0.9, bottom=0.13)
+    figure.tight_layout(rect=[0.03, 0.12, 0.97, 0.90])
     figure.savefig(output_path, bbox_inches="tight", dpi=300)
     plt.close(figure)
     return output_path
@@ -713,47 +734,21 @@ def group_validation_rows_by_variant(
     return grouped
 
 
-def validation_variant_key(row: dict[str, str]) -> str:
-    run_id = row.get("run_id")
-    if run_id not in (None, ""):
-        return str(run_id)
-    return validation_variant_base_label(row)
-
-
-def validation_variant_base_label(row: dict[str, str]) -> str:
-    for key in ("model_size_label", "model_shape_label"):
-        value = row.get(key)
-        if value not in (None, ""):
-            return str(value)
-    run_id = row.get("run_id")
-    if run_id not in (None, ""):
-        return str(run_id)
-    return "unknown"
-
-
 def validation_variant_display_labels(rows: list[dict[str, str]]) -> dict[str, str]:
-    run_to_base_label: dict[str, str] = {}
-    base_label_counts: dict[str, int] = {}
-    run_order: list[str] = []
-
-    for row in rows:
-        variant_key = validation_variant_key(row)
-        if variant_key not in run_to_base_label:
-            run_order.append(variant_key)
-            base_label = validation_variant_base_label(row)
-            run_to_base_label[variant_key] = base_label
-            base_label_counts[base_label] = base_label_counts.get(base_label, 0) + 1
-
     display_labels: dict[str, str] = {}
-    for variant_key in run_order:
-        base_label = run_to_base_label[variant_key]
-        if base_label_counts.get(base_label, 0) > 1:
-            display_labels[variant_key] = (
-                f"{base_label} ({safe_filename_fragment(variant_key)})"
-            )
-        else:
-            display_labels[variant_key] = base_label
+    for variant_key in validation_variant_order(rows):
+        display_labels[variant_key] = validation_variant_display_label(variant_key)
     return display_labels
+
+
+def validation_variant_order(rows: list[dict[str, str]]) -> list[str]:
+    preferred = ["none", "gmc", "lmc"]
+    present = {validation_variant_key(row) for row in rows}
+    return [label for label in preferred if label in present]
+
+
+def validation_variant_display_label(variant_key: str) -> str:
+    return variant_key
 
 
 def validation_variant_styles(variant_keys: list[str]) -> dict[str, dict[str, Any]]:
@@ -772,6 +767,11 @@ def validation_variant_styles(variant_keys: list[str]) -> dict[str, dict[str, An
             "markersize": 3.5,
         }
     return styles
+
+
+def validation_variant_key(row: dict[str, str]) -> str:
+    correction_label = scaling_curve_correction_label(row)
+    return correction_label or "none"
 
 
 def plot_consistency_results(rows: list[dict[str, str]], output_path: Path) -> Path:
