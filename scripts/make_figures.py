@@ -583,24 +583,24 @@ def plot_validation_loss_over_tokens_by_experiment(
         )
     return output_paths
 
-
 def plot_loss_over_tokens_for_experiment(
     rows: list[dict[str, str]],
     figure_label: str,
     output_path: Path,
 ) -> Path:
     granularity_rows = [
-        row for row in rows if row.get("granularity") not in (None, "")
+        row for row in rows
+        if row.get("granularity") not in (None, "")
     ]
+
     granularity_labels = sorted(
         {str(row["granularity"]) for row in granularity_rows},
         key=granularity_sort_key,
     )
-    figure_height = max(3.8, 2.75 * max(len(granularity_labels), 1))
-    figure = plt.figure(figsize=(14, figure_height))
 
     if not granularity_labels:
-        axis = figure.add_subplot(111)
+        figure, axis = plt.subplots(figsize=(12, 4))
+
         axis.text(
             0.5,
             0.5,
@@ -610,19 +610,36 @@ def plot_loss_over_tokens_for_experiment(
             transform=axis.transAxes,
         )
         axis.set_axis_off()
-        figure.suptitle(figure_label, y=0.985)
-        figure.savefig(output_path, bbox_inches="tight", dpi=300)
+
+        figure.suptitle(figure_label, fontsize=16)
+
+        figure.savefig(
+            output_path,
+            dpi=300,
+            bbox_inches="tight",
+        )
         plt.close(figure)
         return output_path
 
+    figure_height = max(
+        3.0,
+        2.5 * len(granularity_labels),
+    )
+
+    figure, axes = plt.subplots(
+        len(granularity_labels),
+        1,
+        figsize=(14, figure_height),
+        sharex=True,
+    )
+
     if len(granularity_labels) == 1:
-        subfigures = [figure.subfigures(1, 1)]
-    else:
-        subfigures = list(figure.subfigures(len(granularity_labels), 1, hspace=0.08))
+        axes = [axes]
 
     variant_display_labels = validation_variant_display_labels(rows)
     variant_keys = validation_variant_order(rows)
     variant_styles = validation_variant_styles(variant_keys)
+
     legend_handles = [
         Line2D(
             [0],
@@ -635,17 +652,17 @@ def plot_loss_over_tokens_for_experiment(
             label=variant_display_labels[variant_key],
         )
         for variant_key in variant_keys
-        ]
+    ]
 
-    for subfig, granularity in zip(subfigures, granularity_labels):
-        axis = subfig.subplots()
-        axis.set_yscale("log", nonpositive="clip")
+    for axis, granularity in zip(axes, granularity_labels):
         sub_rows = [
             row
             for row in granularity_rows
             if str(row.get("granularity") or "") == granularity
         ]
+
         variant_groups = group_validation_rows_by_variant(sub_rows)
+
         if not variant_groups:
             axis.text(
                 0.5,
@@ -656,72 +673,97 @@ def plot_loss_over_tokens_for_experiment(
                 transform=axis.transAxes,
             )
             axis.set_axis_off()
-            subfig.suptitle(granularity, y=0.98)
             continue
 
         for variant_key in variant_keys:
             variant_rows = variant_groups.get(variant_key)
+
             if not variant_rows:
                 continue
+
             points = [
-                (to_float(row["tokens_seen"]), to_float(row["loss"]))
+                (
+                    to_float(row["tokens_seen"]),
+                    to_float(row["loss"]),
+                )
                 for row in variant_rows
                 if row.get("tokens_seen") not in (None, "")
                 and row.get("loss") not in (None, "")
             ]
+
             if not points:
                 continue
+
             points.sort(key=lambda point: point[0])
+
             xs, ys = zip(*points)
-            style = variant_styles[variant_key]
+
             axis.plot(
                 xs,
                 ys,
                 label=variant_display_labels[variant_key],
-                **style,
+                **variant_styles[variant_key],
             )
 
-        positive_values = [
-            value
-            for value in (
-                to_float_or_none(row.get("loss"))
-                for row in sub_rows
-            )
-            if value is not None and value > 0
-        ]
-        if positive_values:
-            minimum_positive = min(positive_values)
-            axis.set_ylim(bottom=max(minimum_positive / 1.8, 1e-6))
+        axis.set_title(
+            granularity,
+            fontsize=11,
+            pad=6,
+        )
 
-        axis.grid(True, which="major", alpha=0.28, linewidth=0.6)
-        axis.grid(True, which="minor", alpha=0.14, linewidth=0.35)
+        axis.set_ylabel("Loss")
+
+        axis.grid(
+            True,
+            which="major",
+            alpha=0.30,
+            linewidth=0.6,
+        )
+
         axis.minorticks_on()
-        axis.set_axisbelow(True)
-        subfig.suptitle(granularity, y=0.98)
 
-    figure.suptitle(figure_label, y=0.985, fontsize=15)
-    figure.text(
-        0.5,
-        0.955,
-        "Validation loss by granularity and correction mode",
-        ha="center",
-        va="top",
-        fontsize="small",
+        axis.grid(
+            True,
+            which="minor",
+            alpha=0.15,
+            linewidth=0.3,
+        )
+
+        axis.set_axisbelow(True)
+
+    axes[-1].set_xlabel("Tokens seen")
+
+    figure.suptitle(
+        figure_label,
+        fontsize=16,
+        y=0.98,
     )
-    figure.supxlabel("Tokens seen")
-    figure.supylabel("Validation loss")
+
     if legend_handles:
         figure.legend(
             handles=legend_handles,
             loc="lower center",
-            bbox_to_anchor=(0.5, 0.025),
-            ncol=min(len(legend_handles), 4),
+            bbox_to_anchor=(0.5, 0.01),
+            ncol=min(len(legend_handles), 5),
             frameon=False,
-            fontsize="small",
         )
-    figure.tight_layout(rect=[0.03, 0.12, 0.97, 0.90])
-    figure.savefig(output_path, bbox_inches="tight", dpi=300)
+
+    figure.subplots_adjust(
+        left=0.08,
+        right=0.98,
+        top=0.92,
+        bottom=0.10,
+        hspace=0.35,
+    )
+
+    figure.savefig(
+        output_path,
+        dpi=300,
+        bbox_inches="tight",
+    )
+
     plt.close(figure)
+
     return output_path
 
 
