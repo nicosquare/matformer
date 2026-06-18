@@ -62,6 +62,13 @@ from src.training.distributed import (
     sum_int,
     wrap_model_for_distributed,
 )
+from src.training import (
+    checkpointing as training_checkpointing,
+    data as training_data,
+    distributed as training_distributed,
+    steps as training_steps,
+    warmup as training_warmup,
+)
 from src.utils.config import (
     ConfigError,
     attach_parameter_counts_to_config,
@@ -131,11 +138,11 @@ def run_training(
     run = config["run"]
     training = config["training"]
     output_dir = Path(run["output_dir"])
-    run_state = build_initial_continuation_state(config)
+    run_state = training_checkpointing.build_initial_continuation_state(config)
     checkpoint_state: dict[str, Any] = {}
     optimizer = None
     scheduler = None
-    distributed_context = prepare_distributed_context(config, device=device)
+    distributed_context = training_distributed.prepare_distributed_context(config, device=device)
     sync_config_with_distributed_context(config, distributed_context)
     monitoring_session = create_monitoring_session(config, distributed_context)
     heartbeat_writer = build_heartbeat_writer(config, distributed_context)
@@ -179,29 +186,29 @@ def run_training(
                 write_config_artifact(config, distributed_context=distributed_context)
 
         with heartbeat_stage(heartbeat_writer, "fsdp_wrapping"):
-            model = wrap_model_for_distributed(model, distributed_context)
+            model = training_distributed.wrap_model_for_distributed(model, distributed_context)
 
         if tokenized_dataset is None:
             if tokenizer is None:
                 with heartbeat_stage(heartbeat_writer, "tokenizer_loading"):
                     tokenizer = load_tokenizer(config)
             with heartbeat_stage(heartbeat_writer, "dataset_loading_preprocessing"):
-                tokenized_dataset = load_and_tokenize_dataset(
+                tokenized_dataset = training_data.load_and_tokenize_dataset(
                     config,
                     tokenizer,
                     num_proc=training.get("preprocess_num_proc", 1),
                 )
 
         with heartbeat_stage(heartbeat_writer, "dataloader_creation"):
-            train_dataloader, eval_dataloader = build_dataloaders(
+            train_dataloader, eval_dataloader = training_data.build_dataloaders(
                 config,
                 tokenized_dataset,
                 device,
                 distributed_context=distributed_context,
             )
-        optimizer, scheduler = build_optimizer_and_scheduler(model, training)
+        optimizer, scheduler = training_steps.build_optimizer_and_scheduler(model, training)
         if run["continuation"]["enabled"]:
-            run_state = load_run_continuation_state(
+            run_state = training_checkpointing.load_run_continuation_state(
                 config,
                 model,
                 optimizer,
@@ -210,11 +217,11 @@ def run_training(
             )
         emit_run_start_continuation_state(heartbeat_writer, run_state)
         checkpoint_state.update(run_state)
-        update_run_continuation_state(config, run_state)
+        training_checkpointing.update_run_continuation_state(config, run_state)
         metrics_rows = []
-        if should_run_pre_nested_warmup(config, run_state):
+        if training_warmup.should_run_pre_nested_warmup(config, run_state):
             metrics_rows.extend(
-                run_pre_nested_warmup_phase(
+                training_warmup.run_pre_nested_warmup_phase(
                     config,
                     model,
                     train_dataloader,
@@ -230,9 +237,9 @@ def run_training(
                 )
             )
         else:
-            update_pre_nested_warmup_state(
+            training_warmup.update_pre_nested_warmup_state(
                 config,
-                build_pre_nested_warmup_state(
+                training_warmup.build_pre_nested_warmup_state(
                     config,
                     completed=bool(run_state.get("warmup_completed", False)),
                     completion_step=(
@@ -261,7 +268,7 @@ def run_training(
 
         if not warmup_budget_exhausted:
             metrics_rows.extend(
-                train_for_steps(
+                training_steps.train_for_steps(
                     config,
                     model,
                     train_dataloader,
@@ -292,7 +299,7 @@ def run_training(
             completed_run_state["latest_checkpoint_path"] = completed_run_state.get(
                 "latest_checkpoint_path"
             ) or str(output_dir / "checkpoints" / "latest.pt")
-        checkpoint_summary_fields = write_checkpoint_if_needed(
+        checkpoint_summary_fields = training_checkpointing.write_checkpoint_if_needed(
             config,
             model,
             optimizer,
@@ -305,11 +312,11 @@ def run_training(
 
         if run["continuation"]["enabled"]:
             run_state.update(completed_run_state)
-            update_run_continuation_state(config, run_state)
+            training_checkpointing.update_run_continuation_state(config, run_state)
 
-        if should_write_shared_artifact(distributed_context):
+        if training_distributed.should_write_shared_artifact(distributed_context):
             with heartbeat_stage(heartbeat_writer, "artifact_writing"):
-                extraction_metadata_path = write_extraction_metadata_if_nested(
+                extraction_metadata_path = training_steps.write_extraction_metadata_if_nested(
                     config,
                     model,
                     output_dir,
@@ -332,7 +339,7 @@ def run_training(
                     distributed_context=distributed_context,
                 )
 
-        training_outcome = summarize_training_outcome(config, metrics_rows)
+        training_outcome = training_steps.summarize_training_outcome(config, metrics_rows)
         tokens_seen = training_outcome["tokens_seen"]
         target_model = getattr(model, "module", model)
         runtime_pattern = getattr(target_model, "current_granularity_pattern", None)
@@ -413,7 +420,7 @@ def run_training(
                 and optimizer is not None
                 and scheduler is not None
             ):
-                maybe_write_latest_checkpoint(
+                training_checkpointing.maybe_write_latest_checkpoint(
                     config,
                     model,
                     optimizer,
@@ -427,7 +434,7 @@ def run_training(
                 )
             run_state["status"] = "failed"
             if run["continuation"]["enabled"]:
-                update_run_continuation_state(config, run_state)
+                training_checkpointing.update_run_continuation_state(config, run_state)
             with heartbeat_stage(heartbeat_writer, "artifact_writing"):
                 write_failed_run_summary(
                     config,
@@ -448,7 +455,7 @@ def run_training(
         raise
     finally:
         monitoring_session.close()
-        destroy_distributed_process_group(distributed_context)
+        training_distributed.destroy_distributed_process_group(distributed_context)
 
 
 def build_artifact_parameter_counts(
@@ -456,7 +463,7 @@ def build_artifact_parameter_counts(
     model,
     distributed_context=None,
 ) -> dict[str, dict[str, Any]]:
-    if not should_write_shared_artifact(distributed_context):
+    if not training_distributed.should_write_shared_artifact(distributed_context):
         return {}
     return build_parameter_counts_by_granularity(
         model,
@@ -617,7 +624,7 @@ class WandbMonitoringSession(NoopMonitoringSession):
 
         if not config.get("monitoring", {}).get("enabled", False):
             return
-        if not should_write_shared_artifact(distributed_context):
+        if not training_distributed.should_write_shared_artifact(distributed_context):
             return
         if config.get("monitoring", {}).get("backend") != "wandb":
             return
@@ -796,7 +803,7 @@ def create_monitoring_session(
 def build_heartbeat_writer(config: dict[str, Any], distributed_context):
     training = config["training"]
     heartbeat_enabled = training.get("heartbeat_enabled", True)
-    if not heartbeat_enabled or not should_write_shared_artifact(distributed_context):
+    if not heartbeat_enabled or not training_distributed.should_write_shared_artifact(distributed_context):
         return NoopHeartbeatWriter()
 
     run = config["run"]
@@ -1033,7 +1040,7 @@ def write_checkpoint_if_needed(
     run_state: dict[str, Any],
     distributed_context=None,
 ) -> dict[str, Any]:
-    if should_write_shared_artifact(distributed_context):
+    if training_distributed.should_write_shared_artifact(distributed_context):
         checkpoint_fields = build_checkpoint_summary_fields(config, metrics_rows)
         checkpoint_path = checkpoint_fields.get("best_checkpoint_path")
         if checkpoint_path is None:
@@ -1097,7 +1104,7 @@ def maybe_write_best_eval_checkpoint(
     if not config.get("evaluation", {}).get("validation", False):
         return
 
-    if should_write_shared_artifact(distributed_context):
+    if training_distributed.should_write_shared_artifact(distributed_context):
         payload = build_best_eval_checkpoint_payload(
             config,
             validation_results,
@@ -1181,7 +1188,7 @@ def save_model_checkpoint(
     run_state: dict[str, Any],
     distributed_context=None,
 ) -> None:
-    if not should_write_shared_artifact(distributed_context):
+    if not training_distributed.should_write_shared_artifact(distributed_context):
         return
 
     model_state_dict, optimizer_state_dict = checkpoint_state_dicts(
@@ -1827,12 +1834,12 @@ def run_pre_nested_warmup_phase(
     monitoring_session=None,
     stage_name: str = "training",
 ) -> list[dict[str, Any]]:
-    run_state = run_state if run_state is not None else build_initial_continuation_state(config)
+    run_state = run_state if run_state is not None else training_checkpointing.build_initial_continuation_state(config)
     warmup = config["training"].get("pre_nested_warmup", {})
     if not isinstance(warmup, Mapping):
         warmup = {}
 
-    warmup_state = build_pre_nested_warmup_state(
+    warmup_state = training_warmup.build_pre_nested_warmup_state(
         config,
         completed=bool(run_state.get("warmup_completed", False)),
         completion_step=(
@@ -1843,8 +1850,8 @@ def run_pre_nested_warmup_phase(
         transition_reason=run_state.get("warmup_transition_reason"),
     )
 
-    if not should_run_pre_nested_warmup(config, run_state):
-        update_pre_nested_warmup_state(config, warmup_state)
+    if not training_warmup.should_run_pre_nested_warmup(config, run_state):
+        training_warmup.update_pre_nested_warmup_state(config, warmup_state)
         return []
 
     warmup_target_steps = resolve_pre_nested_warmup_target_steps(config, train_dataloader)
@@ -1864,7 +1871,7 @@ def run_pre_nested_warmup_phase(
                 "warmup_transition_reason": "warmup_duration_reached",
             }
         )
-        update_pre_nested_warmup_state(config, warmup_state)
+        training_warmup.update_pre_nested_warmup_state(config, warmup_state)
         if checkpoint_state is not None:
             checkpoint_state.update(
                 {
@@ -1874,7 +1881,7 @@ def run_pre_nested_warmup_phase(
                 }
             )
         if continuation_latest_checkpoint_policy(config)["enabled"]:
-            maybe_write_latest_checkpoint(
+            training_checkpointing.maybe_write_latest_checkpoint(
                 config,
                 model,
                 optimizer,
@@ -1898,7 +1905,7 @@ def run_pre_nested_warmup_phase(
     ]
     warmup_config["training"]["granularity_sampling"] = "all"
 
-    warmup_metrics_rows = train_for_steps(
+    warmup_metrics_rows = training_steps.train_for_steps(
         warmup_config,
         model,
         train_dataloader,
@@ -1936,7 +1943,7 @@ def run_pre_nested_warmup_phase(
             "warmup_transition_reason": transition_reason,
         }
     )
-    update_pre_nested_warmup_state(config, warmup_state)
+    training_warmup.update_pre_nested_warmup_state(config, warmup_state)
 
     if checkpoint_state is not None:
         checkpoint_state.update(
@@ -1948,7 +1955,7 @@ def run_pre_nested_warmup_phase(
         )
 
     if continuation_latest_checkpoint_policy(config)["enabled"]:
-        maybe_write_latest_checkpoint(
+        training_checkpointing.maybe_write_latest_checkpoint(
             config,
             model,
             optimizer,
@@ -2247,7 +2254,7 @@ def train_for_steps(
 
     metrics_rows = []
     start_time = time.time()
-    run_state = run_state if run_state is not None else build_initial_continuation_state(config)
+    run_state = run_state if run_state is not None else training_checkpointing.build_initial_continuation_state(config)
     step = int(run_state.get("last_completed_step", 0))
     epoch = int(run_state.get("epoch", 0))
     resume_batch_index = int(run_state.get("batch_index", 0))
@@ -2494,7 +2501,7 @@ def train_for_steps(
                         "content_tokens_seen": content_tokens_seen,
                     }
                 )
-                maybe_write_latest_checkpoint(
+                training_checkpointing.maybe_write_latest_checkpoint(
                     config,
                     model,
                     optimizer,
@@ -2574,7 +2581,7 @@ def train_for_steps(
                         run_state,
                         distributed_context=distributed_context,
                     )
-                    maybe_write_latest_checkpoint(
+                    training_checkpointing.maybe_write_latest_checkpoint(
                         config,
                         model,
                         optimizer,
@@ -2631,7 +2638,7 @@ def train_for_steps(
         run_state=run_state,
         monitoring_session=monitoring_session,
     )
-    maybe_write_latest_checkpoint(
+    training_checkpointing.maybe_write_latest_checkpoint(
         config,
         model,
         optimizer,
@@ -2834,7 +2841,7 @@ def append_final_validation_if_needed(
         step,
         heartbeat_writer,
         checkpoint_state if checkpoint_state is not None else {},
-        run_state if run_state is not None else build_initial_continuation_state(config),
+        run_state if run_state is not None else training_checkpointing.build_initial_continuation_state(config),
         distributed_context=distributed_context,
     )
     validation_metric_rows = validation_results_to_metric_rows(

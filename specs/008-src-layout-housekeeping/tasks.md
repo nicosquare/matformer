@@ -64,11 +64,11 @@
 ### Implementation for User Story 2
 
 - [X] T018 [US2] Move training orchestration from `training/run.py` into `src/training/run.py` and keep the public entrypoint stable
-- [ ] T019 [P] [US2] Extract checkpoint and continuation handling into `src/training/checkpointing.py`
-- [ ] T020 [P] [US2] Extract step-loop helpers and training step utilities into `src/training/steps.py`
-- [ ] T021 [P] [US2] Extract warmup-specific logic into `src/training/warmup.py`
-- [ ] T022 [P] [US2] Keep dataloader and distributed helpers in `src/training/data.py` and `src/training/distributed.py`, updating imports to use the new source tree
-- [ ] T023 [US2] Update `src/training/__init__.py` to expose the training helpers needed by existing callers
+- [X] T019 [P] [US2] Extract checkpoint and continuation handling into `src/training/checkpointing.py`
+- [X] T020 [P] [US2] Extract step-loop helpers and training step utilities into `src/training/steps.py`
+- [X] T021 [P] [US2] Extract warmup-specific logic into `src/training/warmup.py`
+- [X] T022 [P] [US2] Keep dataloader and distributed helpers in `src/training/data.py` and `src/training/distributed.py`, updating imports to use the new source tree
+- [X] T023 [US2] Update `src/training/__init__.py` to expose the training helpers needed by existing callers
 
 ## Phase 5: User Story 3 - Understand and modify figure generation in smaller pieces (Priority: P3)
 
