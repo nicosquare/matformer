@@ -22,6 +22,7 @@ __all__ = [
     "flatten_axes",
     "finalize_side_legend_figure",
     "granularity_sort_key",
+    "generate_figures",
     "metric_row_limits_for_panel_specs",
     "panel_spec_label",
     "panel_sampling_matches",
@@ -32,6 +33,7 @@ __all__ = [
     "safe_filename_fragment",
     "to_float",
     "to_float_or_none",
+    "main",
 ]
 
 
@@ -232,3 +234,24 @@ def to_float_or_none(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
 
+
+def generate_figures(
+    input_root: str | Path,
+    output_dir: str | Path,
+    refresh_counts: bool = True,
+    dpi: int = 300,
+) -> list[Path]:
+    from .reporting_legacy import generate_figures as legacy_generate_figures
+
+    return legacy_generate_figures(
+        input_root,
+        output_dir,
+        refresh_counts=refresh_counts,
+        dpi=dpi,
+    )
+
+
+def main(argv: list[str] | None = None) -> None:
+    from .reporting_legacy import main as legacy_main
+
+    legacy_main(argv)
