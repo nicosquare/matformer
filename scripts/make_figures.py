@@ -10,6 +10,7 @@ import re
 import sys
 from pathlib import Path
 from typing import Any
+from collections.abc import Callable
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -84,6 +85,152 @@ SCALING_SAMPLING_MARKERS = {
     "adaptive_per_block_ucb": "X",
 }
 
+PLOT_STYLE_BASE = {
+    "figure_title_fontsize": 17,
+    "panel_title_fontsize": 12,
+    "subfigure_title_fontsize": 13,
+    "axis_label_fontsize": 11,
+    "tick_label_fontsize": 10,
+    "legend_fontsize": 11,
+    "standalone_label": "standalone reference",
+    "series_colors": SCALING_GROUP_COLORS,
+    "series_aliases": {},
+    "comparison_linestyle": None,
+    "comparison_markers_by_variant": {},
+    "curve_aliases": {},
+}
+PLOT_STYLE_PRESETS = {
+    "default": {},
+    # These presets keep the existing rendering behavior but expose the knobs
+    # in one place so the figure script can be tuned without hunting through
+    # the plotting code.
+    "nested_all_no_corrections": {
+        "figure_title_fontsize": 15,
+        "curve_aliases": {
+            "nested-all / slicing": "nested-all / slicing",
+            "nested-all / concat": "nested-all / concat",
+        },
+        "series_colors": {
+            "nested-all / slicing": "tab:blue",
+            "nested-all / concat": "tab:orange",
+            "standalone": "tab:brown",
+        },
+    },
+    "nested_random_no_corrections": {
+        "figure_title_fontsize": 15,
+        "curve_aliases": {
+            "nested-random / slicing / global": "nested-random / slicing / global",
+            "nested-random / concat / global": "nested-random / concat / global",
+            "nested-random / slicing / per_block": "nested-random / slicing / per_block",
+            "nested-random / concat / per_block": "nested-random / concat / per_block",
+            "nested-random / slicing / adaptive_per_block_thompson": "nested-random / slicing / adaptive_per_block_thompson",
+            "nested-random / concat / adaptive_per_block_thompson": "nested-random / concat / adaptive_per_block_thompson",
+            "nested-random / slicing / adaptive_per_block_ucb": "nested-random / slicing / adaptive_per_block_ucb",
+            "nested-random / concat / adaptive_per_block_ucb": "nested-random / concat / adaptive_per_block_ucb",
+        },
+        "series_colors": {
+            "nested-random / slicing / global": "tab:blue",
+            "nested-random / concat / global": "tab:orange",
+            "nested-random / slicing / per_block": "tab:cyan",
+            "nested-random / concat / per_block": "tab:red",
+            "nested-random / slicing / adaptive_per_block_thompson": "tab:green",
+            "nested-random / concat / adaptive_per_block_thompson": "tab:purple",
+            "nested-random / slicing / adaptive_per_block_ucb": "tab:olive",
+            "nested-random / concat / adaptive_per_block_ucb": "tab:pink",
+            "standalone": "tab:brown",
+        },
+    },
+    "nested_split_no_corrections": {
+        "figure_title_fontsize": 17,
+        "subfigure_title_fontsize": 13,
+        "legend_fontsize": 12,
+        "comparison_linestyle": "-",
+        "comparison_markers_by_variant": {
+            "slicing": "s",
+            "concat": "o",
+        },
+        "series_aliases": {
+            "standalone": "Individual",
+            "nested-random / slicing / none / global": "Slicing",
+            "nested-random / concat / none / global": "Concat",
+            "nested-random / concat / lmc": "Concat/LMC",
+            "nested-random / concat / gmc": "Concat/GMC",
+            "nested-all / slicing / none / global": "Slicing",
+            "nested-all / concat / none / global": "Concat",
+            "nested-all / concat / lmc": "Concat/LMC",
+            "nested-all / concat / gmc": "Concat/GMC",
+        },
+        "series_colors": {
+            "standalone": "tab:brown",
+            "nested-random / slicing / none / global": "tab:red",
+            "nested-random / concat / none / global": "tab:blue",
+            "nested-random / concat / lmc": "tab:purple",
+            "nested-random / concat / gmc": "tab:green",
+            "nested-all / slicing / none / global": "tab:red",
+            "nested-all / concat / none / global": "tab:blue",
+            "nested-all / concat / lmc": "tab:purple",
+            "nested-all / concat / gmc": "tab:green",
+        },
+    },
+}
+PPL_VS_SIZE_FIGURE_SPECS = [
+    {
+        "output_name": "ppl_vs_size.png",
+        "figure_title": "Perplexity vs Non-embedding parameters",
+        "figure_alias": "all",
+        "panel_specs": SIZE_PLOT_PANELS_WITH_SAMPLING,
+        "style": "default",
+        "row_filter_name": None,
+    },
+    {
+        "output_name": "ppl_vs_size_nested_all_no_corrections.png",
+        "figure_title": "Perplexity vs Non-embedding parameters: nested-all, no corrections",
+        "figure_alias": "nested_all",
+        "panel_specs": [
+            ("nested-all", "slicing", None),
+            ("nested-all", "concat", None),
+        ],
+        "style": "nested_all_no_corrections",
+        "row_filter_name": "no_corrections",
+    },
+    {
+        "output_name": "ppl_vs_size_nested_random_no_corrections.png",
+        "figure_title": "Perplexity vs Non-embedding parameters: nested-random, no corrections",
+        "figure_alias": "nested_random",
+        "panel_specs": [
+            ("nested-random", "slicing", None),
+            ("nested-random", "concat", None),
+        ],
+        "style": "nested_random_no_corrections",
+        "row_filter_name": "no_corrections",
+    },
+]
+PPL_VS_SIZE_SPLIT_FIGURE_SPEC = {
+    "output_name": "ppl_vs_size_nested_random_vs_nested_all_no_corrections.png",
+    "figure_title": "Perplexity vs Non-embedding parameters: nested-random and nested-all, no corrections",
+    "style": "nested_split_no_corrections",
+    "left": {
+        "subfigure_title": "One width per batch",
+        "series_keys": [
+            "standalone",
+            "nested-random / slicing / none / global",
+            "nested-random / concat / none / global",
+            "nested-random / concat / lmc",
+            "nested-random / concat / gmc",
+        ],
+    },
+    "right": {
+        "subfigure_title": "All widths per batch",
+        "series_keys": [
+            "standalone",
+            "nested-all / slicing / none / global",
+            "nested-all / concat / none / global",
+            "nested-all / concat / lmc",
+            "nested-all / concat / gmc",
+        ],
+    },
+}
+
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
@@ -152,13 +299,32 @@ def generate_figures(
                 dpi=dpi,
             )
         )
-        figure_paths.extend(
-            plot_metric_vs_size(
+        for figure_spec in PPL_VS_SIZE_FIGURE_SPECS:
+            figure_paths.extend(
+                plot_metric_vs_size(
+                    scaling_rows,
+                    metric_name="perplexity",
+                    ylabel="Perplexity",
+                    output_path=output_dir / figure_spec["output_name"],
+                    panel_specs=figure_spec["panel_specs"],
+                    row_filter=resolve_figure_row_filter(figure_spec["row_filter_name"]),
+                    figure_title=figure_spec["figure_title"],
+                    style=figure_spec["style"],
+                    figure_alias=figure_spec["figure_alias"],
+                    dpi=dpi,
+                )
+            )
+        figure_paths.append(
+            plot_metric_vs_size_split_comparison(
                 scaling_rows,
                 metric_name="perplexity",
                 ylabel="Perplexity",
-                output_path=output_dir / "ppl_vs_size.png",
-                panel_specs=SIZE_PLOT_PANELS_WITH_SAMPLING,
+                output_path=output_dir
+                / PPL_VS_SIZE_SPLIT_FIGURE_SPEC["output_name"],
+                figure_title=PPL_VS_SIZE_SPLIT_FIGURE_SPEC["figure_title"],
+                style=PPL_VS_SIZE_SPLIT_FIGURE_SPEC["style"],
+                left_panel_spec=PPL_VS_SIZE_SPLIT_FIGURE_SPEC["left"],
+                right_panel_spec=PPL_VS_SIZE_SPLIT_FIGURE_SPEC["right"],
                 dpi=dpi,
             )
         )
@@ -203,6 +369,24 @@ def generate_figures(
     else:
         metrics_rows = read_csv_artifacts(input_root, "metrics.csv")
         metrics_rows = enrich_metrics_metadata_from_run_config(input_root, metrics_rows)
+        validation_metrics_rows = [
+            row for row in metrics_rows if validation_split_filter(row)
+        ]
+        if validation_metrics_rows:
+            figure_paths.extend(
+                plot_validation_loss_over_tokens_by_experiment(
+                    validation_metrics_rows,
+                    output_dir,
+                    dpi=dpi,
+                )
+            )
+            figure_paths.extend(
+                plot_validation_loss_over_tokens_by_granularity_comparison(
+                    validation_metrics_rows,
+                    output_dir,
+                    dpi=dpi,
+                )
+            )
         figure_paths.append(
             plot_metric_over_steps(
                 metrics_rows,
@@ -493,9 +677,15 @@ def plot_metric_vs_size(
     ylabel: str,
     output_path: Path,
     panel_specs: list[tuple[str, str, str | None]] | None = None,
+    row_filter: Callable[[dict[str, str]], bool] | None = None,
+    figure_title: str | None = None,
+    style: str = "default",
+    figure_alias: str | None = None,
     dpi: int = 300,
 ) -> list[Path]:
     panel_specs = panel_specs or SIZE_PLOT_PANELS_DEFAULT
+    style_config = resolve_plot_style(style)
+    plot_rows = rows if row_filter is None else [row for row in rows if row_filter(row)]
     column_count = 2 if len(panel_specs) > 1 else 1
     row_count = math.ceil(len(panel_specs) / column_count)
     figure, axes = plt.subplots(
@@ -513,12 +703,13 @@ def plot_metric_vs_size(
     ):
         plot_metric_vs_size_panel(
             axis,
-            rows,
+            plot_rows,
             metric_name=metric_name,
             ylabel=ylabel,
             sampling_mode=sampling_mode,
             variant_label=variant_label,
             sampling_label=sampling_label,
+            style_config=style_config,
         )
 
     row_limits = metric_row_limits_for_panel_specs(
@@ -534,23 +725,30 @@ def plot_metric_vs_size(
         for axis in axes_list[start:end]:
             axis.set_ylim(*row_limit)
 
-    figure.suptitle(f"{ylabel} vs Non-embedding parameters")
+    figure.suptitle(
+        figure_title or f"{ylabel} vs Non-embedding parameters",
+        fontsize=style_config["figure_title_fontsize"],
+    )
     figure.tight_layout(rect=[0, 0, 1, 0.96])
     figure.savefig(output_path, bbox_inches="tight", dpi=dpi)
     plt.close(figure)
 
     output_paths = [output_path]
+    panel_stem = output_path.stem
+    if figure_alias:
+        panel_stem = f"{panel_stem}__{safe_filename_fragment(figure_alias)}"
     for panel_spec in panel_specs:
         panel_path = output_path.with_name(
-            f"{output_path.stem}__{safe_filename_fragment(panel_spec_label(*panel_spec))}.png"
+            f"{panel_stem}__{safe_filename_fragment(panel_spec_label(*panel_spec))}.png"
         )
         output_paths.append(
             plot_metric_vs_size_panel_figure(
-                rows,
+                plot_rows,
                 metric_name=metric_name,
                 ylabel=ylabel,
                 panel_spec=panel_spec,
                 output_path=panel_path,
+                style_config=style_config,
                 dpi=dpi,
             )
         )
@@ -621,6 +819,7 @@ def plot_metric_vs_size_panel_figure(
     ylabel: str,
     panel_spec: tuple[str, str, str | None],
     output_path: Path,
+    style_config: dict[str, Any],
     dpi: int = 300,
 ) -> Path:
     figure, axis = plt.subplots(figsize=(7.2, 5.0))
@@ -632,11 +831,155 @@ def plot_metric_vs_size_panel_figure(
         sampling_mode=panel_spec[0],
         variant_label=panel_spec[1],
         sampling_label=panel_spec[2],
+        style_config=style_config,
     )
     figure.tight_layout()
     figure.savefig(output_path, bbox_inches="tight", dpi=dpi)
     plt.close(figure)
     return output_path
+
+
+def plot_metric_vs_size_split_comparison(
+    rows: list[dict[str, str]],
+    metric_name: str,
+    ylabel: str,
+    output_path: Path,
+    figure_title: str,
+    style: str,
+    left_panel_spec: dict[str, Any],
+    right_panel_spec: dict[str, Any],
+    dpi: int = 300,
+) -> Path:
+    style_config = resolve_plot_style(style)
+    figure = plt.figure(figsize=(15.0, 6.0))
+    left_subfigure, right_subfigure = figure.subfigures(1, 2, wspace=0.06)
+    left_axis = left_subfigure.subplots()
+    right_axis = right_subfigure.subplots()
+
+    left_values = plot_metric_vs_size_split_panel(
+        left_axis,
+        rows,
+        metric_name=metric_name,
+        ylabel=ylabel,
+        panel_spec=left_panel_spec,
+        style_config=style_config,
+    )
+    right_values = plot_metric_vs_size_split_panel(
+        right_axis,
+        rows,
+        metric_name=metric_name,
+        ylabel=ylabel,
+        panel_spec=right_panel_spec,
+        style_config=style_config,
+    )
+
+    shared_values = left_values + right_values
+    if shared_values:
+        shared_limits = padded_limits(min(shared_values), max(shared_values))
+        left_axis.set_ylim(*shared_limits)
+        right_axis.set_ylim(*shared_limits)
+
+    left_subfigure.suptitle(
+        str(left_panel_spec["subfigure_title"]),
+        fontsize=style_config["subfigure_title_fontsize"],
+        y=0.88,
+    )
+    right_subfigure.suptitle(
+        str(right_panel_spec["subfigure_title"]),
+        fontsize=style_config["subfigure_title_fontsize"],
+        y=0.88,
+    )
+    figure.suptitle(
+        figure_title,
+        fontsize=style_config["figure_title_fontsize"],
+        y=0.985,
+    )
+    figure.subplots_adjust(top=0.83, bottom=0.12, left=0.06, right=0.98, wspace=0.07)
+    figure.savefig(output_path, bbox_inches="tight", dpi=dpi)
+    plt.close(figure)
+    return output_path
+
+
+def plot_metric_vs_size_split_panel(
+    axis,
+    rows: list[dict[str, str]],
+    metric_name: str,
+    ylabel: str,
+    panel_spec: dict[str, Any],
+    style_config: dict[str, Any],
+) -> list[float]:
+    series_keys = list(panel_spec["series_keys"])
+    panel_rows = [
+        row
+        for row in rows
+        if comparison_series_key(row) in series_keys
+    ]
+
+    axis.set_xlabel("Non-embedding parameters", fontsize=style_config["axis_label_fontsize"])
+    axis.set_ylabel(ylabel, fontsize=style_config["axis_label_fontsize"])
+    axis.tick_params(labelsize=style_config["tick_label_fontsize"])
+    axis.grid(True, alpha=0.3)
+    axis.set_axisbelow(True)
+
+    if not panel_rows:
+        axis.text(
+            0.5,
+            0.5,
+            "No numeric points found",
+            ha="center",
+            va="center",
+            transform=axis.transAxes,
+        )
+        return []
+
+    grouped = group_rows_by_series_key(panel_rows, series_keys)
+    series_values: list[float] = []
+
+    for series_key in series_keys:
+        series_rows = grouped.get(series_key)
+        if not series_rows:
+            continue
+
+        points = [
+            (to_float(row["non_embedding_parameters"]), to_float(row[metric_name]))
+            for row in series_rows
+            if row.get("non_embedding_parameters") not in (None, "")
+            and row.get(metric_name) not in (None, "")
+        ]
+        if not points:
+            continue
+
+        points.sort(key=lambda point: point[0])
+        xs, ys = zip(*points)
+        series_values.extend(ys)
+
+        if series_key == "standalone":
+            axis.scatter(
+                xs,
+                ys,
+                marker="^",
+                s=42,
+                color=style_config["series_colors"].get(
+                    series_key,
+                    SCALING_GROUP_COLORS["standalone"],
+                ),
+                label=resolve_series_alias(series_key, style_config),
+                zorder=3,
+            )
+            continue
+
+        axis.plot(
+            xs,
+            ys,
+            label=resolve_series_alias(series_key, style_config),
+            **comparison_series_style(series_key, style_config),
+        )
+
+    handles, labels = axis.get_legend_handles_labels()
+    if handles:
+        axis.legend(frameon=False, fontsize=style_config["legend_fontsize"])
+
+    return series_values
 
 
 def panel_spec_label(
@@ -658,7 +1001,9 @@ def plot_metric_vs_size_panel(
     sampling_mode: str,
     variant_label: str,
     sampling_label: str | None = None,
+    style_config: dict[str, Any] | None = None,
 ) -> None:
+    style_config = style_config or resolve_plot_style("default")
     panel_rows = [
         row
         for row in rows
@@ -668,13 +1013,14 @@ def plot_metric_vs_size_panel(
             scaling_curve_sampling_label(row),
             sampling_label,
         )
-    ]
+        ]
     panel_title = f"{sampling_mode} / {variant_label}"
     if sampling_label is not None:
         panel_title = f"{panel_title} / {sampling_label}"
-    axis.set_title(panel_title)
-    axis.set_xlabel("Non-embedding parameters")
-    axis.set_ylabel(ylabel)
+    axis.set_title(panel_title, fontsize=style_config["panel_title_fontsize"], pad=6)
+    axis.set_xlabel("Non-embedding parameters", fontsize=style_config["axis_label_fontsize"])
+    axis.set_ylabel(ylabel, fontsize=style_config["axis_label_fontsize"])
+    axis.tick_params(labelsize=style_config["tick_label_fontsize"])
     axis.grid(True, alpha=0.3)
 
     if not panel_rows:
@@ -690,8 +1036,14 @@ def plot_metric_vs_size_panel(
 
     grouped = group_scaling_rows(panel_rows)
     for group_rows_for_label in grouped.values():
-        style = scaling_curve_style(group_rows_for_label)
-        legend_label = scaling_curve_display_label(group_rows_for_label)
+        style = scaling_curve_style(
+            group_rows_for_label,
+            style_config=style_config,
+        )
+        legend_label = scaling_curve_display_label(
+            group_rows_for_label,
+            alias_map=style_config["curve_aliases"],
+        )
         points = [
             (to_float(row["non_embedding_parameters"]), to_float(row[metric_name]))
             for row in group_rows_for_label
@@ -719,14 +1071,116 @@ def plot_metric_vs_size_panel(
             ys,
             marker="^",
             s=42,
-            color=SCALING_GROUP_COLORS["standalone"],
-            label="standalone reference",
+            color=style_config["series_colors"].get(
+                "standalone",
+                SCALING_GROUP_COLORS["standalone"],
+            ),
+            label=style_config["standalone_label"],
             zorder=3,
         )
 
     handles, labels = axis.get_legend_handles_labels()
     if handles:
-        axis.legend(frameon=False, fontsize="small")
+        axis.legend(frameon=False, fontsize=style_config["legend_fontsize"])
+
+
+def resolve_plot_style(style_name: str) -> dict[str, Any]:
+    merged = dict(PLOT_STYLE_BASE)
+    preset = PLOT_STYLE_PRESETS.get(style_name, {})
+    for key, value in preset.items():
+        if isinstance(value, dict):
+            nested = dict(merged.get(key, {}))
+            nested.update(value)
+            merged[key] = nested
+        else:
+            merged[key] = value
+    return merged
+
+
+def resolve_series_alias(series_key: str, style_config: dict[str, Any]) -> str:
+    return str(
+        style_config.get("series_aliases", {}).get(
+            series_key,
+            style_config.get("curve_aliases", {}).get(series_key, series_key),
+        )
+    )
+
+
+def comparison_series_key(row: dict[str, str]) -> str | None:
+    family_label = scaling_curve_family_label(row)
+    if family_label == "standalone":
+        return "standalone"
+    if family_label not in {"nested-random", "nested-all"}:
+        return None
+
+    variant_label = scaling_curve_variant_label(row) or "slicing"
+    correction_label = scaling_curve_correction_label(row) or "none"
+    if correction_label != "none":
+        sampling_label = scaling_curve_sampling_label(row) or "global"
+        if sampling_label != "global":
+            return None
+        return f"{family_label} / {variant_label} / {correction_label}"
+
+    sampling_label = scaling_curve_sampling_label(row) or "global"
+    return f"{family_label} / {variant_label} / {correction_label} / {sampling_label}"
+
+
+def group_rows_by_series_key(
+    rows: list[dict[str, str]],
+    series_keys: list[str],
+) -> dict[str, list[dict[str, str]]]:
+    grouped: dict[str, list[dict[str, str]]] = {key: [] for key in series_keys}
+    for row in rows:
+        series_key = comparison_series_key(row)
+        if series_key is None or series_key not in grouped:
+            continue
+        grouped[series_key].append(row)
+    return grouped
+
+
+def comparison_series_style(
+    series_key: str,
+    style_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    style_config = style_config or resolve_plot_style("default")
+    if series_key == "standalone":
+        return {
+            "linewidth": 1.6,
+            "linestyle": "None",
+            "color": style_config["series_colors"].get(
+                series_key,
+                SCALING_GROUP_COLORS["standalone"],
+            ),
+        }
+
+    parts = series_key.split(" / ")
+    variant_label = parts[1] if len(parts) > 1 else "slicing"
+    correction_label = parts[2] if len(parts) > 2 else "none"
+    sampling_label = "global"
+    if len(parts) > 3:
+        sampling_label = parts[3]
+    correction_style = SCALING_CORRECTION_STYLES.get(
+        correction_label,
+        SCALING_CORRECTION_STYLES["none"],
+    )
+    base_color = style_config["series_colors"].get(series_key, "tab:gray")
+    linestyle = style_config.get("comparison_linestyle")
+    if not linestyle:
+        linestyle = correction_style["linestyle"]
+    marker = style_config.get("comparison_markers_by_variant", {}).get(
+        variant_label,
+        SCALING_SAMPLING_MARKERS.get(
+            sampling_label,
+            correction_style["marker"],
+        ),
+    )
+    return {
+        "linewidth": 1.4,
+        "linestyle": linestyle,
+        "marker": marker,
+        "markersize": 5,
+        "color": blend_color_toward_white(base_color, correction_style["shade"]),
+    }
 
 
 def plot_metric_over_steps(
@@ -1665,11 +2119,15 @@ def scaling_curve_label(row: dict[str, str]) -> str:
     return " / ".join(parts)
 
 
-def scaling_curve_display_label(rows: list[dict[str, str]]) -> str:
+def scaling_curve_display_label(
+    rows: list[dict[str, str]],
+    alias_map: dict[str, str] | None = None,
+) -> str:
     row = rows[0]
     family_label = scaling_curve_family_label(row)
     if family_label == "standalone":
-        return "standalone"
+        label = "standalone"
+        return alias_map.get(label, label) if alias_map else label
 
     parts = [family_label]
     variant_label = scaling_curve_variant_label(row)
@@ -1685,7 +2143,8 @@ def scaling_curve_display_label(rows: list[dict[str, str]]) -> str:
     if correction_label is not None:
         parts.append(correction_label)
 
-    return " / ".join(parts)
+    label = " / ".join(parts)
+    return alias_map.get(label, label) if alias_map else label
 
 
 def scaling_curve_color_group_label(row: dict[str, str]) -> str:
@@ -1739,7 +2198,11 @@ def scaling_curve_variant_label(row: dict[str, str]) -> str | None:
 def scaling_curve_sampling_label(row: dict[str, str]) -> str | None:
     sampling_mode = row.get("sampling_mode")
     if sampling_mode not in {"nested-random", "nested-all"}:
-        return None
+        resolved_run_mode = row.get("resolved_run_mode")
+        if resolved_run_mode in {"nested-random", "nested-all"}:
+            sampling_mode = str(resolved_run_mode)
+        else:
+            return None
 
     resolved_sampling_mode = row.get("resolved_sampling_mode")
     if resolved_sampling_mode not in (None, ""):
@@ -1777,7 +2240,7 @@ def display_sampling_label_for_curve(sampling_label: str | None) -> str | None:
     if sampling_label is None:
         return None
     if sampling_label == "global":
-        return "global"
+        return None
     if sampling_label == "per_block":
         return "per_block sampling"
     if sampling_label == "adaptive_per_block_thompson":
@@ -1827,7 +2290,11 @@ def panel_sampling_matches(
     return actual_sampling_label == expected_sampling_label
 
 
-def scaling_curve_style(rows: list[dict[str, str]]) -> dict[str, Any]:
+def scaling_curve_style(
+    rows: list[dict[str, str]],
+    style_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    style_config = style_config or resolve_plot_style("default")
     group_key = None
     color_group_key = None
     correction_label = None
@@ -1845,7 +2312,10 @@ def scaling_curve_style(rows: list[dict[str, str]]) -> dict[str, Any]:
         correction_label or "none",
         SCALING_CORRECTION_STYLES["none"],
     )
-    base_color = SCALING_GROUP_COLORS.get(color_group_key or "", "tab:gray")
+    base_color = style_config["series_colors"].get(
+        color_group_key or "",
+        SCALING_GROUP_COLORS.get(color_group_key or "", "tab:gray"),
+    )
     sampling_tone = SCALING_SAMPLING_TONES.get(sampling_label or "global", 0.0)
     style = {
         "linewidth": 1.4,
@@ -1863,6 +2333,23 @@ def scaling_curve_style(rows: list[dict[str, str]]) -> dict[str, Any]:
     if group_key == "standalone":
         style["linewidth"] = 1.6
     return style
+
+
+def no_corrections_row_filter(row: dict[str, str]) -> bool:
+    family_label = scaling_curve_family_label(row)
+    if family_label == "standalone":
+        return True
+    return scaling_curve_correction_label(row) is None
+
+
+def resolve_figure_row_filter(
+    row_filter_name: str | None,
+) -> Callable[[dict[str, str]], bool] | None:
+    if row_filter_name is None:
+        return None
+    if row_filter_name == "no_corrections":
+        return no_corrections_row_filter
+    raise ValueError(f"Unknown figure row filter: {row_filter_name}")
 
 
 def combine_shades(*shades: float) -> float:

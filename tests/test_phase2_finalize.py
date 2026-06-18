@@ -16,7 +16,9 @@ from scripts.make_figures import (
     loss_moving_average_window_size,
     loss_trace_description,
     loss_trace_panel_suffix,
+    no_corrections_row_filter,
     refresh_scaling_parameter_counts,
+    resolve_plot_style,
     scaling_curve_style,
     scaling_curve_sampling_label,
     validation_comparison_display_label,
@@ -322,6 +324,9 @@ def test_make_figures_reads_csv_artifacts(tmp_path):
     assert {
         "loss_vs_size.png",
         "ppl_vs_size.png",
+        "ppl_vs_size_nested_all_no_corrections.png",
+        "ppl_vs_size_nested_random_no_corrections.png",
+        "ppl_vs_size_nested_random_vs_nested_all_no_corrections.png",
         "accuracy_vs_size.png",
         "consistency_vs_size.png",
         "medium_trend_report.md",
@@ -1149,6 +1154,40 @@ def test_make_figures_groups_scaling_curves_by_sampling_mode_variant_and_members
     assert concat_style["marker"] == "o"
     assert concat_style["linestyle"] == "-"
     assert concat_style["linewidth"] == 1.4
+
+
+def test_make_figures_filters_no_corrections_rows_for_comparison_figures():
+    corrected_row = {
+        "sampling_mode": "nested-random",
+        "model_family": "nested",
+        "model_variant": "slicing",
+        "correction_mode": "gmc",
+    }
+    nested_row = {
+        "sampling_mode": "nested-all",
+        "model_family": "nested",
+        "model_variant": "concat",
+        "correction_mode": "none",
+    }
+    standalone_row = {
+        "sampling_mode": "standalone",
+        "model_family": "standalone",
+        "model_variant": "slicing",
+    }
+
+    assert not no_corrections_row_filter(corrected_row)
+    assert no_corrections_row_filter(nested_row)
+    assert no_corrections_row_filter(standalone_row)
+
+
+def test_make_figures_resolves_named_plot_style_presets():
+    style = resolve_plot_style("nested_random_no_corrections")
+
+    assert style["figure_title_fontsize"] == 15
+    assert style["curve_aliases"]["nested-random / slicing / global"] == (
+        "nested-random / slicing / global"
+    )
+    assert style["series_colors"]["nested-random / concat / per_block"] == "tab:red"
 
 
 def test_loss_moving_average_window_size_scales_with_point_count():

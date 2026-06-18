@@ -8,11 +8,15 @@ from datasets import Dataset
 
 from scripts.make_figures import (
     blend_color_toward_white,
+    comparison_series_key,
+    comparison_series_style,
     generate_figures,
     scaling_curve_color_group_label,
     scaling_curve_display_label,
     scaling_curve_label,
     scaling_curve_style,
+    resolve_plot_style,
+    resolve_series_alias,
 )
 from models.correction import (
     correction_context_from_config,
@@ -931,7 +935,13 @@ def test_shared_family_folder_artifacts_can_be_read_directly_by_figures(tmp_path
     )
     figure_names = {path.name for path in figure_paths}
 
-    assert {"loss_vs_size.png", "ppl_vs_size.png"} <= figure_names
+    assert {
+        "loss_vs_size.png",
+        "ppl_vs_size.png",
+        "ppl_vs_size_nested_all_no_corrections.png",
+        "ppl_vs_size_nested_random_no_corrections.png",
+        "ppl_vs_size_nested_random_vs_nested_all_no_corrections.png",
+    } <= figure_names
 
 
 def test_scaling_curve_label_prefers_correction_mode_when_available():
@@ -985,6 +995,68 @@ def test_scaling_curve_display_label_makes_per_block_sampling_explicit():
         "nested-random / concat / per_block sampling / lmc"
     )
     assert scaling_curve_display_label([global_row]) == "nested-random / concat / gmc"
+
+
+def test_comparison_series_alias_and_color_presets_are_configurable():
+    style = resolve_plot_style("nested_split_no_corrections")
+    series_key = "nested-random / concat / gmc"
+
+    assert style["figure_title_fontsize"] == 17
+    assert style["subfigure_title_fontsize"] == 13
+    assert style["legend_fontsize"] == 12
+    assert style["comparison_linestyle"] == "-"
+    assert style["comparison_markers_by_variant"] == {"slicing": "s", "concat": "o"}
+    assert comparison_series_key(
+        {
+            "sampling_mode": "nested-random",
+            "model_family": "nested",
+            "model_variant": "concat",
+            "correction_mode": "gmc",
+            "resolved_sampling_mode": "global",
+        }
+    ) == series_key
+    assert (
+        comparison_series_key(
+            {
+                "sampling_mode": "nested-random",
+                "model_family": "nested",
+                "model_variant": "concat",
+                "correction_mode": "gmc",
+                "resolved_sampling_mode": "per_block",
+            }
+        )
+        is None
+    )
+    assert comparison_series_key(
+        {
+            "sampling_mode": "nested-all",
+            "model_family": "nested",
+            "model_variant": "concat",
+            "correction_mode": "lmc",
+            "resolved_sampling_mode": "global",
+        }
+    ) == "nested-all / concat / lmc"
+    assert resolve_series_alias(series_key, style) == "Concat/GMC"
+    assert resolve_series_alias("nested-all / concat / lmc", style) == "Concat/LMC"
+    style["series_aliases"][series_key] = "random concat with correction"
+    style["series_colors"][series_key] = "tab:cyan"
+    assert resolve_series_alias(series_key, style) == "random concat with correction"
+    gmc_style = comparison_series_style(series_key, style)
+    slicing_style = comparison_series_style(
+        "nested-random / slicing / none / global",
+        style,
+    )
+    assert gmc_style["color"] == blend_color_toward_white("tab:cyan", 0.2)
+    assert gmc_style["linestyle"] == "-"
+    assert gmc_style["marker"] == "o"
+    assert slicing_style["linestyle"] == "-"
+    assert slicing_style["marker"] == "s"
+    lmc_style = comparison_series_style(
+        "nested-all / concat / lmc",
+        style,
+    )
+    assert lmc_style["linestyle"] == "-"
+    assert lmc_style["marker"] == "o"
 
 
 def test_scaling_curve_style_groups_family_colors_markers_and_shades():
