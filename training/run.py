@@ -26,7 +26,11 @@ from src.evaluation.validation import (
     perplexity_from_loss,
     validation_results_to_metric_rows,
 )
-from src.models.ffn import CatLlamaMLP, get_concat_layout_diagnostic, get_ffn_prefix_metadata
+from src.models.ffn import (
+    CatLlamaMLP,
+    build_concat_layout_diagnostic,
+    get_ffn_prefix_metadata,
+)
 from src.models.adaptive_sampler import (
     build_adaptive_reward_record,
     build_adaptive_sampler_artifact_fields,
@@ -152,7 +156,7 @@ def run_training(
                 distributed_context.is_rank_zero
                 and config["model"]["variant"] == "concat"
             ):
-                diagnostic = get_concat_layout_diagnostic(
+                diagnostic = build_concat_layout_diagnostic(
                     config["model"]["intermediate_size"],
                     config["model"]["granularities"],
                     granularity_prefixes=config["model"].get("granularity_prefixes"),

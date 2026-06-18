@@ -267,4 +267,5 @@ __all__ = [
     "build_per_block_granularity_pattern",
     "apply_granularity_pattern_to_model",
     "prime_standalone_granularity_state",
+    "record_runtime_sampling_provenance",
 ]

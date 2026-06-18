@@ -451,6 +451,76 @@ def test_tiny_nested_training_can_sample_one_granularity_for_the_nested_random_g
     )
 
 
+def test_refactored_training_flow_writes_representative_artifacts(tmp_path):
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "training.max_steps=1",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "outputs.save_checkpoints=false",
+            "evaluation.validation=false",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+
+    result = run_training(
+        config,
+        model=TinyNestedTrainingModel(),
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    with result["metrics_path"].open("r", encoding="utf-8", newline="") as metrics_file:
+        metrics_reader = csv.DictReader(metrics_file)
+        metrics_rows = list(metrics_reader)
+
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    metrics_row = metrics_rows[0]
+
+    assert result["metrics_path"] == output_dir / "metrics.csv"
+    assert result["scaling_path"] == output_dir / "scaling_results.csv"
+    assert result["summary_path"] == output_dir / "run_summary.json"
+    assert summary["status"] == "completed"
+    assert summary["output_dir"] == str(output_dir)
+    assert summary["metrics_path"] == str(result["metrics_path"])
+    assert summary["scaling_results_path"] == str(result["scaling_path"])
+    assert summary["extraction_metadata_path"] == str(
+        output_dir / "extraction_metadata.json"
+    )
+    assert summary["checkpoint_status"] == "none"
+    assert summary["checkpoint_unavailable_reason"] == "checkpoint writes disabled"
+    assert summary["granularity_pattern_summary"]["repeatable_source"][0] == (
+        "debug-nested-001"
+    )
+    assert summary["correction_context"]["local_correction_active"] is False
+    assert metrics_row["run_id"] == "debug-nested-001"
+    assert metrics_row["split"] == "train"
+    assert json.loads(metrics_row["granularity_pattern_summary"])[
+        "repeatable_source"
+    ][0] == "debug-nested-001"
+    assert "local_correction_active" in json.loads(metrics_row["correction_context"])
+    assert len(metrics_rows) >= 1
+    for artifact_name in [
+        "config.json",
+        "metrics.csv",
+        "scaling_results.csv",
+        "run_summary.json",
+        "extraction_metadata.json",
+    ]:
+        assert (output_dir / artifact_name).exists()
+
+
 def _run_monitoring_smoke_case(tmp_path, run_id: str):
     output_dir = tmp_path / run_id
     config = resolve_run_config(

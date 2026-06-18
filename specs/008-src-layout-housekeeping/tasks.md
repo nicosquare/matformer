@@ -58,8 +58,8 @@
 
 ### Verification for User Story 2
 
-- [ ] T016 [P] [US2] Add or update `tests/test_training_smoke.py` to cover the refactored training flow and representative artifact outputs
-- [ ] T017 [P] [US2] Add or update `tests/test_artifacts.py` to confirm training summaries and metrics still serialize with the expected fields after the split
+- [X] T016 [P] [US2] Add or update `tests/test_training_smoke.py` to cover the refactored training flow and representative artifact outputs
+- [X] T017 [P] [US2] Add or update `tests/test_artifacts.py` to confirm training summaries and metrics still serialize with the expected fields after the split
 
 ### Implementation for User Story 2
 

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import torch
 from datasets import Dataset
 
-from scripts.make_figures import (
+from src.evaluation.reporting_legacy import (
     display_sampling_label_for_curve,
     enrich_metrics_metadata_from_run_config,
     enrich_scaling_metadata_from_run_config,
