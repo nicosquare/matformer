@@ -27,12 +27,12 @@ from transformers import AutoTokenizer, LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 import yaml
 
-from models.ffn import CatLlamaMLP
-from models.wiring import ModifiedLlamaForCausalLM, apply_granularity_pattern_to_model
-from training.run import build_optimizer_and_scheduler
-from training.run import load_checkpoint_state
-from training.run import save_model_checkpoint
-from utils.config import (
+from src.models.ffn import CatLlamaMLP
+from src.models.wiring import ModifiedLlamaForCausalLM, apply_granularity_pattern_to_model
+from src.training.run import build_optimizer_and_scheduler
+from src.training.run import load_checkpoint_state
+from src.training.run import save_model_checkpoint
+from src.utils.config import (
     DEFAULT_MODEL_VARIANT,
     VALID_MODEL_VARIANTS,
     VALID_OPTIMIZER_NAMES,

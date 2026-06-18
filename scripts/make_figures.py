@@ -7,14 +7,9 @@ import csv
 import json
 import math
 import re
-import sys
 from pathlib import Path
 from typing import Any
 from collections.abc import Callable
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
 import matplotlib
 
@@ -284,7 +279,7 @@ def generate_figures(
     consistency_rows = read_csv_artifacts(input_root, "consistency_results.csv")
 
     if scaling_rows and task_result_rows:
-        from evaluation.validation import aggregate_scaling_summary
+        from src.evaluation.validation import aggregate_scaling_summary
 
         scaling_rows = aggregate_scaling_summary(scaling_rows, task_result_rows)
 
@@ -572,8 +567,8 @@ def config_path_for_scaling_row(
 
 
 def recompute_parameter_counts(config_path: Path) -> dict[str, dict[str, Any]]:
-    from training.run import build_model
-    from utils.metrics import build_parameter_counts_by_granularity
+    from src.training.run import build_model
+    from src.utils.metrics import build_parameter_counts_by_granularity
 
     with config_path.open("r", encoding="utf-8") as config_file:
         config = json.load(config_file)

@@ -1,0 +1,10 @@
+[build-system]
+requires = []
+build-backend = "build_backend"
+backend-path = ["."]
+
+[project]
+name = "matformer"
+version = "0.0.0"
+description = "MatFormer reproduction experiments"
+requires-python = ">=3.12"

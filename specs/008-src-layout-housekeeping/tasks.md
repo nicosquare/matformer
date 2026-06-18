@@ -17,10 +17,10 @@
 
 **Purpose**: Create the source-package layout and packaging plumbing needed for all later work
 
-- [ ] T001 Create `pyproject.toml` at the repository root with editable-install support for the `src/` layout and the preserved package names
-- [ ] T002 Create the `src/` package root and move package initialization files into `src/models/__init__.py`, `src/training/__init__.py`, `src/evaluation/__init__.py`, and `src/utils/__init__.py`
-- [ ] T003 [P] Update import resolution in `train.py` and `scripts/make_figures.py` so wrappers can import from `src/` without path hacks
-- [ ] T004 [P] Add a quick import smoke check in `tests/test_src_layout.py` to verify `models`, `training`, `evaluation`, and `utils` resolve from `src/`
+- [X] T001 Create `pyproject.toml` at the repository root with editable-install support for the `src/` layout and the preserved package names
+- [X] T002 Create the `src/` package root and move package initialization files into `src/models/__init__.py`, `src/training/__init__.py`, `src/evaluation/__init__.py`, and `src/utils/__init__.py`
+- [X] T003 [P] Update import resolution in `train.py` and `scripts/make_figures.py` so wrappers can import from `src/` without path hacks
+- [X] T004 [P] Add a quick import smoke check in `tests/test_src_layout.py` to verify `models`, `training`, `evaluation`, and `utils` resolve from `src/`
 
 ## Phase 2: Foundational (Blocking Prerequisites)
 
