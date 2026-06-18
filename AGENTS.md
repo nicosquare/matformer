@@ -1,5 +1,5 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read:
-`specs/007-adaptive-per-block-sampling/plan.md`
+`specs/008-src-layout-housekeeping/plan.md`
 <!-- SPECKIT END -->
