@@ -28,9 +28,9 @@
 
 - [X] T005 Move shared configuration logic into `src/utils/config.py` and `src/utils/config_resolution.py`, keeping the current config semantics intact
 - [X] T006 Move shared metrics serialization and summary helpers into `src/utils/metrics.py`, `src/utils/metrics_io.py`, and `src/utils/metrics_summary.py`
-- [ ] T007 [P] Update `src/utils/__init__.py` to re-export the config and metrics helpers needed by existing imports
-- [ ] T008 Split figure/report helper logic out of the standalone script into `src/evaluation/reporting.py` and `src/evaluation/reporting_styles.py`
-- [ ] T009 Update the stable CLI contract in `specs/008-src-layout-housekeeping/contracts/cli-entrypoints.md` if any wrapper-visible behavior needs clarification during implementation
+- [X] T007 [P] Update `src/utils/__init__.py` to re-export the config and metrics helpers needed by existing imports
+- [X] T008 Split figure/report helper logic out of the standalone script into `src/evaluation/reporting.py` and `src/evaluation/reporting_styles.py`
+- [X] T009 Update the stable CLI contract in `specs/008-src-layout-housekeeping/contracts/cli-entrypoints.md` if any wrapper-visible behavior needs clarification during implementation
 
 ## Phase 3: User Story 1 - Find the real code in one place (Priority: P1)
 
