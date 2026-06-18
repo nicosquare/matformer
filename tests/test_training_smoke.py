@@ -501,6 +501,58 @@ def _read_heartbeat_events(path: Path) -> list[dict[str, object]]:
         ]
 
 
+def test_train_py_config_flag_dispatches_to_configured_run(monkeypatch, tmp_path):
+    import train as train_module
+    import training.run as training_run
+
+    captured = {}
+
+    def fake_run_from_config_path(
+        config_path,
+        *,
+        run_id=None,
+        overrides=None,
+        output_dir=None,
+    ):
+        captured["config_path"] = config_path
+        captured["run_id"] = run_id
+        captured["overrides"] = list(overrides or [])
+        captured["output_dir"] = output_dir
+
+    monkeypatch.setattr(
+        training_run,
+        "run_from_config_path",
+        fake_run_from_config_path,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "train.py",
+            "--config",
+            "configs/debug_matrix.yaml",
+            "--run-id",
+            "debug-nested-001",
+            "--output-root",
+            str(tmp_path / "artifacts"),
+            "--override",
+            "training.max_steps=1",
+        ],
+    )
+
+    train_module.main()
+
+    assert captured == {
+        "config_path": "configs/debug_matrix.yaml",
+        "run_id": "debug-nested-001",
+        "overrides": [
+            "training.max_steps=1",
+            f"run.output_root={tmp_path / 'artifacts'}",
+        ],
+        "output_dir": None,
+    }
+
+
 @pytest.mark.xfail(
     reason="Run resumption wiring is implemented in T009/T010, not yet here",
     strict=False,

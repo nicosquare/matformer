@@ -40,8 +40,8 @@
 
 ### Verification for User Story 1
 
-- [ ] T010 [P] [US1] Add or update `tests/test_src_layout.py` to assert the importable production packages resolve from `src/`
-- [ ] T011 [P] [US1] Add or update `tests/test_training_smoke.py` to confirm `python train.py --config ...` still reaches the config-driven flow after the layout move
+- [X] T010 [P] [US1] Add or update `tests/test_src_layout.py` to assert the importable production packages resolve from `src/`
+- [X] T011 [P] [US1] Add or update `tests/test_training_smoke.py` to confirm `python train.py --config ...` still reaches the config-driven flow after the layout move
 
 ### Implementation for User Story 1
 
