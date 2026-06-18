@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from torch import nn
 from transformers.models.llama.modeling_llama import LlamaMLP
 
-from models.granularity import (
+from src.models.granularity import (
     MATFORMER_GRANULARITY_ORDER,
     get_concat_block_metadata,
     get_concat_block_membership_counts,

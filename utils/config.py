@@ -11,12 +11,12 @@ from typing import Any, Iterable, Mapping
 
 import yaml
 
-from utils.model_size import (
+from src.utils.model_size import (
     MODEL_FAMILY_SLUG,
     derive_model_size_slug,
     derive_token_budget_slug,
 )
-from utils.monitoring import DEFAULT_MONITORING_BACKEND, VALID_MONITORING_BACKENDS
+from src.utils.monitoring import DEFAULT_MONITORING_BACKEND, VALID_MONITORING_BACKENDS
 
 
 VALID_GRANULARITIES = {"s", "m", "l", "xl"}

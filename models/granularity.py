@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from utils.config import CANONICAL_GRANULARITY_PREFIX_FRACTIONS
+from src.utils.config import CANONICAL_GRANULARITY_PREFIX_FRACTIONS
 
 
 MATFORMER_GRANULARITY_ORDER = ("s", "m", "l", "xl")

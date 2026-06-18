@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from models.granularity import GranularityPattern
+from src.models.granularity import GranularityPattern
 
 
 VALID_CORRECTION_MODES = {"none", "gmc", "lmc"}

@@ -19,15 +19,15 @@ from torch.nn.utils import clip_grad_norm_
 from torch.utils.data.distributed import DistributedSampler
 from transformers import AutoTokenizer, LlamaConfig, LlamaForCausalLM, get_scheduler
 
-from evaluation.validation import (
+from src.evaluation.validation import (
     configure_model_granularity,
     evaluate_validation_per_granularity,
     move_batch_to_device,
     perplexity_from_loss,
     validation_results_to_metric_rows,
 )
-from models.ffn import CatLlamaMLP, get_concat_layout_diagnostic, get_ffn_prefix_metadata
-from models.adaptive_sampler import (
+from src.models.ffn import CatLlamaMLP, get_concat_layout_diagnostic, get_ffn_prefix_metadata
+from src.models.adaptive_sampler import (
     build_adaptive_reward_record,
     build_adaptive_sampler_artifact_fields,
     build_adaptive_sampler_state,
@@ -38,19 +38,19 @@ from models.adaptive_sampler import (
     summarize_adaptive_sampler_state,
     update_adaptive_sampler_state,
 )
-from models.correction import summarize_correction_context_from_config
-from models.granularity import summarize_granularity_pattern_from_config
-from models.wiring import (
+from src.models.correction import summarize_correction_context_from_config
+from src.models.granularity import summarize_granularity_pattern_from_config
+from src.models.wiring import (
     ModifiedLlamaForCausalLM,
     prime_standalone_granularity_state,
     record_runtime_sampling_provenance,
 )
-from training.data import (
+from src.training.data import (
     build_language_model_dataloader,
     load_and_tokenize_dataset,
     split_train_eval_dataset,
 )
-from training.distributed import (
+from src.training.distributed import (
     broadcast_object,
     destroy_distributed_process_group,
     prepare_distributed_context,
@@ -58,7 +58,7 @@ from training.distributed import (
     sum_int,
     wrap_model_for_distributed,
 )
-from utils.config import (
+from src.utils.config import (
     ConfigError,
     attach_parameter_counts_to_config,
     resolve_run_config,
@@ -67,8 +67,8 @@ from utils.config import (
     resolve_training_length_for_world_size,
     validate_run_config,
 )
-from utils.heartbeats import HeartbeatCadence, HeartbeatWriter
-from utils.metrics import (
+from src.utils.heartbeats import HeartbeatCadence, HeartbeatWriter
+from src.utils.metrics import (
     build_checkpoint_summary_fields,
     build_monitoring_summary_fields,
     build_parameter_counts_by_granularity,
@@ -83,7 +83,7 @@ from utils.metrics import (
     write_scaling_results_csv,
     summarize_runtime_granularity_pattern_from_config,
 )
-from utils.monitoring import group_loss_rows_by_series
+from src.utils.monitoring import group_loss_rows_by_series
 
 
 def run_from_config_path(
@@ -3073,4 +3073,3 @@ def _runtime_granularity_artifacts(
         granularity_pattern=runtime_pattern,
     )
     return runtime_pattern_summary, correction_context
-

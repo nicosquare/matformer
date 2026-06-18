@@ -12,10 +12,10 @@ from typing import Any, Callable, Mapping, Sequence
 import torch
 from transformers import AutoTokenizer
 
-from evaluation.validation import configure_model_granularity
-from training.run import build_model
-from utils.config import load_yaml_config
-from utils.metrics import build_speculative_task_rows, write_task_results_csv
+from src.evaluation.validation import configure_model_granularity
+from src.training.run import build_model
+from src.utils.config import load_yaml_config
+from src.utils.metrics import build_speculative_task_rows, write_task_results_csv
 
 DEFAULT_SPECULATIVE_DECODING = {
     "max_draft_tokens": 4,

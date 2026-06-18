@@ -8,8 +8,8 @@ from typing import Any
 
 from transformers import LlamaForCausalLM
 
-from models.ffn import CatLlamaMLP, ModifiedLlamaMLP, get_ffn_prefix_metadata
-from models.granularity import (
+from src.models.ffn import CatLlamaMLP, ModifiedLlamaMLP, get_ffn_prefix_metadata
+from src.models.granularity import (
     MATFORMER_GRANULARITY_ORDER,
     GranularityPattern,
     build_granularity_pattern,

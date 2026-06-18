@@ -13,8 +13,8 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from models.ffn import CatLlamaMLP, ModifiedLlamaMLP
-from models.granularity import MATFORMER_GRANULARITY_ORDER
+from src.models.ffn import CatLlamaMLP, ModifiedLlamaMLP
+from src.models.granularity import MATFORMER_GRANULARITY_ORDER
 
 
 def parse_args():

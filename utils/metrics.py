@@ -7,14 +7,14 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from utils.config import (
+from src.utils.config import (
     resolve_sampling_mode_from_config_sections,
     write_resolved_config,
 )
-from models.adaptive_sampler import build_adaptive_sampler_artifact_fields
-from models.correction import summarize_correction_context_from_config
-from models.granularity import summarize_granularity_pattern_from_config
-from utils.monitoring import (
+from src.models.adaptive_sampler import build_adaptive_sampler_artifact_fields
+from src.models.correction import summarize_correction_context_from_config
+from src.models.granularity import summarize_granularity_pattern_from_config
+from src.utils.monitoring import (
     DEFAULT_MONITORING_BACKEND,
     build_monitoring_series_metadata,
 )
@@ -666,7 +666,7 @@ def build_parameter_counts_by_granularity(
     granularities: Iterable[str],
     trainable_only: bool = False,
 ) -> dict[str, dict[str, Any]]:
-    from utils.model_size import model_parameter_counts
+    from src.utils.model_size import model_parameter_counts
 
     return {
         granularity: model_parameter_counts(
@@ -1325,6 +1325,6 @@ def _should_write_shared_artifact(distributed_context: Any | None) -> bool:
     if distributed_context is None:
         return True
 
-    from training.distributed import should_write_shared_artifact
+    from src.training.distributed import should_write_shared_artifact
 
     return should_write_shared_artifact(distributed_context)

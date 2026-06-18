@@ -9,8 +9,8 @@ from typing import Any, Iterable, Mapping
 import torch
 import torch.distributed as dist
 
-from utils.config import resolve_sampling_mode_from_config_sections
-from utils.metrics import json_artifact_value
+from src.utils.config import resolve_sampling_mode_from_config_sections
+from src.utils.metrics import json_artifact_value
 
 
 def perplexity_from_loss(loss: float) -> float:

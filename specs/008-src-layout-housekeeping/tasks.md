@@ -47,8 +47,8 @@
 
 - [X] T012 [US1] Update `train.py` to remain a thin wrapper that imports the training entrypoint from `src/training/run.py`
 - [X] T013 [US1] Update `scripts/make_figures.py` to remain a thin wrapper that imports the figure entrypoint from `src/evaluation/reporting.py`
-- [ ] T014 [P] [US1] Move package imports used by `tests/` and internal modules to the preserved `src/models`, `src/training`, `src/evaluation`, and `src/utils` package tree
-- [ ] T015 [US1] Update `README.md` and any root-level usage docs if they refer to the old source layout or import paths
+- [X] T014 [P] [US1] Move package imports used by `tests/` and internal modules to the preserved `src/models`, `src/training`, `src/evaluation`, and `src/utils` package tree
+- [X] T015 [US1] Update `README.md` and any root-level usage docs if they refer to the old source layout or import paths
 
 ## Phase 4: User Story 2 - Understand and modify training flow in smaller pieces (Priority: P2)
 

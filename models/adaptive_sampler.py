@@ -10,7 +10,7 @@ from pathlib import Path
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from models.granularity import MATFORMER_GRANULARITY_ORDER, validate_granularity
+from src.models.granularity import MATFORMER_GRANULARITY_ORDER, validate_granularity
 
 
 VALID_ADAPTIVE_SAMPLER_STRATEGIES = ("thompson", "ucb")

@@ -9,8 +9,8 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
-from utils.config import resolve_all_run_configs, resolve_run_config
-from utils.metrics import (
+from src.utils.config import resolve_all_run_configs, resolve_run_config
+from src.utils.metrics import (
     baseline_match_id as metrics_baseline_match_id,
     build_baseline_match_row,
     write_json_artifact,
@@ -228,7 +228,7 @@ def find_standalone_baseline_config(
 
 
 def run_training_config(config: dict[str, Any]) -> dict[str, Any]:
-    from training.run import run_training
+    from src.training.run import run_training
 
     return run_training(config)
 

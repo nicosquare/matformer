@@ -11,10 +11,10 @@ from typing import Any, Iterable, Mapping, Sequence
 import torch
 import yaml
 
-from training.data import load_and_tokenize_dataset
-from training.run import build_dataloaders, build_model, load_tokenizer
-from evaluation.validation import configure_model_granularity
-from utils.metrics import write_consistency_results_csv
+from src.training.data import load_and_tokenize_dataset
+from src.training.run import build_dataloaders, build_model, load_tokenizer
+from src.evaluation.validation import configure_model_granularity
+from src.utils.metrics import write_consistency_results_csv
 
 
 TOKEN_LEVEL_AGREEMENT = "token_level_agreement"

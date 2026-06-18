@@ -8,8 +8,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from utils.config import resolve_run_config
-from utils.metrics import write_task_results_csv
+from src.utils.config import resolve_run_config
+from src.utils.metrics import write_task_results_csv
 
 
 MINIMAL_DOWNSTREAM_SUITE_ID = "minimal-downstream"

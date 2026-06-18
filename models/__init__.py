@@ -1,6 +1,6 @@
 """Shallow model package for MatFormer granularity refactors."""
 
-from models.correction import (
+from src.models.correction import (
     CorrectionContext,
     VALID_CORRECTION_MODES,
     VALID_SAMPLING_MODES,
@@ -13,7 +13,7 @@ from models.correction import (
     summarize_correction_context,
     summarize_correction_context_from_config,
 )
-from models.adaptive_sampler import (
+from src.models.adaptive_sampler import (
     VALID_ADAPTIVE_SAMPLER_STRATEGIES,
     AdaptiveSamplerBlockStat,
     AdaptiveSamplerState,
@@ -28,8 +28,8 @@ from models.adaptive_sampler import (
     validate_adaptive_sampler_strategy,
     validate_adaptive_sampler_state,
 )
-from models.ffn import CatLlamaMLP, ModifiedLlamaMLP
-from models.granularity import (
+from src.models.ffn import CatLlamaMLP, ModifiedLlamaMLP
+from src.models.granularity import (
     MATFORMER_GRANULARITY_DISPLAY_NAMES,
     MATFORMER_GRANULARITY_ORDER,
     GranularityMetadata,
@@ -53,7 +53,7 @@ from models.granularity import (
     summarize_granularity_pattern_from_config,
     summarize_granularity_pattern,
 )
-from models.wiring import (
+from src.models.wiring import (
     apply_granularity_pattern_to_model,
     build_global_granularity_pattern,
     ModifiedLlamaForCausalLM,
