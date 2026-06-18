@@ -63,7 +63,7 @@
 
 ### Implementation for User Story 2
 
-- [ ] T018 [US2] Move training orchestration from `training/run.py` into `src/training/run.py` and keep the public entrypoint stable
+- [X] T018 [US2] Move training orchestration from `training/run.py` into `src/training/run.py` and keep the public entrypoint stable
 - [ ] T019 [P] [US2] Extract checkpoint and continuation handling into `src/training/checkpointing.py`
 - [ ] T020 [P] [US2] Extract step-loop helpers and training step utilities into `src/training/steps.py`
 - [ ] T021 [P] [US2] Extract warmup-specific logic into `src/training/warmup.py`
