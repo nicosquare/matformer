@@ -55,7 +55,6 @@ from src.training.checkpointing import (
     continuation_latest_checkpoint_policy,
     maybe_write_latest_checkpoint,
 )
-from src.training.steps import train_for_steps
 from src.utils.config import (
     ConfigError,
     attach_parameter_counts_to_config,
@@ -243,6 +242,9 @@ def run_pre_nested_warmup_phase(
         config["model"]["granularities"][-1]
     ]
     warmup_config["training"]["granularity_sampling"] = "all"
+
+    # Import lazily to avoid a module-level cycle with src.training.steps.
+    from src.training.steps import train_for_steps
 
     warmup_metrics_rows = train_for_steps(
         warmup_config,

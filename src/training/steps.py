@@ -62,13 +62,7 @@ from src.training.distributed import (
     sum_int,
     wrap_model_for_distributed,
 )
-from src.training import (
-    checkpointing as training_checkpointing,
-    data as training_data,
-    distributed as training_distributed,
-    steps as training_steps,
-    warmup as training_warmup,
-)
+import src.training.checkpointing as training_checkpointing
 from src.utils.config import (
     ConfigError,
     attach_parameter_counts_to_config,

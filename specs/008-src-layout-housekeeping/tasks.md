@@ -78,8 +78,8 @@
 
 ### Verification for User Story 3
 
-- [ ] T024 [P] [US3] Add or update `tests/test_pilot_comparison.py` or `tests/test_artifacts.py` to verify the refactored figure-generation path still reads and summarizes existing artifacts
-- [ ] T025 [P] [US3] Add or update `tests/test_monitoring.py` or a focused reporting test to confirm metrics grouping and report generation still behave as expected
+- [X] T024 [P] [US3] Add or update `tests/test_pilot_comparison.py` or `tests/test_artifacts.py` to verify the refactored figure-generation path still reads and summarizes existing artifacts
+- [X] T025 [P] [US3] Add or update `tests/test_monitoring.py` or a focused reporting test to confirm metrics grouping and report generation still behave as expected
 
 ### Implementation for User Story 3
 

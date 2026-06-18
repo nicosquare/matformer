@@ -10,7 +10,6 @@ from src.evaluation.reporting_legacy import (
     blend_color_toward_white,
     comparison_series_key,
     comparison_series_style,
-    generate_figures,
     scaling_curve_color_group_label,
     scaling_curve_display_label,
     scaling_curve_label,
@@ -18,6 +17,7 @@ from src.evaluation.reporting_legacy import (
     resolve_plot_style,
     resolve_series_alias,
 )
+from src.evaluation.reporting import generate_figures
 from models.correction import (
     correction_context_from_config,
     summarize_correction_context,
