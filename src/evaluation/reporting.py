@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import argparse
 import math
 import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import to_rgb
 
+from . import reporting_styles
 from .reporting_styles import PLOT_STYLE_BASE, PLOT_STYLE_PRESETS
 
 __all__ = [
@@ -241,17 +246,192 @@ def generate_figures(
     refresh_counts: bool = True,
     dpi: int = 300,
 ) -> list[Path]:
-    from .reporting_legacy import generate_figures as legacy_generate_figures
+    from . import reporting_consistency, reporting_io, reporting_scaling, reporting_validation
 
-    return legacy_generate_figures(
+    input_root = Path(input_root)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    figure_paths: list[Path] = []
+    scaling_rows = reporting_io.read_csv_artifacts(input_root, "scaling_results.csv")
+    scaling_rows = reporting_io.enrich_scaling_metadata_from_run_config(
         input_root,
-        output_dir,
-        refresh_counts=refresh_counts,
-        dpi=dpi,
+        scaling_rows,
     )
+    if refresh_counts:
+        scaling_rows = reporting_io.refresh_scaling_parameter_counts(
+            input_root,
+            scaling_rows,
+        )
+
+    task_result_rows = reporting_io.read_csv_artifacts(input_root, "task_results.csv")
+    consistency_rows = reporting_io.read_csv_artifacts(
+        input_root,
+        "consistency_results.csv",
+    )
+
+    if scaling_rows and task_result_rows:
+        from .reporting_validation import aggregate_scaling_summary
+
+        scaling_rows = aggregate_scaling_summary(scaling_rows, task_result_rows)
+
+    if scaling_rows:
+        figure_paths.extend(
+            reporting_scaling.plot_metric_vs_size(
+                scaling_rows,
+                metric_name="loss",
+                ylabel="Loss",
+                output_path=output_dir / "loss_vs_size.png",
+                panel_specs=reporting_styles.SIZE_PLOT_PANELS_WITH_SAMPLING,
+                dpi=dpi,
+            )
+        )
+        for figure_spec in reporting_styles.PPL_VS_SIZE_FIGURE_SPECS:
+            figure_paths.extend(
+                reporting_scaling.plot_metric_vs_size(
+                    scaling_rows,
+                    metric_name="perplexity",
+                    ylabel="Perplexity",
+                    output_path=output_dir / figure_spec["output_name"],
+                    panel_specs=figure_spec["panel_specs"],
+                    row_filter=reporting_scaling.resolve_figure_row_filter(
+                        figure_spec["row_filter_name"]
+                    ),
+                    figure_title=figure_spec["figure_title"],
+                    style=figure_spec["style"],
+                    figure_alias=figure_spec["figure_alias"],
+                    dpi=dpi,
+                )
+            )
+        figure_paths.append(
+            reporting_scaling.plot_metric_vs_size_split_comparison(
+                scaling_rows,
+                metric_name="perplexity",
+                ylabel="Perplexity",
+                output_path=output_dir
+                / reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["output_name"],
+                figure_title=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["figure_title"],
+                style=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["style"],
+                left_panel_spec=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["left"],
+                right_panel_spec=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["right"],
+                dpi=dpi,
+            )
+        )
+        if any(row.get("average_downstream_accuracy") for row in scaling_rows):
+            figure_paths.extend(
+                reporting_scaling.plot_metric_vs_size(
+                    scaling_rows,
+                    metric_name="average_downstream_accuracy",
+                    ylabel="Average downstream accuracy",
+                    output_path=output_dir / "accuracy_vs_size.png",
+                    dpi=dpi,
+                )
+            )
+        figure_paths.append(
+            reporting_scaling.write_medium_trend_report(
+                scaling_rows,
+                output_dir / "medium_trend_report.md",
+            )
+        )
+
+    if scaling_rows:
+        metrics_rows = reporting_io.read_csv_artifacts_filtered(
+            input_root,
+            "metrics.csv",
+            row_filter=reporting_io.validation_split_filter,
+        )
+        metrics_rows = reporting_io.enrich_metrics_metadata_from_run_config(
+            input_root,
+            metrics_rows,
+        )
+        figure_paths.extend(
+            reporting_validation.plot_validation_loss_over_tokens_by_experiment(
+                metrics_rows,
+                output_dir,
+                dpi=dpi,
+            )
+        )
+        figure_paths.extend(
+            reporting_validation.plot_validation_loss_over_tokens_by_granularity_comparison(
+                metrics_rows,
+                output_dir,
+                dpi=dpi,
+            )
+        )
+    else:
+        metrics_rows = reporting_io.read_csv_artifacts(input_root, "metrics.csv")
+        metrics_rows = reporting_io.enrich_metrics_metadata_from_run_config(
+            input_root,
+            metrics_rows,
+        )
+        validation_metrics_rows = [
+            row for row in metrics_rows if reporting_io.validation_split_filter(row)
+        ]
+        if validation_metrics_rows:
+            figure_paths.extend(
+                reporting_validation.plot_validation_loss_over_tokens_by_experiment(
+                    validation_metrics_rows,
+                    output_dir,
+                    dpi=dpi,
+                )
+            )
+            figure_paths.extend(
+                reporting_validation.plot_validation_loss_over_tokens_by_granularity_comparison(
+                    validation_metrics_rows,
+                    output_dir,
+                    dpi=dpi,
+                )
+            )
+        figure_paths.append(
+            reporting_validation.plot_metric_over_steps(
+                metrics_rows,
+                metric_name="perplexity",
+                ylabel="Perplexity",
+                output_path=output_dir / "ppl_over_steps.png",
+                dpi=dpi,
+            )
+        )
+
+    if consistency_rows:
+        figure_paths.append(
+            reporting_consistency.plot_consistency_results(
+                consistency_rows,
+                output_dir / "consistency_vs_size.png",
+                dpi=dpi,
+            )
+        )
+
+    return figure_paths
+
+
+def parse_args(argv: list[str] | None = None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", default="outputs", help="Root containing run CSV artifacts.")
+    parser.add_argument("--output", default="outputs/figures", help="Figure output directory.")
+    parser.add_argument(
+        "--no-refresh-counts",
+        action="store_true",
+        help=(
+            "Use parameter counts already stored in scaling_results.csv instead "
+            "of recomputing counts from each run's config.json."
+        ),
+    )
+    parser.add_argument(
+        "--dpi",
+        type=int,
+        default=300,
+        help="DPI to use when saving figures.",
+    )
+    return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> None:
-    from .reporting_legacy import main as legacy_main
-
-    legacy_main(argv)
+    args = parse_args(argv)
+    figure_paths = generate_figures(
+        args.input,
+        args.output,
+        refresh_counts=not args.no_refresh_counts,
+        dpi=args.dpi,
+    )
+    for path in figure_paths:
+        print(path)

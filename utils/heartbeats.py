@@ -2,12 +2,101 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
+
+
+def heartbeat_training_fields(
+    config: dict[str, Any],
+    step: int | None = None,
+    tokens_seen: int | None = None,
+    content_tokens_seen: int | None = None,
+    latest_loss: float | None = None,
+    tokens_per_second: float | None = None,
+    peak_gpu_memory_bytes: int | None = None,
+    eta_seconds: float | None = None,
+) -> dict[str, Any]:
+    training = config["training"]
+    return {
+        "step": step,
+        "derived_max_steps": training.get("derived_max_steps"),
+        "tokens_seen": tokens_seen,
+        "content_tokens_seen": content_tokens_seen,
+        "token_budget": training.get("token_budget"),
+        "latest_loss": latest_loss,
+        "tokens_per_second": tokens_per_second,
+        "peak_gpu_memory_bytes": peak_gpu_memory_bytes,
+        "eta_seconds": eta_seconds,
+    }
+
+
+def build_heartbeat_cadence(config: dict[str, Any]) -> "HeartbeatCadence":
+    training = config["training"]
+    return HeartbeatCadence(
+        step_interval=training.get("heartbeat_step_interval", 10),
+        time_interval_seconds=training.get("heartbeat_time_interval_seconds", 60.0),
+    )
+
+
+@contextmanager
+def heartbeat_stage(heartbeat_writer, stage: str, **fields: Any):
+    heartbeat_writer.stage_start(stage, **fields)
+    try:
+        yield
+    finally:
+        heartbeat_writer.stage_complete(stage, **fields)
+
+
+def estimate_eta_seconds(
+    config: dict[str, Any],
+    tokens_seen: int,
+    tokens_per_second: float | None,
+) -> float | None:
+    if tokens_per_second is None or tokens_per_second <= 0:
+        return None
+    remaining_tokens = max(config["training"]["token_budget"] - tokens_seen, 0)
+    return remaining_tokens / tokens_per_second
+
+
+def maybe_emit_training_heartbeat(
+    heartbeat_writer,
+    heartbeat_cadence: "HeartbeatCadence",
+    config: dict[str, Any],
+    step: int,
+    tokens_seen: int,
+    content_tokens_seen: int,
+    latest_loss: float,
+    tokens_per_second: float | None,
+    peak_gpu_memory_bytes: int,
+    stage_name: str = "training",
+) -> None:
+    now = time.time()
+    if not heartbeat_cadence.should_emit(step=step, now=now):
+        return
+
+    heartbeat_writer.heartbeat(
+        stage_name,
+        **heartbeat_training_fields(
+            config,
+            step=step,
+            tokens_seen=tokens_seen,
+            content_tokens_seen=content_tokens_seen,
+            latest_loss=latest_loss,
+            tokens_per_second=tokens_per_second,
+            peak_gpu_memory_bytes=peak_gpu_memory_bytes,
+            eta_seconds=estimate_eta_seconds(
+                config,
+                tokens_seen=tokens_seen,
+                tokens_per_second=tokens_per_second,
+            ),
+        ),
+    )
+    heartbeat_cadence.mark_emitted(step=step, now=now)
 
 
 class HeartbeatCadence:

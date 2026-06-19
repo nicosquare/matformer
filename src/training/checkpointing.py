@@ -520,6 +520,29 @@ def build_initial_continuation_state(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def update_run_continuation_state(
+    config: dict[str, Any],
+    state: Mapping[str, Any],
+) -> None:
+    continuation = config["run"].setdefault("continuation", {})
+    if not isinstance(continuation, dict):
+        raise ConfigError("run.continuation must be a mapping when provided")
+    for key in [
+        "status",
+        "latest_checkpoint_path",
+        "latest_checkpoint_step",
+        "last_completed_step",
+        "resume_count",
+        "tokens_seen",
+        "content_tokens_seen",
+        "step",
+        "epoch",
+        "batch_index",
+    ]:
+        if key in state and state[key] is not None:
+            continuation[key] = state[key]
+
+
 def _build_initial_adaptive_sampler_state(
     config: Mapping[str, Any],
 ) -> dict[str, Any] | None:
