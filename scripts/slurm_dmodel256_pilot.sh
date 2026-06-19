@@ -164,6 +164,13 @@ export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 export TORCH_NCCL_ASYNC_ERROR_HANDLING="${TORCH_NCCL_ASYNC_ERROR_HANDLING:-1}"
 unset NCCL_ASYNC_ERROR_HANDLING
 
+echo "HF env at launcher start:"
+printf '  PWD=%s\n' "$PWD"
+printf '  HF_HOME=%s\n' "${HF_HOME:-unset}"
+printf '  HF_DATASETS_CACHE=%s\n' "${HF_DATASETS_CACHE:-unset}"
+printf '  TRANSFORMERS_CACHE=%s\n' "${TRANSFORMERS_CACHE:-unset}"
+printf '  .env exists=%s\n' "$(if [[ -f .env ]]; then printf yes; else printf no; fi)"
+
 CONDA_ENV_NAME="${CONDA_ENV_NAME:-elasticnn}"
 DEFAULT_CONDA_PYTHON="$HOME/.conda/envs/$CONDA_ENV_NAME/bin/python"
 if [[ -z "${PYTHON_BIN:-}" && -x "$DEFAULT_CONDA_PYTHON" ]]; then
