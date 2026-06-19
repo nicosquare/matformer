@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import to_rgb
 from matplotlib.lines import Line2D
 
-from src.evaluation import reporting, reporting_styles
+from src.evaluation import reporting_styles
 
 
 PARAMETER_COUNT_FIELDS = [
@@ -681,7 +681,7 @@ def plot_metric_vs_size(
     dpi: int = 300,
 ) -> list[Path]:
     panel_specs = panel_specs or reporting_styles.SIZE_PLOT_PANELS_DEFAULT
-    style_config = reporting.resolve_plot_style(style)
+    style_config = resolve_plot_style(style)
     plot_rows = rows if row_filter is None else [row for row in rows if row_filter(row)]
     column_count = 2 if len(panel_specs) > 1 else 1
     row_count = math.ceil(len(panel_specs) / column_count)
@@ -692,7 +692,7 @@ def plot_metric_vs_size(
         sharex=True,
         sharey=False,
     )
-    axes_list = reporting.flatten_axes(axes)
+    axes_list = flatten_axes(axes)
 
     for axis, (sampling_mode, variant_label, sampling_label) in zip(
         axes_list,
@@ -709,7 +709,7 @@ def plot_metric_vs_size(
             style_config=style_config,
         )
 
-    row_limits = reporting.metric_row_limits_for_panel_specs(
+    row_limits = metric_row_limits_for_panel_specs(
         axes_list,
         panel_specs,
         column_count,
@@ -733,10 +733,10 @@ def plot_metric_vs_size(
     output_paths = [output_path]
     panel_stem = output_path.stem
     if figure_alias:
-        panel_stem = f"{panel_stem}__{reporting.safe_filename_fragment(figure_alias)}"
+        panel_stem = f"{panel_stem}__{safe_filename_fragment(figure_alias)}"
     for panel_spec in panel_specs:
         panel_path = output_path.with_name(
-            f"{panel_stem}__{reporting.safe_filename_fragment(reporting.panel_spec_label(*panel_spec))}.png"
+            f"{panel_stem}__{safe_filename_fragment(panel_spec_label(*panel_spec))}.png"
         )
         output_paths.append(
             plot_metric_vs_size_panel_figure(
@@ -847,7 +847,7 @@ def plot_metric_vs_size_split_comparison(
     right_panel_spec: dict[str, Any],
     dpi: int = 300,
 ) -> Path:
-    style_config = reporting.resolve_plot_style(style)
+    style_config = resolve_plot_style(style)
     figure = plt.figure(figsize=(15.0, 6.0))
     left_subfigure, right_subfigure = figure.subfigures(1, 2, wspace=0.06)
     left_axis = left_subfigure.subplots()
@@ -872,7 +872,7 @@ def plot_metric_vs_size_split_comparison(
 
     shared_values = left_values + right_values
     if shared_values:
-        shared_limits = reporting.padded_limits(min(shared_values), max(shared_values))
+        shared_limits = padded_limits(min(shared_values), max(shared_values))
         left_axis.set_ylim(*shared_limits)
         right_axis.set_ylim(*shared_limits)
 
@@ -938,7 +938,7 @@ def plot_metric_vs_size_split_panel(
             continue
 
         points = [
-            (reporting.to_float(row["non_embedding_parameters"]), reporting.to_float(row[metric_name]))
+            (to_float(row["non_embedding_parameters"]), to_float(row[metric_name]))
             for row in series_rows
             if row.get("non_embedding_parameters") not in (None, "")
             and row.get(metric_name) not in (None, "")
@@ -960,7 +960,7 @@ def plot_metric_vs_size_split_panel(
                     series_key,
                     reporting_styles.SCALING_GROUP_COLORS["standalone"],
                 ),
-                label=reporting.resolve_series_alias(series_key, style_config),
+                label=resolve_series_alias(series_key, style_config),
                 zorder=3,
             )
             continue
@@ -968,7 +968,7 @@ def plot_metric_vs_size_split_panel(
         axis.plot(
             xs,
             ys,
-            label=reporting.resolve_series_alias(series_key, style_config),
+            label=resolve_series_alias(series_key, style_config),
             **comparison_series_style(series_key, style_config),
         )
 
@@ -1000,13 +1000,13 @@ def plot_metric_vs_size_panel(
     sampling_label: str | None = None,
     style_config: dict[str, Any] | None = None,
 ) -> None:
-    style_config = style_config or reporting.resolve_plot_style("default")
+    style_config = style_config or resolve_plot_style("default")
     panel_rows = [
         row
         for row in rows
         if scaling_curve_family_label(row) == sampling_mode
         and scaling_curve_variant_label(row) == variant_label
-        and reporting.panel_sampling_matches(
+        and panel_sampling_matches(
             scaling_curve_sampling_label(row),
             sampling_label,
         )
@@ -1042,7 +1042,7 @@ def plot_metric_vs_size_panel(
             alias_map=style_config["curve_aliases"],
         )
         points = [
-            (reporting.to_float(row["non_embedding_parameters"]), reporting.to_float(row[metric_name]))
+            (to_float(row["non_embedding_parameters"]), to_float(row[metric_name]))
             for row in group_rows_for_label
             if row.get("non_embedding_parameters") not in (None, "")
             and row.get(metric_name) not in (None, "")
@@ -1054,7 +1054,7 @@ def plot_metric_vs_size_panel(
         axis.plot(xs, ys, label=legend_label, **style)
 
     standalone_points = [
-        (reporting.to_float(row["non_embedding_parameters"]), reporting.to_float(row[metric_name]))
+        (to_float(row["non_embedding_parameters"]), to_float(row[metric_name]))
         for row in rows
         if scaling_curve_family_label(row) == "standalone"
         and row.get("non_embedding_parameters") not in (None, "")
@@ -1139,7 +1139,7 @@ def comparison_series_style(
     series_key: str,
     style_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    style_config = style_config or reporting.resolve_plot_style("default")
+    style_config = style_config or resolve_plot_style("default")
     if series_key == "standalone":
         return {
             "linewidth": 1.6,
@@ -1176,7 +1176,7 @@ def comparison_series_style(
         "linestyle": linestyle,
         "marker": marker,
         "markersize": 5,
-        "color": reporting.blend_color_toward_white(base_color, correction_style["shade"]),
+        "color": blend_color_toward_white(base_color, correction_style["shade"]),
     }
 
 
@@ -1187,7 +1187,7 @@ def plot_metric_over_steps(
     output_path: Path,
     dpi: int = 300,
 ) -> Path:
-    figure, axis, legend_axis = reporting.create_figure_with_side_legend(
+    figure, axis, legend_axis = create_figure_with_side_legend(
         plot_width=7,
         plot_height=4,
         legend_width=2.4,
@@ -1196,7 +1196,7 @@ def plot_metric_over_steps(
 
     for label, group_rows_for_label in grouped.items():
         points = [
-            (reporting.to_float(row["step"]), reporting.to_float(row[metric_name]))
+            (to_float(row["step"]), to_float(row[metric_name]))
             for row in group_rows_for_label
             if row.get("step") not in (None, "") and row.get(metric_name) not in (None, "")
         ]
@@ -1209,7 +1209,7 @@ def plot_metric_over_steps(
     axis.set_xlabel("Step")
     axis.set_ylabel(ylabel)
     axis.grid(True, alpha=0.3)
-    reporting.place_legend_on_right(legend_axis, axis)
+    place_legend_on_right(legend_axis, axis)
     figure.savefig(output_path, dpi=dpi)
     plt.close(figure)
     return output_path
@@ -1231,7 +1231,7 @@ def plot_validation_loss_over_tokens_by_experiment(
                 figure_rows,
                 figure_label,
                 output_dir
-                / f"validation_loss_over_tokens_{reporting.safe_filename_fragment(figure_label)}.png",
+                / f"validation_loss_over_tokens_{safe_filename_fragment(figure_label)}.png",
                 dpi=dpi,
             )
         )
@@ -1274,7 +1274,7 @@ def plot_validation_loss_over_tokens_by_granularity_comparison_figure(
 
     granularity_labels = sorted(
         {str(row["granularity"]) for row in granularity_rows},
-        key=reporting.granularity_sort_key,
+        key=granularity_sort_key,
     )
 
     if not granularity_labels:
@@ -1351,8 +1351,8 @@ def plot_validation_loss_over_tokens_by_granularity_comparison_figure(
 
             points = [
                 (
-                    reporting.to_float(row["tokens_seen"]),
-                    reporting.to_float(row["loss"]),
+                    to_float(row["tokens_seen"]),
+                    to_float(row["loss"]),
                 )
                 for row in method_rows
                 if row.get("tokens_seen") not in (None, "")
@@ -1461,7 +1461,7 @@ def validation_comparison_display_label(method_key: str) -> str:
     if method_key == "standalone":
         return "standalone"
     _, variant_label, sampling_label = method_key.split(" / ")
-    return f"{variant_label} / {reporting.display_sampling_label_for_curve(sampling_label) or sampling_label}"
+    return f"{variant_label} / {display_sampling_label_for_curve(sampling_label) or sampling_label}"
 
 
 def validation_comparison_styles(method_keys: list[str]) -> dict[str, dict[str, Any]]:
@@ -1518,7 +1518,7 @@ def plot_loss_over_tokens_for_experiment(
 
     granularity_labels = sorted(
         {str(row["granularity"]) for row in granularity_rows},
-        key=reporting.granularity_sort_key,
+        key=granularity_sort_key,
     )
 
     if not granularity_labels:
@@ -1602,8 +1602,8 @@ def plot_loss_over_tokens_for_experiment(
 
             points = [
                 (
-                    reporting.to_float(row["tokens_seen"]),
-                    reporting.to_float(row["loss"]),
+                    to_float(row["tokens_seen"]),
+                    to_float(row["loss"]),
                 )
                 for row in variant_rows
                 if row.get("tokens_seen") not in (None, "")
@@ -1740,13 +1740,13 @@ def plot_consistency_results(
     output_path: Path,
     dpi: int = 300,
 ) -> Path:
-    figure, axis, legend_axis = reporting.create_figure_with_side_legend(
+    figure, axis, legend_axis = create_figure_with_side_legend(
         plot_width=10,
         plot_height=5,
         legend_width=4.8,
     )
     numeric_rows = [
-        row for row in rows if reporting.to_float_or_none(row.get("metric_value")) is not None
+        row for row in rows if to_float_or_none(row.get("metric_value")) is not None
     ]
 
     if not numeric_rows:
@@ -1759,7 +1759,7 @@ def plot_consistency_results(
             transform=axis.transAxes,
         )
         axis.set_axis_off()
-        reporting.finalize_side_legend_figure(figure, trace_description="")
+        finalize_side_legend_figure(figure, trace_description="")
         figure.savefig(output_path, bbox_inches="tight", dpi=dpi)
         plt.close(figure)
         return output_path
@@ -1777,7 +1777,7 @@ def plot_consistency_results(
     )
     pair_to_metric_values = {
         pair_label: {
-            str(row["metric_name"]): reporting.to_float(row["metric_value"])
+            str(row["metric_name"]): to_float(row["metric_value"])
             for row in numeric_rows
             if consistency_pair_label(row) == pair_label
         }
@@ -1808,7 +1808,7 @@ def plot_consistency_results(
     axis.set_xlabel("Granularity pair")
     axis.set_ylabel("Metric value")
     axis.grid(True, axis="y", alpha=0.3)
-    reporting.place_legend_on_right(legend_axis, axis)
+    place_legend_on_right(legend_axis, axis)
     figure.savefig(output_path, dpi=dpi)
     plt.close(figure)
     return output_path
@@ -2291,7 +2291,7 @@ def scaling_curve_style(
     rows: list[dict[str, str]],
     style_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    style_config = style_config or reporting.resolve_plot_style("default")
+    style_config = style_config or resolve_plot_style("default")
     group_key = None
     color_group_key = None
     correction_label = None
@@ -2317,9 +2317,9 @@ def scaling_curve_style(
     style = {
         "linewidth": 1.4,
         "linestyle": correction_style["linestyle"],
-        "color": reporting.blend_color_toward_white(
+        "color": blend_color_toward_white(
             base_color,
-            reporting.combine_shades(sampling_tone, correction_style["shade"]),
+            combine_shades(sampling_tone, correction_style["shade"]),
         ),
         "markersize": 5,
     }

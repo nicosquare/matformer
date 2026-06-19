@@ -1,3 +1,1 @@
-"""Small utility helpers for MatFormer reproduction experiments."""
-
-from .config import *  # noqa: F401,F403
+"""Utility package for MatFormer reproduction experiments."""

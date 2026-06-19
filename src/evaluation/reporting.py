@@ -246,7 +246,18 @@ def generate_figures(
     refresh_counts: bool = True,
     dpi: int = 300,
 ) -> list[Path]:
-    from . import reporting_consistency, reporting_io, reporting_scaling, reporting_validation
+    from . import reporting_io
+    from .reporting_impl import (
+        plot_consistency_results,
+        plot_metric_over_steps,
+        plot_metric_vs_size,
+        plot_metric_vs_size_split_comparison,
+        plot_validation_loss_over_tokens_by_experiment,
+        plot_validation_loss_over_tokens_by_granularity_comparison,
+        resolve_figure_row_filter,
+        write_medium_trend_report,
+    )
+    from .validation import aggregate_scaling_summary
 
     input_root = Path(input_root)
     output_dir = Path(output_dir)
@@ -271,13 +282,11 @@ def generate_figures(
     )
 
     if scaling_rows and task_result_rows:
-        from .reporting_validation import aggregate_scaling_summary
-
         scaling_rows = aggregate_scaling_summary(scaling_rows, task_result_rows)
 
     if scaling_rows:
         figure_paths.extend(
-            reporting_scaling.plot_metric_vs_size(
+            plot_metric_vs_size(
                 scaling_rows,
                 metric_name="loss",
                 ylabel="Loss",
@@ -288,13 +297,13 @@ def generate_figures(
         )
         for figure_spec in reporting_styles.PPL_VS_SIZE_FIGURE_SPECS:
             figure_paths.extend(
-                reporting_scaling.plot_metric_vs_size(
+                plot_metric_vs_size(
                     scaling_rows,
                     metric_name="perplexity",
                     ylabel="Perplexity",
                     output_path=output_dir / figure_spec["output_name"],
                     panel_specs=figure_spec["panel_specs"],
-                    row_filter=reporting_scaling.resolve_figure_row_filter(
+                    row_filter=resolve_figure_row_filter(
                         figure_spec["row_filter_name"]
                     ),
                     figure_title=figure_spec["figure_title"],
@@ -304,7 +313,7 @@ def generate_figures(
                 )
             )
         figure_paths.append(
-            reporting_scaling.plot_metric_vs_size_split_comparison(
+            plot_metric_vs_size_split_comparison(
                 scaling_rows,
                 metric_name="perplexity",
                 ylabel="Perplexity",
@@ -319,7 +328,7 @@ def generate_figures(
         )
         if any(row.get("average_downstream_accuracy") for row in scaling_rows):
             figure_paths.extend(
-                reporting_scaling.plot_metric_vs_size(
+                plot_metric_vs_size(
                     scaling_rows,
                     metric_name="average_downstream_accuracy",
                     ylabel="Average downstream accuracy",
@@ -328,7 +337,7 @@ def generate_figures(
                 )
             )
         figure_paths.append(
-            reporting_scaling.write_medium_trend_report(
+            write_medium_trend_report(
                 scaling_rows,
                 output_dir / "medium_trend_report.md",
             )
@@ -345,14 +354,14 @@ def generate_figures(
             metrics_rows,
         )
         figure_paths.extend(
-            reporting_validation.plot_validation_loss_over_tokens_by_experiment(
+            plot_validation_loss_over_tokens_by_experiment(
                 metrics_rows,
                 output_dir,
                 dpi=dpi,
             )
         )
         figure_paths.extend(
-            reporting_validation.plot_validation_loss_over_tokens_by_granularity_comparison(
+            plot_validation_loss_over_tokens_by_granularity_comparison(
                 metrics_rows,
                 output_dir,
                 dpi=dpi,
@@ -369,21 +378,21 @@ def generate_figures(
         ]
         if validation_metrics_rows:
             figure_paths.extend(
-                reporting_validation.plot_validation_loss_over_tokens_by_experiment(
+                plot_validation_loss_over_tokens_by_experiment(
                     validation_metrics_rows,
                     output_dir,
                     dpi=dpi,
                 )
             )
             figure_paths.extend(
-                reporting_validation.plot_validation_loss_over_tokens_by_granularity_comparison(
+                plot_validation_loss_over_tokens_by_granularity_comparison(
                     validation_metrics_rows,
                     output_dir,
                     dpi=dpi,
                 )
             )
         figure_paths.append(
-            reporting_validation.plot_metric_over_steps(
+            plot_metric_over_steps(
                 metrics_rows,
                 metric_name="perplexity",
                 ylabel="Perplexity",
@@ -394,7 +403,7 @@ def generate_figures(
 
     if consistency_rows:
         figure_paths.append(
-            reporting_consistency.plot_consistency_results(
+            plot_consistency_results(
                 consistency_rows,
                 output_dir / "consistency_vs_size.png",
                 dpi=dpi,

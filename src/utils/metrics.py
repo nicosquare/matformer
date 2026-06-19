@@ -1180,7 +1180,7 @@ def _granularity_pattern_provenance(
     granularity_sampling_mode = model.get("granularity_sampling_mode")
     if granularity_sampling_mode is None:
         granularity_sampling_mode = "global"
-    resolved_run_mode = _sampling_mode(run, training)
+    resolved_run_mode = resolve_sampling_mode_from_config_sections(run, training)
 
     provenance = {
         "pattern_type": (
