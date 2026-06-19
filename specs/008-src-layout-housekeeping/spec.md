@@ -2,7 +2,7 @@
 
 **Feature Branch**: `008-src-layout-housekeeping`  
 **Created**: 2026-06-18  
-**Status**: Draft  
+**Status**: Complete  
 **Input**: User description: "Move all working code into src/, keep files under 500 lines where practical, and split the large training and figure-generation scripts into focused modules."
 
 ## Clarifications

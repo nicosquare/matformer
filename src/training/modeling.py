@@ -6,6 +6,7 @@ import copy
 from pathlib import Path
 from typing import Any
 
+from huggingface_hub import snapshot_download
 from transformers import AutoTokenizer, LlamaConfig, LlamaForCausalLM
 
 from src.models.ffn import CatLlamaMLP
@@ -119,7 +120,15 @@ def load_tokenizer(config: dict[str, Any]):
     dataset = config["dataset"]
     tokenizer_name = dataset.get("tokenizer_name") or model.get("tokenizer_name")
     tokenizer_name = tokenizer_name or model["base_model_name"]
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    except OSError:
+        # When the hub is unreachable, use the locally cached snapshot if one exists.
+        cached_snapshot = snapshot_download(
+            repo_id=tokenizer_name,
+            local_files_only=True,
+        )
+        tokenizer = AutoTokenizer.from_pretrained(cached_snapshot)
     if tokenizer.pad_token is None and tokenizer.eos_token is not None:
         tokenizer.pad_token = tokenizer.eos_token
     return tokenizer
