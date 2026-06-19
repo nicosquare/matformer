@@ -87,7 +87,7 @@
 - [X] T027 [P] [US3] Extract reusable plot styling and figure constants into `src/evaluation/reporting_styles.py`
 - [X] T028 [P] [US3] Extract CSV artifact loading and metadata enrichment helpers into `src/evaluation/reporting_io.py`
 - [X] T029 [P] [US3] Extract plot-specific logic for scaling, validation, and consistency figures into focused helpers under `src/evaluation/`
-- [ ] T030 [US3] Update `scripts/make_figures.py` to import the new reporting modules and keep the CLI surface unchanged
+- [X] T030 [US3] Update `scripts/make_figures.py` to import the new reporting modules and keep the CLI surface unchanged
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
