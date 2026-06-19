@@ -19,6 +19,10 @@ python3 -m pip install -r requirements.txt
 GPU-enabled PyTorch builds may require a platform-specific install command from
 the PyTorch project before installing the remaining packages.
 
+The importable code now lives under `src/`. The root `train.py` and
+`scripts/make_figures.py` entrypoints remain thin wrappers around that package
+layout.
+
 ## Running LM Pre-training Jobs
 
 To run the training script, execute:

@@ -4,12 +4,12 @@ import pytest
 import torch
 from datasets import Dataset
 
-from evaluation.validation import (
+from src.evaluation.validation import (
     evaluate_validation_per_granularity,
     perplexity_from_loss,
     validation_results_to_metric_rows,
 )
-from training.data import (
+from src.training.data import (
     DataError,
     build_language_model_dataloader,
     collate_language_model_batch,
@@ -108,7 +108,7 @@ def test_load_text_dataset_passes_dataset_config_name(monkeypatch):
         calls["split"] = split
         return Dataset.from_dict({"text": ["a", "bb", "ccc"]})
 
-    monkeypatch.setattr("training.data.load_dataset", fake_load_dataset)
+    monkeypatch.setattr("src.training.data.load_dataset", fake_load_dataset)
 
     dataset = load_text_dataset(
         "HuggingFaceFW/fineweb",

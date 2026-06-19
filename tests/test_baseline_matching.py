@@ -1,11 +1,11 @@
 import copy
 
-from training.baselines import (
+from src.training.baselines import (
     add_baseline_notes_to_summary,
     build_baseline_match_record,
 )
-from utils.config import resolve_run_config
-from utils.metrics import build_baseline_match_row
+from src.utils.config import resolve_run_config
+from src.utils.metrics import build_baseline_match_row
 
 
 def _debug_nested_config():

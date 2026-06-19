@@ -32,7 +32,7 @@ if [[ -n "${OUTPUT_ROOT:-}" ]]; then
   printf 'Output root: %s\n' "$OUTPUT_ROOT"
 fi
 
-exec "$PYTHON_BIN" -m training.baselines \
+exec "$PYTHON_BIN" -m src.training.baselines \
   --config "$CONFIG_PATH" \
   --nested-run-id "$NESTED_RUN_ID" \
   "${BASELINE_ARGS[@]}" \

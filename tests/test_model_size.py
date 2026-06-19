@@ -2,11 +2,11 @@ import torch.nn as nn
 import pytest
 from transformers import LlamaConfig, LlamaForCausalLM
 
-from models.ffn import CatLlamaMLP, ModifiedLlamaMLP
-from models.wiring import ModifiedLlamaForCausalLM
-from training.run import build_model
-from utils.config import resolve_run_config
-from utils.model_size import (
+from src.models.ffn import CatLlamaMLP, ModifiedLlamaMLP
+from src.models.wiring import ModifiedLlamaForCausalLM
+from src.training.run import build_model
+from src.utils.config import resolve_run_config
+from src.utils.model_size import (
     count_embedding_parameters,
     count_lm_head_parameters,
     count_non_embedding_parameters,

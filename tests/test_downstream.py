@@ -2,16 +2,16 @@ import csv
 
 import pytest
 
-from evaluation.downstream import (
+from src.evaluation.downstream import (
     MINIMAL_DOWNSTREAM_TASKS,
     build_lm_eval_command,
     downstream_suite_from_config,
     lm_eval_results_to_task_rows,
     select_lm_eval_metric,
 )
-from evaluation.validation import aggregate_scaling_summary
-from utils.config import resolve_run_config
-from utils.metrics import (
+from src.evaluation.validation import aggregate_scaling_summary
+from src.utils.config import resolve_run_config
+from src.utils.metrics import (
     ArtifactError,
     TASK_RESULTS_COLUMNS,
     write_task_results_csv,

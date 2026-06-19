@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import torch
 from datasets import Dataset
 
-from scripts.make_figures import (
+from src.evaluation.reporting_impl import (
     display_sampling_label_for_curve,
     enrich_metrics_metadata_from_run_config,
     enrich_scaling_metadata_from_run_config,
@@ -28,16 +28,16 @@ from scripts.make_figures import (
     with_default_model_variant,
 )
 from train import parse_args
-from training.baselines import (
+from src.training.baselines import (
     add_baseline_notes_to_summary,
     build_baseline_match_record,
     compare_baseline_configs,
     run_debug_nested_with_baselines,
     run_debug_nested_with_one_baseline,
 )
-from training.run import run_training
-from utils.config import resolve_run_config
-from utils.metrics import (
+from src.training.run import run_training
+from src.utils.config import resolve_run_config
+from src.utils.metrics import (
     build_run_summary,
     write_consistency_results_csv,
     write_metrics_csv,
@@ -856,8 +856,8 @@ def test_make_figures_refreshes_parameter_counts_from_run_config(tmp_path):
 
     refreshed_rows = refresh_scaling_parameter_counts(tmp_path, [stale_row])
 
-    from training.run import build_model
-    from utils.model_size import model_parameter_counts
+    from src.training.run import build_model
+    from src.utils.model_size import model_parameter_counts
 
     model = build_model(config)
     expected_counts = model_parameter_counts(model, granularity="s")

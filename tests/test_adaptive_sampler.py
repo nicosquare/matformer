@@ -4,7 +4,7 @@ from collections.abc import Mapping
 
 import pytest
 
-from models.adaptive_sampler import (
+from src.models.adaptive_sampler import (
     AdaptiveSamplerBlockStat,
     AdaptiveSamplerState,
     build_adaptive_sampler_state,
@@ -72,7 +72,7 @@ def _build_sample_state(strategy_name: str, exploration_scale: float, decay_rate
 
 
 def test_thompson_scoring_prefers_the_historical_mean_when_exploration_is_zero():
-    import models.adaptive_sampler as adaptive_sampler
+    import src.models.adaptive_sampler as adaptive_sampler
 
     score_fn = getattr(adaptive_sampler, "score_adaptive_sampler_actions")
     state = _build_sample_state(
@@ -88,7 +88,7 @@ def test_thompson_scoring_prefers_the_historical_mean_when_exploration_is_zero()
 
 
 def test_ucb_scoring_and_reward_updates_follow_the_bandit_plan():
-    import models.adaptive_sampler as adaptive_sampler
+    import src.models.adaptive_sampler as adaptive_sampler
 
     score_fn = getattr(adaptive_sampler, "score_adaptive_sampler_actions")
     reward_fn = getattr(adaptive_sampler, "build_adaptive_reward_record")

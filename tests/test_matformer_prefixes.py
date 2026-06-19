@@ -2,7 +2,7 @@ import pytest
 import torch
 from transformers import LlamaConfig
 
-from models.ffn import (
+from src.models.ffn import (
     CatLlamaMLP,
     ModifiedLlamaMLP,
     get_concat_layout_diagnostic,
@@ -15,7 +15,7 @@ from models.ffn import (
     get_concat_gradient_membership_correction_scales_from_metadata,
     granularity_prefix_width,
 )
-from models.granularity import (
+from src.models.granularity import (
     MATFORMER_GRANULARITY_ORDER,
     build_granularity_pattern,
     get_block_membership_counts,
@@ -23,11 +23,11 @@ from models.granularity import (
     get_granularity_metadata,
     summarize_granularity_pattern,
 )
-from models.wiring import ModifiedLlamaForCausalLM
-from models.wiring import apply_granularity_pattern_to_model
-from models.wiring import build_global_granularity_pattern
-from models.wiring import build_per_block_granularity_pattern
-from utils.config import resolve_run_config
+from src.models.wiring import ModifiedLlamaForCausalLM
+from src.models.wiring import apply_granularity_pattern_to_model
+from src.models.wiring import build_global_granularity_pattern
+from src.models.wiring import build_per_block_granularity_pattern
+from src.utils.config import resolve_run_config
 
 
 def tiny_llama_config(

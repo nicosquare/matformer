@@ -18,8 +18,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from utils.config import ConfigError, parse_override, resolve_run_config
-from utils.model_size import derive_token_budget_slug
+from src.utils.config import ConfigError, parse_override, resolve_run_config
+from src.utils.model_size import derive_token_budget_slug
 
 
 DEFAULT_CONFIG_PATH = REPO_ROOT / "configs" / "dmodel256_pilot_comparison.yaml"

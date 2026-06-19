@@ -5,7 +5,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from utils.config import resolve_run_config, validate_run_config
+from src.utils.config import resolve_run_config, validate_run_config
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

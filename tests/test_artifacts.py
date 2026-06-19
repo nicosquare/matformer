@@ -6,11 +6,10 @@ import pytest
 import torch
 from datasets import Dataset
 
-from scripts.make_figures import (
+from src.evaluation.reporting_impl import (
     blend_color_toward_white,
     comparison_series_key,
     comparison_series_style,
-    generate_figures,
     scaling_curve_color_group_label,
     scaling_curve_display_label,
     scaling_curve_label,
@@ -18,18 +17,20 @@ from scripts.make_figures import (
     resolve_plot_style,
     resolve_series_alias,
 )
-from models.correction import (
+from src.evaluation.reporting import generate_figures
+from src.models.correction import (
     correction_context_from_config,
     summarize_correction_context,
 )
-from models.granularity import summarize_granularity_pattern
-from models.wiring import (
+from src.models.granularity import summarize_granularity_pattern
+from src.models.wiring import (
     build_global_granularity_pattern,
     build_per_block_granularity_pattern,
 )
-from utils.config import resolve_all_run_configs, resolve_run_config
-from utils.metrics import (
+from src.utils.config import resolve_all_run_configs, resolve_run_config
+from src.utils.metrics import (
     ArtifactError,
+    METRICS_COLUMNS,
     SCALING_RESULTS_COLUMNS,
     build_run_summary,
     build_consistency_result_rows,
@@ -42,7 +43,7 @@ from utils.metrics import (
     write_scaling_results_csv,
     write_task_results_csv,
 )
-from training.run import build_training_metric_row, run_training
+from src.training.run import build_training_metric_row, run_training
 
 
 class TinyExtractionModel(torch.nn.Module):
@@ -1413,7 +1414,7 @@ def test_run_summary_schema_requires_budget_derived_fields(tmp_path):
 
 
 def _checkpoint_summary_builder():
-    import utils.metrics as metrics
+    import src.utils.metrics as metrics
 
     builder = getattr(metrics, "build_checkpoint_summary_fields", None)
     assert (
@@ -1531,7 +1532,7 @@ def test_no_checkpoint_summary_when_checkpoint_writes_are_disabled(tmp_path):
 
 
 def test_rank_zero_only_shared_artifact_helper_writes_on_rank_zero(tmp_path):
-    from training.distributed import DistributedContext, rank_zero_only
+    from src.training.distributed import DistributedContext, rank_zero_only
 
     context = DistributedContext(
         enabled=True,
@@ -1557,7 +1558,7 @@ def test_rank_zero_only_shared_artifact_helper_writes_on_rank_zero(tmp_path):
 
 
 def test_rank_zero_only_shared_artifact_helper_skips_nonzero_rank(tmp_path):
-    from training.distributed import DistributedContext, rank_zero_only
+    from src.training.distributed import DistributedContext, rank_zero_only
 
     context = DistributedContext(
         enabled=True,
@@ -1963,6 +1964,37 @@ def test_nested_run_writes_extraction_metadata_artifact(tmp_path):
 
     metadata_path = output_dir / "extraction_metadata.json"
     assert metadata_path.exists()
+
+    summary_path = output_dir / "run_summary.json"
+    metrics_path = output_dir / "metrics.csv"
+
+    with metrics_path.open("r", encoding="utf-8", newline="") as metrics_file:
+        metrics_reader = csv.DictReader(metrics_file)
+        assert metrics_reader.fieldnames == METRICS_COLUMNS
+        metric_rows = list(metrics_reader)
+
+    saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert saved_summary["status"] == "completed"
+    assert saved_summary["metrics_path"] == str(metrics_path)
+    assert saved_summary["scaling_results_path"] == str(
+        output_dir / "scaling_results.csv"
+    )
+    assert saved_summary["extraction_metadata_path"] == str(metadata_path)
+    assert saved_summary["checkpoint_status"] == "none"
+    assert saved_summary["checkpoint_unavailable_reason"] == "checkpoint writes disabled"
+    assert saved_summary["granularity_pattern_summary"]["repeatable_source"][0] == (
+        "debug-nested-001"
+    )
+    train_rows = [row for row in metric_rows if row["split"] == "train"]
+    assert train_rows
+    assert train_rows[0]["run_id"] == "debug-nested-001"
+    assert train_rows[0]["split"] == "train"
+    assert json.loads(train_rows[0]["granularity_pattern_summary"])[
+        "repeatable_source"
+    ][0] == "debug-nested-001"
+    assert "local_correction_active" in json.loads(
+        train_rows[0]["correction_context"]
+    )
 
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert metadata["run_id"] == "debug-nested-001"

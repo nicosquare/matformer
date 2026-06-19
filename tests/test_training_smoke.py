@@ -9,10 +9,10 @@ import pytest
 import torch
 from datasets import Dataset
 
-from models.granularity import build_granularity_pattern
-from training.run import run_training
-from utils.config import ConfigError, resolve_run_config
-from utils.monitoring import group_loss_rows_by_series
+from src.models.granularity import build_granularity_pattern
+from src.training.run import run_training
+from src.utils.config import ConfigError, resolve_run_config
+from src.utils.monitoring import group_loss_rows_by_series
 
 
 class TinyNestedTrainingModel(torch.nn.Module):
@@ -246,7 +246,7 @@ def _assert_optimizer_states_equal(left, right):
 
 
 def _run_concat_lmc_case(tmp_path, monkeypatch, correction_mode):
-    import training.run as training_run
+    import src.training.run as training_run
 
     output_dir = tmp_path / f"concat-{correction_mode}" / "debug-nested-001"
     config = resolve_run_config(
@@ -328,7 +328,7 @@ def _run_concat_lmc_case(tmp_path, monkeypatch, correction_mode):
 
 
 def _run_slicing_case(tmp_path, monkeypatch, correction_mode):
-    import training.run as training_run
+    import src.training.run as training_run
 
     output_dir = tmp_path / f"slicing-{correction_mode}" / "debug-nested-001"
     overrides = [
@@ -393,7 +393,7 @@ def test_tiny_nested_training_can_sample_one_granularity_for_the_nested_random_g
     tmp_path,
     monkeypatch,
 ):
-    import training.run as training_run
+    import src.training.run as training_run
 
     output_dir = tmp_path / "dmodel256-pilot-comparison-001"
     config = resolve_run_config(
@@ -451,6 +451,76 @@ def test_tiny_nested_training_can_sample_one_granularity_for_the_nested_random_g
     )
 
 
+def test_refactored_training_flow_writes_representative_artifacts(tmp_path):
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "training.max_steps=1",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "outputs.save_checkpoints=false",
+            "evaluation.validation=false",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+
+    result = run_training(
+        config,
+        model=TinyNestedTrainingModel(),
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    with result["metrics_path"].open("r", encoding="utf-8", newline="") as metrics_file:
+        metrics_reader = csv.DictReader(metrics_file)
+        metrics_rows = list(metrics_reader)
+
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    metrics_row = metrics_rows[0]
+
+    assert result["metrics_path"] == output_dir / "metrics.csv"
+    assert result["scaling_path"] == output_dir / "scaling_results.csv"
+    assert result["summary_path"] == output_dir / "run_summary.json"
+    assert summary["status"] == "completed"
+    assert summary["output_dir"] == str(output_dir)
+    assert summary["metrics_path"] == str(result["metrics_path"])
+    assert summary["scaling_results_path"] == str(result["scaling_path"])
+    assert summary["extraction_metadata_path"] == str(
+        output_dir / "extraction_metadata.json"
+    )
+    assert summary["checkpoint_status"] == "none"
+    assert summary["checkpoint_unavailable_reason"] == "checkpoint writes disabled"
+    assert summary["granularity_pattern_summary"]["repeatable_source"][0] == (
+        "debug-nested-001"
+    )
+    assert summary["correction_context"]["local_correction_active"] is False
+    assert metrics_row["run_id"] == "debug-nested-001"
+    assert metrics_row["split"] == "train"
+    assert json.loads(metrics_row["granularity_pattern_summary"])[
+        "repeatable_source"
+    ][0] == "debug-nested-001"
+    assert "local_correction_active" in json.loads(metrics_row["correction_context"])
+    assert len(metrics_rows) >= 1
+    for artifact_name in [
+        "config.json",
+        "metrics.csv",
+        "scaling_results.csv",
+        "run_summary.json",
+        "extraction_metadata.json",
+    ]:
+        assert (output_dir / artifact_name).exists()
+
+
 def _run_monitoring_smoke_case(tmp_path, run_id: str):
     output_dir = tmp_path / run_id
     config = resolve_run_config(
@@ -501,6 +571,58 @@ def _read_heartbeat_events(path: Path) -> list[dict[str, object]]:
         ]
 
 
+def test_train_py_config_flag_dispatches_to_configured_run(monkeypatch, tmp_path):
+    import train as train_module
+    import src.training.run as training_run
+
+    captured = {}
+
+    def fake_run_from_config_path(
+        config_path,
+        *,
+        run_id=None,
+        overrides=None,
+        output_dir=None,
+    ):
+        captured["config_path"] = config_path
+        captured["run_id"] = run_id
+        captured["overrides"] = list(overrides or [])
+        captured["output_dir"] = output_dir
+
+    monkeypatch.setattr(
+        training_run,
+        "run_from_config_path",
+        fake_run_from_config_path,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "train.py",
+            "--config",
+            "configs/debug_matrix.yaml",
+            "--run-id",
+            "debug-nested-001",
+            "--output-root",
+            str(tmp_path / "artifacts"),
+            "--override",
+            "training.max_steps=1",
+        ],
+    )
+
+    train_module.main()
+
+    assert captured == {
+        "config_path": "configs/debug_matrix.yaml",
+        "run_id": "debug-nested-001",
+        "overrides": [
+            "training.max_steps=1",
+            f"run.output_root={tmp_path / 'artifacts'}",
+        ],
+        "output_dir": None,
+    }
+
+
 @pytest.mark.xfail(
     reason="Run resumption wiring is implemented in T009/T010, not yet here",
     strict=False,
@@ -509,7 +631,7 @@ def test_interrupted_and_relaunched_run_preserves_the_same_output_dir(
     tmp_path,
     monkeypatch,
 ):
-    import training.run as training_run
+    import src.training.run as training_run
 
     output_dir = tmp_path / "debug-nested-001"
     config = resolve_run_config(
@@ -677,7 +799,7 @@ def test_tiny_nested_training_accumulates_all_granularities_per_batch(
     tmp_path,
     monkeypatch,
 ):
-    import training.run as training_run
+    import src.training.run as training_run
 
     output_dir = tmp_path / "debug-nested-001"
     config = resolve_run_config(
@@ -858,7 +980,7 @@ def test_tiny_nested_training_records_nested_all_summary_even_when_runtime_patte
 
 
 def test_training_counts_parameters_before_runtime_wrapping(tmp_path, monkeypatch):
-    import training.run as training_run
+    import src.training.run as training_run
 
     output_dir = tmp_path / "debug-nested-001"
     config = resolve_run_config(
@@ -909,7 +1031,7 @@ def test_tiny_nested_training_can_sample_one_granularity_per_block_per_batch(
     tmp_path,
     monkeypatch,
 ):
-    import training.run as training_run
+    import src.training.run as training_run
 
     output_dir = tmp_path / "debug-nested-001"
     config = resolve_run_config(
@@ -999,7 +1121,7 @@ def test_config_driven_nested_training_records_concat_variant_in_summary(tmp_pat
 
 
 def test_config_driven_nested_training_uses_resolved_sgd_optimizer(tmp_path, monkeypatch):
-    import training.run as training_run
+    import src.training.run as training_run
 
     output_dir = tmp_path / "debug-nested-001"
     config = resolve_run_config(
@@ -1282,7 +1404,7 @@ def test_config_driven_training_rejects_multi_process_execution_before_setup(
         }
     )
 
-    import training.run as training_run
+    import src.training.run as training_run
 
     def fake_prepare_distributed_context(*args, **kwargs):
         raise AssertionError("prepare_distributed_context should not be called")
@@ -1317,7 +1439,7 @@ def test_run_training_rejects_invalid_adaptive_pairing_before_setup(
     tmp_path,
     monkeypatch,
 ):
-    import training.run as training_run
+    import src.training.run as training_run
 
     output_dir = tmp_path / "debug-nested-001"
     config = resolve_run_config(
@@ -1381,7 +1503,7 @@ def test_adaptive_per_block_smoke_shifts_patterns_and_resumes_from_checkpoint(
     tmp_path,
     monkeypatch,
 ):
-    import training.run as training_run
+    import src.training.run as training_run
 
     output_dir = tmp_path / "debug-nested-001"
     tokenized_dataset = Dataset.from_dict(
@@ -1503,7 +1625,7 @@ def test_monitoring_smoke_groups_nested_and_standalone_runs_by_series(
     tmp_path,
     monkeypatch,
 ):
-    import training.run as training_run
+    import src.training.run as training_run
 
     created_sessions = []
 
@@ -1567,7 +1689,7 @@ def test_wandb_session_uses_explicit_project_and_entity_settings(
     tmp_path,
     monkeypatch,
 ):
-    import training.run as training_run
+    import src.training.run as training_run
 
     fake_wandb = types.ModuleType("wandb")
     fake_wandb.init_kwargs = None

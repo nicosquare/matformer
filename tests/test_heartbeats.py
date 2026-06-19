@@ -14,7 +14,7 @@ class FakeClock:
 
 
 def test_heartbeat_writer_emits_stdout_and_jsonl_schema(tmp_path):
-    from utils.heartbeats import HeartbeatWriter
+    from src.utils.heartbeats import HeartbeatWriter
 
     stdout = io.StringIO()
     clock = FakeClock(1000.0, 1060.0)
@@ -90,7 +90,7 @@ def test_heartbeat_writer_emits_stdout_and_jsonl_schema(tmp_path):
 
 
 def test_heartbeat_writer_accepts_extra_stage_fields(tmp_path):
-    from utils.heartbeats import HeartbeatWriter
+    from src.utils.heartbeats import HeartbeatWriter
 
     stdout = io.StringIO()
     writer = HeartbeatWriter(
@@ -111,7 +111,7 @@ def test_heartbeat_writer_accepts_extra_stage_fields(tmp_path):
 
 
 def test_heartbeat_writer_formats_resume_banner(tmp_path):
-    from utils.heartbeats import HeartbeatWriter
+    from src.utils.heartbeats import HeartbeatWriter
 
     stdout = io.StringIO()
     writer = HeartbeatWriter(
@@ -150,7 +150,7 @@ def test_heartbeat_writer_formats_resume_banner(tmp_path):
 
 
 def test_heartbeat_cadence_emits_on_step_or_elapsed_interval():
-    from utils.heartbeats import HeartbeatCadence
+    from src.utils.heartbeats import HeartbeatCadence
 
     cadence = HeartbeatCadence(step_interval=10, time_interval_seconds=60)
 

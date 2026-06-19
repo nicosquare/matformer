@@ -5,15 +5,15 @@ import textwrap
 
 import pytest
 
-from utils.config import (
+from src.utils.config import (
     ConfigError,
     resolve_all_run_configs,
     resolve_run_config,
     validate_run_config,
     write_resolved_config,
 )
-from models.correction import correction_context_from_config
-from models.granularity import build_granularity_pattern
+from src.models.correction import correction_context_from_config
+from src.models.granularity import build_granularity_pattern
 
 
 def _write_single_run_config(tmp_path):

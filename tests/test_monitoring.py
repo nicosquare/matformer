@@ -1,4 +1,4 @@
-from utils.monitoring import group_loss_rows_by_series
+from src.utils.monitoring import group_loss_rows_by_series
 
 
 def test_group_loss_rows_by_series_uses_run_local_granularity_labels():

@@ -4,7 +4,7 @@ import pytest
 import torch
 import yaml
 
-from evaluation.consistency import (
+from src.evaluation.consistency import (
     DEFAULT_TOP_K_VALUES,
     KL_DIVERGENCE_DEFERRED_REASON,
     build_consistency_rows,
