@@ -93,10 +93,10 @@
 
 **Purpose**: Final cleanup and consistency checks across the refactor
 
-- [ ] T031 [P] Audit `src/utils/config.py`, `src/utils/metrics.py`, `src/training/run.py`, and `scripts/make_figures.py` to verify every in-scope production file is at or below 500 lines; if any file exceeds the limit, add a short rationale in the relevant module docstring or adjacent design note and record the exception explicitly
-- [ ] T032 [P] Update `AGENTS.md` or root docs if any remaining source-layout references still point at the old layout
+- [X] T031 [P] Audit `src/utils/config.py`, `src/utils/metrics.py`, `src/training/run.py`, and `scripts/make_figures.py` to verify every in-scope production file is at or below 500 lines; if any file exceeds the limit, add a short rationale in the relevant module docstring or adjacent design note and record the exception explicitly
+- [X] T032 [P] Update `AGENTS.md` or root docs if any remaining source-layout references still point at the old layout
 - [ ] T033 Run the quickstart validation commands from `specs/008-src-layout-housekeeping/quickstart.md` and fix any import or wrapper regressions
-- [ ] T034 Verify `tests/test_src_layout.py`, `tests/test_training_smoke.py`, and the reporting tests all pass against the moved source tree
+- [X] T034 Verify `tests/test_src_layout.py`, `tests/test_training_smoke.py`, and the reporting tests all pass against the moved source tree
 - [ ] T035 [P] Add or update `tests/test_layout_boundary.py` to assert notebooks, logs, outputs, paper assets, and reference material remain outside the `src/` move and are not relocated
 
 ## Dependencies & Execution Order

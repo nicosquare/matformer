@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .reporting_legacy import (
+from .reporting_impl import (
     adaptive_sampler_strategy_for_row,
     build_medium_trend_report_lines,
     comparison_series_key,

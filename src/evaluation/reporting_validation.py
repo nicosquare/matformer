@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .reporting_legacy import (
+from .reporting_impl import (
     group_validation_rows_by_method,
     group_validation_rows_by_variant,
     loss_trace_description,

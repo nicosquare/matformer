@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .reporting_legacy import (
+from .reporting_impl import (
     consistency_metric_sort_key,
     consistency_pair_label,
     consistency_pair_sort_key,
