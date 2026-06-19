@@ -1,7 +1,7 @@
 import torch
 
-import training.distributed as distributed
-from training.distributed import (
+import src.training.distributed as distributed
+from src.training.distributed import (
     DistributedContext,
     broadcast_object,
     destroy_distributed_process_group,
@@ -149,7 +149,7 @@ def test_checkpoint_state_dict_uses_distributed_checkpoint_api_for_fsdp(
 ):
     from torch.distributed.checkpoint import state_dict as state_dict_module
 
-    import training.run as training_run
+    import src.training.run as training_run
 
     context = DistributedContext(
         enabled=True,
@@ -185,7 +185,7 @@ def test_checkpoint_state_dict_uses_distributed_checkpoint_api_for_fsdp(
 
 
 def test_wrap_model_for_distributed_uses_hf_style_fsdp_recipe(monkeypatch):
-    import training.distributed as distributed
+    import src.training.distributed as distributed
 
     monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
 

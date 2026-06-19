@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-import training.run as training_run
+import src.training.run as training_run
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

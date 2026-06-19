@@ -6,7 +6,7 @@ import pytest
 import torch
 from datasets import Dataset
 
-from src.evaluation.reporting_legacy import (
+from src.evaluation.reporting_impl import (
     blend_color_toward_white,
     comparison_series_key,
     comparison_series_style,
@@ -18,17 +18,17 @@ from src.evaluation.reporting_legacy import (
     resolve_series_alias,
 )
 from src.evaluation.reporting import generate_figures
-from models.correction import (
+from src.models.correction import (
     correction_context_from_config,
     summarize_correction_context,
 )
-from models.granularity import summarize_granularity_pattern
-from models.wiring import (
+from src.models.granularity import summarize_granularity_pattern
+from src.models.wiring import (
     build_global_granularity_pattern,
     build_per_block_granularity_pattern,
 )
-from utils.config import resolve_all_run_configs, resolve_run_config
-from utils.metrics import (
+from src.utils.config import resolve_all_run_configs, resolve_run_config
+from src.utils.metrics import (
     ArtifactError,
     METRICS_COLUMNS,
     SCALING_RESULTS_COLUMNS,
@@ -43,7 +43,7 @@ from utils.metrics import (
     write_scaling_results_csv,
     write_task_results_csv,
 )
-from training.run import build_training_metric_row, run_training
+from src.training.run import build_training_metric_row, run_training
 
 
 class TinyExtractionModel(torch.nn.Module):
@@ -1414,7 +1414,7 @@ def test_run_summary_schema_requires_budget_derived_fields(tmp_path):
 
 
 def _checkpoint_summary_builder():
-    import utils.metrics as metrics
+    import src.utils.metrics as metrics
 
     builder = getattr(metrics, "build_checkpoint_summary_fields", None)
     assert (
@@ -1532,7 +1532,7 @@ def test_no_checkpoint_summary_when_checkpoint_writes_are_disabled(tmp_path):
 
 
 def test_rank_zero_only_shared_artifact_helper_writes_on_rank_zero(tmp_path):
-    from training.distributed import DistributedContext, rank_zero_only
+    from src.training.distributed import DistributedContext, rank_zero_only
 
     context = DistributedContext(
         enabled=True,
@@ -1558,7 +1558,7 @@ def test_rank_zero_only_shared_artifact_helper_writes_on_rank_zero(tmp_path):
 
 
 def test_rank_zero_only_shared_artifact_helper_skips_nonzero_rank(tmp_path):
-    from training.distributed import DistributedContext, rank_zero_only
+    from src.training.distributed import DistributedContext, rank_zero_only
 
     context = DistributedContext(
         enabled=True,

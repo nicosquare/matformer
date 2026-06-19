@@ -1,6 +1,6 @@
 from src.evaluation.reporting import generate_figures
-from utils.metrics import write_metrics_csv, write_scaling_results_csv
-from utils.monitoring import group_loss_rows_by_series
+from src.utils.metrics import write_metrics_csv, write_scaling_results_csv
+from src.utils.monitoring import group_loss_rows_by_series
 
 
 def test_reporting_path_groups_loss_rows_and_writes_medium_trend_report(tmp_path):

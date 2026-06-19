@@ -4,7 +4,7 @@ import pytest
 import torch
 import yaml
 
-from evaluation.speculative import (
+from src.evaluation.speculative import (
     evaluate_speculative_pair,
     load_prompt_texts,
     load_speculative_model_pairs,
@@ -14,7 +14,7 @@ from evaluation.speculative import (
     resolve_speculative_config,
     run_speculative_evaluation,
 )
-from utils.metrics import build_speculative_task_rows
+from src.utils.metrics import build_speculative_task_rows
 
 
 VALID_GRANULARITIES = {"s", "m", "l", "xl"}

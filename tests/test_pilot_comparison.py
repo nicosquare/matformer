@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 def _pilot_comparison_builder():
-    import utils.metrics as metrics
+    import src.utils.metrics as metrics
 
     builder = getattr(metrics, "build_pilot_comparison_rows", None)
     assert builder is not None, (

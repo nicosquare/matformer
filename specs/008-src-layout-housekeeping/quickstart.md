@@ -10,10 +10,10 @@ python -m pip install -e .
 
 ```bash
 python - <<'PY'
-import models
-import training
-import evaluation
-import utils
+import src.models as models
+import src.training as training
+import src.evaluation as evaluation
+import src.utils as utils
 print(models.__file__)
 print(training.__file__)
 print(evaluation.__file__)

@@ -2,7 +2,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from utils.config import resolve_all_run_configs, resolve_run_config, validate_run_config
+from src.utils.config import resolve_all_run_configs, resolve_run_config, validate_run_config
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -98,7 +98,7 @@ def test_debug_matrix_runner_propagates_output_root_env(tmp_path):
         env_updates={"OUTPUT_ROOT": str(output_root)},
     )
 
-    assert args[:2] == ["-m", "training.baselines"]
+    assert args[:2] == ["-m", "src.training.baselines"]
     assert _has_arg_pair(args, "--config", "configs/debug_matrix.yaml")
     assert _has_arg_pair(args, "--nested-run-id", "debug-nested-001")
     assert not _has_arg(args, "--granularity")
@@ -134,7 +134,7 @@ def test_debug_matrix_runner_forwards_output_arguments(tmp_path):
         ],
     )
 
-    assert args[:2] == ["-m", "training.baselines"]
+    assert args[:2] == ["-m", "src.training.baselines"]
     assert _has_arg_pair(args, "--output-root", str(output_root))
     assert _has_arg_pair(args, "--output-dir", str(explicit_output_dir))
     assert _has_arg_pair(args, "--override", "training.max_steps=1")
@@ -182,7 +182,7 @@ def test_slurm_debug_matrix_wrapper_forwards_to_runner(tmp_path):
     )
 
     args = argv_path.read_text(encoding="utf-8").splitlines()
-    assert args[:2] == ["-m", "training.baselines"]
+    assert args[:2] == ["-m", "src.training.baselines"]
     assert _has_arg_pair(args, "--config", "configs/debug_matrix.yaml")
     assert _has_arg_pair(args, "--nested-run-id", "debug-nested-001")
     assert _has_arg_pair(args, "--granularity", "m")
