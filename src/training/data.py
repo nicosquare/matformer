@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import torch
@@ -14,6 +15,20 @@ class DataError(ValueError):
     """Raised when a dataset cannot support the planned training flow."""
 
 
+def _log_dataset_cache_context(dataset_name: str, dataset_split: str) -> None:
+    hf_home = os.environ.get("HF_HOME")
+    hf_datasets_cache = os.environ.get("HF_DATASETS_CACHE")
+    transformers_cache = os.environ.get("TRANSFORMERS_CACHE")
+    print(
+        "[dataset] "
+        f"name={dataset_name} split={dataset_split} "
+        f"HF_HOME={hf_home or 'unset'} "
+        f"HF_DATASETS_CACHE={hf_datasets_cache or 'unset'} "
+        f"TRANSFORMERS_CACHE={transformers_cache or 'unset'}",
+        flush=True,
+    )
+
+
 def load_text_dataset(
     dataset_name: str,
     dataset_split: str,
@@ -23,10 +38,16 @@ def load_text_dataset(
     text_column: str = "text",
     shuffle: bool = True,
 ):
+    _log_dataset_cache_context(dataset_name, dataset_split)
     if dataset_config_name:
         dataset = load_dataset(dataset_name, dataset_config_name, split=dataset_split)
     else:
         dataset = load_dataset(dataset_name, split=dataset_split)
+    print(
+        "[dataset] "
+        f"loaded cache_files={getattr(dataset, 'cache_files', None)}",
+        flush=True,
+    )
     return prepare_text_dataset(
         dataset,
         sample_limit=sample_limit,
@@ -87,7 +108,13 @@ def tokenize_text_dataset(
     if remove_source_columns:
         map_kwargs["remove_columns"] = dataset.column_names
 
-    return dataset.map(tokenize_batch, **map_kwargs)
+    tokenized_dataset = dataset.map(tokenize_batch, **map_kwargs)
+    print(
+        "[dataset] "
+        f"tokenized cache_files={getattr(tokenized_dataset, 'cache_files', None)}",
+        flush=True,
+    )
+    return tokenized_dataset
 
 
 def load_and_tokenize_dataset(
