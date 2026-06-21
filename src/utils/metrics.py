@@ -238,6 +238,28 @@ class ArtifactError(ValueError):
     """Raised when an artifact would miss required analysis fields."""
 
 
+def best_validation_metric_value(
+    validation_results: list[dict[str, Any]],
+) -> tuple[str | None, float | None]:
+    loss_values = [
+        float(result["loss"])
+        for result in validation_results
+        if result.get("loss") is not None
+    ]
+    if loss_values:
+        return "validation_loss", min(loss_values)
+
+    perplexity_values = [
+        float(result["perplexity"])
+        for result in validation_results
+        if result.get("perplexity") is not None
+    ]
+    if perplexity_values:
+        return "validation_perplexity", min(perplexity_values)
+
+    return None, None
+
+
 def write_config_artifact(
     config: Mapping[str, Any],
     output_dir: str | Path | None = None,

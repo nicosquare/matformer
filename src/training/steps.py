@@ -10,10 +10,7 @@ except ImportError:  # pragma: no cover - optional dependency
 
 load_dotenv()
 
-import copy
-from contextlib import contextmanager
 import random
-import os
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -21,8 +18,9 @@ from typing import Any, Mapping
 import torch
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data.distributed import DistributedSampler
-from transformers import AutoTokenizer, LlamaConfig, LlamaForCausalLM, get_scheduler
+from transformers import get_scheduler
 
+import src.training.checkpointing as training_checkpointing
 from src.evaluation.validation import (
     configure_model_granularity,
     evaluate_validation_per_granularity,
@@ -30,133 +28,45 @@ from src.evaluation.validation import (
     perplexity_from_loss,
     validation_results_to_metric_rows,
 )
-from src.models.ffn import (
-    CatLlamaMLP,
-    build_concat_layout_diagnostic,
-    get_ffn_prefix_metadata,
-)
 from src.models.adaptive_sampler import (
-    build_adaptive_reward_record,
     build_adaptive_sampler_artifact_fields,
-    build_adaptive_sampler_state,
-    AdaptiveSamplerState,
-    coerce_adaptive_sampler_state,
-    normalize_adaptive_sampler_state,
     select_adaptive_sampler_layer_granularities,
-    summarize_adaptive_sampler_state,
-    update_adaptive_sampler_state,
 )
 from src.models.correction import summarize_correction_context_from_config
+from src.models.ffn import (
+    get_ffn_prefix_metadata,
+)
 from src.models.granularity import summarize_granularity_pattern_from_config
-from src.models.wiring import (
-    ModifiedLlamaForCausalLM,
-    prime_standalone_granularity_state,
-    record_runtime_sampling_provenance,
+from src.training.checkpointing import (
+    _prepare_adaptive_sampler_runtime_state,
+    _update_adaptive_sampler_runtime_state,
+    continuation_latest_checkpoint_policy,
+    maybe_write_best_eval_checkpoint,
 )
 from src.training.data import (
     build_language_model_dataloader,
-    load_and_tokenize_dataset,
     split_train_eval_dataset,
 )
 from src.training.distributed import (
-    broadcast_object,
-    destroy_distributed_process_group,
-    prepare_distributed_context,
-    should_write_shared_artifact,
     sum_int,
-    wrap_model_for_distributed,
 )
-import src.training.checkpointing as training_checkpointing
-from src.training.checkpointing import (
-    maybe_write_best_eval_checkpoint,
-    continuation_latest_checkpoint_policy,
-    _prepare_adaptive_sampler_runtime_state,
-    _update_adaptive_sampler_runtime_state,
-)
+from src.training.monitoring import NoopHeartbeatWriter
 from src.utils.config import (
     ConfigError,
-    attach_parameter_counts_to_config,
-    resolve_run_config,
     resolve_optimizer_kwargs,
     resolve_sampling_mode_from_config_sections,
-    resolve_training_length_for_world_size,
-    validate_run_config,
 )
 from src.utils.heartbeats import (
-    HeartbeatCadence,
-    HeartbeatWriter,
     build_heartbeat_cadence,
     heartbeat_stage,
     heartbeat_training_fields,
     maybe_emit_training_heartbeat,
 )
 from src.utils.metrics import (
-    build_checkpoint_summary_fields,
-    build_monitoring_summary_fields,
-    build_parameter_counts_by_granularity,
-    build_run_summary,
-    build_scaling_result_rows,
-    write_config_artifact,
-    write_failed_run_summary,
     json_artifact_value,
-    write_json_artifact,
-    write_metrics_csv,
-    write_run_summary,
-    write_scaling_results_csv,
     summarize_runtime_granularity_pattern_from_config,
+    write_json_artifact,
 )
-from src.utils.monitoring import group_loss_rows_by_series
-def load_model_and_optimizer_state(
-    model,
-    optimizer,
-    model_state_dict: Mapping[str, Any],
-    optimizer_state_dict: Mapping[str, Any] | None,
-    distributed_context=None,
-) -> None:
-    if (
-        distributed_context is not None
-        and distributed_context.enabled
-        and distributed_context.strategy == "fsdp"
-    ):
-        from torch.distributed.checkpoint.state_dict import (
-            StateDictOptions,
-            set_state_dict,
-        )
-
-        set_state_dict(
-            model,
-            optimizer if optimizer is not None else [],
-            model_state_dict=model_state_dict,
-            optim_state_dict=optimizer_state_dict or {},
-            options=StateDictOptions(full_state_dict=True, cpu_offload=True),
-        )
-        return
-
-    model.load_state_dict(dict(model_state_dict))
-    if optimizer is not None and optimizer_state_dict is not None:
-        optimizer.load_state_dict(dict(optimizer_state_dict))
-
-
-def best_validation_metric_value(
-    validation_results: list[dict[str, Any]],
-) -> tuple[str | None, float | None]:
-    loss_values = [
-        float(result["loss"])
-        for result in validation_results
-        if result.get("loss") is not None
-    ]
-    if loss_values:
-        return "validation_loss", min(loss_values)
-
-    perplexity_values = [
-        float(result["perplexity"])
-        for result in validation_results
-        if result.get("perplexity") is not None
-    ]
-    if perplexity_values:
-        return "validation_perplexity", min(perplexity_values)
-
-    return None, None
 
 
 def build_dataloaders(

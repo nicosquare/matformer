@@ -10,6 +10,10 @@ import torch
 from datasets import Dataset
 
 from src.models.granularity import build_granularity_pattern
+import src.training.distributed as training_distributed
+import src.training.modeling as training_modeling
+import src.training.monitoring as training_monitoring
+import src.training.steps as training_steps
 from src.training.run import run_training
 from src.utils.config import ConfigError, resolve_run_config
 from src.utils.monitoring import group_loss_rows_by_series
@@ -276,7 +280,9 @@ def _run_concat_lmc_case(tmp_path, monkeypatch, correction_mode):
     model = ToyConcatLMCModel()
     initial_parameters = _snapshot_named_parameters(model)
     captured = {}
-    original_build_optimizer_and_scheduler = training_run.build_optimizer_and_scheduler
+    original_build_optimizer_and_scheduler = (
+        training_steps.build_optimizer_and_scheduler
+    )
     parameter_counts = {
         "total_parameters": 21,
         "embedding_parameters": 0,
@@ -290,12 +296,12 @@ def _run_concat_lmc_case(tmp_path, monkeypatch, correction_mode):
         return optimizer, scheduler
 
     monkeypatch.setattr(
-        training_run,
+        training_steps,
         "build_optimizer_and_scheduler",
         capturing_build_optimizer_and_scheduler,
     )
     monkeypatch.setattr(
-        training_run,
+        training_modeling,
         "build_artifact_parameter_counts",
         lambda *args, **kwargs: {
             granularity: dict(parameter_counts)
@@ -305,7 +311,7 @@ def _run_concat_lmc_case(tmp_path, monkeypatch, correction_mode):
     # Keep the legacy concat-LMC smoke deterministic so it still exercises the
     # full four-granularity correction path after the sampling-mode refactor.
     monkeypatch.setattr(
-        training_run,
+        training_steps,
         "select_training_granularities",
         lambda config, granularities, device: list(granularities),
     )
@@ -358,7 +364,9 @@ def _run_slicing_case(tmp_path, monkeypatch, correction_mode):
     model = TinyNestedTrainingModel()
     initial_parameters = _snapshot_named_parameters(model)
     captured = {}
-    original_build_optimizer_and_scheduler = training_run.build_optimizer_and_scheduler
+    original_build_optimizer_and_scheduler = (
+        training_steps.build_optimizer_and_scheduler
+    )
 
     def capturing_build_optimizer_and_scheduler(model_arg, training):
         optimizer, scheduler = original_build_optimizer_and_scheduler(model_arg, training)
@@ -366,7 +374,7 @@ def _run_slicing_case(tmp_path, monkeypatch, correction_mode):
         return optimizer, scheduler
 
     monkeypatch.setattr(
-        training_run,
+        training_steps,
         "build_optimizer_and_scheduler",
         capturing_build_optimizer_and_scheduler,
     )
@@ -420,7 +428,7 @@ def test_tiny_nested_training_can_sample_one_granularity_for_the_nested_random_g
     model = TinyNestedTrainingModel()
     captured_randrange_values = iter([2])
     monkeypatch.setattr(
-        training_run.random,
+        training_steps.random,
         "randrange",
         lambda count: next(captured_randrange_values),
     )
@@ -654,7 +662,7 @@ def test_interrupted_and_relaunched_run_preserves_the_same_output_dir(
             "attention_mask": [[1, 1, 0], [1, 1, 1]],
         }
     )
-    original_train_for_steps = training_run.train_for_steps
+    original_train_for_steps = training_steps.train_for_steps
     train_invocations = {"count": 0}
 
     def interrupting_train_for_steps(*args, **kwargs):
@@ -664,7 +672,7 @@ def test_interrupted_and_relaunched_run_preserves_the_same_output_dir(
         return original_train_for_steps(*args, **kwargs)
 
     monkeypatch.setattr(
-        training_run,
+        training_steps,
         "train_for_steps",
         interrupting_train_for_steps,
     )
@@ -827,7 +835,7 @@ def test_tiny_nested_training_accumulates_all_granularities_per_batch(
         clip_calls.append(max_norm)
         return torch.tensor(0.0)
 
-    monkeypatch.setattr(training_run, "clip_grad_norm_", fake_clip_grad_norm_)
+    monkeypatch.setattr(training_steps, "clip_grad_norm_", fake_clip_grad_norm_)
 
     result = run_training(
         config,
@@ -1003,7 +1011,7 @@ def test_training_counts_parameters_before_runtime_wrapping(tmp_path, monkeypatc
         }
     )
     monkeypatch.setattr(
-        training_run,
+        training_distributed,
         "wrap_model_for_distributed",
         lambda model, context: FlatParameterRuntimeWrapper(model),
     )
@@ -1059,7 +1067,11 @@ def test_tiny_nested_training_can_sample_one_granularity_per_block_per_batch(
     )
     model = TinyNestedTrainingModel()
     randrange_values = iter([0, 1])
-    monkeypatch.setattr(training_run.random, "randrange", lambda count: next(randrange_values))
+    monkeypatch.setattr(
+        training_steps.random,
+        "randrange",
+        lambda count: next(randrange_values),
+    )
 
     result = run_training(
         config,
@@ -1148,7 +1160,7 @@ def test_config_driven_nested_training_uses_resolved_sgd_optimizer(tmp_path, mon
         }
     )
     captured = {}
-    original_helper = training_run.build_optimizer_and_scheduler
+    original_helper = training_steps.build_optimizer_and_scheduler
 
     def capturing_build_optimizer_and_scheduler(model, training):
         captured["optimizer_name"] = training["optimizer_name"]
@@ -1163,7 +1175,7 @@ def test_config_driven_nested_training_uses_resolved_sgd_optimizer(tmp_path, mon
         return optimizer, scheduler
 
     monkeypatch.setattr(
-        training_run,
+        training_steps,
         "build_optimizer_and_scheduler",
         capturing_build_optimizer_and_scheduler,
     )
@@ -1413,12 +1425,12 @@ def test_config_driven_training_rejects_multi_process_execution_before_setup(
         raise AssertionError("wrap_model_for_distributed should not be called")
 
     monkeypatch.setattr(
-        training_run,
+        training_distributed,
         "prepare_distributed_context",
         fake_prepare_distributed_context,
     )
     monkeypatch.setattr(
-        training_run,
+        training_distributed,
         "wrap_model_for_distributed",
         fake_wrap_model_for_distributed,
     )
@@ -1473,12 +1485,12 @@ def test_run_training_rejects_invalid_adaptive_pairing_before_setup(
         raise AssertionError("wrap_model_for_distributed should not be called")
 
     monkeypatch.setattr(
-        training_run,
+        training_distributed,
         "prepare_distributed_context",
         fake_prepare_distributed_context,
     )
     monkeypatch.setattr(
-        training_run,
+        training_distributed,
         "wrap_model_for_distributed",
         fake_wrap_model_for_distributed,
     )
@@ -1635,7 +1647,7 @@ def test_monitoring_smoke_groups_nested_and_standalone_runs_by_series(
         return session
 
     monkeypatch.setattr(
-        training_run,
+        training_monitoring,
         "create_monitoring_session",
         fake_create_monitoring_session,
     )
@@ -1731,7 +1743,7 @@ def test_wandb_session_uses_explicit_project_and_entity_settings(
         ],
     )
 
-    session = training_run.WandbMonitoringSession(
+    session = training_monitoring.WandbMonitoringSession(
         config,
         distributed_context=SimpleNamespace(enabled=False),
     )

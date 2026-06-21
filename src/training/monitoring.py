@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from src.training.distributed import should_write_shared_artifact
-from src.utils.heartbeats import HeartbeatWriter
+from src.utils.heartbeats import HeartbeatWriter, heartbeat_stage
 from src.utils.metrics import build_monitoring_summary_fields
 from src.utils.monitoring import group_loss_rows_by_series
 
@@ -226,15 +225,6 @@ class WandbMonitoringSession(NoopMonitoringSession):
             self._wandb.finish()
         except Exception:
             self.enabled = False
-
-
-@contextmanager
-def heartbeat_stage(heartbeat_writer, stage: str, **fields: Any):
-    heartbeat_writer.stage_start(stage, **fields)
-    try:
-        yield
-    finally:
-        heartbeat_writer.stage_complete(stage, **fields)
 
 
 def create_monitoring_session(

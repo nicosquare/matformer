@@ -12,10 +12,11 @@ from typing import Any
 from src.utils.config import resolve_all_run_configs, resolve_run_config
 from src.utils.metrics import (
     baseline_match_id as metrics_baseline_match_id,
+)
+from src.utils.metrics import (
     build_baseline_match_row,
     write_json_artifact,
 )
-
 
 BASELINE_MATCH_FIELDS = [
     ("dataset.dataset_name", "dataset"),

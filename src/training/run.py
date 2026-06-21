@@ -10,125 +10,45 @@ except ImportError:  # pragma: no cover - optional dependency
 
 load_dotenv()
 
-import copy
-import random
 import os
 from pathlib import Path
 from typing import Any, Mapping
 
 import torch
-from torch.nn.utils import clip_grad_norm_
 
-from src.evaluation.validation import (
-    configure_model_granularity,
-    evaluate_validation_per_granularity,
-    move_batch_to_device,
-    perplexity_from_loss,
-    validation_results_to_metric_rows,
-)
-from src.models.ffn import build_concat_layout_diagnostic, get_ffn_prefix_metadata
-from src.models.adaptive_sampler import (
-    build_adaptive_reward_record,
-    build_adaptive_sampler_artifact_fields,
-    build_adaptive_sampler_state,
-    AdaptiveSamplerState,
-    coerce_adaptive_sampler_state,
-    normalize_adaptive_sampler_state,
-    select_adaptive_sampler_layer_granularities,
-    summarize_adaptive_sampler_state,
-    update_adaptive_sampler_state,
-)
-from src.models.correction import summarize_correction_context_from_config
-from src.models.granularity import summarize_granularity_pattern_from_config
-from src.models.wiring import (
-    ModifiedLlamaForCausalLM,
-    prime_standalone_granularity_state,
-    record_runtime_sampling_provenance,
-)
-from src.training.data import (
-    build_dataloaders,
-    build_language_model_dataloader,
-    load_and_tokenize_dataset,
-    split_train_eval_dataset,
-)
-from src.training.distributed import (
-    broadcast_object,
-    destroy_distributed_process_group,
-    prepare_distributed_context,
-    should_write_shared_artifact,
-    sum_int,
-    wrap_model_for_distributed,
-)
 import src.training.checkpointing as training_checkpointing
 import src.training.data as training_data
 import src.training.distributed as training_distributed
+import src.training.modeling as training_modeling
+import src.training.monitoring as training_monitoring
 import src.training.steps as training_steps
 import src.training.warmup as training_warmup
-from src.training.checkpointing import checkpoint_state_dict
-from src.training.steps import (
-    build_optimizer_and_scheduler,
-    build_training_metric_row,
-    select_training_granularities,
-    set_random_seed,
+from src.models.adaptive_sampler import (
+    build_adaptive_sampler_artifact_fields,
 )
-from src.training.modeling import (
-    build_artifact_parameter_counts,
-    build_llama_config,
-    build_model,
-    distributed_summary_fields,
-    load_tokenizer,
-    sync_config_with_distributed_context,
+from src.models.correction import summarize_correction_context_from_config
+from src.models.ffn import build_concat_layout_diagnostic
+from src.models.wiring import (
+    record_runtime_sampling_provenance,
 )
-from src.training.monitoring import (
-    NoopHeartbeatWriter,
-    WandbMonitoringSession,
-    build_heartbeat_writer,
-    create_monitoring_session,
-    emit_run_start_continuation_state,
-    heartbeat_stage,
-)
+from src.training.steps import set_random_seed
 from src.utils.config import (
     ConfigError,
     attach_parameter_counts_to_config,
     resolve_run_config,
-    resolve_optimizer_kwargs,
-    resolve_sampling_mode_from_config_sections,
-    resolve_training_length_for_world_size,
     validate_run_config,
 )
 from src.utils.metrics import (
     build_checkpoint_summary_fields,
     build_monitoring_summary_fields,
-    build_parameter_counts_by_granularity,
     build_run_summary,
     build_scaling_result_rows,
+    summarize_runtime_granularity_pattern_from_config,
     write_config_artifact,
     write_failed_run_summary,
-    json_artifact_value,
-    write_json_artifact,
     write_metrics_csv,
     write_run_summary,
     write_scaling_results_csv,
-    summarize_runtime_granularity_pattern_from_config,
-)
-
-
-def _sync_training_step_hooks() -> None:
-    """Keep monkeypatch-friendly hooks aligned with ``src.training.steps``."""
-
-    hook_names = [
-        "build_optimizer_and_scheduler",
-        "build_artifact_parameter_counts",
-        "select_training_granularities",
-    ]
-    for name in hook_names:
-        setattr(training_steps, name, globals()[name])
-    training_steps.clip_grad_norm_ = clip_grad_norm_
-from src.utils.heartbeats import (
-    build_heartbeat_cadence,
-    estimate_eta_seconds,
-    heartbeat_training_fields,
-    maybe_emit_training_heartbeat,
 )
 
 
@@ -170,7 +90,6 @@ def run_training(
 ) -> dict[str, Any]:
     ensure_single_process_runtime()
     validate_run_config(config)
-    _sync_training_step_hooks()
     run = config["run"]
     training = config["training"]
     output_dir = Path(run["output_dir"])
@@ -178,22 +97,34 @@ def run_training(
     checkpoint_state: dict[str, Any] = {}
     optimizer = None
     scheduler = None
-    distributed_context = training_distributed.prepare_distributed_context(config, device=device)
-    sync_config_with_distributed_context(config, distributed_context)
-    monitoring_session = create_monitoring_session(config, distributed_context)
-    heartbeat_writer = build_heartbeat_writer(config, distributed_context)
+    distributed_context = training_distributed.prepare_distributed_context(
+        config,
+        device=device,
+    )
+    training_modeling.sync_config_with_distributed_context(
+        config,
+        distributed_context,
+    )
+    monitoring_session = training_monitoring.create_monitoring_session(
+        config,
+        distributed_context,
+    )
+    heartbeat_writer = training_monitoring.build_heartbeat_writer(
+        config,
+        distributed_context,
+    )
     parameter_counts_by_granularity = {}
 
-    with heartbeat_stage(heartbeat_writer, "artifact_writing"):
+    with training_monitoring.heartbeat_stage(heartbeat_writer, "artifact_writing"):
         write_config_artifact(config, distributed_context=distributed_context)
     set_random_seed(run.get("seed"))
 
     device = torch.device(distributed_context.device)
 
     try:
-        with heartbeat_stage(heartbeat_writer, "model_initialization"):
+        with training_monitoring.heartbeat_stage(heartbeat_writer, "model_initialization"):
             if model is None:
-                model = build_model(config)
+                model = training_modeling.build_model(config)
             record_runtime_sampling_provenance(model, config)
             if (
                 distributed_context.is_rank_zero
@@ -205,7 +136,7 @@ def run_training(
                     granularity_prefixes=config["model"].get("granularity_prefixes"),
                 )
                 print(f"[concat-diagnostic] {diagnostic}", flush=True)
-            parameter_counts_by_granularity = build_artifact_parameter_counts(
+            parameter_counts_by_granularity = training_modeling.build_artifact_parameter_counts(
                 config,
                 model,
                 distributed_context,
@@ -218,31 +149,49 @@ def run_training(
             model = model.to(device)
 
         if parameter_counts_by_granularity:
-            with heartbeat_stage(heartbeat_writer, "artifact_writing"):
+            with training_monitoring.heartbeat_stage(
+                heartbeat_writer,
+                "artifact_writing",
+            ):
                 write_config_artifact(config, distributed_context=distributed_context)
 
-        with heartbeat_stage(heartbeat_writer, "fsdp_wrapping"):
-            model = training_distributed.wrap_model_for_distributed(model, distributed_context)
+        with training_monitoring.heartbeat_stage(heartbeat_writer, "fsdp_wrapping"):
+            model = training_distributed.wrap_model_for_distributed(
+                model,
+                distributed_context,
+            )
 
         if tokenized_dataset is None:
             if tokenizer is None:
-                with heartbeat_stage(heartbeat_writer, "tokenizer_loading"):
-                    tokenizer = load_tokenizer(config)
-            with heartbeat_stage(heartbeat_writer, "dataset_loading_preprocessing"):
+                with training_monitoring.heartbeat_stage(
+                    heartbeat_writer,
+                    "tokenizer_loading",
+                ):
+                    tokenizer = training_modeling.load_tokenizer(config)
+            with training_monitoring.heartbeat_stage(
+                heartbeat_writer,
+                "dataset_loading_preprocessing",
+            ):
                 tokenized_dataset = training_data.load_and_tokenize_dataset(
                     config,
                     tokenizer,
                     num_proc=training.get("preprocess_num_proc", 1),
                 )
 
-        with heartbeat_stage(heartbeat_writer, "dataloader_creation"):
+        with training_monitoring.heartbeat_stage(
+            heartbeat_writer,
+            "dataloader_creation",
+        ):
             train_dataloader, eval_dataloader = training_data.build_dataloaders(
                 config,
                 tokenized_dataset,
                 device,
                 distributed_context=distributed_context,
             )
-        optimizer, scheduler = training_steps.build_optimizer_and_scheduler(model, training)
+        optimizer, scheduler = training_steps.build_optimizer_and_scheduler(
+            model,
+            training,
+        )
         if run["continuation"]["enabled"]:
             run_state = training_checkpointing.load_run_continuation_state(
                 config,
@@ -251,7 +200,10 @@ def run_training(
                 scheduler,
                 distributed_context=distributed_context,
             )
-        emit_run_start_continuation_state(heartbeat_writer, run_state)
+        training_monitoring.emit_run_start_continuation_state(
+            heartbeat_writer,
+            run_state,
+        )
         checkpoint_state.update(run_state)
         training_checkpointing.update_run_continuation_state(config, run_state)
         metrics_rows = []
@@ -351,7 +303,10 @@ def run_training(
             training_checkpointing.update_run_continuation_state(config, run_state)
 
         if training_distributed.should_write_shared_artifact(distributed_context):
-            with heartbeat_stage(heartbeat_writer, "artifact_writing"):
+            with training_monitoring.heartbeat_stage(
+                heartbeat_writer,
+                "artifact_writing",
+            ):
                 extraction_metadata_path = training_steps.write_extraction_metadata_if_nested(
                     config,
                     model,
@@ -414,7 +369,7 @@ def run_training(
             "parameter_counts_by_granularity": parameter_counts_by_granularity,
             **build_monitoring_summary_fields(config, metrics_rows),
             **checkpoint_summary_fields,
-            **distributed_summary_fields(distributed_context),
+            **training_modeling.distributed_summary_fields(distributed_context),
             **build_adaptive_sampler_artifact_fields(config, run_state),
         }
         if metrics_path is not None:
@@ -432,7 +387,7 @@ def run_training(
             notes=["completed config-driven training loop"],
             extra_fields=extra_summary_fields,
         )
-        with heartbeat_stage(heartbeat_writer, "artifact_writing"):
+        with training_monitoring.heartbeat_stage(heartbeat_writer, "artifact_writing"):
             summary_path = write_run_summary(
                 output_dir,
                 summary,
@@ -471,7 +426,10 @@ def run_training(
             run_state["status"] = "failed"
             if run["continuation"]["enabled"]:
                 training_checkpointing.update_run_continuation_state(config, run_state)
-            with heartbeat_stage(heartbeat_writer, "artifact_writing"):
+            with training_monitoring.heartbeat_stage(
+                heartbeat_writer,
+                "artifact_writing",
+            ):
                 write_failed_run_summary(
                     config,
                     str(error),

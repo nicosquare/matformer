@@ -15,15 +15,16 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     checkpoint_wrapper,
 )
 from torch.distributed.fsdp import (
-    CPUOffload,
     BackwardPrefetch,
-    FullyShardedDataParallel as FSDP,
+    CPUOffload,
     MixedPrecision,
     ShardingStrategy,
 )
+from torch.distributed.fsdp import (
+    FullyShardedDataParallel as FSDP,
+)
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
-
 
 T = TypeVar("T")
 

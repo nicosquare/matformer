@@ -7,8 +7,8 @@ from typing import Any
 
 import torch
 from datasets import load_dataset
-from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
 
 class DataError(ValueError):
