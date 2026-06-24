@@ -43,7 +43,8 @@ from src.utils.metrics import (
     write_scaling_results_csv,
     write_task_results_csv,
 )
-from src.training.run import build_training_metric_row, run_training
+from src.training.run import run_training
+from src.training.steps import build_training_metric_row
 
 
 class TinyExtractionModel(torch.nn.Module):

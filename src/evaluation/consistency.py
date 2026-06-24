@@ -12,7 +12,8 @@ import torch
 import yaml
 
 from src.training.data import load_and_tokenize_dataset
-from src.training.run import build_dataloaders, build_model, load_tokenizer
+from src.training.data import build_dataloaders
+from src.training.modeling import build_model, load_tokenizer
 from src.evaluation.validation import configure_model_granularity
 from src.utils.metrics import write_consistency_results_csv
 

@@ -907,7 +907,7 @@ def test_make_figures_refreshes_parameter_counts_from_run_config(tmp_path):
 
     refreshed_rows = refresh_scaling_parameter_counts(tmp_path, [stale_row])
 
-    from src.training.run import build_model
+    from src.training.modeling import build_model
     from src.utils.model_size import model_parameter_counts
 
     model = build_model(config)

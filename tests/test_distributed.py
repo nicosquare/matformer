@@ -149,7 +149,7 @@ def test_checkpoint_state_dict_uses_distributed_checkpoint_api_for_fsdp(
 ):
     from torch.distributed.checkpoint import state_dict as state_dict_module
 
-    import src.training.run as training_run
+    import src.training.checkpointing as training_checkpointing
 
     context = DistributedContext(
         enabled=True,
@@ -174,7 +174,7 @@ def test_checkpoint_state_dict_uses_distributed_checkpoint_api_for_fsdp(
 
     monkeypatch.setattr(state_dict_module, "get_state_dict", fake_get_state_dict)
 
-    state_dict = training_run.checkpoint_state_dict(model, context)
+    state_dict = training_checkpointing.checkpoint_state_dict(model, context)
 
     assert list(state_dict) == ["weight"]
     assert torch.equal(state_dict["weight"], torch.tensor([1.0]))

@@ -580,7 +580,7 @@ def config_path_for_scaling_row(
 
 
 def recompute_parameter_counts(config_path: Path) -> dict[str, dict[str, Any]]:
-    from src.training.run import build_model
+    from src.training.modeling import build_model
     from src.utils.metrics import build_parameter_counts_by_granularity
 
     with config_path.open("r", encoding="utf-8") as config_file:

@@ -51,7 +51,6 @@ from src.utils.metrics import (
     write_scaling_results_csv,
 )
 
-
 def run_from_config_path(
     config_path: str | Path,
     run_id: str | None = None,

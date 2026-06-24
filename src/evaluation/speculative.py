@@ -13,7 +13,7 @@ import torch
 from transformers import AutoTokenizer
 
 from src.evaluation.validation import configure_model_granularity
-from src.training.run import build_model
+from src.training.modeling import build_model
 from src.utils.config import load_yaml_config
 from src.utils.metrics import build_speculative_task_rows, write_task_results_csv
 

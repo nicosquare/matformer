@@ -4,7 +4,7 @@ from transformers import LlamaConfig, LlamaForCausalLM
 
 from src.models.ffn import CatLlamaMLP, ModifiedLlamaMLP
 from src.models.wiring import ModifiedLlamaForCausalLM
-from src.training.run import build_model
+from src.training.modeling import build_model
 from src.utils.config import resolve_run_config
 from src.utils.model_size import (
     count_embedding_parameters,
