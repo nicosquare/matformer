@@ -236,6 +236,7 @@ def main(argv: list[str] | None = None) -> None:
         args.output,
         refresh_counts=not args.no_refresh_counts,
         dpi=args.dpi,
+        validation_loss_log_y=args.validation_loss_log_y,
     )
     for path in figure_paths:
         print(path)
@@ -259,6 +260,11 @@ def parse_args(argv: list[str] | None = None):
         default=300,
         help="DPI to use when saving figures.",
     )
+    parser.add_argument(
+        "--validation-loss-log-y",
+        action="store_true",
+        help="Render validation loss figures with a logarithmic y axis.",
+    )
     return parser.parse_args(argv)
 
 
@@ -267,6 +273,7 @@ def generate_figures(
     output_dir: str | Path,
     refresh_counts: bool = True,
     dpi: int = 300,
+    validation_loss_log_y: bool = False,
 ) -> list[Path]:
     input_root = Path(input_root)
     output_dir = Path(output_dir)
@@ -354,6 +361,7 @@ def generate_figures(
                 metrics_rows,
                 output_dir,
                 dpi=dpi,
+                validation_loss_log_y=validation_loss_log_y,
             )
         )
         figure_paths.extend(
@@ -361,6 +369,7 @@ def generate_figures(
                 metrics_rows,
                 output_dir,
                 dpi=dpi,
+                validation_loss_log_y=validation_loss_log_y,
             )
         )
     else:
@@ -375,6 +384,7 @@ def generate_figures(
                     validation_metrics_rows,
                     output_dir,
                     dpi=dpi,
+                    validation_loss_log_y=validation_loss_log_y,
                 )
             )
             figure_paths.extend(
@@ -382,6 +392,7 @@ def generate_figures(
                     validation_metrics_rows,
                     output_dir,
                     dpi=dpi,
+                    validation_loss_log_y=validation_loss_log_y,
                 )
             )
         figure_paths.append(
@@ -848,7 +859,7 @@ def plot_metric_vs_size_split_comparison(
     dpi: int = 300,
 ) -> Path:
     style_config = resolve_plot_style(style)
-    figure = plt.figure(figsize=(15.0, 6.0))
+    figure = plt.figure(figsize=(15.0, 8.0))
     left_subfigure, right_subfigure = figure.subfigures(1, 2, wspace=0.06)
     left_axis = left_subfigure.subplots()
     right_axis = right_subfigure.subplots()
@@ -1219,6 +1230,7 @@ def plot_validation_loss_over_tokens_by_experiment(
     rows: list[dict[str, str]],
     output_dir: Path,
     dpi: int = 300,
+    validation_loss_log_y: bool = False,
 ) -> list[Path]:
     output_paths = []
     grouped = group_loss_rows_by_figure(
@@ -1233,6 +1245,7 @@ def plot_validation_loss_over_tokens_by_experiment(
                 output_dir
                 / f"validation_loss_over_tokens_{safe_filename_fragment(figure_label)}.png",
                 dpi=dpi,
+                validation_loss_log_y=validation_loss_log_y,
             )
         )
     return output_paths
@@ -1242,6 +1255,7 @@ def plot_validation_loss_over_tokens_by_granularity_comparison(
     rows: list[dict[str, str]],
     output_dir: Path,
     dpi: int = 300,
+    validation_loss_log_y: bool = False,
 ) -> list[Path]:
     comparison_rows = [
         row
@@ -1258,6 +1272,7 @@ def plot_validation_loss_over_tokens_by_granularity_comparison(
             comparison_rows,
             output_dir / "validation_loss_over_tokens_granularity_comparison.png",
             dpi=dpi,
+            validation_loss_log_y=validation_loss_log_y,
         )
     ]
 
@@ -1266,6 +1281,7 @@ def plot_validation_loss_over_tokens_by_granularity_comparison_figure(
     rows: list[dict[str, str]],
     output_path: Path,
     dpi: int = 300,
+    validation_loss_log_y: bool = False,
 ) -> Path:
     granularity_rows = [
         row for row in rows
@@ -1278,7 +1294,7 @@ def plot_validation_loss_over_tokens_by_granularity_comparison_figure(
     )
 
     if not granularity_labels:
-        figure, axis = plt.subplots(figsize=(12, 4))
+        figure, axis = plt.subplots(figsize=(12, 8))
         axis.text(
             0.5,
             0.5,
@@ -1372,6 +1388,8 @@ def plot_validation_loss_over_tokens_by_granularity_comparison_figure(
             )
 
         axis.set_title(granularity, fontsize=11, pad=6)
+        if validation_loss_log_y:
+            axis.set_yscale("log", nonpositive="clip")
         axis.set_ylabel("Loss")
         axis.grid(True, which="major", alpha=0.30, linewidth=0.6)
         axis.minorticks_on()
@@ -1510,6 +1528,7 @@ def plot_loss_over_tokens_for_experiment(
     figure_label: str,
     output_path: Path,
     dpi: int = 300,
+    validation_loss_log_y: bool = False,
 ) -> Path:
     granularity_rows = [
         row for row in rows
@@ -1522,7 +1541,7 @@ def plot_loss_over_tokens_for_experiment(
     )
 
     if not granularity_labels:
-        figure, axis = plt.subplots(figsize=(12, 4))
+        figure, axis = plt.subplots(figsize=(12, 8))
 
         axis.text(
             0.5,
@@ -1630,6 +1649,8 @@ def plot_loss_over_tokens_for_experiment(
             pad=6,
         )
 
+        if validation_loss_log_y:
+            axis.set_yscale("log", nonpositive="clip")
         axis.set_ylabel("Loss")
 
         axis.grid(

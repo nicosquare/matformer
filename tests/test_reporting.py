@@ -1,6 +1,25 @@
+from pathlib import Path
+
 from src.evaluation.reporting import generate_figures
 from src.utils.metrics import write_metrics_csv, write_scaling_results_csv
 from src.utils.monitoring import group_loss_rows_by_series
+
+
+def test_make_figures_cli_forwards_validation_loss_log_y(monkeypatch):
+    import scripts.make_figures as make_figures
+
+    captured = {}
+
+    def fake_generate_figures(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return [Path("outputs/figures/example.png")]
+
+    monkeypatch.setattr("src.evaluation.reporting.generate_figures", fake_generate_figures)
+
+    make_figures.main(["--validation-loss-log-y"])
+
+    assert captured["kwargs"]["validation_loss_log_y"] is True
 
 
 def test_reporting_path_groups_loss_rows_and_writes_medium_trend_report(tmp_path):

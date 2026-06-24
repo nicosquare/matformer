@@ -16,6 +16,7 @@ from src.evaluation.reporting_impl import (
     loss_moving_average_window_size,
     loss_trace_description,
     loss_trace_panel_suffix,
+    plot_loss_over_tokens_for_experiment,
     no_corrections_row_filter,
     refresh_scaling_parameter_counts,
     resolve_plot_style,
@@ -661,6 +662,56 @@ def test_make_figures_uses_compact_validation_legend_labels():
         "gmc": "gmc",
         "lmc": "lmc",
     }
+
+
+def test_make_figures_uses_log_y_axis_for_validation_loss_when_requested(
+    tmp_path,
+    monkeypatch,
+):
+    from matplotlib.axes import Axes
+
+    rows = [
+        {
+            "run_id": "debug-nested-001",
+            "split": "validation",
+            "sampling_mode": "nested-random",
+            "resolved_sampling_mode": "global",
+            "model_variant": "slicing",
+            "granularity": "s",
+            "tokens_seen": 128,
+            "loss": 2.0,
+        },
+        {
+            "run_id": "debug-nested-001",
+            "split": "validation",
+            "sampling_mode": "nested-random",
+            "resolved_sampling_mode": "global",
+            "model_variant": "slicing",
+            "granularity": "s",
+            "tokens_seen": 256,
+            "loss": 1.0,
+        },
+    ]
+
+    recorded = []
+    original_set_yscale = Axes.set_yscale
+
+    def record_set_yscale(self, *args, **kwargs):
+        recorded.append((args, kwargs))
+        return original_set_yscale(self, *args, **kwargs)
+
+    monkeypatch.setattr(Axes, "set_yscale", record_set_yscale)
+
+    plot_loss_over_tokens_for_experiment(
+        rows,
+        "validation loss",
+        tmp_path / "validation_loss.png",
+        dpi=72,
+        validation_loss_log_y=True,
+    )
+
+    assert (tmp_path / "validation_loss.png").exists()
+    assert any(args == ("log",) for args, kwargs in recorded)
 
 
 def test_make_figures_plots_grouped_consistency_metrics_and_skips_deferred_rows(tmp_path):

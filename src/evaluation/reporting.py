@@ -245,6 +245,7 @@ def generate_figures(
     output_dir: str | Path,
     refresh_counts: bool = True,
     dpi: int = 300,
+    validation_loss_log_y: bool = False,
 ) -> list[Path]:
     from . import reporting_io
     from .reporting_impl import (
@@ -358,6 +359,7 @@ def generate_figures(
                 metrics_rows,
                 output_dir,
                 dpi=dpi,
+                validation_loss_log_y=validation_loss_log_y,
             )
         )
         figure_paths.extend(
@@ -365,6 +367,7 @@ def generate_figures(
                 metrics_rows,
                 output_dir,
                 dpi=dpi,
+                validation_loss_log_y=validation_loss_log_y,
             )
         )
     else:
@@ -382,6 +385,7 @@ def generate_figures(
                     validation_metrics_rows,
                     output_dir,
                     dpi=dpi,
+                    validation_loss_log_y=validation_loss_log_y,
                 )
             )
             figure_paths.extend(
@@ -389,6 +393,7 @@ def generate_figures(
                     validation_metrics_rows,
                     output_dir,
                     dpi=dpi,
+                    validation_loss_log_y=validation_loss_log_y,
                 )
             )
         figure_paths.append(
@@ -431,6 +436,11 @@ def parse_args(argv: list[str] | None = None):
         default=300,
         help="DPI to use when saving figures.",
     )
+    parser.add_argument(
+        "--validation-loss-log-y",
+        action="store_true",
+        help="Render validation loss figures with a logarithmic y axis.",
+    )
     return parser.parse_args(argv)
 
 
@@ -441,6 +451,7 @@ def main(argv: list[str] | None = None) -> None:
         args.output,
         refresh_counts=not args.no_refresh_counts,
         dpi=args.dpi,
+        validation_loss_log_y=args.validation_loss_log_y,
     )
     for path in figure_paths:
         print(path)

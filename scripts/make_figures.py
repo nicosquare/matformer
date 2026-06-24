@@ -32,6 +32,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=300,
         help="DPI to use when saving figures.",
     )
+    parser.add_argument(
+        "--validation-loss-log-y",
+        action="store_true",
+        help="Render validation loss figures with a logarithmic y axis.",
+    )
     return parser.parse_args(argv)
 
 
@@ -44,6 +49,7 @@ def main(argv: list[str] | None = None) -> None:
         args.output,
         refresh_counts=not args.no_refresh_counts,
         dpi=args.dpi,
+        validation_loss_log_y=args.validation_loss_log_y,
     )
     for path in figure_paths:
         print(path)
