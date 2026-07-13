@@ -76,13 +76,13 @@
 
 ### Verification for User Story 3
 
-- [ ] T016 [P] [US3] Add malformed explicit-layout regression tests in `tests/test_config.py` for non-increasing, non-positive, and duplicate label cases
-- [ ] T017 [P] [US3] Add concat-alignment failure coverage in `tests/test_config.py` and `tests/test_training_smoke.py` for explicit fractions that violate block alignment
-- [ ] T018 [P] [US3] Add positive aligned-concat regression coverage in `tests/test_config.py` and `tests/test_training_smoke.py` for an explicit layout that satisfies block alignment
+- [X] T016 [P] [US3] Add malformed explicit-layout regression tests in `tests/test_config.py` for non-increasing, non-positive, and duplicate label cases
+- [X] T017 [P] [US3] Add concat-alignment failure coverage in `tests/test_config.py` and `tests/test_training_smoke.py` for explicit fractions that violate block alignment
+- [X] T018 [P] [US3] Add positive aligned-concat regression coverage in `tests/test_config.py` and `tests/test_training_smoke.py` for an explicit layout that satisfies block alignment
 
 ### Implementation for User Story 3
 
-- [ ] T019 [US3] Harden `src/utils/config.py` validation messages for invalid final widths, missing explicit labels, and invalid `run.granularity` requests
+- [X] T019 [US3] Harden `src/utils/config.py` validation messages for invalid final widths, missing explicit labels, and invalid `run.granularity` requests
 
 **Checkpoint**: Malformed or incompatible layouts should now fail before any training work starts.
 

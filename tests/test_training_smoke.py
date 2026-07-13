@@ -982,6 +982,83 @@ def test_explicit_five_granularity_training_smoke(tmp_path):
     ] == labels
 
 
+def test_explicit_concat_alignment_failure_happens_before_training(tmp_path):
+    with pytest.raises(ConfigError, match="align with CatLlama block widths"):
+        resolve_run_config(
+            "tests/fixtures/explicit_granularity_smoke.yaml",
+            output_dir=tmp_path / "misaligned-concat",
+            overrides={
+                "model.variant": "concat",
+                "model.granularity_prefixes": {
+                    "micro": 0.25,
+                    "small": 0.375,
+                    "medium": 0.625,
+                    "large": 0.875,
+                    "full": 1.0,
+                },
+            },
+        )
+
+
+def test_explicit_aligned_concat_training_smoke(tmp_path):
+    output_dir = tmp_path / "explicit-granularity-smoke-001"
+    config = resolve_run_config(
+        "tests/fixtures/explicit_granularity_smoke.yaml",
+        output_dir=output_dir,
+        overrides={
+            "model.variant": "concat",
+            "model.granularity_prefixes": {
+                "micro": 0.125,
+                "small": 0.25,
+                "medium": 0.5,
+                "large": 0.75,
+                "full": 1.0,
+            },
+            "training.max_steps": 1,
+            "training.eval_interval": 0,
+            "training.batch_size_per_process": 1,
+            "training.learning_rate": 0.01,
+            "training.scheduler.kwargs.warmup_steps": 0,
+            "outputs.save_checkpoints": False,
+            "evaluation.validation": False,
+        },
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+    labels = ["micro", "small", "medium", "large", "full"]
+    model = TinyNestedTrainingModel(
+        loss_scale_by_granularity={
+            "micro": 1.0,
+            "small": 2.0,
+            "medium": 3.0,
+            "large": 4.0,
+            "full": 5.0,
+        }
+    )
+
+    result = run_training(
+        config,
+        model=model,
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    assert config["model"]["variant"] == "concat"
+    assert config["model"]["granularities"] == labels
+    assert [
+        entry["prefix_width"]
+        for entry in config["model"]["ffn_concat_block_metadata"]
+    ] == [64, 128, 256, 384, 512]
+    assert model.train_forward_granularities == labels
+    assert summary["model_variant"] == "concat"
+    assert summary["granularity_pattern_summary"]["selected_granularities"] == labels
+
+
 def test_tiny_nested_training_records_nested_all_summary_even_when_runtime_pattern_stays_single(
     tmp_path,
 ):

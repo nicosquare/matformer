@@ -808,8 +808,8 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             raise ConfigError("standalone runs require run.granularity")
         if granularity not in granularities:
             raise ConfigError(
-                "standalone run.granularity must match one of the resolved "
-                f"model.granularities: {granularity}"
+                f"run.granularity={granularity!r} is not valid for standalone run; "
+                f"available labels={granularities}"
             )
         if granularities != [granularity]:
             raise ConfigError(
@@ -964,10 +964,22 @@ def _resolve_model_dimension_and_granularity_metadata(config: dict[str, Any]) ->
 
     granularities = model.get("granularities")
     if not isinstance(granularities, list) or not granularities:
+        if granularity_mode == "explicit":
+            raise ConfigError(
+                "model.granularities is required when "
+                "model.granularity_mode=explicit; provide an ordered, non-empty "
+                "label list"
+            )
         return
 
     prefixes = model.get("granularity_prefixes")
     if prefixes is None:
+        if granularity_mode == "explicit":
+            raise ConfigError(
+                "model.granularity_prefixes is required when "
+                "model.granularity_mode=explicit; provide one prefix fraction "
+                "for each model.granularities label"
+            )
         try:
             prefixes = {
                 granularity: (
@@ -978,7 +990,8 @@ def _resolve_model_dimension_and_granularity_metadata(config: dict[str, Any]) ->
             }
         except KeyError as error:
             raise ConfigError(
-                "model.granularity_prefixes is required for custom labels"
+                "model.granularity_prefixes is required for non-canonical labels; "
+                f"provide entries for model.granularities={granularities}"
             ) from error
     elif not isinstance(prefixes, Mapping):
         raise ConfigError("model.granularity_prefixes must be a mapping")
@@ -1097,14 +1110,24 @@ def _apply_run_granularities(config: dict[str, Any]) -> None:
 
     if run.get("model_family") == "standalone" and "granularity" in run:
         configured_granularities = model.get("granularities")
+        granularity_mode = str(model.get("granularity_mode", "canonical")).strip().lower()
+        if granularity_mode == "explicit" and (
+            not isinstance(configured_granularities, list)
+            or not configured_granularities
+        ):
+            raise ConfigError(
+                "model.granularities is required when "
+                "model.granularity_mode=explicit; provide an ordered, non-empty "
+                "label list before selecting run.granularity"
+            )
         if (
             isinstance(configured_granularities, list)
             and configured_granularities
             and run["granularity"] not in configured_granularities
         ):
             raise ConfigError(
-                "standalone run.granularity must match one of the resolved "
-                f"model.granularities: {run['granularity']}"
+                f"run.granularity={run['granularity']!r} is not valid for "
+                f"standalone run; available labels={configured_granularities}"
             )
         _apply_standalone_fixed_width(model, run["granularity"])
         model["granularities"] = [run["granularity"]]
@@ -1558,8 +1581,10 @@ def _resolve_granularity_prefix_map(
     if previous_width != resolved_intermediate_size:
         last_granularity = granularities[-1]
         raise ConfigError(
-            f"model.granularity_prefixes.{last_granularity} must resolve to "
-            f"model.intermediate_size={resolved_intermediate_size}"
+            f"model.granularity_prefixes.{last_granularity} must resolve to full "
+            f"model.intermediate_size={resolved_intermediate_size}; "
+            f"got prefix_width={previous_width} from "
+            f"fraction={resolved[last_granularity]}"
         )
 
     return resolved
@@ -1678,7 +1703,10 @@ def _apply_standalone_fixed_width(model: dict[str, Any], granularity: str) -> No
         raise ConfigError("model.granularity_prefixes must be a mapping")
 
     if granularity not in source_prefixes:
-        raise ConfigError(f"Unknown granularity for standalone run: {granularity}")
+        raise ConfigError(
+            f"run.granularity={granularity!r} is not valid for standalone run; "
+            f"available labels={list(source_prefixes)}"
+        )
 
     source_fraction = float(source_prefixes[granularity])
     intermediate_size = int(source_intermediate_size * source_fraction)

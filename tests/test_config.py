@@ -151,6 +151,105 @@ def test_canonical_granularity_resolution_preserves_legacy_layout():
     validate_run_config(resolved)
 
 
+@pytest.mark.parametrize(
+    "case, overrides, expected_message",
+    [
+        (
+            "non_increasing",
+            {
+                "model.granularity_prefixes": {
+                    "micro": 0.4,
+                    "small": 0.2,
+                    "medium": 0.6,
+                    "large": 0.8,
+                    "full": 1.0,
+                }
+            },
+            "strictly nested widths",
+        ),
+        (
+            "non_positive",
+            {
+                "model.granularity_prefixes": {
+                    "micro": 0.0,
+                    "small": 0.2,
+                    "medium": 0.4,
+                    "large": 0.6,
+                    "full": 1.0,
+                }
+            },
+            "must be positive",
+        ),
+        (
+            "duplicate_labels",
+            {
+                "model.granularities": ["micro", "small", "small", "large", "full"],
+                "model.granularity_prefixes": {
+                    "micro": 0.2,
+                    "small": 0.4,
+                    "large": 0.8,
+                    "full": 1.0,
+                },
+            },
+            "strictly nested widths",
+        ),
+    ],
+)
+def test_explicit_granularity_rejects_malformed_layouts(
+    case,
+    overrides,
+    expected_message,
+):
+    with pytest.raises(ConfigError, match=expected_message):
+        resolve_run_config(
+            "tests/fixtures/explicit_granularity_smoke.yaml",
+            overrides=overrides,
+        )
+
+
+def test_explicit_concat_rejects_misaligned_prefix_widths():
+    with pytest.raises(ConfigError, match="align with CatLlama block widths"):
+        resolve_run_config(
+            "tests/fixtures/explicit_granularity_smoke.yaml",
+            overrides={
+                "model.variant": "concat",
+                "model.granularity_prefixes": {
+                    "micro": 0.25,
+                    "small": 0.375,
+                    "medium": 0.625,
+                    "large": 0.875,
+                    "full": 1.0,
+                },
+            },
+        )
+
+
+def test_explicit_concat_resolves_aligned_prefix_widths():
+    resolved = resolve_run_config(
+        "tests/fixtures/explicit_granularity_smoke.yaml",
+        overrides={
+            "model.variant": "concat",
+            "model.granularity_prefixes": {
+                "micro": 0.125,
+                "small": 0.25,
+                "medium": 0.5,
+                "large": 0.75,
+                "full": 1.0,
+            },
+        },
+    )
+
+    assert resolved["model"]["variant"] == "concat"
+    assert [
+        entry["prefix_width"]
+        for entry in resolved["model"]["ffn_concat_block_metadata"]
+    ] == [64, 128, 256, 384, 512]
+    assert [
+        entry["block_width"]
+        for entry in resolved["model"]["ffn_concat_block_metadata"]
+    ] == [64, 64, 128, 128, 128]
+
+
 def test_cli_overrides_are_parsed_and_applied():
     resolved = resolve_run_config(
         "configs/debug_matrix.yaml",
@@ -612,7 +711,10 @@ def test_debug_standalone_granularity_must_match_model_granularities():
     invalid = copy.deepcopy(resolved)
     invalid["model"]["granularities"] = ["s"]
 
-    with pytest.raises(ConfigError, match="exactly one matching granularity"):
+    with pytest.raises(
+        ConfigError,
+        match=r"run\.granularity='m'.*available labels",
+    ):
         validate_run_config(invalid)
 
 
@@ -942,6 +1044,61 @@ def test_granularity_prefix_validation_rejects_extra_keys():
         resolve_run_config(
             "configs/dmodel256_pilot_comparison.yaml",
             overrides=["model.granularity_prefixes.extra=0.01"],
+        )
+
+
+def test_explicit_granularity_requires_labels_and_prefixes():
+    with pytest.raises(
+        ConfigError,
+        match="model.granularities is required when model.granularity_mode=explicit",
+    ):
+        resolve_run_config(
+            "tests/fixtures/explicit_granularity_smoke.yaml",
+            overrides={"model.granularities": []},
+        )
+
+    with pytest.raises(
+        ConfigError,
+        match="model.granularity_prefixes is required when model.granularity_mode=explicit",
+    ):
+        resolve_run_config(
+            "tests/fixtures/explicit_granularity_smoke.yaml",
+            overrides={"model.granularity_prefixes": None},
+        )
+
+
+def test_granularity_prefix_validation_reports_invalid_final_width():
+    with pytest.raises(
+        ConfigError,
+        match=r"must resolve to full model\.intermediate_size=512; got prefix_width=460",
+    ):
+        resolve_run_config(
+            "tests/fixtures/explicit_granularity_smoke.yaml",
+            overrides={
+                "model.granularity_prefixes": {
+                    "micro": 0.2,
+                    "small": 0.4,
+                    "medium": 0.6,
+                    "large": 0.8,
+                    "full": 0.9,
+                }
+            },
+        )
+
+
+def test_standalone_granularity_error_lists_resolved_labels():
+    with pytest.raises(
+        ConfigError,
+        match=r"run\.granularity='bogus'.*available labels",
+    ):
+        resolve_run_config(
+            "configs/dmodel256_pilot_comparison.yaml",
+            overrides=[
+                "run.run_id=dmodel256-standalone-bogus-001",
+                "run.model_family=standalone",
+                "run.sampling_mode=standalone",
+                "run.granularity=bogus",
+            ],
         )
 
 
