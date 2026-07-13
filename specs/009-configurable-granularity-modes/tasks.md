@@ -55,14 +55,14 @@
 
 ### Verification for User Story 2
 
-- [ ] T011 [P] [US2] Add canonical compatibility regression coverage in `tests/test_config.py` for unchanged `s/m/l/xl` resolution
-- [ ] T012 [P] [US2] Add canonical artifact assertions in `tests/test_dmodel256_pilot.py` to verify saved resolved configs record canonical mode, the canonical label order, and derived widths
+- [X] T011 [P] [US2] Add canonical compatibility regression coverage in `tests/test_config.py` for unchanged `s/m/l/xl` resolution
+- [X] T012 [P] [US2] Add canonical artifact assertions in `tests/test_dmodel256_pilot.py` to verify saved resolved configs record canonical mode, the canonical label order, and derived widths
 
 ### Implementation for User Story 2
 
-- [ ] T013 [P] [US2] Update `scripts/run_dmodel256_pilot.sh` to remove hard-coded standalone `s/m/l/xl` handling and derive allowed baselines from the resolved config
-- [ ] T014 [P] [US2] Update `scripts/slurm_dmodel256_pilot.sh` and `scripts/queue_dmodel256_pilot.py` to mirror the resolved-granularity handling used by `scripts/run_dmodel256_pilot.sh`
-- [ ] T015 [US2] Refresh `configs/dmodel256_pilot_comparison.yaml` comments and `scripts/run_dmodel256_pilot.sh` usage text so operators see the resolved-granularity contract
+- [X] T013 [P] [US2] Update `scripts/run_dmodel256_pilot.sh` to remove hard-coded standalone `s/m/l/xl` handling and derive allowed baselines from the resolved config
+- [X] T014 [P] [US2] Update `scripts/slurm_dmodel256_pilot.sh` and `scripts/queue_dmodel256_pilot.py` to mirror the resolved-granularity handling used by `scripts/run_dmodel256_pilot.sh`
+- [X] T015 [US2] Refresh `configs/dmodel256_pilot_comparison.yaml` comments and `scripts/run_dmodel256_pilot.sh` usage text so operators see the resolved-granularity contract
 
 **Checkpoint**: Canonical runs and pilot launchers should still behave exactly as before.
 

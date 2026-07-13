@@ -28,7 +28,7 @@ Options:
   --run-id RUN_ID             Run id from configs/dmodel256_pilot_comparison.yaml.
   --config PATH               Pilot config path.
   --mode MODE                 nested-random, nested-all, standalone, or comparison.
-  --granularity NAME          Standalone granularity: s, m, l, or xl.
+  --granularity NAME          Standalone granularity from the resolved config.
   --python-bin PATH           Python executable to use inside the job.
   -h, --help                  Show this message.
 
@@ -277,6 +277,71 @@ mode_run_id() {
   esac
 }
 
+resolved_granularities() {
+  local resolver_bin="${PYTHON_CONFIG_BIN:-${PYTHON:-python}}"
+  local -a resolver_overrides=()
+  local -a resolver_command
+  local index
+
+  for ((index = 0; index < ${#FORWARDED_ARGS[@]}; index++)); do
+    if [[ "${FORWARDED_ARGS[$index]}" == "--override" ]]; then
+      if [[ $((index + 1)) -ge ${#FORWARDED_ARGS[@]} ]]; then
+        echo "Missing value for --override" >&2
+        exit 2
+      fi
+      resolver_overrides+=("${FORWARDED_ARGS[$((index + 1))]}")
+      index=$((index + 1))
+    fi
+  done
+
+  read -r -a resolver_command <<< "$resolver_bin"
+  local resolved_output=""
+  if command -v "${resolver_command[0]}" >/dev/null 2>&1 \
+    && resolved_output=$("${resolver_command[@]}" - "${CONFIG_PATH:-configs/dmodel256_pilot_comparison.yaml}" "${resolver_overrides[@]}" <<'PY'
+import sys
+
+from src.utils.config import resolve_run_config
+
+
+config_path = sys.argv[1]
+overrides = sys.argv[2:]
+resolved = resolve_run_config(config_path, overrides=overrides)
+for granularity in resolved["model"]["granularities"]:
+    print(granularity)
+PY
+  ); then
+    if [[ -n "$resolved_output" ]]; then
+      printf '%s\n' "$resolved_output"
+      return 0
+    fi
+  fi
+
+  awk '
+    /^[[:space:]]+granularities:[[:space:]]*\[/ {
+      labels = $0
+      sub(/.*\[/, "", labels)
+      sub(/\].*/, "", labels)
+      gsub(/,/, "", labels)
+      count = split(labels, values, /[[:space:]]+/)
+      for (position = 1; position <= count; position++) {
+        if (values[position] != "") print values[position]
+      }
+      exit
+    }
+  ' "${CONFIG_PATH:-configs/dmodel256_pilot_comparison.yaml}"
+}
+
+granularity_is_resolved() {
+  local requested="$1"
+  local resolved
+  while IFS= read -r resolved; do
+    if [[ "$resolved" == "$requested" ]]; then
+      return 0
+    fi
+  done < <(resolved_granularities)
+  return 1
+}
+
 DISPLAY_RUN_ID="$RUN_ID"
 if [[ "$RUN_ID_EXPLICIT" != "true" ]]; then
   case "$MODE_ARG" in
@@ -319,9 +384,8 @@ append_mode_overrides() {
       TRAIN_ARGS+=(--override "run.sampling_mode=nested-all")
       ;;
     standalone)
-      if [[ "$granularity" != "s" && "$granularity" != "m" \
-        && "$granularity" != "l" && "$granularity" != "xl" ]]; then
-        echo "Standalone mode requires --granularity s, m, l, or xl" >&2
+      if [[ -z "$granularity" ]] || ! granularity_is_resolved "$granularity"; then
+        echo "Standalone mode requires --granularity from the resolved model.granularities" >&2
         exit 2
       fi
       TRAIN_ARGS+=(--override "run.model_family=standalone")

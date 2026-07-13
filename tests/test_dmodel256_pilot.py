@@ -5,7 +5,11 @@ import re
 import subprocess
 from pathlib import Path
 
-from src.utils.config import resolve_run_config, validate_run_config
+from src.utils.config import (
+    resolve_run_config,
+    validate_run_config,
+    write_resolved_config,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -148,6 +152,33 @@ def test_dmodel256_pilot_resolves_current_reference_config(tmp_path):
     assert config["training"]["token_budget"] < 10_000_000_000
 
     validate_run_config(config)
+
+
+def test_dmodel256_pilot_saved_config_records_canonical_granularity_artifacts(tmp_path):
+    output_root = tmp_path / "pilot-output"
+    resolved = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        overrides=[f"run.output_root={output_root}"],
+    )
+
+    config_path = write_resolved_config(resolved)
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    model = saved["model"]
+
+    assert model["granularity_mode"] == "canonical"
+    assert model["granularities"] == ["s", "m", "l", "xl"]
+    assert model["granularity_prefixes"] == {
+        "s": 0.125,
+        "m": 0.25,
+        "l": 0.5,
+        "xl": 1.0,
+    }
+    assert [entry["prefix_width"] for entry in model["ffn_prefix_metadata"]] == [
+        128,
+        256,
+        512,
+        1024,
+    ]
 
 
 def test_dmodel256_pilot_standalone_runs_share_family_folder_key(tmp_path):

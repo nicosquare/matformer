@@ -160,7 +160,13 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def build_experiment_specs() -> list[ExperimentSpec]:
+def build_experiment_specs(
+    granularities: Iterable[str] | None = None,
+) -> list[ExperimentSpec]:
+    if granularities is None:
+        resolved = resolve_run_config(DEFAULT_CONFIG_PATH)
+        granularities = resolved["model"]["granularities"]
+
     specs: list[ExperimentSpec] = []
 
     correction_modes_by_variant = {
@@ -210,7 +216,7 @@ def build_experiment_specs() -> list[ExperimentSpec]:
                 )
             )
 
-    for granularity in ("s", "m", "l", "xl"):
+    for granularity in granularities:
         specs.append(
             ExperimentSpec(
                 label=f"standalone-{granularity}",
@@ -450,6 +456,16 @@ def _build_resolve_overrides(
     return overrides
 
 
+def _build_base_resolve_overrides(
+    output_root: Path,
+    settings: BatchSettings,
+) -> list[str]:
+    overrides = [_override("run.output_root", str(output_root))]
+    overrides.extend(_build_batch_overrides(settings))
+    overrides.extend(settings.passthrough_overrides)
+    return overrides
+
+
 def _run_summary_status(run_summary_path: Path) -> str | None:
     if not run_summary_path.is_file():
         return None
@@ -472,8 +488,17 @@ def build_queued_runs(
 ) -> list[QueuedRun]:
     batch_slug = _build_batch_slug(settings)
     queued_runs: list[QueuedRun] = []
+    base_resolved = resolve_run_config(
+        config_path,
+        overrides=_build_base_resolve_overrides(output_root, settings),
+    )
+    resolved_granularities = base_resolved["model"].get("granularities")
+    if not isinstance(resolved_granularities, list) or not resolved_granularities:
+        raise ConfigError(
+            "Resolved pilot config must contain a non-empty model.granularities list"
+        )
 
-    for spec in build_experiment_specs():
+    for spec in build_experiment_specs(resolved_granularities):
         run_id = _build_run_id(spec, batch_slug)
         resolve_overrides = _build_resolve_overrides(
             output_root,

@@ -129,6 +129,28 @@ def test_resolve_debug_matrix_expands_nested_and_standalone_runs():
         validate_run_config(resolved)
 
 
+def test_canonical_granularity_resolution_preserves_legacy_layout():
+    resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
+    model = resolved["model"]
+
+    assert model["granularity_mode"] == "canonical"
+    assert model["granularities"] == ["s", "m", "l", "xl"]
+    assert model["granularity_prefixes"] == {
+        "s": 0.125,
+        "m": 0.25,
+        "l": 0.5,
+        "xl": 1.0,
+    }
+    assert [entry["prefix_width"] for entry in model["ffn_prefix_metadata"]] == [
+        128,
+        256,
+        512,
+        1024,
+    ]
+
+    validate_run_config(resolved)
+
+
 def test_cli_overrides_are_parsed_and_applied():
     resolved = resolve_run_config(
         "configs/debug_matrix.yaml",

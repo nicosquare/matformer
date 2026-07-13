@@ -1,5 +1,12 @@
 # d_model=256 MatFormer-Llama/SwiGLU pilot comparison using a reduced
 # training-token budget.
+#
+# Granularity contract:
+# - Omitting model.granularity_mode preserves the canonical s/m/l/xl layout.
+# - Set model.granularity_mode=explicit with ordered model.granularities and
+#   model.granularity_prefixes to define a custom pilot layout.
+# - Pilot launchers resolve model.granularities before creating standalone rows;
+#   they do not maintain a separate hard-coded label list.
 run:
   run_id: dmodel256-pilot-comparison-001
   phase_id: dmodel256_pilot_comparison
