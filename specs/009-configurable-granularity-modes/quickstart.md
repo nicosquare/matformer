@@ -2,7 +2,8 @@
 
 ## Validate Canonical Compatibility
 
-Run the config-resolution tests that cover the existing canonical `s/m/l/xl` path:
+Run the config-resolution tests that cover the canonical path and explicit
+custom layouts:
 
 ```bash
 pytest tests/test_config.py -k granularity
@@ -37,6 +38,17 @@ Standalone validation should reject any granularity not in the resolved list. Fo
 
 ```bash
 bash scripts/run_dmodel256_pilot.sh --mode standalone --granularity s --config configs/dmodel256_pilot_comparison.yaml
+```
+
+The same entrypoint accepts an explicit layout and validates the requested
+label against that resolved list:
+
+```bash
+bash scripts/run_dmodel256_pilot.sh \
+  --mode standalone \
+  --granularity medium \
+  --config tests/fixtures/explicit_granularity_smoke.yaml \
+  -- --override training.max_steps=1 --override outputs.save_checkpoints=false
 ```
 
 ## Inspect Outputs

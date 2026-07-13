@@ -220,13 +220,22 @@ class CatLlamaMLP(LlamaMLP):
             getattr(config, "granularities", MATFORMER_GRANULARITY_ORDER)
         )
         config_prefixes = getattr(config, "granularity_prefixes", None)
+        metadata_granularities = config_granularities
+        if (
+            config_prefixes is None
+            and set(config_granularities).issubset(MATFORMER_GRANULARITY_ORDER)
+            and config_granularities != MATFORMER_GRANULARITY_ORDER
+        ):
+            # Canonical concat blocks retain the full S/M/L/XL physical
+            # layout even when only a subset is sampled for the run.
+            metadata_granularities = MATFORMER_GRANULARITY_ORDER
         self.ffn_prefix_metadata = (
             [dict(entry) for entry in getattr(config, "ffn_prefix_metadata", [])]
             if getattr(config, "ffn_prefix_metadata", None)
             else get_ffn_prefix_metadata(
                 self.intermediate_size,
                 granularity_prefixes=config_prefixes,
-                granularities=config_granularities,
+                granularities=metadata_granularities,
             )
         )
         self.granularity_prefixes = {

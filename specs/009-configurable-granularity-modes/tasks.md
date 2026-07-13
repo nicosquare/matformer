@@ -92,8 +92,8 @@
 
 **Purpose**: Final cleanup and validation across the whole feature.
 
-- [ ] T020 [P] Update `specs/009-configurable-granularity-modes/quickstart.md` commands or comments if validation paths change, and align any lingering references to canonical-only label assumptions in `scripts/` help text
-- [ ] T021 [P] Run the targeted checks from `specs/009-configurable-granularity-modes/quickstart.md` and fix any remaining regressions in config resolution, scripts, or tests
+- [X] T020 [P] Update `specs/009-configurable-granularity-modes/quickstart.md` commands or comments if validation paths change, and align any lingering references to canonical-only label assumptions in `scripts/` help text
+- [X] T021 [P] Run the targeted checks from `specs/009-configurable-granularity-modes/quickstart.md` and fix any remaining regressions in config resolution, scripts, or tests
 
 ---
 

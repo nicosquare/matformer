@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Phase 4 runner: one nested debug run plus matched S/M/L/XL standalone baselines.
+# Phase 4 runner: one nested debug run plus matched configured standalone baselines.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
@@ -24,7 +24,7 @@ fi
 if [[ ${#BASELINE_ARGS[@]} -gt 0 ]]; then
   printf 'Debug matrix target: nested MatFormer plus selected standalone baselines\n'
 else
-  printf 'Debug matrix target: nested MatFormer plus standalone S/M/L/XL baselines\n'
+  printf 'Debug matrix target: nested MatFormer plus configured standalone baselines\n'
 fi
 printf 'Config: %s\n' "$CONFIG_PATH"
 printf 'Nested run id: %s\n' "$NESTED_RUN_ID"

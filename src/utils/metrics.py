@@ -1116,6 +1116,10 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "correction_mode": None,
         "membership_correction": None,
         "granularity_pattern_summary": None,
+        "granularity_mode": None,
+        "granularities": None,
+        "granularity_prefixes": None,
+        "granularity_prefix_widths": None,
         "correction_context": None,
         "sampler_strategy": None,
         "adaptive_sampler_strategy": None,
@@ -1170,6 +1174,9 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "adaptive_sampler_previous_pattern",
         "adaptive_reward_summary",
         "adaptive_correction_penalty_summary",
+        "granularities",
+        "granularity_prefixes",
+        "granularity_prefix_widths",
     ):
         if normalized_row.get(key) is not None:
             normalized_row[key] = json_artifact_value(normalized_row[key])

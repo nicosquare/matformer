@@ -21,7 +21,7 @@ Usage:
 Options:
   --repo-root PATH            Repository root; defaults to the sbatch submit directory.
   --output-root PATH          Root for run artifacts; forwarded as OUTPUT_ROOT.
-  --baseline-granularity G    Standalone baseline granularity: s, m, l, or xl.
+  --baseline-granularity G    Standalone baseline granularity from the configured matrix.
   --baseline-granularities GS  Space or comma separated baseline granularities.
   --nested-run-id RUN_ID      Nested run id from configs/debug_matrix.yaml.
   --config PATH               Matrix config path.
@@ -154,6 +154,6 @@ mkdir -p "$OUTPUT_ROOT" logs
 printf 'Slurm job id: %s\n' "${SLURM_JOB_ID:-local-shell}"
 printf 'Python: %s\n' "$PYTHON_BIN"
 printf 'Output root: %s\n' "$OUTPUT_ROOT"
-printf 'Baseline granularities: %s\n' "${BASELINE_GRANULARITIES:-${BASELINE_GRANULARITY:-s m l xl}}"
+printf 'Baseline granularities: %s\n' "${BASELINE_GRANULARITIES:-${BASELINE_GRANULARITY:-configured matrix defaults}}"
 
 exec bash scripts/run_debug_matrix.sh "${FORWARDED_ARGS[@]}"

@@ -249,10 +249,13 @@ def get_block_membership_counts(
         raise ValueError("granularities must be a non-empty sequence")
 
     ordered = validate_granularity_sequence(granularities)
-    block_counts = [
-        granularity_block_count(granularity, granularities=ordered)
-        for granularity in ordered
-    ]
+    if set(ordered).issubset(MATFORMER_GRANULARITY_ORDER):
+        # Preserve the canonical block geometry when callers provide a
+        # canonical subset, while explicit custom labels use their resolved
+        # sequence order as the only geometry available to this helper.
+        block_counts = [granularity_block_count(granularity) for granularity in ordered]
+    else:
+        block_counts = [index + 1 for index, _ in enumerate(ordered)]
     max_blocks = max(block_counts)
     if total_blocks is None:
         total_blocks = max_blocks
@@ -312,10 +315,17 @@ def get_concat_block_membership_counts_from_metadata(
     if not granularities:
         raise ValueError("granularities must be a non-empty sequence")
 
+    use_canonical_positions = set(granularities).issubset(
+        MATFORMER_GRANULARITY_ORDER
+    )
     prefix_widths = []
     for granularity in granularities:
         try:
-            block_index = granularities.index(granularity)
+            block_index = (
+                MATFORMER_GRANULARITY_ORDER.index(granularity)
+                if use_canonical_positions
+                else granularities.index(granularity)
+            )
         except ValueError as error:
             raise ValueError(
                 f"Unknown configured granularity: {granularity}"
