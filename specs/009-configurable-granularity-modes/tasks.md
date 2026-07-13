@@ -40,8 +40,8 @@
 
 ### Implementation for User Story 1
 
-- [ ] T009 [US1] Extend `src/utils/config.py` to accept `model.granularity_mode=explicit`, preserve the provided label order, and write resolved `model.granularities` and `model.granularity_prefixes`
-- [ ] T010 [US1] Update `src/training/steps.py` and `src/training/run.py` so training, validation, checkpointing, reporting, and adaptive sampling read the resolved explicit label list instead of hard-coded canonical labels
+- [X] T009 [US1] Extend `src/utils/config.py` to accept `model.granularity_mode=explicit`, preserve the provided label order, and write resolved `model.granularities` and `model.granularity_prefixes`
+- [X] T010 [US1] Update `src/training/steps.py` and `src/training/run.py` so training, validation, checkpointing, reporting, and adaptive sampling read the resolved explicit label list instead of hard-coded canonical labels
 
 **Checkpoint**: Explicit custom granularities should now be runnable and visible in resolved artifacts.
 
