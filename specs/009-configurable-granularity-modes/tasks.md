@@ -9,8 +9,8 @@
 
 **Purpose**: Create the shared fixtures needed to validate the new granularity contract.
 
-- [ ] T001 [P] Create an explicit-mode smoke config fixture at `tests/fixtures/explicit_granularity_smoke.yaml`
-- [ ] T002 [P] Create a malformed-layout fixture at `tests/fixtures/explicit_granularity_invalid.yaml` for non-increasing and concat-misaligned layouts
+- [X] T001 [P] Create an explicit-mode smoke config fixture at `tests/fixtures/explicit_granularity_smoke.yaml`
+- [X] T002 [P] Create a malformed-layout fixture at `tests/fixtures/explicit_granularity_invalid.yaml` for non-increasing and concat-misaligned layouts
 
 ---
 
