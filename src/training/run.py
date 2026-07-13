@@ -355,6 +355,7 @@ def run_training(
             "steps_completed": training_outcome["steps_completed"],
             "stop_reason": training_outcome["stop_reason"],
             "content_tokens_seen": training_outcome["content_tokens_seen"],
+            **training_modeling.build_granularity_artifact_fields(config),
             "model_variant": config["model"]["variant"],
             "granularities": config["model"]["granularities"],
             "granularity_sampling": training.get("granularity_sampling", "all"),

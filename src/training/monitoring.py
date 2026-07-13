@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from src.training.distributed import should_write_shared_artifact
+from src.models.granularity import resolved_granularity_artifact_fields
 from src.utils.heartbeats import HeartbeatWriter, heartbeat_stage
 from src.utils.metrics import build_monitoring_summary_fields
 from src.utils.monitoring import group_loss_rows_by_series
@@ -137,7 +138,7 @@ class WandbMonitoringSession(NoopMonitoringSession):
             "monitoring_tags": list(monitoring.get("tags", [])),
             "monitoring_notes": monitoring.get("notes"),
             "monitoring_mode": monitoring.get("mode"),
-            "granularities": list(config["model"]["granularities"]),
+            **resolved_granularity_artifact_fields(config["model"]),
             "granularity_sampling": training.get("granularity_sampling", "all"),
             "continuation_enabled": bool(run.get("continuation", {}).get("enabled", False)),
             "continuation_status": run.get("continuation", {}).get("status", "fresh"),

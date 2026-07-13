@@ -50,6 +50,7 @@ def build_global_granularity_pattern(
         pattern_type="single",
         selected_granularities=selected_granularities,
         layer_count=block_count,
+        available_granularities=selected_granularities,
         repeatable_source=(
             str(run.get("run_id") or ""),
             "model.granularity_sampling_mode=global",
@@ -90,6 +91,7 @@ def build_per_block_granularity_pattern(
         pattern_type="per_block",
         selected_granularities=selected_granularities,
         layer_count=block_count,
+        available_granularities=model.get("granularities", selected_granularities),
         repeatable_source=(
             str(run.get("run_id") or ""),
             f"model.granularity_sampling_mode={sampling_mode or 'per_block'}",
@@ -180,6 +182,7 @@ def prime_standalone_granularity_state(
     model,
     granularity: str,
     run_id: str | None = None,
+    available_granularities: Sequence[str] | None = None,
 ) -> GranularityPattern:
     """Record the fixed standalone granularity on a model for provenance."""
 
@@ -187,6 +190,7 @@ def prime_standalone_granularity_state(
         pattern_type="single",
         selected_granularities=(granularity,),
         layer_count=1,
+        available_granularities=available_granularities,
         repeatable_source=(
             str(run_id or ""),
             "run.sampling_mode=standalone",

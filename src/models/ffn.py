@@ -254,7 +254,7 @@ class CatLlamaMLP(LlamaMLP):
             trained_granularities or config_granularities
         )
         max_trained_block_index = max(
-            MATFORMER_GRANULARITY_ORDER.index(granularity)
+            block_granularities.index(granularity)
             for granularity in self.trained_granularities
         )
         if max_trained_block_index >= len(self.ffn_concat_block_metadata):
@@ -377,7 +377,13 @@ class CatLlamaMLP(LlamaMLP):
 
     def configure_subnetwork(self, flag):
         self.current_granularity = flag
-        self.current_subset_blocks = granularity_concat_block_count(flag)
+        configured_granularities = tuple(
+            entry["name"] for entry in self.ffn_prefix_metadata
+        )
+        self.current_subset_blocks = granularity_concat_block_count(
+            flag,
+            granularities=configured_granularities,
+        )
         self.current_subset_hd = granularity_prefix_width(
             self.intermediate_size,
             flag,
@@ -385,7 +391,13 @@ class CatLlamaMLP(LlamaMLP):
         )
 
     def prefix_parameter_count(self, flag, trainable_only=False):
-        block_count = granularity_concat_block_count(flag)
+        configured_granularities = tuple(
+            entry["name"] for entry in self.ffn_prefix_metadata
+        )
+        block_count = granularity_concat_block_count(
+            flag,
+            granularities=configured_granularities,
+        )
         parameter_count = 0
 
         for block_index in range(block_count):

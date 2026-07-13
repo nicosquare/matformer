@@ -36,7 +36,10 @@ from src.models.correction import summarize_correction_context_from_config
 from src.models.ffn import (
     get_ffn_prefix_metadata,
 )
-from src.models.granularity import summarize_granularity_pattern_from_config
+from src.models.granularity import (
+    resolved_granularity_artifact_fields,
+    summarize_granularity_pattern_from_config,
+)
 from src.training.checkpointing import (
     _prepare_adaptive_sampler_runtime_state,
     _update_adaptive_sampler_runtime_state,
@@ -288,7 +291,7 @@ def train_for_steps(
 ) -> list[dict[str, Any]]:
     training = config["training"]
     run = config["run"]
-    granularities = config["model"]["granularities"]
+    granularities = list(config["model"]["granularities"])
     model_sampling_mode = str(config["model"].get("granularity_sampling_mode", "global"))
     run_sampling_mode = str(run.get("sampling_mode", "nested-random"))
     target_model = model.module if hasattr(model, "module") else model
@@ -703,6 +706,7 @@ def select_training_granularities(
     granularities: list[str],
     device: torch.device,
 ) -> list[str]:
+    granularities = _resolved_granularities(config, granularities)
     if str(config["run"].get("sampling_mode", "nested-random")) == "nested-all":
         return list(granularities)
 
@@ -723,6 +727,7 @@ def select_training_layer_granularities(
     granularities: list[str],
     device: torch.device,
 ) -> list[str]:
+    granularities = _resolved_granularities(config, granularities)
     layer_count = int(config["model"]["num_layers"])
     if layer_count <= 0:
         raise ValueError("model.num_layers must be positive")
@@ -736,6 +741,20 @@ def select_training_layer_granularities(
         ]
         for _ in range(layer_count)
     ]
+
+
+def _resolved_granularities(
+    config: Mapping[str, Any],
+    fallback: list[str],
+) -> list[str]:
+    """Return the ordered granularity list resolved by configuration."""
+
+    model = config.get("model", {})
+    configured = model.get("granularities") if isinstance(model, Mapping) else None
+    resolved = list(configured or fallback)
+    if not resolved:
+        raise ConfigError("model.granularities must be a non-empty resolved list")
+    return resolved
 
 
 def select_random_granularity_index(
@@ -1029,6 +1048,7 @@ def build_training_metric_row(
         ),
         "granularity_sampling_mode": model.get("granularity_sampling_mode"),
         "granularity": granularity,
+        **resolved_granularity_artifact_fields(model),
         "granularity_pattern_summary": json_artifact_value(
             granularity_pattern_summary
             if granularity_pattern_summary is not None

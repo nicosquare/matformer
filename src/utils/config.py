@@ -499,6 +499,7 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         [
             "base_model_name",
             "variant",
+            "granularity_mode",
             "correction_mode",
             "membership_correction",
             "granularity_sampling_mode",
@@ -632,13 +633,21 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
     if not isinstance(granularities, list) or not granularities:
         raise ConfigError("model.granularities must be a non-empty list")
 
-    unknown_granularities = [
-        granularity
+    if any(
+        not isinstance(granularity, str) or not granularity.strip()
         for granularity in granularities
-        if granularity not in VALID_GRANULARITIES
-    ]
-    if unknown_granularities:
-        raise ConfigError(f"Unknown granularities: {unknown_granularities}")
+    ):
+        raise ConfigError(
+            "model.granularities must contain only non-empty string labels"
+        )
+    if len(set(granularities)) != len(granularities):
+        raise ConfigError("model.granularities must contain unique labels")
+
+    granularity_mode = model.get("granularity_mode")
+    if granularity_mode not in {"canonical", "explicit"}:
+        raise ConfigError(
+            "model.granularity_mode must be one of ['canonical', 'explicit']"
+        )
 
     if model["variant"] not in VALID_MODEL_VARIANTS:
         raise ConfigError(
@@ -795,8 +804,13 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
 
     if model_topology == "standalone":
         granularity = run.get("granularity")
-        if granularity not in VALID_GRANULARITIES:
+        if not isinstance(granularity, str) or not granularity.strip():
             raise ConfigError("standalone runs require run.granularity")
+        if granularity not in granularities:
+            raise ConfigError(
+                "standalone run.granularity must match one of the resolved "
+                f"model.granularities: {granularity}"
+            )
         if granularities != [granularity]:
             raise ConfigError(
                 "standalone runs must resolve to exactly one matching granularity"
@@ -922,6 +936,15 @@ def _is_concat_model_path(config: Mapping[str, Any]) -> bool:
 def _resolve_model_dimension_and_granularity_metadata(config: dict[str, Any]) -> None:
     model = config.setdefault("model", {})
     run = config.get("run", {})
+    granularity_mode = model.get("granularity_mode", "canonical")
+    if not isinstance(granularity_mode, str):
+        raise ConfigError("model.granularity_mode must be a string")
+    granularity_mode = granularity_mode.strip().lower()
+    if granularity_mode not in {"canonical", "explicit"}:
+        raise ConfigError(
+            "model.granularity_mode must be one of ['canonical', 'explicit']"
+        )
+    model["granularity_mode"] = granularity_mode
 
     hidden_size = model.get("hidden_size")
     d_model = model.get("d_model")
@@ -945,13 +968,18 @@ def _resolve_model_dimension_and_granularity_metadata(config: dict[str, Any]) ->
 
     prefixes = model.get("granularity_prefixes")
     if prefixes is None:
-        prefixes = {
-            granularity: (
-                CANONICAL_GRANULARITY_PREFIX_FRACTIONS[granularity][0]
-                / CANONICAL_GRANULARITY_PREFIX_FRACTIONS[granularity][1]
-            )
-            for granularity in granularities
-        }
+        try:
+            prefixes = {
+                granularity: (
+                    CANONICAL_GRANULARITY_PREFIX_FRACTIONS[granularity][0]
+                    / CANONICAL_GRANULARITY_PREFIX_FRACTIONS[granularity][1]
+                )
+                for granularity in granularities
+            }
+        except KeyError as error:
+            raise ConfigError(
+                "model.granularity_prefixes is required for custom labels"
+            ) from error
     elif not isinstance(prefixes, Mapping):
         raise ConfigError("model.granularity_prefixes must be a mapping")
 
@@ -1068,6 +1096,16 @@ def _apply_run_granularities(config: dict[str, Any]) -> None:
     model = config.setdefault("model", {})
 
     if run.get("model_family") == "standalone" and "granularity" in run:
+        configured_granularities = model.get("granularities")
+        if (
+            isinstance(configured_granularities, list)
+            and configured_granularities
+            and run["granularity"] not in configured_granularities
+        ):
+            raise ConfigError(
+                "standalone run.granularity must match one of the resolved "
+                f"model.granularities: {run['granularity']}"
+            )
         _apply_standalone_fixed_width(model, run["granularity"])
         model["granularities"] = [run["granularity"]]
     elif "granularities" in run:

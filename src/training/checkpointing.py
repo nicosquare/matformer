@@ -25,6 +25,7 @@ from src.models.adaptive_sampler import (
     summarize_adaptive_sampler_state,
     update_adaptive_sampler_state,
 )
+from src.models.granularity import resolved_granularity_artifact_fields
 from src.training.distributed import (
     broadcast_object,
     should_write_shared_artifact,
@@ -316,6 +317,7 @@ def save_model_checkpoint(
             "checkpoint_selection_step": checkpoint_fields[
                 "checkpoint_selection_step"
             ],
+            **resolved_granularity_artifact_fields(config.get("model", {})),
             "step": run_state.get("step", run_state.get("last_completed_step", 0)),
             "epoch": run_state.get("epoch", 0),
             "batch_index": run_state.get("batch_index", 0),

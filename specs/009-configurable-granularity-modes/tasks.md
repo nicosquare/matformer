@@ -20,10 +20,10 @@
 
 **Checkpoint**: No user-story work should start until the resolved granularity plumbing is in place.
 
-- [ ] T003 Implement sequence-based granularity metadata helpers in `src/models/granularity.py` so prefix widths can be derived from any ordered label list
-- [ ] T004 [P] Update `src/training/modeling.py` and `src/training/monitoring.py` to use `model.granularities` and `model.granularity_prefixes` when emitting artifacts and metrics
-- [ ] T005 [P] Update `src/training/checkpointing.py` and `src/training/run.py` to persist the resolved granularity mode, ordered labels, prefix fractions, and derived prefix widths in checkpoint and run-summary artifacts
-- [ ] T006 Update `src/training/steps.py` and `src/utils/config.py` to thread resolved granularity sequences through validation, adaptive sampling, and standalone granularity selection
+- [X] T003 Implement sequence-based granularity metadata helpers in `src/models/granularity.py` so prefix widths can be derived from any ordered label list
+- [X] T004 [P] Update `src/training/modeling.py` and `src/training/monitoring.py` to use `model.granularities` and `model.granularity_prefixes` when emitting artifacts and metrics
+- [X] T005 [P] Update `src/training/checkpointing.py` and `src/training/run.py` to persist the resolved granularity mode, ordered labels, prefix fractions, and derived prefix widths in checkpoint and run-summary artifacts
+- [X] T006 Update `src/training/steps.py` and `src/utils/config.py` to thread resolved granularity sequences through validation, adaptive sampling, and standalone granularity selection
 
 ---
 

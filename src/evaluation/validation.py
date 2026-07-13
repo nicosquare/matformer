@@ -10,6 +10,7 @@ import torch
 import torch.distributed as dist
 
 from src.utils.config import resolve_sampling_mode_from_config_sections
+from src.models.granularity import resolved_granularity_artifact_fields
 from src.utils.metrics import json_artifact_value
 
 
@@ -163,6 +164,7 @@ def validation_results_to_metric_rows(
                 "granularity_sampling_mode"
             ),
             "granularity": result["granularity"],
+            **resolved_granularity_artifact_fields(model),
             "granularity_pattern_summary": json_artifact_value(
                 granularity_pattern_summary
                 if granularity_pattern_summary is not None

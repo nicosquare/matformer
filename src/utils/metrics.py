@@ -13,7 +13,10 @@ from src.utils.config import (
 )
 from src.models.adaptive_sampler import build_adaptive_sampler_artifact_fields
 from src.models.correction import summarize_correction_context_from_config
-from src.models.granularity import summarize_granularity_pattern_from_config
+from src.models.granularity import (
+    resolved_granularity_artifact_fields,
+    summarize_granularity_pattern_from_config,
+)
 from src.utils.monitoring import (
     DEFAULT_MONITORING_BACKEND,
     build_monitoring_series_metadata,
@@ -35,6 +38,10 @@ METRICS_COLUMNS = [
     "membership_correction",
     "granularity",
     "granularity_pattern_summary",
+    "granularity_mode",
+    "granularities",
+    "granularity_prefixes",
+    "granularity_prefix_widths",
     "correction_context",
     "sampler_strategy",
     "adaptive_sampler_strategy",
@@ -148,6 +155,10 @@ RUN_SUMMARY_FIELDS = [
     "granularity_sampling_mode",
     "granularity_pattern_provenance",
     "granularity_pattern_summary",
+    "granularity_mode",
+    "granularities",
+    "granularity_prefixes",
+    "granularity_prefix_widths",
     "correction_context",
     "adaptive_sampler_strategy",
     "adaptive_sampler_exploration_scale",
@@ -350,6 +361,7 @@ def build_run_summary(
         "granularity_sampling_mode": model.get("granularity_sampling_mode"),
         "granularity_pattern_provenance": _granularity_pattern_provenance(config),
         "granularity_pattern_summary": _granularity_pattern_summary(config),
+        **resolved_granularity_artifact_fields(model),
         "correction_context": _correction_context_summary(config),
         **build_adaptive_sampler_artifact_fields(config),
         "completion_label": run["completion_label"],
@@ -553,6 +565,7 @@ def build_checkpoint_summary_fields(
         "checkpoint_metric_value": None,
         "checkpoint_selection_step": None,
         "checkpoint_unavailable_reason": None,
+        **resolved_granularity_artifact_fields(config.get("model", {})),
     }
 
     if not save_checkpoints:
