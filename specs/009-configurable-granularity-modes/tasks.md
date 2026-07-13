@@ -35,8 +35,8 @@
 
 ### Verification for User Story 1
 
-- [ ] T007 [P] [US1] Add explicit-mode resolution assertions in `tests/test_config.py` for a five-label `0.2/0.4/0.6/0.8/1.0` layout
-- [ ] T008 [P] [US1] Add a five-granularity smoke run in `tests/test_training_smoke.py` using `tests/fixtures/explicit_granularity_smoke.yaml`
+- [X] T007 [P] [US1] Add explicit-mode resolution assertions in `tests/test_config.py` for a five-label `0.2/0.4/0.6/0.8/1.0` layout
+- [X] T008 [P] [US1] Add a five-granularity smoke run in `tests/test_training_smoke.py` using `tests/fixtures/explicit_granularity_smoke.yaml`
 
 ### Implementation for User Story 1
 

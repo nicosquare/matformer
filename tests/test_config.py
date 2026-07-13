@@ -881,6 +881,29 @@ def test_dmodel256_pilot_config_preserves_clarified_terms_and_shape_fields():
     validate_run_config(resolved)
 
 
+def test_explicit_granularity_fixture_resolves_ordered_five_level_layout():
+    resolved = resolve_run_config("tests/fixtures/explicit_granularity_smoke.yaml")
+
+    model = resolved["model"]
+    assert model["granularity_mode"] == "explicit"
+    assert model["granularities"] == ["micro", "small", "medium", "large", "full"]
+    assert model["granularity_prefixes"] == {
+        "micro": 0.2,
+        "small": 0.4,
+        "medium": 0.6,
+        "large": 0.8,
+        "full": 1.0,
+    }
+    assert [entry["prefix_width"] for entry in model["ffn_prefix_metadata"]] == [
+        102,
+        204,
+        307,
+        409,
+        512,
+    ]
+    validate_run_config(resolved)
+
+
 def test_granularity_prefix_validation_rejects_non_monotonic_widths():
     with pytest.raises(
         ConfigError,

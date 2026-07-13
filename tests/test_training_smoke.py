@@ -925,6 +925,63 @@ def test_tiny_nested_training_averages_losses_across_all_granularities_for_neste
     assert float(model.weight.grad.detach().cpu().item()) == pytest.approx(3.75)
 
 
+def test_explicit_five_granularity_training_smoke(tmp_path):
+    output_dir = tmp_path / "explicit-granularity-smoke-001"
+    config = resolve_run_config(
+        "tests/fixtures/explicit_granularity_smoke.yaml",
+        output_dir=output_dir,
+        overrides=[
+            "training.max_steps=1",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "outputs.save_checkpoints=false",
+            "evaluation.validation=false",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+    labels = ["micro", "small", "medium", "large", "full"]
+    model = TinyNestedTrainingModel(
+        loss_scale_by_granularity={
+            "micro": 1.0,
+            "small": 2.0,
+            "medium": 3.0,
+            "large": 4.0,
+            "full": 5.0,
+        }
+    )
+
+    result = run_training(
+        config,
+        model=model,
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    with result["metrics_path"].open("r", encoding="utf-8", newline="") as metrics_file:
+        train_rows = [
+            row
+            for row in csv.DictReader(metrics_file)
+            if row["split"] == "train" and row["step"] == "1"
+        ]
+
+    assert config["model"]["granularity_mode"] == "explicit"
+    assert config["model"]["granularities"] == labels
+    assert model.train_forward_granularities == labels
+    assert [row["granularity"] for row in train_rows] == labels
+    assert summary["granularity_pattern_summary"]["selected_granularities"] == labels
+    assert json.loads((output_dir / "config.json").read_text(encoding="utf-8"))["model"][
+        "granularities"
+    ] == labels
+
+
 def test_tiny_nested_training_records_nested_all_summary_even_when_runtime_pattern_stays_single(
     tmp_path,
 ):
