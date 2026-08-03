@@ -6,11 +6,14 @@ import copy
 import json
 import math
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 import yaml
 
+from src.utils.artifact_io import DEFAULT_ARTIFACT_IO
+from src.utils.artifact_io import retry_artifact_io
 from src.utils.model_size import (
     MODEL_FAMILY_SLUG,
     derive_model_size_slug,
@@ -34,6 +37,7 @@ VALID_OPTIMIZER_NAMES = {"adamw", "sgd"}
 VALID_COMPLETION_LABELS = {"debug", "run"}
 VALID_GRANULARITY_SAMPLING = {"all", "random"}
 VALID_PRE_NESTED_WARMUP_UNITS = {"epochs", "steps"}
+VALID_MIXED_PRECISION_MODES = {"none", "bf16", "fp16"}
 DEFAULT_MODEL_VARIANT = "slicing"
 VALID_SAMPLING_MODES = {"nested-random", "nested-all", "standalone"}
 CANONICAL_GRANULARITY_ORDER = ("s", "m", "l", "xl")
@@ -419,11 +423,38 @@ def write_resolved_config(
 
     output_path = Path(resolved_output_dir) / filename
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as config_file:
-        json.dump(config, config_file, indent=2, sort_keys=True)
-        config_file.write("\n")
+    def write_attempt(_attempt: int) -> Path:
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=output_path.parent,
+                prefix=f".{output_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as config_file:
+                temporary_path = Path(config_file.name)
+                json.dump(config, config_file, indent=2, sort_keys=True)
+                config_file.write("\n")
+                config_file.flush()
+                os.fsync(config_file.fileno())
+            os.replace(temporary_path, output_path)
+            return output_path
+        except Exception:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise
 
-    return output_path
+    return retry_artifact_io(
+        write_attempt,
+        target_path=output_path,
+        operation_name="resolved_config_replace",
+        settings=config,
+    )
 
 
 def attach_parameter_counts_to_config(
@@ -466,8 +497,11 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         raise ConfigError(
             "Missing mapping section: training.preset_registry_paths"
         )
-    _require_mapping(config, "outputs")
-    _require_mapping(config, "evaluation")
+    outputs = _require_mapping(config, "outputs")
+    artifact_io = outputs.get("artifact_io")
+    if not isinstance(artifact_io, Mapping):
+        raise ConfigError("Missing mapping section: outputs.artifact_io")
+    evaluation = _require_mapping(config, "evaluation")
 
     _require_fields(
         run,
@@ -543,7 +577,26 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "preset_registry_paths",
         ],
     )
-    _require_fields(continuation, "run.continuation", ["enabled"])
+    _require_fields(
+        continuation,
+        "run.continuation",
+        ["enabled", "retain_previous_latest"],
+    )
+    _require_fields(
+        outputs,
+        "outputs",
+        ["metrics_flush_interval_steps", "best_eval_retention_count", "artifact_io"],
+    )
+    _require_fields(
+        artifact_io,
+        "outputs.artifact_io",
+        list(DEFAULT_ARTIFACT_IO),
+    )
+    _require_fields(
+        evaluation,
+        "evaluation",
+        ["validation", "final_validation"],
+    )
     _require_fields(
         monitoring,
         "monitoring",
@@ -727,6 +780,82 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
 
     if not isinstance(continuation.get("enabled"), bool):
         raise ConfigError("run.continuation.enabled must be a boolean")
+    if not isinstance(continuation.get("retain_previous_latest"), bool):
+        raise ConfigError(
+            "run.continuation.retain_previous_latest must be a boolean"
+        )
+
+    _positive_int(
+        outputs.get("metrics_flush_interval_steps"),
+        "outputs.metrics_flush_interval_steps",
+    )
+    _positive_int(
+        outputs.get("best_eval_retention_count"),
+        "outputs.best_eval_retention_count",
+    )
+    _positive_int(
+        artifact_io.get("max_attempts"),
+        "outputs.artifact_io.max_attempts",
+    )
+    initial_backoff = _nonnegative_float(
+        artifact_io.get("initial_backoff_seconds"),
+        "outputs.artifact_io.initial_backoff_seconds",
+    )
+    max_backoff = _nonnegative_float(
+        artifact_io.get("max_backoff_seconds"),
+        "outputs.artifact_io.max_backoff_seconds",
+    )
+    if max_backoff < initial_backoff:
+        raise ConfigError(
+            "outputs.artifact_io.max_backoff_seconds must be greater than or "
+            "equal to initial_backoff_seconds"
+        )
+    jitter_fraction = _nonnegative_float(
+        artifact_io.get("jitter_fraction"),
+        "outputs.artifact_io.jitter_fraction",
+    )
+    if jitter_fraction > 1.0:
+        raise ConfigError("outputs.artifact_io.jitter_fraction must be <= 1")
+    if artifact_io.get("checkpoint_staging") not in {"auto", "local", "direct"}:
+        raise ConfigError(
+            "outputs.artifact_io.checkpoint_staging must be one of "
+            "['auto', 'direct', 'local']"
+        )
+    if artifact_io.get("periodic_checkpoint_failure_policy") not in {
+        "continue_if_previous",
+        "strict",
+    }:
+        raise ConfigError(
+            "outputs.artifact_io.periodic_checkpoint_failure_policy must be one "
+            "of ['continue_if_previous', 'strict']"
+        )
+    _positive_int(
+        artifact_io.get("metrics_pending_row_limit"),
+        "outputs.artifact_io.metrics_pending_row_limit",
+    )
+    if not isinstance(evaluation.get("validation"), bool):
+        raise ConfigError("evaluation.validation must be a boolean")
+    if not isinstance(evaluation.get("final_validation"), bool):
+        raise ConfigError("evaluation.final_validation must be a boolean")
+    if completion_label == "run" and not evaluation["final_validation"]:
+        raise ConfigError(
+            "evaluation.final_validation is required when "
+            "run.completion_label=run"
+        )
+
+    requested_precision = training.get(
+        "requested_mixed_precision",
+        training.get("mixed_precision", "none"),
+    )
+    if requested_precision not in VALID_MIXED_PRECISION_MODES:
+        raise ConfigError(
+            "training.mixed_precision must be one of "
+            f"{sorted(VALID_MIXED_PRECISION_MODES)}"
+        )
+    if not isinstance(training.get("requested_activation_checkpointing"), bool):
+        raise ConfigError(
+            "training.requested_activation_checkpointing must be a boolean"
+        )
 
     if not isinstance(monitoring.get("enabled"), bool):
         raise ConfigError("monitoring.enabled must be a boolean")
@@ -1772,6 +1901,7 @@ def _resolve_long_run_defaults(config: dict[str, Any]) -> None:
     _resolve_continuation_defaults(config)
     _resolve_monitoring_defaults(config)
     _resolve_pre_nested_warmup_defaults(config)
+    _resolve_reliability_defaults(config)
 
 
 def _select_representative_parameter_counts(
@@ -2003,7 +2133,111 @@ def _resolve_continuation_defaults(config: dict[str, Any]) -> None:
         continuation.get("enabled", False),
         "run.continuation.enabled",
     )
+    continuation["retain_previous_latest"] = _normalize_bool(
+        continuation.get("retain_previous_latest", True),
+        "run.continuation.retain_previous_latest",
+    )
     run["continuation"] = continuation
+
+
+def _resolve_reliability_defaults(config: dict[str, Any]) -> None:
+    run = config.setdefault("run", {})
+    training = config.setdefault("training", {})
+    outputs = config.setdefault("outputs", {})
+    evaluation = config.setdefault("evaluation", {})
+    if not isinstance(outputs, dict):
+        raise ConfigError("outputs must be a mapping when provided")
+    if not isinstance(evaluation, dict):
+        raise ConfigError("evaluation must be a mapping when provided")
+
+    requested_precision = training.get(
+        "requested_mixed_precision",
+        training.get("mixed_precision", "none"),
+    )
+    if not isinstance(requested_precision, str):
+        raise ConfigError("training.mixed_precision must be a string")
+    requested_precision = requested_precision.strip().lower()
+    if requested_precision not in VALID_MIXED_PRECISION_MODES:
+        raise ConfigError(
+            "training.mixed_precision must be one of "
+            f"{sorted(VALID_MIXED_PRECISION_MODES)}"
+        )
+    requested_checkpointing = _normalize_bool(
+        training.get(
+            "requested_activation_checkpointing",
+            training.get("activation_checkpointing", False),
+        ),
+        "training.activation_checkpointing",
+    )
+    training["mixed_precision"] = requested_precision
+    training["requested_mixed_precision"] = requested_precision
+    training["resolved_mixed_precision"] = requested_precision
+    training["activation_checkpointing"] = requested_checkpointing
+    training["requested_activation_checkpointing"] = requested_checkpointing
+    training["resolved_activation_checkpointing"] = requested_checkpointing
+
+    outputs["metrics_flush_interval_steps"] = _positive_int(
+        outputs.get("metrics_flush_interval_steps", 100),
+        "outputs.metrics_flush_interval_steps",
+    )
+    outputs["best_eval_retention_count"] = _positive_int(
+        outputs.get("best_eval_retention_count", 1),
+        "outputs.best_eval_retention_count",
+    )
+    configured_artifact_io = outputs.get("artifact_io", {})
+    if not isinstance(configured_artifact_io, dict):
+        raise ConfigError("outputs.artifact_io must be a mapping when provided")
+    artifact_io = DEFAULT_ARTIFACT_IO | configured_artifact_io
+    artifact_io["max_attempts"] = _positive_int(
+        artifact_io["max_attempts"],
+        "outputs.artifact_io.max_attempts",
+    )
+    artifact_io["initial_backoff_seconds"] = _nonnegative_float(
+        artifact_io["initial_backoff_seconds"],
+        "outputs.artifact_io.initial_backoff_seconds",
+    )
+    artifact_io["max_backoff_seconds"] = _nonnegative_float(
+        artifact_io["max_backoff_seconds"],
+        "outputs.artifact_io.max_backoff_seconds",
+    )
+    artifact_io["jitter_fraction"] = _nonnegative_float(
+        artifact_io["jitter_fraction"],
+        "outputs.artifact_io.jitter_fraction",
+    )
+    artifact_io["checkpoint_staging"] = str(
+        artifact_io["checkpoint_staging"]
+    ).strip().lower()
+    artifact_io["periodic_checkpoint_failure_policy"] = str(
+        artifact_io["periodic_checkpoint_failure_policy"]
+    ).strip().lower()
+    artifact_io["metrics_pending_row_limit"] = _positive_int(
+        artifact_io["metrics_pending_row_limit"],
+        "outputs.artifact_io.metrics_pending_row_limit",
+    )
+    outputs["artifact_io"] = artifact_io
+
+    evaluation["validation"] = _normalize_bool(
+        evaluation.get("validation", False),
+        "evaluation.validation",
+    )
+    evaluation["final_validation"] = _normalize_bool(
+        evaluation.get("final_validation", True),
+        "evaluation.final_validation",
+    )
+    if run.get("completion_label") == "run" and not evaluation["final_validation"]:
+        raise ConfigError(
+            "evaluation.final_validation is required when "
+            "run.completion_label=run"
+        )
+    evaluation["final_validation_reason"] = (
+        "required_for_completed_run"
+        if run.get("completion_label") == "run"
+        else (
+            "enabled_for_debug_run"
+            if evaluation["final_validation"]
+            else "explicitly_disabled_for_debug_run"
+        )
+    )
 
 
 def _resolve_monitoring_defaults(config: dict[str, Any]) -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import functools
 import os
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Callable, TypeVar
 
@@ -25,6 +26,8 @@ from torch.distributed.fsdp import (
 )
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
+
+from src.utils.config import ConfigError
 
 T = TypeVar("T")
 
@@ -72,6 +75,11 @@ def prepare_distributed_context(
     fsdp_config = _fsdp_config(distributed_config)
     local_rank = get_local_rank(default=env_int("LOCAL_RANK", 0))
     resolved_device = resolve_device(device=device, local_rank=local_rank)
+    runtime_settings = resolve_runtime_settings(
+        training_config,
+        resolved_device,
+        single_process=env_world_size <= 1,
+    )
 
     if resolved_device.type == "cuda":
         torch.cuda.set_device(resolved_device)
@@ -94,31 +102,107 @@ def prepare_distributed_context(
         world_size=world_size,
         strategy=strategy,
         device=resolved_device,
-        mixed_precision=training_config.get("mixed_precision", "none"),
-        activation_checkpointing=bool(training_config.get("activation_checkpointing", False)),
+        mixed_precision=runtime_settings["resolved_mixed_precision"],
+        activation_checkpointing=runtime_settings[
+            "resolved_activation_checkpointing"
+        ],
         fsdp_config=fsdp_config,
     )
 
 
 def wrap_model_for_distributed(model, context: DistributedContext):
+    if context.activation_checkpointing:
+        apply_model_activation_checkpointing(model)
     if not context.enabled:
         return model
     if context.strategy != "fsdp":
         raise ValueError(f"Unsupported distributed strategy: {context.strategy}")
 
-    if context.activation_checkpointing:
-        checkpoint_fn = functools.partial(
-            checkpoint_wrapper,
-            checkpoint_impl=CheckpointImpl.NO_REENTRANT,
-        )
-        apply_activation_checkpointing(
-            model,
-            checkpoint_wrapper_fn=checkpoint_fn,
-            check_fn=lambda module: isinstance(module, LlamaDecoderLayer),
-        )
-
     fsdp_kwargs = build_fsdp_kwargs(context)
     return FSDP(model, **fsdp_kwargs)
+
+
+def apply_model_activation_checkpointing(model) -> None:
+    """Checkpoint Llama decoder layers for both local and FSDP execution."""
+
+    checkpoint_fn = functools.partial(
+        checkpoint_wrapper,
+        checkpoint_impl=CheckpointImpl.NO_REENTRANT,
+    )
+    apply_activation_checkpointing(
+        model,
+        checkpoint_wrapper_fn=checkpoint_fn,
+        check_fn=lambda module: isinstance(module, LlamaDecoderLayer),
+    )
+
+
+def resolve_runtime_settings(
+    training_config: dict[str, Any],
+    device: torch.device | str,
+    *,
+    single_process: bool,
+) -> dict[str, Any]:
+    """Resolve requested precision/checkpointing against the actual device."""
+
+    resolved_device = torch.device(device)
+    requested_precision = str(
+        training_config.get(
+            "requested_mixed_precision",
+            training_config.get("mixed_precision", "none"),
+        )
+        or "none"
+    ).lower()
+    requested_checkpointing = bool(
+        training_config.get(
+            "requested_activation_checkpointing",
+            training_config.get("activation_checkpointing", False),
+        )
+    )
+
+    if requested_precision == "fp16" and single_process:
+        raise ConfigError(
+            "training.mixed_precision=fp16 is unsupported for single-process "
+            "training; use bf16 on a CUDA device with native BF16 support"
+        )
+    if requested_precision not in {"none", "bf16", "fp16"}:
+        raise ConfigError(
+            f"Unsupported training.mixed_precision={requested_precision!r}"
+        )
+
+    if resolved_device.type != "cuda":
+        resolved_precision = "none"
+        resolved_checkpointing = False
+    else:
+        if requested_precision == "bf16" and not torch.cuda.is_bf16_supported():
+            raise ConfigError(
+                "training.mixed_precision=bf16 requires native CUDA BF16 support"
+            )
+        resolved_precision = requested_precision
+        resolved_checkpointing = requested_checkpointing
+
+    training_config["requested_mixed_precision"] = requested_precision
+    training_config["resolved_mixed_precision"] = resolved_precision
+    training_config["requested_activation_checkpointing"] = requested_checkpointing
+    training_config["resolved_activation_checkpointing"] = resolved_checkpointing
+    return {
+        "requested_mixed_precision": requested_precision,
+        "resolved_mixed_precision": resolved_precision,
+        "requested_activation_checkpointing": requested_checkpointing,
+        "resolved_activation_checkpointing": resolved_checkpointing,
+    }
+
+
+def autocast_context(
+    config: dict[str, Any],
+    device: torch.device | str,
+):
+    training = config.get("training", {})
+    if (
+        torch.device(device).type == "cuda"
+        and training.get("resolved_mixed_precision") == "bf16"
+    ):
+        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+    return nullcontext()
 
 
 def build_fsdp_kwargs(context: DistributedContext) -> dict[str, Any]:
@@ -178,10 +262,9 @@ def build_mixed_precision(
         return None
 
     if normalized == "bf16":
-        if torch.cuda.is_bf16_supported():
-            dtype = torch.bfloat16
-        else:
-            dtype = torch.float16
+        if not torch.cuda.is_bf16_supported():
+            raise ConfigError("BF16 requires native CUDA BF16 support")
+        dtype = torch.bfloat16
     elif normalized == "fp16":
         dtype = torch.float16
     else:

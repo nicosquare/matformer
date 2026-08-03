@@ -3,13 +3,23 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import io
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from src.utils.config import (
     resolve_sampling_mode_from_config_sections,
     write_resolved_config,
+)
+from src.utils.artifact_io import (
+    emit_artifact_event,
+    remove_resolved_failure,
+    resolved_artifact_io,
+    retry_artifact_io,
 )
 from src.models.adaptive_sampler import build_adaptive_sampler_artifact_fields
 from src.models.correction import summarize_correction_context_from_config
@@ -191,6 +201,12 @@ RUN_SUMMARY_FIELDS = [
     "scheduler_kwargs",
     "optimizer_name",
     "optimizer_kwargs",
+    "requested_mixed_precision",
+    "resolved_mixed_precision",
+    "requested_activation_checkpointing",
+    "resolved_activation_checkpointing",
+    "final_validation",
+    "final_validation_reason",
     "expected_tokens_per_step",
     "derived_max_steps",
     "effective_world_size",
@@ -217,8 +233,16 @@ RUN_SUMMARY_FIELDS = [
     "checkpoint_metric_value",
     "checkpoint_selection_step",
     "checkpoint_unavailable_reason",
+    "artifact_retry_count",
+    "artifact_last_errno",
+    "last_durable_checkpoint_step",
+    "deferred_metric_rows",
+    "skipped_periodic_checkpoints",
+    "checkpoint_staging_mode",
+    "unresolved_artifact_failures",
     "metrics_path",
     "scaling_results_path",
+    "scaling_results_unavailable_reason",
     "extraction_metadata_path",
     "notes",
 ]
@@ -247,6 +271,197 @@ BASELINE_MATCH_FIELDS = [
 
 class ArtifactError(ValueError):
     """Raised when an artifact would miss required analysis fields."""
+
+
+class MetricsJournal:
+    """Bounded metrics buffer with durable incremental flushes and resume repair."""
+
+    def __init__(
+        self,
+        output_dir: str | Path,
+        *,
+        flush_interval_steps: int = 100,
+        checkpoint_step: int = 0,
+        artifact_io_config: Mapping[str, Any] | None = None,
+        heartbeat_writer=None,
+        artifact_state: dict[str, Any] | None = None,
+    ) -> None:
+        self.output_dir = Path(output_dir)
+        self.path = self.output_dir / "metrics.csv"
+        self.flush_interval_steps = max(1, int(flush_interval_steps))
+        self._buffer: list[dict[str, Any]] = []
+        self._last_flush_step = int(checkpoint_step)
+        self._validation_steps: set[int] = set()
+        self.artifact_io = resolved_artifact_io(artifact_io_config)
+        self.heartbeat_writer = heartbeat_writer
+        self.artifact_state = artifact_state
+        self.pending_row_limit = int(self.artifact_io["metrics_pending_row_limit"])
+        self.spool_path = self._build_spool_path()
+        recovered = recover_metrics_rows(self.path, checkpoint_step=checkpoint_step)
+        self._validation_steps.update(
+            int(row["step"])
+            for row in recovered
+            if row.get("split") == "validation"
+        )
+        write_metrics_csv(
+            self.output_dir,
+            recovered,
+            artifact_io=self.artifact_io,
+            heartbeat_writer=self.heartbeat_writer,
+            artifact_state=self.artifact_state,
+        )
+
+    def append(
+        self,
+        rows: Mapping[str, Any] | Iterable[Mapping[str, Any]],
+        *,
+        force: bool = False,
+    ) -> None:
+        normalized = _normalize_rows(rows)
+        if not normalized:
+            if force:
+                self.flush()
+            return
+        self._buffer.extend(normalized)
+        if len(self._buffer) >= self.pending_row_limit:
+            self.flush()
+        steps = [_int_value(row.get("step")) for row in normalized]
+        latest_step = max(steps, default=self._last_flush_step)
+        self._validation_steps.update(
+            _int_value(row.get("step"))
+            for row in normalized
+            if row.get("split") == "validation"
+        )
+        if force or latest_step - self._last_flush_step >= self.flush_interval_steps:
+            self.flush()
+            self._last_flush_step = latest_step
+
+    def has_validation_at_step(self, step: int) -> bool:
+        return int(step) in self._validation_steps
+
+    def flush(self, *, strict: bool = False) -> None:
+        if not self._buffer:
+            return
+        try:
+            write_metrics_csv(
+                self.output_dir,
+                self._buffer,
+                append=True,
+                artifact_io=self.artifact_io,
+                heartbeat_writer=self.heartbeat_writer,
+                artifact_state=self.artifact_state,
+            )
+        except OSError as remote_error:
+            if strict:
+                raise
+            try:
+                self._write_spool()
+            except OSError as spool_error:
+                if len(self._buffer) >= self.pending_row_limit:
+                    raise RuntimeError(
+                        "Metrics could not be persisted remotely or spooled "
+                        f"locally and the pending-row limit ({self.pending_row_limit}) "
+                        "was reached"
+                    ) from spool_error
+                return
+            if self.artifact_state is not None:
+                self.artifact_state["deferred_metric_rows"] = len(self._buffer)
+            emit_artifact_event(
+                self.heartbeat_writer,
+                "stage_failed",
+                "metrics_persistence",
+                artifact_path=str(self.path),
+                spool_path=str(self.spool_path),
+                deferred_metric_rows=len(self._buffer),
+                errno=remote_error.errno,
+                recoverable=True,
+            )
+            return
+
+        self._buffer.clear()
+        if self.spool_path.exists():
+            self.spool_path.unlink(missing_ok=True)
+        if self.artifact_state is not None:
+            self.artifact_state["deferred_metric_rows"] = 0
+        remove_resolved_failure(
+            self.artifact_state,
+            operation_name="metrics_csv_append",
+            target_path=self.path,
+        )
+
+    def read_all(self) -> list[dict[str, Any]]:
+        self.flush(strict=True)
+        return read_metrics_csv(self.path)
+
+    def artifact_summary_fields(self) -> dict[str, Any]:
+        return {
+            "deferred_metric_rows": len(self._buffer),
+            "metrics_spool_path": (
+                str(self.spool_path) if self.spool_path.exists() else None
+            ),
+        }
+
+    def _build_spool_path(self) -> Path:
+        local_root = os.environ.get("SLURM_TMPDIR")
+        if not local_root:
+            local_root = tempfile.gettempdir()
+        identity = hashlib.sha256(str(self.output_dir).encode("utf-8")).hexdigest()[:12]
+        run_id = self.output_dir.name or "run"
+        return (
+            Path(local_root)
+            / "matformer-artifact-spool"
+            / f"{run_id}-{identity}.metrics.pending.csv"
+        )
+
+    def _write_spool(self) -> None:
+        self.spool_path.parent.mkdir(parents=True, exist_ok=True)
+        write_csv_artifact(
+            self.spool_path,
+            self._buffer,
+            METRICS_COLUMNS,
+            append=False,
+            artifact_io={**self.artifact_io, "max_attempts": 1},
+        )
+
+
+def recover_metrics_rows(
+    path: str | Path,
+    *,
+    checkpoint_step: int,
+) -> list[dict[str, Any]]:
+    """Keep the valid CSV prefix at or before the loaded checkpoint step."""
+
+    metrics_path = Path(path)
+    if not metrics_path.exists() or metrics_path.stat().st_size == 0:
+        return []
+
+    recovered: list[dict[str, Any]] = []
+    try:
+        with metrics_path.open("r", encoding="utf-8", newline="") as metrics_file:
+            reader = csv.DictReader(metrics_file)
+            if reader.fieldnames != METRICS_COLUMNS:
+                return []
+            for row in reader:
+                if None in row or any(value is None for value in row.values()):
+                    break
+                try:
+                    row_step = int(row.get("step") or 0)
+                except (TypeError, ValueError):
+                    break
+                if row_step > int(checkpoint_step):
+                    continue
+                recovered.append(dict(row))
+    except (OSError, csv.Error, UnicodeError):
+        return recovered
+    return recovered
+
+
+def read_metrics_csv(path: str | Path) -> list[dict[str, Any]]:
+    metrics_path = Path(path)
+    if not metrics_path.exists():
+        return []
+    with metrics_path.open("r", encoding="utf-8", newline="") as metrics_file:
+        return [dict(row) for row in csv.DictReader(metrics_file)]
 
 
 def best_validation_metric_value(
@@ -389,6 +604,20 @@ def build_run_summary(
         "scheduler_kwargs": training["scheduler_kwargs"],
         "optimizer_name": training["optimizer_name"],
         "optimizer_kwargs": training["optimizer_kwargs"],
+        "requested_mixed_precision": training.get("requested_mixed_precision"),
+        "resolved_mixed_precision": training.get("resolved_mixed_precision"),
+        "requested_activation_checkpointing": training.get(
+            "requested_activation_checkpointing"
+        ),
+        "resolved_activation_checkpointing": training.get(
+            "resolved_activation_checkpointing"
+        ),
+        "final_validation": config.get("evaluation", {}).get(
+            "final_validation"
+        ),
+        "final_validation_reason": config.get("evaluation", {}).get(
+            "final_validation_reason"
+        ),
         "expected_tokens_per_step": training["expected_tokens_per_step"],
         "derived_max_steps": training["derived_max_steps"],
         "effective_world_size": training["effective_world_size"],
@@ -416,13 +645,29 @@ def build_run_summary(
         **build_checkpoint_summary_fields(
             config,
             metrics_rows=[],
-            validation_enabled=config.get("evaluation", {}).get("validation", False),
+            validation_enabled=bool(
+                config.get("evaluation", {}).get("validation", False)
+                or config.get("evaluation", {}).get("final_validation", False)
+            ),
             save_checkpoints=config.get("outputs", {}).get(
                 "save_checkpoints",
                 False,
             ),
         ),
         "notes": list(notes or []),
+        "metrics_path": None,
+        "scaling_results_path": None,
+        "extraction_metadata_path": None,
+        "scaling_results_unavailable_reason": None,
+        "artifact_retry_count": 0,
+        "artifact_last_errno": None,
+        "last_durable_checkpoint_step": 0,
+        "deferred_metric_rows": 0,
+        "skipped_periodic_checkpoints": 0,
+        "checkpoint_staging_mode": config.get("outputs", {})
+        .get("artifact_io", {})
+        .get("checkpoint_staging", "auto"),
+        "unresolved_artifact_failures": [],
     }
 
     if extra_fields:
@@ -512,11 +757,20 @@ def write_run_summary(
     summary: Mapping[str, Any],
     filename: str = "run_summary.json",
     distributed_context: Any | None = None,
+    artifact_io: Mapping[str, Any] | None = None,
+    heartbeat_writer=None,
+    artifact_state: dict[str, Any] | None = None,
 ) -> Path | None:
     if not _should_write_shared_artifact(distributed_context):
         return None
     _require_fields(summary, RUN_SUMMARY_FIELDS, filename)
-    return write_json_artifact(Path(output_dir) / filename, summary)
+    return write_json_artifact(
+        Path(output_dir) / filename,
+        summary,
+        artifact_io=artifact_io,
+        heartbeat_writer=heartbeat_writer,
+        artifact_state=artifact_state,
+    )
 
 
 def write_failed_run_summary(
@@ -540,7 +794,7 @@ def write_failed_run_summary(
         notes=failure_notes,
     )
     run_output_dir = output_dir or config["run"]["output_dir"]
-    return write_run_summary(run_output_dir, summary)
+    return write_run_summary(run_output_dir, summary, artifact_io=config)
 
 
 def build_checkpoint_summary_fields(
@@ -553,7 +807,11 @@ def build_checkpoint_summary_fields(
     checkpoint_dir = output_dir / "checkpoints"
 
     if validation_enabled is None:
-        validation_enabled = bool(config.get("evaluation", {}).get("validation", False))
+        evaluation = config.get("evaluation", {})
+        validation_enabled = bool(
+            evaluation.get("validation", False)
+            or evaluation.get("final_validation", False)
+        )
     if save_checkpoints is None:
         save_checkpoints = bool(config.get("outputs", {}).get("save_checkpoints", False))
 
@@ -607,6 +865,9 @@ def write_metrics_csv(
     rows: Mapping[str, Any] | Iterable[Mapping[str, Any]],
     append: bool = False,
     distributed_context: Any | None = None,
+    artifact_io: Mapping[str, Any] | None = None,
+    heartbeat_writer=None,
+    artifact_state: dict[str, Any] | None = None,
 ) -> Path | None:
     return write_csv_artifact(
         Path(output_dir) / "metrics.csv",
@@ -614,6 +875,9 @@ def write_metrics_csv(
         METRICS_COLUMNS,
         append=append,
         distributed_context=distributed_context,
+        artifact_io=artifact_io,
+        heartbeat_writer=heartbeat_writer,
+        artifact_state=artifact_state,
     )
 
 
@@ -729,17 +993,9 @@ def build_scaling_result_rows(
     )
     latest_rows = validation_rows
     if not latest_rows:
-        latest_rows = latest_metric_rows_by_granularity(metrics_rows, split="train")
+        return []
 
-    allow_partial_training_rows = (
-        not validation_rows
-        and training.get("granularity_sampling") == "random"
-    )
     granularities = list(model["granularities"])
-    if allow_partial_training_rows:
-        granularities = [
-            granularity for granularity in granularities if granularity in latest_rows
-        ]
 
     rows = []
     for granularity in granularities:
@@ -1051,15 +1307,46 @@ def write_json_artifact(
     path: str | Path,
     payload: Mapping[str, Any],
     distributed_context: Any | None = None,
+    artifact_io: Mapping[str, Any] | None = None,
+    heartbeat_writer=None,
+    artifact_state: dict[str, Any] | None = None,
 ) -> Path | None:
     if not _should_write_shared_artifact(distributed_context):
         return None
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as output_file:
-        json.dump(payload, output_file, indent=2, sort_keys=True)
-        output_file.write("\n")
-    return output_path
+    def write_attempt(_attempt: int) -> Path:
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=output_path.parent,
+                prefix=f".{output_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as output_file:
+                temporary_path = Path(output_file.name)
+                json.dump(payload, output_file, indent=2, sort_keys=True)
+                output_file.write("\n")
+                output_file.flush()
+                os.fsync(output_file.fileno())
+            os.replace(temporary_path, output_path)
+            _fsync_directory(output_path.parent)
+            return output_path
+        except Exception:
+            if temporary_path is not None:
+                _unlink_best_effort(temporary_path)
+            raise
+
+    return retry_artifact_io(
+        write_attempt,
+        target_path=output_path,
+        operation_name="json_replace",
+        settings=artifact_io,
+        heartbeat_writer=heartbeat_writer,
+        state=artifact_state,
+    )
 
 
 def write_csv_artifact(
@@ -1068,6 +1355,9 @@ def write_csv_artifact(
     columns: list[str],
     append: bool = False,
     distributed_context: Any | None = None,
+    artifact_io: Mapping[str, Any] | None = None,
+    heartbeat_writer=None,
+    artifact_state: dict[str, Any] | None = None,
 ) -> Path | None:
     if not _should_write_shared_artifact(distributed_context):
         return None
@@ -1078,17 +1368,105 @@ def write_csv_artifact(
     for row in normalized_rows:
         _require_fields(row, columns, str(output_path))
 
-    file_exists = output_path.exists()
-    should_write_header = not append or not file_exists or output_path.stat().st_size == 0
-    mode = "a" if append else "w"
-
-    with output_path.open(mode, encoding="utf-8", newline="") as output_file:
-        writer = csv.DictWriter(output_file, fieldnames=columns, extrasaction="ignore")
-        if should_write_header:
+    if append:
+        original_offset = output_path.stat().st_size if output_path.exists() else 0
+        payload_buffer = io.StringIO(newline="")
+        writer = csv.DictWriter(
+            payload_buffer,
+            fieldnames=columns,
+            extrasaction="ignore",
+        )
+        if original_offset == 0:
             writer.writeheader()
         writer.writerows(normalized_rows)
+        encoded_rows = payload_buffer.getvalue().encode("utf-8")
 
-    return output_path
+        def append_attempt(_attempt: int) -> Path:
+            mode = "r+b" if output_path.exists() else "w+b"
+            try:
+                with output_path.open(mode) as output_file:
+                    output_file.truncate(original_offset)
+                    output_file.seek(original_offset)
+                    output_file.write(encoded_rows)
+                    output_file.flush()
+                    os.fsync(output_file.fileno())
+            except Exception:
+                _truncate_best_effort(output_path, original_offset)
+                raise
+            return output_path
+
+        operation = append_attempt
+        operation_name = "metrics_csv_append" if output_path.name == "metrics.csv" else "csv_append"
+    else:
+        def replace_attempt(_attempt: int) -> Path:
+            temporary_path: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    newline="",
+                    dir=output_path.parent,
+                    prefix=f".{output_path.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as output_file:
+                    temporary_path = Path(output_file.name)
+                    writer = csv.DictWriter(
+                        output_file,
+                        fieldnames=columns,
+                        extrasaction="ignore",
+                    )
+                    writer.writeheader()
+                    writer.writerows(normalized_rows)
+                    output_file.flush()
+                    os.fsync(output_file.fileno())
+                os.replace(temporary_path, output_path)
+                _fsync_directory(output_path.parent)
+                return output_path
+            except Exception:
+                if temporary_path is not None:
+                    _unlink_best_effort(temporary_path)
+                raise
+
+        operation = replace_attempt
+        operation_name = "csv_replace"
+
+    return retry_artifact_io(
+        operation,
+        target_path=output_path,
+        operation_name=operation_name,
+        settings=artifact_io,
+        heartbeat_writer=heartbeat_writer,
+        state=artifact_state,
+    )
+
+
+def _truncate_best_effort(path: Path, offset: int) -> None:
+    try:
+        with path.open("r+b") as output_file:
+            output_file.truncate(offset)
+            output_file.flush()
+            os.fsync(output_file.fileno())
+    except OSError:
+        return
+
+
+def _unlink_best_effort(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        return
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _normalize_rows(

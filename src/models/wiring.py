@@ -13,12 +13,14 @@ from src.models.granularity import (
     MATFORMER_GRANULARITY_ORDER,
     GranularityPattern,
     build_granularity_pattern,
+    validate_granularity_sequence,
 )
 
 
 def build_global_granularity_pattern(
     config: Mapping[str, Any],
     granularities: Sequence[str] | None = None,
+    available_granularities: Sequence[str] | None = None,
 ) -> GranularityPattern:
     """Build the explicit global sampling pattern for a run.
 
@@ -50,7 +52,10 @@ def build_global_granularity_pattern(
         pattern_type="single",
         selected_granularities=selected_granularities,
         layer_count=block_count,
-        available_granularities=selected_granularities,
+        available_granularities=(
+            available_granularities
+            or model.get("granularities", selected_granularities)
+        ),
         repeatable_source=(
             str(run.get("run_id") or ""),
             "model.granularity_sampling_mode=global",
@@ -61,6 +66,7 @@ def build_global_granularity_pattern(
 def build_per_block_granularity_pattern(
     config: Mapping[str, Any],
     layer_granularities: Sequence[str],
+    available_granularities: Sequence[str] | None = None,
 ) -> GranularityPattern:
     """Build the explicit per-block sampling pattern for a run."""
 
@@ -91,7 +97,10 @@ def build_per_block_granularity_pattern(
         pattern_type="per_block",
         selected_granularities=selected_granularities,
         layer_count=block_count,
-        available_granularities=model.get("granularities", selected_granularities),
+        available_granularities=(
+            available_granularities
+            or model.get("granularities", selected_granularities)
+        ),
         repeatable_source=(
             str(run.get("run_id") or ""),
             f"model.granularity_sampling_mode={sampling_mode or 'per_block'}",
@@ -120,7 +129,7 @@ def apply_granularity_pattern_to_model(
     config = {
         "model": {
             "granularity_sampling_mode": sampling_mode,
-            "granularities": list(granularities),
+            "granularities": list(target.granularity_order),
             "num_layers": len(layers),
         },
         "run": {"run_id": run_id},
@@ -130,11 +139,13 @@ def apply_granularity_pattern_to_model(
         pattern = build_global_granularity_pattern(
             config,
             granularities=granularities,
+            available_granularities=target.granularity_order,
         )
     elif sampling_mode in {"per_block", "adaptive_per_block"}:
         pattern = build_per_block_granularity_pattern(
             config,
             layer_granularities=granularities,
+            available_granularities=target.granularity_order,
         )
     else:
         raise ValueError(
@@ -224,7 +235,9 @@ class ModifiedLlamaForCausalLM(LlamaForCausalLM):
 
     def __init__(self, config, mlp_cls=ModifiedLlamaMLP, mlp_kwargs=None):
         super().__init__(config)
-        self.granularity_order = MATFORMER_GRANULARITY_ORDER
+        self.granularity_order = validate_granularity_sequence(
+            getattr(config, "granularities", None) or MATFORMER_GRANULARITY_ORDER
+        )
         self.ffn_prefix_metadata = (
             [dict(entry) for entry in getattr(config, "ffn_prefix_metadata", [])]
             if getattr(config, "ffn_prefix_metadata", None)

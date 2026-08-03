@@ -3,6 +3,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 from src.utils.config import (
@@ -29,6 +30,7 @@ def _capture_dmodel256_pilot_comparison_invocation(tmp_path, extra_args, env_upd
     env.update(
         {
             "PYTHON_BIN": str(recorder),
+            "PYTHON_CONFIG_BIN": sys.executable,
             "ARGV_FILE": str(argv_path),
         }
     )
@@ -346,6 +348,51 @@ def test_dmodel256_pilot_runner_standalone_mode_sets_granularity_overrides(tmp_p
     assert not _has_arg_pair(args, "--override", "model.granularities=[m]")
     assert not _has_arg_pair(args, "--override", "training.granularity_sampling=all")
     assert _has_arg_pair(args, "--override", "training.max_steps_cap=1")
+
+
+def test_dmodel256_pilot_runner_delegates_explicit_standalone_validation(
+    tmp_path,
+):
+    args = _capture_dmodel256_pilot_comparison_invocation(
+        tmp_path,
+        [
+            "--mode",
+            "standalone",
+            "--granularity",
+            "micro",
+            "--run-id",
+            "dmodel256-explicit-standalone-micro-001",
+            "--override",
+            "model.granularity_mode=explicit",
+            "--override",
+            "model.granularities=[micro,small,medium,large,full]",
+            "--override",
+            "model.granularity_prefixes={micro: 0.125, small: 0.25, medium: 0.5, large: 0.75, full: 1.0}",
+        ],
+        # Reproduce the batch environment where only PYTHON_BIN is configured.
+        # Standalone validation must be performed by train.py with all overrides,
+        # not by an override-blind shell fallback.
+        env_updates={
+            "PATH": "/usr/bin:/bin",
+            "PYTHON": "",
+            "PYTHON_CONFIG_BIN": "",
+        },
+    )
+
+    assert _has_arg_pair(args, "--override", "model.granularity_mode=explicit")
+    assert _has_arg_pair(
+        args,
+        "--override",
+        "model.granularities=[micro,small,medium,large,full]",
+    )
+    assert _has_arg_pair(
+        args,
+        "--override",
+        "model.granularity_prefixes={micro: 0.125, small: 0.25, medium: 0.5, large: 0.75, full: 1.0}",
+    )
+    assert _has_arg_pair(args, "--override", "run.model_family=standalone")
+    assert _has_arg_pair(args, "--override", "run.sampling_mode=standalone")
+    assert _has_arg_pair(args, "--override", "run.granularity=micro")
 
 
 def test_slurm_dmodel256_pilot_comparison_requests_single_node_multi_gpu_resources():

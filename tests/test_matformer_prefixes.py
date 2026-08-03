@@ -424,6 +424,64 @@ def test_layer_granularity_pattern_applies_directly_to_model_layers():
     ] == [64, 8, 16, 32]
 
 
+@pytest.mark.parametrize("mlp_cls", [ModifiedLlamaMLP, CatLlamaMLP])
+def test_explicit_per_block_pattern_preserves_repeated_layer_assignments(mlp_cls):
+    labels = ["micro", "small", "medium", "full"]
+    config = tiny_llama_config(
+        num_hidden_layers=4,
+        granularity_prefixes={
+            "micro": 0.25,
+            "small": 0.5,
+            "medium": 0.75,
+            "full": 1.0,
+        },
+        granularities=labels,
+    )
+    model = ModifiedLlamaForCausalLM(config, mlp_cls=mlp_cls)
+    layer_assignment = ["micro", "small", "micro", "full"]
+
+    pattern = apply_granularity_pattern_to_model(
+        model,
+        layer_assignment,
+        sampling_mode="per_block",
+    )
+
+    assert model.granularity_order == tuple(labels)
+    assert model.current_layer_granularities == layer_assignment
+    assert pattern.selected_granularities == tuple(layer_assignment)
+    assert [
+        layer.current_granularity for layer in model.matformer_layers
+    ] == layer_assignment
+    assert [layer.current_subset_hd for layer in model.matformer_layers] == [
+        16,
+        32,
+        16,
+        64,
+    ]
+
+
+def test_explicit_per_block_pattern_rejects_label_outside_configured_vocabulary():
+    labels = ["micro", "small", "medium", "full"]
+    config = tiny_llama_config(
+        num_hidden_layers=4,
+        granularity_prefixes={
+            "micro": 0.25,
+            "small": 0.5,
+            "medium": 0.75,
+            "full": 1.0,
+        },
+        granularities=labels,
+    )
+    model = ModifiedLlamaForCausalLM(config)
+
+    with pytest.raises(ValueError, match="Unknown MatFormer granularity: giant"):
+        apply_granularity_pattern_to_model(
+            model,
+            ["micro", "small", "giant", "full"],
+            sampling_mode="per_block",
+        )
+
+
 def test_gradient_membership_correction_scales_match_configured_granularities():
     total_blocks = 8
 

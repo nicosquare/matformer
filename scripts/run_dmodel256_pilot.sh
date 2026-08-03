@@ -149,7 +149,7 @@ python_command() {
 }
 
 resolved_granularities() {
-  local resolver_bin="${PYTHON_CONFIG_BIN:-${PYTHON:-python}}"
+  local resolver_bin="${PYTHON_CONFIG_BIN:-$PYTHON_BIN}"
   local -a resolver_overrides=()
   local -a resolver_command
   local index
@@ -166,9 +166,13 @@ resolved_granularities() {
   done
 
   read -r -a resolver_command <<< "$resolver_bin"
+  if ! command -v "${resolver_command[0]}" >/dev/null 2>&1; then
+    echo "Cannot resolve model.granularities: config resolver is unavailable: ${resolver_command[0]}" >&2
+    return 2
+  fi
+
   local resolved_output=""
-  if command -v "${resolver_command[0]}" >/dev/null 2>&1 \
-    && resolved_output=$("${resolver_command[@]}" - "$CONFIG_PATH" "${resolver_overrides[@]}" <<'PY'
+  if ! resolved_output=$("${resolver_command[@]}" - "$CONFIG_PATH" "${resolver_overrides[@]}" <<'PY'
 import sys
 
 from src.utils.config import resolve_run_config
@@ -181,36 +185,15 @@ for granularity in resolved["model"]["granularities"]:
     print(granularity)
 PY
   ); then
-    if [[ -n "$resolved_output" ]]; then
-      printf '%s\n' "$resolved_output"
-      return 0
-    fi
+    echo "Cannot resolve model.granularities with the supplied config and overrides" >&2
+    return 2
   fi
 
-  awk '
-    /^[[:space:]]+granularities:[[:space:]]*\[/ {
-      labels = $0
-      sub(/.*\[/, "", labels)
-      sub(/\].*/, "", labels)
-      gsub(/,/, "", labels)
-      count = split(labels, values, /[[:space:]]+/)
-      for (position = 1; position <= count; position++) {
-        if (values[position] != "") print values[position]
-      }
-      exit
-    }
-  ' "$CONFIG_PATH"
-}
-
-granularity_is_resolved() {
-  local requested="$1"
-  local resolved
-  while IFS= read -r resolved; do
-    if [[ "$resolved" == "$requested" ]]; then
-      return 0
-    fi
-  done < <(resolved_granularities)
-  return 1
+  if [[ -z "$resolved_output" ]]; then
+    echo "Resolved model.granularities is empty" >&2
+    return 2
+  fi
+  printf '%s\n' "$resolved_output"
 }
 
 mode_run_id() {
@@ -242,8 +225,8 @@ mode_overrides() {
         "run.sampling_mode=nested-all"
       ;;
     standalone)
-      if [[ -z "$granularity" ]] || ! granularity_is_resolved "$granularity"; then
-        echo "Standalone mode requires --granularity from the resolved model.granularities" >&2
+      if [[ -z "$granularity" ]]; then
+        echo "Standalone mode requires --granularity" >&2
         exit 2
       fi
       printf '%s\n' \
@@ -299,16 +282,20 @@ emit_omitted_standalone_row() {
 }
 
 run_comparison() {
+  local resolved_output
   run_training_mode nested-random "" "$(mode_run_id nested-random)"
   run_training_mode nested-all "" "$(mode_run_id nested-all)"
 
+  if ! resolved_output="$(resolved_granularities)"; then
+    return 2
+  fi
   while IFS= read -r granularity; do
     if [[ "$RUN_STANDALONE_BASELINES" == "1" ]]; then
       run_training_mode standalone "$granularity" "$(mode_run_id standalone "$granularity")"
     else
       emit_omitted_standalone_row "$granularity"
     fi
-  done < <(resolved_granularities)
+  done <<< "$resolved_output"
 }
 
 case "$MODE" in

@@ -9,6 +9,7 @@ from typing import Any, Iterable, Mapping
 import torch
 import torch.distributed as dist
 
+from src.training.distributed import autocast_context
 from src.utils.config import resolve_sampling_mode_from_config_sections
 from src.models.granularity import resolved_granularity_artifact_fields
 from src.utils.metrics import json_artifact_value
@@ -55,6 +56,7 @@ def evaluate_validation_loss(
     device: torch.device | str,
     granularity: str | None = None,
     distributed: bool = False,
+    config: dict[str, Any] | None = None,
 ) -> dict[str, float | int | str | None]:
     was_training = model.training
     model.eval()
@@ -67,11 +69,12 @@ def evaluate_validation_loss(
         configure_model_granularity(model, granularity)
         for batch in dataloader:
             batch = move_batch_to_device(batch, device)
-            outputs = model(
-                input_ids=batch["input_ids"],
-                attention_mask=batch.get("attention_mask"),
-                labels=batch["labels"],
-            )
+            with autocast_context(config or {}, device):
+                outputs = model(
+                    input_ids=batch["input_ids"],
+                    attention_mask=batch.get("attention_mask"),
+                    labels=batch["labels"],
+                )
             loss_sum += outputs.loss.detach().float().item()
             batch_count += 1
             token_count += _count_tokens(batch)
@@ -102,17 +105,60 @@ def evaluate_validation_per_granularity(
     granularities: list[str],
     device: torch.device | str,
     distributed: bool = False,
+    config: dict[str, Any] | None = None,
 ) -> list[dict[str, float | int | str | None]]:
-    return [
-        evaluate_validation_loss(
-            model,
-            dataloader,
-            device=device,
-            granularity=granularity,
-            distributed=distributed,
-        )
-        for granularity in granularities
-    ]
+    runtime_state = _capture_runtime_granularity_state(model)
+    try:
+        return [
+            evaluate_validation_loss(
+                model,
+                dataloader,
+                device=device,
+                granularity=granularity,
+                distributed=distributed,
+                config=config,
+            )
+            for granularity in granularities
+        ]
+    finally:
+        _restore_runtime_granularity_state(model, runtime_state)
+
+
+def _capture_runtime_granularity_state(model) -> dict[str, Any]:
+    target = model.module if hasattr(model, "module") else model
+    layer_granularities = getattr(target, "current_layer_granularities", None)
+    return {
+        "current_granularity": getattr(target, "current_granularity", None),
+        "current_layer_granularities": (
+            None if layer_granularities is None else list(layer_granularities)
+        ),
+        "current_granularity_pattern": getattr(
+            target,
+            "current_granularity_pattern",
+            None,
+        ),
+        "current_sampling_mode": getattr(target, "current_sampling_mode", None),
+    }
+
+
+def _restore_runtime_granularity_state(model, state: Mapping[str, Any]) -> None:
+    target = model.module if hasattr(model, "module") else model
+    pattern = state.get("current_granularity_pattern")
+    layer_granularities = state.get("current_layer_granularities")
+    pattern_type = getattr(pattern, "pattern_type", None)
+
+    if layer_granularities and pattern_type == "per_block":
+        configure_layers = getattr(target, "configure_layer_granularities", None)
+        if configure_layers is not None:
+            configure_layers(layer_granularities)
+    elif state.get("current_granularity") is not None:
+        configure_subnetwork = getattr(target, "configure_subnetwork", None)
+        if configure_subnetwork is not None:
+            configure_subnetwork(state["current_granularity"])
+
+    for field_name, value in state.items():
+        if hasattr(target, field_name):
+            setattr(target, field_name, value)
 
 
 def validation_results_to_metric_rows(

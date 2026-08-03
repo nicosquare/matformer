@@ -508,6 +508,7 @@ def test_write_resolved_config(tmp_path):
         "latest_checkpoint_save_interval_steps": 0,
         "latest_checkpoint_save_on_validation": True,
         "latest_checkpoint_save_on_completion": True,
+        "retain_previous_latest": True,
     }
     assert saved["monitoring"]["project"] == "dmodel256_pilot_comparison"
     assert saved["monitoring"]["job_type"] == "train"
@@ -529,7 +530,13 @@ def test_resolve_minimal_config_includes_long_run_defaults(tmp_path):
     resolved = resolve_run_config(config_path, output_dir=output_dir)
 
     assert resolved["model"]["d_model"] == 128
-    assert resolved["run"]["continuation"] == {"enabled": False}
+    assert resolved["run"]["continuation"] == {
+        "enabled": False,
+        "retain_previous_latest": True,
+    }
+    assert resolved["outputs"]["metrics_flush_interval_steps"] == 100
+    assert resolved["outputs"]["best_eval_retention_count"] == 1
+    assert resolved["evaluation"]["final_validation"] is True
     assert resolved["monitoring"] == {
         "enabled": False,
         "backend": "wandb",
@@ -554,6 +561,33 @@ def test_resolve_minimal_config_includes_long_run_defaults(tmp_path):
         "completion_step": None,
         "transition_reason": None,
     }
+
+
+def test_non_debug_run_cannot_disable_final_validation(tmp_path):
+    with pytest.raises(
+        ConfigError,
+        match="evaluation.final_validation is required",
+    ):
+        resolve_run_config(
+            "configs/dmodel256_pilot_comparison.yaml",
+            output_dir=tmp_path / "dmodel256-pilot-comparison-001",
+            overrides=["evaluation.final_validation=false"],
+        )
+
+
+def test_debug_run_can_explicitly_disable_final_validation(tmp_path):
+    resolved = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=tmp_path / "debug-nested-001",
+        overrides=["evaluation.final_validation=false"],
+    )
+
+    assert resolved["evaluation"]["final_validation"] is False
+    assert (
+        resolved["evaluation"]["final_validation_reason"]
+        == "explicitly_disabled_for_debug_run"
+    )
 
 
 def test_pre_nested_warmup_validation_rules(tmp_path):

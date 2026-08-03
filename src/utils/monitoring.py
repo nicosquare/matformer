@@ -76,9 +76,10 @@ def group_loss_rows_by_series(
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         normalized_row = dict(row)
+        series_granularity = _loss_series_granularity(normalized_row)
         series_name = build_loss_series_name(
             split=str(normalized_row.get("split") or "unknown-split"),
-            granularity=normalized_row.get("granularity"),
+            granularity=series_granularity,
             metric_name=str(normalized_row.get("metric_name") or DEFAULT_LOSS_METRIC_NAME),
             stage=normalized_row.get("stage"),
         )
@@ -113,13 +114,25 @@ def build_monitoring_series_metadata(
                 run_id=str(run.get("run_id", "unknown-run")),
                 topology=topology,
                 split=str(sample.get("split") or "unknown-split"),
-                granularity=sample.get("granularity"),
+                granularity=_loss_series_granularity(sample),
                 metric_name=sample.get("metric_name") or DEFAULT_LOSS_METRIC_NAME,
                 stage=sample.get("stage"),
                 backend=backend,
             )
         )
     return metadata
+
+
+def _loss_series_granularity(row: Mapping[str, Any]) -> Any:
+    sampling_mode = row.get("granularity_sampling_mode") or row.get(
+        "resolved_sampling_mode"
+    )
+    if row.get("split") == "train" and sampling_mode in {
+        "per_block",
+        "adaptive_per_block",
+    }:
+        return sampling_mode
+    return row.get("granularity")
 
 
 def _normalize_backend(raw_backend: Any) -> str:
