@@ -151,6 +151,8 @@ def test_dmodel256_pilot_resolves_current_reference_config(tmp_path):
     assert config["model"]["tokenizer_name"] != config["model"]["base_model_name"]
     assert config["dataset"]["dataset_name"] == "HuggingFaceFW/fineweb"
     assert config["dataset"]["dataset_config_name"] == "sample-10BT"
+    assert config["dataset"]["sample_limit"] == 100_000
+    assert config["dataset"]["tokenization_keep_in_memory"] is True
     assert config["training"]["token_budget"] < 10_000_000_000
 
     validate_run_config(config)
@@ -341,7 +343,11 @@ def test_dmodel256_pilot_runner_standalone_mode_sets_granularity_overrides(tmp_p
 
     assert "--mode" not in args
     assert "--granularity" not in args
-    assert _has_arg_pair(args, "--override", "run.run_id=dmodel256-standalone-m-001")
+    assert _has_arg_pair(
+        args,
+        "--override",
+        "run.run_id=dmodel256-standalone-m-001",
+    )
     assert _has_arg_pair(args, "--override", "run.model_family=standalone")
     assert _has_arg_pair(args, "--override", "run.sampling_mode=standalone")
     assert _has_arg_pair(args, "--override", "run.granularity=m")
@@ -616,7 +622,11 @@ def test_slurm_dmodel256_pilot_multi_gpu_translates_mode_to_train_overrides(tmp_
     assert _has_arg_pair(args, "--nproc_per_node", "4")
     assert "--mode" not in args
     assert "--granularity" not in args
-    assert _has_arg_pair(args, "--override", "run.run_id=dmodel256-standalone-m-001")
+    assert _has_arg_pair(
+        args,
+        "--override",
+        "run.run_id=dmodel256-standalone-m-001",
+    )
     assert _has_arg_pair(args, "--override", "run.model_family=standalone")
     assert _has_arg_pair(args, "--override", "run.sampling_mode=standalone")
     assert _has_arg_pair(args, "--override", "run.granularity=m")

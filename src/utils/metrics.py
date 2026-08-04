@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import os
+import statistics
 import tempfile
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -70,6 +71,13 @@ METRICS_COLUMNS = [
     "perplexity",
     "tokens_seen",
     "content_tokens_seen",
+    "evaluation_examples",
+    "evaluation_batches",
+    "evaluation_target_tokens",
+    "evaluation_skipped_batches",
+    "validation_manifest_hash",
+    "validation_loss_aggregation",
+    "comparison_control_signature",
     "wall_clock_seconds",
     "tokens_per_second",
     "peak_memory_bytes",
@@ -124,6 +132,22 @@ SCALING_RESULTS_COLUMNS = [
     "checkpoint_path",
     "loss",
     "perplexity",
+    "final_validation_loss",
+    "final_validation_perplexity",
+    "best_validation_loss",
+    "best_validation_perplexity",
+    "best_validation_step",
+    "best_validation_checkpoint",
+    "trailing_validation_mean",
+    "trailing_validation_sample_stddev",
+    "trailing_validation_min",
+    "trailing_validation_max",
+    "trailing_validation_count",
+    "final_minus_best_loss",
+    "evaluation_target_tokens",
+    "effective_width",
+    "validation_manifest_hash",
+    "comparison_control_signature",
     "average_downstream_accuracy",
 ]
 
@@ -214,6 +238,9 @@ RUN_SUMMARY_FIELDS = [
     "content_tokens_seen",
     "stop_reason",
     "seed",
+    "validation_manifest_hash",
+    "validation_loss_aggregation",
+    "comparison_control_signature",
     "status",
     "output_root",
     "output_dir",
@@ -612,12 +639,12 @@ def build_run_summary(
         "resolved_activation_checkpointing": training.get(
             "resolved_activation_checkpointing"
         ),
-        "final_validation": config.get("evaluation", {}).get(
-            "final_validation"
-        ),
-        "final_validation_reason": config.get("evaluation", {}).get(
-            "final_validation_reason"
-        ),
+        "final_validation": config.get("evaluation", {})
+        .get("validation", {})
+        .get("run_at_completion"),
+        "final_validation_reason": config.get("evaluation", {})
+        .get("validation", {})
+        .get("run_at_completion_reason"),
         "expected_tokens_per_step": training["expected_tokens_per_step"],
         "derived_max_steps": training["derived_max_steps"],
         "effective_world_size": training["effective_world_size"],
@@ -625,6 +652,13 @@ def build_run_summary(
         "content_tokens_seen": content_tokens_seen,
         "stop_reason": stop_reason,
         "seed": run.get("seed"),
+        "validation_manifest_hash": config.get("validation_manifest_hash"),
+        "validation_loss_aggregation": config.get(
+            "validation_loss_aggregation"
+        ),
+        "comparison_control_signature": config.get(
+            "comparison_control_signature"
+        ),
         "status": status,
         "output_root": run["output_root"],
         "output_dir": run["output_dir"],
@@ -646,8 +680,12 @@ def build_run_summary(
             config,
             metrics_rows=[],
             validation_enabled=bool(
-                config.get("evaluation", {}).get("validation", False)
-                or config.get("evaluation", {}).get("final_validation", False)
+                config.get("evaluation", {})
+                .get("validation", {})
+                .get("enabled", False)
+                or config.get("evaluation", {})
+                .get("validation", {})
+                .get("run_at_completion", False)
             ),
             save_checkpoints=config.get("outputs", {}).get(
                 "save_checkpoints",
@@ -809,8 +847,10 @@ def build_checkpoint_summary_fields(
     if validation_enabled is None:
         evaluation = config.get("evaluation", {})
         validation_enabled = bool(
-            evaluation.get("validation", False)
-            or evaluation.get("final_validation", False)
+            evaluation.get("validation", {}).get("enabled", False)
+            or evaluation.get("validation", {}).get(
+                "run_at_completion", False
+            )
         )
     if save_checkpoints is None:
         save_checkpoints = bool(config.get("outputs", {}).get("save_checkpoints", False))
@@ -995,7 +1035,26 @@ def build_scaling_result_rows(
     if not latest_rows:
         return []
 
-    granularities = list(model["granularities"])
+    configured_granularities = list(model["granularities"])
+    preferred_order = ["micro", "small", "medium", "large", "full"]
+    granularities = [
+        granularity
+        for granularity in preferred_order
+        if granularity in configured_granularities
+    ] + [
+        granularity
+        for granularity in configured_granularities
+        if granularity not in preferred_order
+    ]
+    trailing_count = int(
+        config.get("evaluation", {})
+        .get("validation", {})
+        .get("trailing_summary_evaluations", 5)
+    )
+    prefix_widths = {
+        str(entry["name"]): int(entry["prefix_width"])
+        for entry in model.get("ffn_prefix_metadata", [])
+    }
 
     rows = []
     for granularity in granularities:
@@ -1019,6 +1078,22 @@ def build_scaling_result_rows(
         )
 
         comparison_id = f"{comparison_id_prefix or run['run_id']}__{granularity}"
+        granularity_rows = sorted(
+            (
+                row
+                for row in metrics_rows
+                if row.get("split") == "validation"
+                and row.get("granularity") == granularity
+                and row.get("loss") is not None
+            ),
+            key=lambda row: int(row.get("step", 0)),
+        )
+        best_row = min(granularity_rows, key=lambda row: float(row["loss"]))
+        trailing_rows = granularity_rows[-trailing_count:]
+        trailing_losses = [float(row["loss"]) for row in trailing_rows]
+        final_loss = float(metric_row["loss"])
+        best_loss = float(best_row["loss"])
+        best_step = int(best_row["step"])
         rows.append(
             {
                 "comparison_id": comparison_id,
@@ -1060,9 +1135,43 @@ def build_scaling_result_rows(
                     "other_non_embedding_parameters"
                 ),
                 "lm_head_counting": parameter_counts.get("lm_head_counting"),
-                "checkpoint_path": None,
-                "loss": metric_row["loss"],
+                "checkpoint_path": str(
+                    Path(run["output_dir"])
+                    / "checkpoints"
+                    / f"best_eval_step_{best_step}.pt"
+                ),
+                "loss": final_loss,
                 "perplexity": metric_row["perplexity"],
+                "final_validation_loss": final_loss,
+                "final_validation_perplexity": metric_row["perplexity"],
+                "best_validation_loss": best_loss,
+                "best_validation_perplexity": best_row.get("perplexity"),
+                "best_validation_step": best_step,
+                "best_validation_checkpoint": str(
+                    Path(run["output_dir"])
+                    / "checkpoints"
+                    / f"best_eval_step_{best_step}.pt"
+                ),
+                "trailing_validation_mean": statistics.fmean(trailing_losses),
+                "trailing_validation_sample_stddev": (
+                    statistics.stdev(trailing_losses)
+                    if len(trailing_losses) > 1
+                    else 0.0
+                ),
+                "trailing_validation_min": min(trailing_losses),
+                "trailing_validation_max": max(trailing_losses),
+                "trailing_validation_count": len(trailing_losses),
+                "final_minus_best_loss": final_loss - best_loss,
+                "evaluation_target_tokens": metric_row.get(
+                    "evaluation_target_tokens"
+                ),
+                "effective_width": prefix_widths.get(granularity),
+                "validation_manifest_hash": config.get(
+                    "validation_manifest_hash"
+                ),
+                "comparison_control_signature": config.get(
+                    "comparison_control_signature"
+                ),
                 "average_downstream_accuracy": None,
             }
         )
@@ -1075,6 +1184,8 @@ def build_pilot_comparison_rows(
     run_summaries: Iterable[Mapping[str, Any]],
     omitted_rows: Iterable[Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
+    run_summaries = list(run_summaries)
+    _validate_comparison_provenance(run_summaries)
     rows: list[dict[str, Any]] = []
 
     for summary in run_summaries:
@@ -1202,6 +1313,39 @@ def build_pilot_comparison_rows(
         )
 
     return rows
+
+
+def _validate_comparison_provenance(
+    run_summaries: Iterable[Mapping[str, Any]],
+) -> None:
+    summaries = [
+        summary
+        for summary in run_summaries
+        if summary.get("status", "completed") == "completed"
+    ]
+    manifests = {
+        str(summary["validation_manifest_hash"])
+        for summary in summaries
+        if summary.get("validation_manifest_hash")
+    }
+    signatures = {
+        str(summary["comparison_control_signature"])
+        for summary in summaries
+        if summary.get("comparison_control_signature")
+    }
+    corrected = bool(manifests or signatures)
+    if corrected and any(
+        not summary.get("validation_manifest_hash")
+        or not summary.get("comparison_control_signature")
+        for summary in summaries
+    ):
+        raise ArtifactError(
+            "Corrected comparison rows require validation-manifest and control signatures"
+        )
+    if len(manifests) > 1 or len(signatures) > 1:
+        raise ArtifactError(
+            "Results are not comparable: validation manifests or control signatures differ"
+        )
 
 
 def build_speculative_task_rows(
@@ -1525,6 +1669,13 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "token_budget": None,
         "effective_world_size": None,
         "content_tokens_seen": normalized_row.get("tokens_seen"),
+        "evaluation_examples": None,
+        "evaluation_batches": None,
+        "evaluation_target_tokens": None,
+        "evaluation_skipped_batches": None,
+        "validation_manifest_hash": None,
+        "validation_loss_aggregation": None,
+        "comparison_control_signature": None,
         "ffn_parameters": None,
         "attention_parameters": None,
         "other_non_embedding_parameters": None,
@@ -1532,6 +1683,19 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "checkpoint_path": None,
         "checkpoint_status": None,
         "checkpoint_metric": None,
+        "final_validation_loss": normalized_row.get("loss"),
+        "final_validation_perplexity": normalized_row.get("perplexity"),
+        "best_validation_loss": None,
+        "best_validation_perplexity": None,
+        "best_validation_step": None,
+        "best_validation_checkpoint": None,
+        "trailing_validation_mean": None,
+        "trailing_validation_sample_stddev": None,
+        "trailing_validation_min": None,
+        "trailing_validation_max": None,
+        "trailing_validation_count": None,
+        "final_minus_best_loss": None,
+        "effective_width": None,
         "run_status": normalized_row.get("status"),
         "omit_reason": None,
         "output_root": None,

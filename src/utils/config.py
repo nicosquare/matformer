@@ -20,6 +20,7 @@ from src.utils.model_size import (
     derive_token_budget_slug,
 )
 from src.utils.monitoring import DEFAULT_MONITORING_BACKEND, VALID_MONITORING_BACKENDS
+from src.utils.reproducibility import DATA_SPLIT_VERSION, SEED_STREAM_VERSION
 
 
 VALID_GRANULARITIES = {"s", "m", "l", "xl"}
@@ -502,6 +503,9 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
     if not isinstance(artifact_io, Mapping):
         raise ConfigError("Missing mapping section: outputs.artifact_io")
     evaluation = _require_mapping(config, "evaluation")
+    reproducibility = run.get("reproducibility")
+    if not isinstance(reproducibility, Mapping):
+        raise ConfigError("Missing mapping section: run.reproducibility")
 
     _require_fields(
         run,
@@ -520,6 +524,8 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "family_resolution_rule",
             "output_root",
             "output_dir",
+            "seed",
+            "reproducibility",
         ],
     )
     _require_one_of_fields(
@@ -595,8 +601,34 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
     _require_fields(
         evaluation,
         "evaluation",
-        ["validation", "final_validation"],
+        ["validation", "test"],
     )
+    validation = evaluation.get("validation")
+    if not isinstance(validation, Mapping):
+        raise ConfigError("evaluation.validation must be a mapping")
+    holdout = validation.get("holdout")
+    if not isinstance(holdout, Mapping):
+        raise ConfigError("evaluation.validation.holdout must be a mapping")
+    test_evaluation = evaluation.get("test")
+    if not isinstance(test_evaluation, Mapping):
+        raise ConfigError("evaluation.test must be a mapping")
+    _require_fields(
+        validation,
+        "evaluation.validation",
+        [
+            "enabled",
+            "interval_steps",
+            "run_at_completion",
+            "holdout",
+            "trailing_summary_evaluations",
+        ],
+    )
+    _require_fields(
+        holdout,
+        "evaluation.validation.holdout",
+        ["source", "examples"],
+    )
+    _require_fields(test_evaluation, "evaluation.test", ["enabled"])
     _require_fields(
         monitoring,
         "monitoring",
@@ -645,6 +677,20 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         raise ConfigError(
             f"run.output_dir must end with run.run_id: {output_dir} vs {run_id}"
         )
+
+    seed = run.get("seed")
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ConfigError("run.seed must be an explicit nonnegative integer")
+    if reproducibility.get("mode") != "strict":
+        raise ConfigError("run.reproducibility.mode must be strict")
+    _positive_int(
+        reproducibility.get("seed_stream_version"),
+        "run.reproducibility.seed_stream_version",
+    )
+    _positive_int(
+        reproducibility.get("data_split_version"),
+        "run.reproducibility.data_split_version",
+    )
 
     model_topology = run["model_family"]
     if model_topology not in VALID_MODEL_TOPOLOGIES:
@@ -833,13 +879,33 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         artifact_io.get("metrics_pending_row_limit"),
         "outputs.artifact_io.metrics_pending_row_limit",
     )
-    if not isinstance(evaluation.get("validation"), bool):
-        raise ConfigError("evaluation.validation must be a boolean")
-    if not isinstance(evaluation.get("final_validation"), bool):
-        raise ConfigError("evaluation.final_validation must be a boolean")
-    if completion_label == "run" and not evaluation["final_validation"]:
+    if not isinstance(validation.get("enabled"), bool):
+        raise ConfigError("evaluation.validation.enabled must be a boolean")
+    _nonnegative_int(
+        validation.get("interval_steps"),
+        "evaluation.validation.interval_steps",
+    )
+    if not isinstance(validation.get("run_at_completion"), bool):
         raise ConfigError(
-            "evaluation.final_validation is required when "
+            "evaluation.validation.run_at_completion must be a boolean"
+        )
+    if holdout.get("source") != "configured_dataset_split":
+        raise ConfigError(
+            "evaluation.validation.holdout.source must be configured_dataset_split"
+        )
+    _positive_int(
+        holdout.get("examples"),
+        "evaluation.validation.holdout.examples",
+    )
+    _positive_int(
+        validation.get("trailing_summary_evaluations"),
+        "evaluation.validation.trailing_summary_evaluations",
+    )
+    if test_evaluation.get("enabled") is not False:
+        raise ConfigError("evaluation.test.enabled must be false")
+    if completion_label == "run" and not validation["run_at_completion"]:
+        raise ConfigError(
+            "evaluation.validation.run_at_completion is required when "
             "run.completion_label=run"
         )
 
@@ -1898,6 +1964,7 @@ def _resolve_parameter_reporting_defaults(config: dict[str, Any]) -> None:
 
 
 def _resolve_long_run_defaults(config: dict[str, Any]) -> None:
+    _resolve_reproducibility_defaults(config)
     _resolve_continuation_defaults(config)
     _resolve_monitoring_defaults(config)
     _resolve_pre_nested_warmup_defaults(config)
@@ -2216,28 +2283,146 @@ def _resolve_reliability_defaults(config: dict[str, Any]) -> None:
     )
     outputs["artifact_io"] = artifact_io
 
-    evaluation["validation"] = _normalize_bool(
-        evaluation.get("validation", False),
-        "evaluation.validation",
-    )
-    evaluation["final_validation"] = _normalize_bool(
-        evaluation.get("final_validation", True),
-        "evaluation.final_validation",
-    )
-    if run.get("completion_label") == "run" and not evaluation["final_validation"]:
+    _resolve_evaluation_defaults(config)
+    validation = evaluation["validation"]
+    if run.get("completion_label") == "run" and not validation["run_at_completion"]:
         raise ConfigError(
-            "evaluation.final_validation is required when "
+            "evaluation.validation.run_at_completion is required when "
             "run.completion_label=run"
         )
-    evaluation["final_validation_reason"] = (
+    validation["run_at_completion_reason"] = (
         "required_for_completed_run"
         if run.get("completion_label") == "run"
         else (
             "enabled_for_debug_run"
-            if evaluation["final_validation"]
+            if validation["run_at_completion"]
             else "explicitly_disabled_for_debug_run"
         )
     )
+
+
+def _resolve_reproducibility_defaults(config: dict[str, Any]) -> None:
+    run = config.setdefault("run", {})
+    if "seed" not in run:
+        raise ConfigError("run.seed must be an explicit nonnegative integer")
+    seed = run["seed"]
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ConfigError("run.seed must be an explicit nonnegative integer")
+
+    reproducibility = run.get("reproducibility", {})
+    if not isinstance(reproducibility, dict):
+        raise ConfigError("run.reproducibility must be a mapping when provided")
+    mode = reproducibility.get("mode", "strict")
+    if mode != "strict":
+        raise ConfigError("run.reproducibility.mode must be strict")
+    reproducibility["mode"] = "strict"
+    reproducibility["seed_stream_version"] = _positive_int(
+        reproducibility.get("seed_stream_version", SEED_STREAM_VERSION),
+        "run.reproducibility.seed_stream_version",
+    )
+    reproducibility["data_split_version"] = _positive_int(
+        reproducibility.get("data_split_version", DATA_SPLIT_VERSION),
+        "run.reproducibility.data_split_version",
+    )
+    run["reproducibility"] = reproducibility
+
+
+def _resolve_evaluation_defaults(config: dict[str, Any]) -> None:
+    training = config.setdefault("training", {})
+    evaluation = config.setdefault("evaluation", {})
+    raw_validation = evaluation.get("validation", False)
+    legacy_enabled = raw_validation if isinstance(raw_validation, bool) else None
+    if isinstance(raw_validation, Mapping):
+        validation = copy.deepcopy(dict(raw_validation))
+    elif isinstance(raw_validation, bool):
+        validation = {}
+    else:
+        raise ConfigError("evaluation.validation must be a boolean or mapping")
+
+    if legacy_enabled is not None:
+        validation["enabled"] = legacy_enabled
+    else:
+        validation["enabled"] = _normalize_bool(
+            validation.get("enabled", False),
+            "evaluation.validation.enabled",
+        )
+
+    legacy_interval = training.get("eval_interval")
+    canonical_interval = validation.get("interval_steps")
+    if legacy_interval is not None and canonical_interval is not None:
+        if int(legacy_interval) != int(canonical_interval):
+            raise ConfigError(
+                "Conflicting training.eval_interval and "
+                "evaluation.validation.interval_steps"
+            )
+    validation["interval_steps"] = _nonnegative_int(
+        canonical_interval if canonical_interval is not None else legacy_interval or 0,
+        "evaluation.validation.interval_steps",
+    )
+
+    legacy_completion = evaluation.get("final_validation")
+    canonical_completion = validation.get("run_at_completion")
+    if legacy_completion is not None and canonical_completion is not None:
+        if bool(legacy_completion) != bool(canonical_completion):
+            raise ConfigError(
+                "Conflicting evaluation.final_validation and "
+                "evaluation.validation.run_at_completion"
+            )
+    validation["run_at_completion"] = _normalize_bool(
+        canonical_completion
+        if canonical_completion is not None
+        else (legacy_completion if legacy_completion is not None else True),
+        "evaluation.validation.run_at_completion",
+    )
+
+    holdout = validation.get("holdout", {})
+    if not isinstance(holdout, dict):
+        raise ConfigError("evaluation.validation.holdout must be a mapping")
+    holdout["source"] = str(
+        holdout.get("source", "configured_dataset_split")
+    )
+    legacy_batches = training.get("eval_batches")
+    legacy_examples = None
+    if legacy_batches is not None:
+        legacy_examples = _positive_int(
+            legacy_batches, "training.eval_batches"
+        ) * _positive_int(
+            training.get("batch_size_per_process"),
+            "training.batch_size_per_process",
+        )
+    canonical_examples = holdout.get("examples")
+    if legacy_examples is not None and canonical_examples is not None:
+        if legacy_examples != int(canonical_examples):
+            raise ConfigError(
+                "Conflicting training.eval_batches and "
+                "evaluation.validation.holdout.examples"
+            )
+    holdout["examples"] = _positive_int(
+        canonical_examples
+        if canonical_examples is not None
+        else (legacy_examples if legacy_examples is not None else 512),
+        "evaluation.validation.holdout.examples",
+    )
+    validation["holdout"] = holdout
+    validation["trailing_summary_evaluations"] = _positive_int(
+        validation.get("trailing_summary_evaluations", 5),
+        "evaluation.validation.trailing_summary_evaluations",
+    )
+
+    test_evaluation = evaluation.get("test", {"enabled": False})
+    if not isinstance(test_evaluation, dict):
+        raise ConfigError("evaluation.test must be a mapping")
+    test_evaluation["enabled"] = _normalize_bool(
+        test_evaluation.get("enabled", False), "evaluation.test.enabled"
+    )
+    if test_evaluation["enabled"]:
+        raise ConfigError("evaluation.test.enabled must be false")
+
+    training.pop("eval_interval", None)
+    training.pop("eval_batches", None)
+    evaluation.pop("final_validation", None)
+    evaluation["validation"] = validation
+    evaluation["test"] = test_evaluation
 
 
 def _resolve_monitoring_defaults(config: dict[str, Any]) -> None:

@@ -157,6 +157,15 @@ RUN_STANDALONE_BASELINES=1 \
   bash scripts/run_dmodel256_pilot.sh
 ```
 
+The corrected pilot resolves seed 42 with strict seed-stream and data-split
+version 1, AdamW at learning rate 0.001 without world-size scaling, and a
+fixed 512-example validation holdout selected from the configured FineWeb
+`train` split. This recurring holdout selects the best checkpoint and is
+therefore validation data, not test data. Each launch prints a preflight of
+the resolved controls; `python train.py --config ... --preflight` provides the
+same check without starting training. These corrected controls are the default
+behavior of the existing pilot run IDs.
+
 For a short scheduler smoke check, cap the derived token-budget step count:
 
 ```bash

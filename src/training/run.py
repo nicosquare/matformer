@@ -31,7 +31,6 @@ from src.models.ffn import build_concat_layout_diagnostic
 from src.models.wiring import (
     record_runtime_sampling_provenance,
 )
-from src.training.steps import set_random_seed
 from src.utils.config import (
     ConfigError,
     attach_parameter_counts_to_config,
@@ -50,6 +49,12 @@ from src.utils.metrics import (
     write_metrics_csv,
     write_run_summary,
     write_scaling_results_csv,
+    write_json_artifact,
+)
+from src.utils.reproducibility import (
+    configure_strict_determinism,
+    seed_model_initialization,
+    seed_training_randomness,
 )
 
 def run_from_config_path(
@@ -90,6 +95,8 @@ def run_training(
 ) -> dict[str, Any]:
     ensure_single_process_runtime()
     validate_run_config(config)
+    deterministic_settings = configure_strict_determinism(config)
+    seed_model_initialization(config)
     run = config["run"]
     training = config["training"]
     output_dir = Path(run["output_dir"])
@@ -119,7 +126,6 @@ def run_training(
 
     with training_monitoring.heartbeat_stage(heartbeat_writer, "artifact_writing"):
         write_config_artifact(config, distributed_context=distributed_context)
-    set_random_seed(run.get("seed"))
 
     device = torch.device(distributed_context.device)
 
@@ -127,6 +133,7 @@ def run_training(
         with training_monitoring.heartbeat_stage(heartbeat_writer, "model_initialization"):
             if model is None:
                 model = training_modeling.build_model(config)
+            seed_training_randomness(config)
             record_runtime_sampling_provenance(model, config)
             if (
                 distributed_context.is_rank_zero
@@ -190,6 +197,19 @@ def run_training(
                 device,
                 distributed_context=distributed_context,
             )
+            validation_manifest = config.pop("_validation_manifest")
+            if training_distributed.should_write_shared_artifact(distributed_context):
+                write_json_artifact(
+                    output_dir / "validation_manifest.json",
+                    validation_manifest,
+                    distributed_context=distributed_context,
+                    artifact_io=config,
+                )
+                print(
+                    "[validation] manifest_hash="
+                    f"{config['validation_manifest_hash']}",
+                    flush=True,
+                )
         optimizer, scheduler = training_steps.build_optimizer_and_scheduler(
             model,
             training,
@@ -405,12 +425,22 @@ def run_training(
                 "resolved_activation_checkpointing"
             ),
             "final_validation": config.get("evaluation", {}).get(
-                "final_validation"
+                "validation", {}
+            ).get(
+                "run_at_completion"
             ),
             "final_validation_reason": config.get("evaluation", {}).get(
-                "final_validation_reason"
-            ),
+                "validation", {}
+            ).get("run_at_completion_reason"),
             "artifact_retry_count": int(run_state.get("artifact_retry_count", 0)),
+            "validation_manifest_hash": config.get("validation_manifest_hash"),
+            "validation_loss_aggregation": config.get(
+                "validation_loss_aggregation"
+            ),
+            "comparison_control_signature": config.get(
+                "comparison_control_signature"
+            ),
+            "deterministic_runtime_settings": deterministic_settings,
             "artifact_last_errno": run_state.get("artifact_last_errno"),
             "last_durable_checkpoint_step": int(
                 run_state.get("last_durable_checkpoint_step", 0)

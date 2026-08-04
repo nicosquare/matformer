@@ -140,6 +140,40 @@ if [[ "$MODE" == "standalone" ]]; then
 fi
 printf 'Output root: %s\n' "$OUTPUT_ROOT_VALUE"
 
+print_preflight() {
+  local resolver_bin="${PYTHON_CONFIG_BIN:-$PYTHON_BIN}"
+  local -a resolver_command
+  local -a resolver_overrides=()
+  local index
+  for ((index = 0; index < ${#FORWARDED_ARGS[@]}; index++)); do
+    if [[ "${FORWARDED_ARGS[$index]}" == "--override" ]]; then
+      resolver_overrides+=("${FORWARDED_ARGS[$((index + 1))]}")
+      index=$((index + 1))
+    fi
+  done
+  read -r -a resolver_command <<< "$resolver_bin"
+  "${resolver_command[@]}" - "$CONFIG_PATH" "${resolver_overrides[@]}" <<'PY'
+import json
+import sys
+
+from src.utils.config import resolve_run_config
+from src.utils.reproducibility import build_comparison_control_signature
+
+resolved = resolve_run_config(sys.argv[1], overrides=sys.argv[2:])
+validation = resolved["evaluation"]["validation"]
+_, controls = build_comparison_control_signature(resolved)
+print("Preflight:")
+print(f"  seed={resolved['run']['seed']} reproducibility={resolved['run']['reproducibility']}")
+print(f"  optimizer={resolved['training']['optimizer_name']} learning_rate={resolved['training']['resolved_learning_rate']}")
+print(f"  token_budget={resolved['training']['token_budget']} batch_size_per_process={resolved['training']['batch_size_per_process']}")
+print(f"  dataset_sample_limit={resolved['dataset'].get('sample_limit')} tokenization_keep_in_memory={resolved['dataset'].get('tokenization_keep_in_memory', False)}")
+print(f"  validation={json.dumps(validation, sort_keys=True)}")
+print(f"  comparison_control_inputs={json.dumps(controls, sort_keys=True)}")
+PY
+}
+
+print_preflight
+
 python_command() {
   local -a command_parts
   # Allow the Slurm wrapper to provide a launcher prefix such as

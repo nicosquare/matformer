@@ -49,6 +49,11 @@ from src.utils.metrics import (
     best_validation_metric_value,
     build_checkpoint_summary_fields,
 )
+from src.utils.reproducibility import (
+    capture_rng_state,
+    deterministic_runtime_settings,
+    restore_rng_state,
+)
 
 def continuation_latest_checkpoint_policy(
     config: Mapping[str, Any],
@@ -335,8 +340,8 @@ def maybe_write_best_eval_checkpoint(
         return
     evaluation = config.get("evaluation", {})
     if not (
-        evaluation.get("validation", False)
-        or evaluation.get("final_validation", False)
+        evaluation.get("validation", {}).get("enabled", False)
+        or evaluation.get("validation", {}).get("run_at_completion", False)
     ):
         return
 
@@ -478,6 +483,33 @@ def save_model_checkpoint(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
             "run_id": config["run"]["run_id"],
+            "reproducibility": {
+                "root_seed": config["run"]["seed"],
+                "seed_stream_version": config["run"]["reproducibility"][
+                    "seed_stream_version"
+                ],
+                "data_split_version": config["run"]["reproducibility"][
+                    "data_split_version"
+                ],
+                "validation_manifest_hash": config.get(
+                    "validation_manifest_hash"
+                ),
+                "comparison_control_signature": config.get(
+                    "comparison_control_signature"
+                ),
+                "batch_size_per_process": config["training"][
+                    "batch_size_per_process"
+                ],
+                "world_size": int(
+                    getattr(distributed_context, "world_size", 1)
+                ),
+                "rank_topology": list(
+                    range(int(getattr(distributed_context, "world_size", 1)))
+                ),
+                "rng_state": capture_rng_state(),
+                "deterministic_runtime_settings": deterministic_runtime_settings(),
+                "adaptive_sampler_seed_provenance": "adaptive_sampling",
+            },
             "checkpoint_status": checkpoint_fields["checkpoint_status"],
             "checkpoint_metric": checkpoint_fields["checkpoint_metric"],
             "checkpoint_metric_value": checkpoint_fields[
@@ -1328,6 +1360,12 @@ def load_checkpoint_state(
         return state
 
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    reproducibility_payload = _validate_reproducibility_payload(
+        checkpoint,
+        config=config,
+        checkpoint_path=checkpoint_path,
+        distributed_context=distributed_context,
+    )
     model_state_dict = checkpoint.get("model_state_dict")
     if model_state_dict is None:
         raise ConfigError(f"Checkpoint missing model_state_dict: {checkpoint_path}")
@@ -1343,6 +1381,8 @@ def load_checkpoint_state(
     )
     if scheduler is not None and scheduler_state_dict is not None:
         scheduler.load_state_dict(scheduler_state_dict)
+    if reproducibility_payload is not None:
+        restore_rng_state(reproducibility_payload["rng_state"])
 
     last_completed_step = int(
         checkpoint.get("step", checkpoint.get("last_completed_step", 0))
@@ -1429,3 +1469,76 @@ def load_checkpoint_state(
     if config is not None:
         _validate_loaded_adaptive_sampler_state(state, config, checkpoint_path)
     return state
+
+
+def _validate_reproducibility_payload(
+    checkpoint: Mapping[str, Any],
+    *,
+    config: Mapping[str, Any] | None,
+    checkpoint_path: Path,
+    distributed_context=None,
+) -> Mapping[str, Any] | None:
+    payload = checkpoint.get("reproducibility")
+    if not isinstance(payload, Mapping):
+        if config is not None and config.get("validation_manifest_hash") is None:
+            return None
+        raise ConfigError(
+            "Checkpoint lacks the reproducibility payload required for corrected "
+            f"runs: {checkpoint_path}"
+        )
+    required = {
+        "root_seed",
+        "seed_stream_version",
+        "data_split_version",
+        "validation_manifest_hash",
+        "comparison_control_signature",
+        "batch_size_per_process",
+        "world_size",
+        "rank_topology",
+        "rng_state",
+        "deterministic_runtime_settings",
+        "adaptive_sampler_seed_provenance",
+    }
+    missing = required - set(payload)
+    if missing:
+        raise ConfigError(
+            f"Checkpoint reproducibility payload is incomplete: {sorted(missing)}"
+        )
+    if config is None:
+        return payload
+
+    expected = {
+        "root_seed": config["run"]["seed"],
+        "seed_stream_version": config["run"]["reproducibility"][
+            "seed_stream_version"
+        ],
+        "data_split_version": config["run"]["reproducibility"][
+            "data_split_version"
+        ],
+        "validation_manifest_hash": config.get("validation_manifest_hash"),
+        "comparison_control_signature": config.get(
+            "comparison_control_signature"
+        ),
+        "batch_size_per_process": config["training"]["batch_size_per_process"],
+        "world_size": int(getattr(distributed_context, "world_size", 1)),
+    }
+    mismatches = {
+        key: (payload.get(key), value)
+        for key, value in expected.items()
+        if payload.get(key) != value
+    }
+    if mismatches:
+        raise ConfigError(
+            "Checkpoint reproducibility controls do not match the current run: "
+            f"{mismatches}"
+        )
+    expected_topology = list(range(expected["world_size"]))
+    if list(payload["rank_topology"]) != expected_topology:
+        raise ConfigError("Checkpoint rank topology does not match the current run")
+    settings = payload["deterministic_runtime_settings"]
+    if config.get("validation_manifest_hash") is not None and (
+        not isinstance(settings, Mapping)
+        or not settings.get("deterministic_algorithms", False)
+    ):
+        raise ConfigError("Checkpoint did not record strict deterministic settings")
+    return payload

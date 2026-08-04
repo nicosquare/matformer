@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import random
 from typing import Any
 
+import numpy as np
 import torch
 from datasets import load_dataset
-from torch.utils.data import DataLoader
-from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data import DataLoader, Sampler
+
+from src.utils.reproducibility import (
+    build_comparison_control_signature,
+    seed_for,
+    stable_hash,
+)
 
 
 class DataError(ValueError):
@@ -37,6 +45,7 @@ def load_text_dataset(
     seed: int | None = None,
     text_column: str = "text",
     shuffle: bool = True,
+    metadata_target: dict[str, Any] | None = None,
 ):
     _log_dataset_cache_context(dataset_name, dataset_split)
     if dataset_config_name:
@@ -48,6 +57,11 @@ def load_text_dataset(
         f"loaded cache_files={getattr(dataset, 'cache_files', None)}",
         flush=True,
     )
+    if metadata_target is not None:
+        metadata_target["source_dataset_fingerprint"] = getattr(
+            dataset, "_fingerprint", None
+        )
+        metadata_target["source_dataset_size"] = len(dataset)
     return prepare_text_dataset(
         dataset,
         sample_limit=sample_limit,
@@ -83,6 +97,7 @@ def tokenize_text_dataset(
     text_column: str = "text",
     num_proc: int = 1,
     remove_source_columns: bool = True,
+    keep_in_memory: bool = False,
 ):
     if text_column not in dataset.column_names:
         raise DataError(f"Dataset does not contain text column: {text_column}")
@@ -102,7 +117,10 @@ def tokenize_text_dataset(
             max_length=context_length,
         )
 
-    map_kwargs = {"batched": True}
+    map_kwargs = {
+        "batched": True,
+        "keep_in_memory": bool(keep_in_memory),
+    }
     if num_proc and num_proc > 1:
         map_kwargs["num_proc"] = num_proc
     if remove_source_columns:
@@ -124,7 +142,6 @@ def load_and_tokenize_dataset(
     num_proc: int = 1,
     shuffle: bool = True,
 ):
-    run = config["run"]
     dataset_config = config["dataset"]
     model_config = config["model"]
 
@@ -133,9 +150,10 @@ def load_and_tokenize_dataset(
         dataset_config["dataset_split"],
         dataset_config_name=dataset_config.get("dataset_config_name"),
         sample_limit=dataset_config.get("sample_limit"),
-        seed=run.get("seed"),
+        seed=seed_for(config, "dataset_selection"),
         text_column=text_column,
         shuffle=shuffle,
+        metadata_target=dataset_config,
     )
     return tokenize_text_dataset(
         dataset,
@@ -143,14 +161,117 @@ def load_and_tokenize_dataset(
         context_length=model_config["context_length"],
         text_column=text_column,
         num_proc=num_proc,
+        keep_in_memory=dataset_config.get("tokenization_keep_in_memory", False),
     )
 
 
-def split_train_eval_dataset(dataset, eval_example_count: int):
-    eval_size = min(eval_example_count, len(dataset))
-    eval_dataset = dataset.select(range(eval_size))
-    train_dataset = dataset.select(range(eval_size, len(dataset)))
+def split_train_eval_dataset(
+    dataset,
+    eval_example_count: int,
+    seed: int | None = None,
+):
+    if len(dataset) < eval_example_count + 1:
+        raise DataError(
+            "Validation holdout requires at least "
+            f"{eval_example_count + 1} usable examples; found {len(dataset)}"
+        )
+    if seed is None:
+        eval_indices = list(range(eval_example_count))
+    else:
+        eval_indices = sorted(random.Random(seed).sample(range(len(dataset)), eval_example_count))
+    eval_index_set = set(eval_indices)
+    train_indices = [index for index in range(len(dataset)) if index not in eval_index_set]
+    eval_dataset = dataset.select(eval_indices)
+    train_dataset = dataset.select(train_indices)
     return train_dataset, eval_dataset
+
+
+class EpochRandomSampler(Sampler[int]):
+    """Epoch-addressable sampler for deterministic single-process training."""
+
+    def __init__(self, dataset, seed: int):
+        self.dataset = dataset
+        self.seed = int(seed)
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    def __iter__(self):
+        generator = torch.Generator()
+        generator.manual_seed(_epoch_seed(self.seed, self.epoch, 0, 1))
+        return iter(torch.randperm(len(self.dataset), generator=generator).tolist())
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+
+class DeterministicDistributedTrainingSampler(Sampler[int]):
+    """Deterministic distributed permutation with equal rank lengths."""
+
+    def __init__(self, dataset, seed: int, rank: int, world_size: int):
+        self.dataset = dataset
+        self.seed = int(seed)
+        self.rank = int(rank)
+        self.world_size = int(world_size)
+        self.epoch = 0
+        self.num_samples = (len(dataset) + self.world_size - 1) // self.world_size
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    def __iter__(self):
+        generator = torch.Generator()
+        generator.manual_seed(_epoch_seed(self.seed, self.epoch, 0, self.world_size))
+        indices = torch.randperm(len(self.dataset), generator=generator).tolist()
+        total_size = self.num_samples * self.world_size
+        if len(indices) < total_size:
+            indices.extend(indices[: total_size - len(indices)])
+        return iter(indices[self.rank:total_size:self.world_size])
+
+    def __len__(self) -> int:
+        return self.num_samples
+
+
+class DistributedValidationSampler(Sampler[int]):
+    """Fixed-order validation partition without padding or duplication."""
+
+    def __init__(self, dataset, rank: int, world_size: int):
+        self.dataset = dataset
+        self.rank = int(rank)
+        self.world_size = int(world_size)
+
+    def __iter__(self):
+        return iter(range(self.rank, len(self.dataset), self.world_size))
+
+    def __len__(self) -> int:
+        remaining = len(self.dataset) - self.rank
+        return max(0, (remaining + self.world_size - 1) // self.world_size)
+
+
+class SeededWorkerInitializer:
+    def __init__(self, seed: int, sampler, rank: int, world_size: int):
+        self.seed = int(seed)
+        self.sampler = sampler
+        self.rank = int(rank)
+        self.world_size = int(world_size)
+
+    def __call__(self, worker_id: int) -> None:
+        epoch = int(getattr(self.sampler, "epoch", 0))
+        worker_seed = _epoch_seed(
+            self.seed,
+            epoch,
+            self.rank * 1_000_003 + int(worker_id),
+            self.world_size,
+        )
+        random.seed(worker_seed)
+        np.random.seed(worker_seed % (2**32))
+        torch.manual_seed(worker_seed)
+
+
+def _epoch_seed(seed: int, epoch: int, rank: int, world_size: int) -> int:
+    material = f"{seed}|{epoch}|{rank}|{world_size}".encode("utf-8")
+    return int.from_bytes(hashlib.sha256(material).digest()[:8], "big") & ((1 << 63) - 1)
 
 
 def build_dataloaders(
@@ -161,36 +282,38 @@ def build_dataloaders(
 ):
     training = config["training"]
     batch_size = training["batch_size_per_process"]
-    eval_batches = training.get("eval_batches", 1)
-    eval_example_count = max(1, eval_batches * batch_size)
+    validation = config["evaluation"]["validation"]
+    eval_example_count = int(validation["holdout"]["examples"])
+    validation_seed = seed_for(config, "validation_holdout")
 
     train_dataset, eval_dataset = split_train_eval_dataset(
         tokenized_dataset,
         eval_example_count,
+        seed=validation_seed,
     )
-    if len(train_dataset) == 0:
-        train_dataset = eval_dataset
 
     pin_memory = device.type == "cuda"
-    train_sampler = build_distributed_sampler(
-        train_dataset,
-        distributed_context,
-        shuffle=True,
-        seed=config["run"].get("seed"),
-    )
-    eval_sampler = build_distributed_sampler(
-        eval_dataset,
-        distributed_context,
-        shuffle=False,
-        seed=config["run"].get("seed"),
+    rank = int(getattr(distributed_context, "rank", 0))
+    world_size = int(getattr(distributed_context, "world_size", 1))
+    sampler_seed = seed_for(config, "training_sampler")
+    if distributed_context is not None and distributed_context.enabled:
+        train_sampler = DeterministicDistributedTrainingSampler(
+            train_dataset, sampler_seed, rank, world_size
+        )
+        eval_sampler = DistributedValidationSampler(eval_dataset, rank, world_size)
+    else:
+        train_sampler = EpochRandomSampler(train_dataset, sampler_seed)
+        eval_sampler = None
+    worker_initializer = SeededWorkerInitializer(
+        seed_for(config, "dataloader_workers"), train_sampler, rank, world_size
     )
     train_dataloader = build_language_model_dataloader(
         train_dataset,
         batch_size=batch_size,
-        shuffle=train_sampler is None,
         sampler=train_sampler,
         num_workers=training.get("dataloader_num_workers", 0),
         pin_memory=pin_memory,
+        worker_init_fn=worker_initializer,
     )
     eval_dataloader = build_language_model_dataloader(
         eval_dataset,
@@ -199,6 +322,15 @@ def build_dataloaders(
         sampler=eval_sampler,
         num_workers=training.get("dataloader_num_workers", 0),
         pin_memory=pin_memory,
+        worker_init_fn=SeededWorkerInitializer(
+            seed_for(config, "dataloader_workers"), eval_sampler, rank, world_size
+        ),
+    )
+    _attach_validation_provenance(
+        config,
+        tokenized_dataset,
+        eval_example_count=eval_example_count,
+        validation_seed=validation_seed,
     )
     return train_dataloader, eval_dataloader
 
@@ -212,12 +344,17 @@ def build_distributed_sampler(
     if distributed_context is None or not distributed_context.enabled:
         return None
 
-    return DistributedSampler(
+    if shuffle:
+        return DeterministicDistributedTrainingSampler(
+            dataset,
+            0 if seed is None else int(seed),
+            distributed_context.rank,
+            distributed_context.world_size,
+        )
+    return DistributedValidationSampler(
         dataset,
-        num_replicas=distributed_context.world_size,
-        rank=distributed_context.rank,
-        shuffle=shuffle,
-        seed=0 if seed is None else int(seed),
+        distributed_context.rank,
+        distributed_context.world_size,
     )
 
 
@@ -230,6 +367,7 @@ def collate_language_model_batch(batch: list[dict[str, Any]]) -> dict[str, torch
         attention_mask = torch.ones_like(input_ids)
 
     labels = input_ids.clone()
+    labels[attention_mask == 0] = -100
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
@@ -244,6 +382,7 @@ def build_language_model_dataloader(
     sampler=None,
     num_workers: int = 0,
     pin_memory: bool = False,
+    worker_init_fn=None,
 ) -> DataLoader:
     return DataLoader(
         dataset,
@@ -253,7 +392,58 @@ def build_language_model_dataloader(
         collate_fn=collate_language_model_batch,
         num_workers=num_workers,
         pin_memory=pin_memory,
+        worker_init_fn=worker_init_fn,
     )
+
+
+def _attach_validation_provenance(
+    config: dict[str, Any],
+    dataset,
+    *,
+    eval_example_count: int,
+    validation_seed: int,
+) -> None:
+    validation_indices = sorted(
+        random.Random(validation_seed).sample(range(len(dataset)), eval_example_count)
+    )
+    validation_index_set = set(validation_indices)
+    training_indices = [
+        index for index in range(len(dataset)) if index not in validation_index_set
+    ]
+    dataset_config = config["dataset"]
+    model = config["model"]
+    run = config["run"]
+    manifest = {
+        "dataset_name": dataset_config["dataset_name"],
+        "dataset_config_name": dataset_config.get("dataset_config_name"),
+        "source_split": dataset_config["dataset_split"],
+        "dataset_fingerprint": dataset_config.get(
+            "source_dataset_fingerprint", getattr(dataset, "_fingerprint", None)
+        ),
+        "dataset_size_before_sample_limit": dataset_config.get(
+            "source_dataset_size", len(dataset)
+        ),
+        "dataset_size_before_splitting": len(dataset),
+        "root_seed": run["seed"],
+        "validation_holdout_seed": validation_seed,
+        "split_algorithm": "sha256_seeded_random_sample_sorted_v1",
+        "data_split_version": run["reproducibility"]["data_split_version"],
+        "validation_indices": validation_indices,
+        "validation_indices_hash": stable_hash(validation_indices),
+        "training_index_hash": stable_hash(training_indices),
+        "validation_example_count": eval_example_count,
+        "tokenizer": model.get("tokenizer_name"),
+        "context_length": model["context_length"],
+        "padding_policy": "max_length_attention_mask_labels_minus_100",
+        "aggregation_method": "target_token_weighted_causal_shift_float64",
+    }
+    manifest["manifest_hash"] = stable_hash(manifest)
+    config["validation_manifest_hash"] = manifest["manifest_hash"]
+    config["validation_loss_aggregation"] = manifest["aggregation_method"]
+    config["_validation_manifest"] = manifest
+    signature, inputs = build_comparison_control_signature(config)
+    config["comparison_control_signature"] = signature
+    config["comparison_control_inputs"] = inputs
 
 
 def _stack_feature(batch: list[dict[str, Any]], name: str) -> torch.Tensor:

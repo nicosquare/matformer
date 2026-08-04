@@ -2,6 +2,17 @@
 
 Run these one at a time if you have a submission cap. This layout uses an aligned explicit granularity map so the `concat` runs stay valid at `d_model=256`.
 
+All commands select the `adam` optimizer preset. The preset resolves to AdamW,
+so do not also set `training.optimizer.name`; preset and direct-name selection
+are mutually exclusive.
+
+The pilot config deterministically selects 100,000 FineWeb examples before
+tokenization. This covers the 100M-token training budget and 512-example
+validation holdout without trying to create a tokenized Arrow cache for all
+14.9M rows in `sample-10BT`. The bounded tokenized subset stays in memory to
+avoid generated Arrow writes on Lustre; the original FineWeb shards are still
+read from the shared Hugging Face cache.
+
 ```bash
 export OUT=/mnt/experiments/matformer
 repo=/home/nicolas.avila/dev/references/matformer
@@ -17,7 +28,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-random --run-id dmodel256-explicit-nested-random-slicing-none-global \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=slicing \
@@ -34,7 +44,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-random --run-id dmodel256-explicit-nested-random-slicing-none-per_block \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=slicing \
@@ -51,7 +60,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-random --run-id dmodel256-explicit-nested-random-slicing-gmc-global \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=slicing \
@@ -68,7 +76,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-random --run-id dmodel256-explicit-nested-random-slicing-gmc-per_block \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=slicing \
@@ -87,7 +94,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-random --run-id dmodel256-explicit-nested-random-concat-none-global \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=concat \
@@ -104,7 +110,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-random --run-id dmodel256-explicit-nested-random-concat-none-per_block \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=concat \
@@ -121,7 +126,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-random --run-id dmodel256-explicit-nested-random-concat-gmc-global \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=concat \
@@ -138,7 +142,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-random --run-id dmodel256-explicit-nested-random-concat-gmc-per_block \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=concat \
@@ -155,7 +158,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-random --run-id dmodel256-explicit-nested-random-concat-lmc-global \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=concat \
@@ -172,7 +174,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-random --run-id dmodel256-explicit-nested-random-concat-lmc-per_block \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=concat \
@@ -191,7 +192,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-all --run-id dmodel256-explicit-nested-all-slicing-none \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=slicing \
@@ -208,7 +208,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-all --run-id dmodel256-explicit-nested-all-slicing-gmc \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=slicing \
@@ -227,7 +226,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-all --run-id dmodel256-explicit-nested-all-concat-none \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=concat \
@@ -244,7 +242,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-all --run-id dmodel256-explicit-nested-all-concat-gmc \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=concat \
@@ -261,7 +258,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-all --run-id dmodel256-explicit-nested-all-concat-lmc \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=concat \
@@ -280,7 +276,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode standalone --run-id dmodel256-explicit-standalone-micro-001 --granularity micro \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.correction_mode=none \
@@ -295,7 +290,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode standalone --run-id dmodel256-explicit-standalone-small-001 --granularity small \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.correction_mode=none \
@@ -310,7 +304,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode standalone --run-id dmodel256-explicit-standalone-medium-001 --granularity medium \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.correction_mode=none \
@@ -325,7 +318,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode standalone --run-id dmodel256-explicit-standalone-large-001 --granularity large \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.correction_mode=none \
@@ -340,7 +332,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode standalone --run-id dmodel256-explicit-standalone-full-001 --granularity full \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.correction_mode=none \
@@ -357,7 +348,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-random --run-id dmodel256-explicit-nested-random-slicing-none-adaptive-thompson \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=slicing \
@@ -375,7 +365,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-random --run-id dmodel256-explicit-nested-random-slicing-gmc-adaptive-thompson \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=slicing \
@@ -393,7 +382,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-random --run-id dmodel256-explicit-nested-random-concat-none-adaptive-thompson \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=concat \
@@ -411,7 +399,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-random --run-id dmodel256-explicit-nested-random-concat-gmc-adaptive-thompson \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=concat \
@@ -429,7 +416,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-random --run-id dmodel256-explicit-nested-random-concat-lmc-adaptive-thompson \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=concat \
@@ -449,7 +435,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-random --run-id dmodel256-explicit-nested-random-slicing-none-adaptive-ucb \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=slicing \
@@ -467,7 +452,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-random --run-id dmodel256-explicit-nested-random-slicing-gmc-adaptive-ucb \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=slicing \
@@ -485,7 +469,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-random --run-id dmodel256-explicit-nested-random-concat-none-adaptive-ucb \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=concat \
@@ -503,7 +486,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-random --run-id dmodel256-explicit-nested-random-concat-gmc-adaptive-ucb \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=concat \
@@ -521,7 +503,6 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --mode nested-random --run-id dmodel256-explicit-nested-random-concat-lmc-adaptive-ucb \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
-  --override training.optimizer.name=adamw \
   --override training.learning_rate=0.001 \
   --override training.learning_rate_scale_rule=none \
   --override model.variant=concat \

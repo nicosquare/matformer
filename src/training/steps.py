@@ -10,14 +10,12 @@ except ImportError:  # pragma: no cover - optional dependency
 
 load_dotenv()
 
-import random
 import time
 from pathlib import Path
 from typing import Any, Mapping
 
 import torch
 from torch.nn.utils import clip_grad_norm_
-from torch.utils.data.distributed import DistributedSampler
 from transformers import get_scheduler
 
 import src.training.checkpointing as training_checkpointing
@@ -46,10 +44,6 @@ from src.training.checkpointing import (
     continuation_latest_checkpoint_policy,
     maybe_write_best_eval_checkpoint,
 )
-from src.training.data import (
-    build_language_model_dataloader,
-    split_train_eval_dataset,
-)
 from src.training.distributed import (
     autocast_context,
     sum_int,
@@ -71,74 +65,7 @@ from src.utils.metrics import (
     summarize_runtime_granularity_pattern_from_config,
     write_json_artifact,
 )
-
-
-def build_dataloaders(
-    config: dict[str, Any],
-    tokenized_dataset,
-    device: torch.device,
-    distributed_context=None,
-):
-    training = config["training"]
-    batch_size = training["batch_size_per_process"]
-    eval_batches = training.get("eval_batches", 1)
-    eval_example_count = max(1, eval_batches * batch_size)
-
-    train_dataset, eval_dataset = split_train_eval_dataset(
-        tokenized_dataset,
-        eval_example_count,
-    )
-    if len(train_dataset) == 0:
-        train_dataset = eval_dataset
-
-    pin_memory = device.type == "cuda"
-    train_sampler = build_distributed_sampler(
-        train_dataset,
-        distributed_context,
-        shuffle=True,
-        seed=config["run"].get("seed"),
-    )
-    eval_sampler = build_distributed_sampler(
-        eval_dataset,
-        distributed_context,
-        shuffle=False,
-        seed=config["run"].get("seed"),
-    )
-    train_dataloader = build_language_model_dataloader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=train_sampler is None,
-        sampler=train_sampler,
-        num_workers=training.get("dataloader_num_workers", 0),
-        pin_memory=pin_memory,
-    )
-    eval_dataloader = build_language_model_dataloader(
-        eval_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        sampler=eval_sampler,
-        num_workers=training.get("dataloader_num_workers", 0),
-        pin_memory=pin_memory,
-    )
-    return train_dataloader, eval_dataloader
-
-
-def build_distributed_sampler(
-    dataset,
-    distributed_context,
-    shuffle: bool,
-    seed: int | None,
-):
-    if distributed_context is None or not distributed_context.enabled:
-        return None
-
-    return DistributedSampler(
-        dataset,
-        num_replicas=distributed_context.world_size,
-        rank=distributed_context.rank,
-        shuffle=shuffle,
-        seed=0 if seed is None else int(seed),
-    )
+from src.utils.reproducibility import dedicated_random, seed_for
 
 
 def build_optimizer_and_scheduler(model, training: Mapping[str, Any]):
@@ -300,7 +227,8 @@ def train_for_steps(
     supports_layer_granularities = hasattr(target_model, "configure_layer_granularities")
     token_budget = training["token_budget"]
     max_steps = training["max_steps"]
-    eval_interval = training.get("eval_interval", 0)
+    validation_config = config.get("evaluation", {}).get("validation", {})
+    eval_interval = int(validation_config.get("interval_steps", 0))
 
     metrics_rows = []
     start_time = time.time()
@@ -356,6 +284,10 @@ def train_for_steps(
                 made_progress = True
                 step += 1
                 batch = move_batch_to_device(batch, device)
+                if count_valid_prediction_targets(batch) <= 0:
+                    raise ValueError(
+                        "Training batch contains zero valid causal prediction targets"
+                    )
                 content_tokens_seen += global_content_tokens_for_batch(
                     batch,
                     device=device,
@@ -411,6 +343,7 @@ def train_for_steps(
                         step=step,
                         phase=stage_name,
                         granularities=granularities,
+                        adaptive_seed=seed_for(config, "adaptive_sampling"),
                     )
                     configure_model_layer_granularities(
                         model,
@@ -627,7 +560,7 @@ def train_for_steps(
                 )
 
                 if (
-                    config.get("evaluation", {}).get("validation", False)
+                    bool(validation_config.get("enabled", False))
                     and eval_interval > 0
                     and step % eval_interval == 0
                 ):
@@ -757,6 +690,7 @@ def select_training_granularities(
         return list(granularities)
     if sampling_mode == "random":
         selected_index = select_random_granularity_index(
+            config=config,
             granularity_count=len(granularities),
             device=device,
         )
@@ -777,6 +711,7 @@ def select_training_layer_granularities(
     return [
         granularities[
             select_random_granularity_index(
+                config=config,
                 granularity_count=len(granularities),
                 device=device,
             )
@@ -800,6 +735,7 @@ def _resolved_granularities(
 
 
 def select_random_granularity_index(
+    config: Mapping[str, Any],
     granularity_count: int,
     device: torch.device,
 ) -> int:
@@ -809,11 +745,17 @@ def select_random_granularity_index(
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         selected_index = torch.empty((), dtype=torch.long, device=device)
         if torch.distributed.get_rank() == 0:
-            selected_index.fill_(random.randrange(granularity_count))
+            selected_index.fill_(
+                dedicated_random(config, "granularity_selection").randrange(
+                    granularity_count
+                )
+            )
         torch.distributed.broadcast(selected_index, src=0)
         return int(selected_index.item())
 
-    return random.randrange(granularity_count)
+    return dedicated_random(config, "granularity_selection").randrange(
+        granularity_count
+    )
 
 
 def configure_model_layer_granularities(
@@ -907,7 +849,8 @@ def append_final_validation_if_needed(
     monitoring_session=None,
     metrics_journal=None,
 ) -> None:
-    if not config.get("evaluation", {}).get("final_validation", False):
+    validation_config = config.get("evaluation", {}).get("validation", {})
+    if not validation_config.get("run_at_completion", False):
         return
     has_final_validation = any(
         row["split"] == "validation" and row["step"] == step
@@ -1170,6 +1113,13 @@ def count_content_tokens(batch: dict[str, torch.Tensor]) -> int:
     return int((batch["labels"] != -100).sum().item())
 
 
+def count_valid_prediction_targets(batch: dict[str, torch.Tensor]) -> int:
+    labels = batch["labels"]
+    if labels.ndim < 2 or labels.shape[1] <= 1:
+        return 0
+    return int((labels[:, 1:] != -100).sum().item())
+
+
 def count_batch_tokens(batch: dict[str, torch.Tensor]) -> int:
     return count_content_tokens(batch)
 
@@ -1178,15 +1128,6 @@ def current_peak_memory_bytes(device: torch.device) -> int:
     if device.type == "cuda":
         return int(torch.cuda.max_memory_allocated(device))
     return 0
-
-
-def set_random_seed(seed: int | None) -> None:
-    if seed is None:
-        return
-    random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
 
 
 def _model_shape_label(run: dict[str, Any]) -> Any:

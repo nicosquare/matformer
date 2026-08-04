@@ -433,12 +433,13 @@ def test_tiny_nested_training_can_sample_one_granularity_for_the_nested_random_g
             "model.granularity_sampling_mode=global",
             "run.continuation.enabled=false",
             "training.max_steps=1",
-            "training.eval_interval=0",
+            "evaluation.validation.interval_steps=0",
             "training.batch_size_per_process=1",
             "training.learning_rate=0.01",
             "training.scheduler.kwargs.warmup_steps=0",
             "outputs.save_checkpoints=false",
-            "evaluation.validation=false",
+            "evaluation.validation.enabled=false",
+            "evaluation.validation.holdout.examples=1",
         ],
     )
     tokenized_dataset = Dataset.from_dict(
@@ -450,9 +451,11 @@ def test_tiny_nested_training_can_sample_one_granularity_for_the_nested_random_g
     model = TinyNestedTrainingModel()
     captured_randrange_values = iter([2])
     monkeypatch.setattr(
-        training_steps.random,
-        "randrange",
-        lambda count: next(captured_randrange_values),
+        training_steps,
+        "dedicated_random",
+        lambda config, stream: SimpleNamespace(
+            randrange=lambda count: next(captured_randrange_values)
+        ),
     )
 
     result = run_training(
@@ -1498,9 +1501,11 @@ def test_tiny_nested_training_can_sample_one_granularity_per_block_per_batch(
     model = TinyNestedTrainingModel()
     randrange_values = iter([0, 1])
     monkeypatch.setattr(
-        training_steps.random,
-        "randrange",
-        lambda count: next(randrange_values),
+        training_steps,
+        "dedicated_random",
+        lambda config, stream: SimpleNamespace(
+            randrange=lambda count: next(randrange_values)
+        ),
     )
 
     result = run_training(
@@ -1585,9 +1590,11 @@ def test_real_model_training_preserves_repeated_per_block_patterns(
     if sampling_mode == "per_block":
         random_indices = iter([0, 1, 0, 3])
         monkeypatch.setattr(
-            training_steps.random,
-            "randrange",
-            lambda count: next(random_indices),
+            training_steps,
+            "dedicated_random",
+            lambda config, stream: SimpleNamespace(
+                randrange=lambda count: next(random_indices)
+            ),
         )
     else:
         monkeypatch.setattr(
@@ -1910,7 +1917,7 @@ def test_budgeted_training_stops_at_token_budget_before_manual_step_cap(
     assert summary["stop_reason"] == "token_budget_reached"
     assert summary["token_budget"] == 64
     assert summary["tokens_seen"] == 64
-    assert summary["content_tokens_seen"] == 2
+    assert summary["content_tokens_seen"] == 4
     assert summary["expected_tokens_per_step"] == 64
     assert summary["derived_max_steps"] == 1
     assert summary["effective_world_size"] == 1
@@ -1923,7 +1930,7 @@ def test_budgeted_training_stops_at_token_budget_before_manual_step_cap(
         train_steps = {row["step"] for row in train_rows}
     assert train_steps == {"1"}
     assert {row["tokens_seen"] for row in train_rows} == {"64"}
-    assert {row["content_tokens_seen"] for row in train_rows} == {"2"}
+    assert {row["content_tokens_seen"] for row in train_rows} == {"4"}
 
 
 def test_config_driven_training_rejects_multi_process_execution_before_setup(

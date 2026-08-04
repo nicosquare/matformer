@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 
 import src.training.run as training_run
+from src.utils.config import resolve_run_config
+from src.utils.reproducibility import build_comparison_control_signature
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -14,6 +17,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--output-root",
         help="Override the run output root before resolving the config",
+    )
+    parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help="Resolve and print reproducibility controls without starting training",
     )
     parser.add_argument(
         "--output-dir",
@@ -33,6 +41,42 @@ def main(argv: list[str] | None = None) -> None:
     overrides = list(args.override)
     if args.output_root:
         overrides.append(f"run.output_root={args.output_root}")
+    if args.preflight:
+        resolved = resolve_run_config(
+            args.config,
+            run_id=args.run_id,
+            overrides=overrides,
+            output_dir=args.output_dir,
+        )
+        _, control_inputs = build_comparison_control_signature(resolved)
+        print(
+            json.dumps(
+                {
+                    "seed": resolved["run"]["seed"],
+                    "reproducibility": resolved["run"]["reproducibility"],
+                    "optimizer": resolved["training"]["optimizer"],
+                    "learning_rate": resolved["training"][
+                        "resolved_learning_rate"
+                    ],
+                    "token_budget": resolved["training"]["token_budget"],
+                    "batch_size_per_process": resolved["training"][
+                        "batch_size_per_process"
+                    ],
+                    "dataset_sample_limit": resolved["dataset"].get(
+                        "sample_limit"
+                    ),
+                    "tokenization_keep_in_memory": resolved["dataset"].get(
+                        "tokenization_keep_in_memory",
+                        False,
+                    ),
+                    "validation": resolved["evaluation"]["validation"],
+                    "comparison_control_inputs": control_inputs,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
     training_run.run_from_config_path(
         args.config,
         run_id=args.run_id,

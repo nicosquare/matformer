@@ -218,6 +218,7 @@ def score_adaptive_sampler_actions(
     step: int,
     phase: str,
     granularities: Sequence[str] | None = None,
+    adaptive_seed: int | None = None,
 ) -> dict[str, float]:
     """Return one score per granularity for a single transformer block."""
 
@@ -258,6 +259,7 @@ def score_adaptive_sampler_actions(
                 phase=phase,
                 count=stat.count,
                 exploration_scale=state_obj.exploration_scale,
+                adaptive_seed=adaptive_seed,
             )
         scores[granularity] = stat.mean_reward * mean_factor + (
             exploration_bonus * age_factor
@@ -272,6 +274,7 @@ def select_adaptive_sampler_layer_granularities(
     step: int,
     phase: str,
     granularities: Sequence[str] | None = None,
+    adaptive_seed: int | None = None,
 ) -> list[str]:
     """Select one granularity per transformer block."""
 
@@ -297,6 +300,7 @@ def select_adaptive_sampler_layer_granularities(
             step=step,
             phase=phase,
             granularities=ordered_granularities,
+            adaptive_seed=adaptive_seed,
         )
         selected.append(
             max(
@@ -614,6 +618,7 @@ def _thompson_bonus(
     phase: str,
     count: int,
     exploration_scale: float,
+    adaptive_seed: int | None,
 ) -> float:
     seed_material = "|".join(
         [
@@ -624,6 +629,7 @@ def _thompson_bonus(
             phase,
             str(state.epoch),
             str(count),
+            *([str(adaptive_seed)] if adaptive_seed is not None else []),
         ]
     ).encode("utf-8")
     seed = int.from_bytes(hashlib.sha256(seed_material).digest()[:8], "big")

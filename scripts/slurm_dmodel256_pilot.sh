@@ -10,7 +10,7 @@
 #SBATCH --qos=cscc-gpu-qos
 #SBATCH --output=./logs/matformer_dmodel256_%j.out
 #SBATCH --error=./logs/matformer_dmodel256_%j.err
-#SBATCH --exclude=gpu-[50,51,56]
+#SBATCH --exclude=gpu-[05]
 
 set -euo pipefail
 
@@ -158,8 +158,10 @@ fi
 
 if [[ -n "$OUTPUT_ROOT_ARG" ]]; then
   export OUTPUT_ROOT="$OUTPUT_ROOT_ARG"
+  unset OUT
+else
+  export OUTPUT_ROOT="${OUT:-${OUTPUT_ROOT:-$ROOT_DIR/outputs}}"
 fi
-export OUTPUT_ROOT="${OUT:-${OUTPUT_ROOT:-$ROOT_DIR/outputs}}"
 export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 export TORCH_NCCL_ASYNC_ERROR_HANDLING="${TORCH_NCCL_ASYNC_ERROR_HANDLING:-1}"
 unset NCCL_ASYNC_ERROR_HANDLING

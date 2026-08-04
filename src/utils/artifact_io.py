@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, TypeVar
 
+from src.utils.reproducibility import dedicated_random
+
 
 T = TypeVar("T")
 
@@ -95,7 +97,7 @@ def retry_artifact_io(
     heartbeat_writer=None,
     state: dict[str, Any] | None = None,
     sleep_fn: Callable[[float], None] = time.sleep,
-    random_fn: Callable[[], float] = random.random,
+    random_fn: Callable[[], float] | None = None,
 ) -> T:
     """Retry transient I/O and report the original target after exhaustion.
 
@@ -109,6 +111,11 @@ def retry_artifact_io(
     maximum = max(0.0, float(resolved["max_backoff_seconds"]))
     jitter = max(0.0, float(resolved["jitter_fraction"]))
     target = Path(target_path)
+    if random_fn is None:
+        if isinstance(settings, Mapping) and isinstance(settings.get("run"), Mapping):
+            random_fn = dedicated_random(settings, "artifact_retry_jitter").random
+        else:
+            random_fn = random.Random(0).random
 
     for attempt in range(1, max_attempts + 1):
         try:

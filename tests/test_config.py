@@ -536,7 +536,7 @@ def test_resolve_minimal_config_includes_long_run_defaults(tmp_path):
     }
     assert resolved["outputs"]["metrics_flush_interval_steps"] == 100
     assert resolved["outputs"]["best_eval_retention_count"] == 1
-    assert resolved["evaluation"]["final_validation"] is True
+    assert resolved["evaluation"]["validation"]["run_at_completion"] is True
     assert resolved["monitoring"] == {
         "enabled": False,
         "backend": "wandb",
@@ -566,12 +566,12 @@ def test_resolve_minimal_config_includes_long_run_defaults(tmp_path):
 def test_non_debug_run_cannot_disable_final_validation(tmp_path):
     with pytest.raises(
         ConfigError,
-        match="evaluation.final_validation is required",
+        match="evaluation.validation.run_at_completion is required",
     ):
         resolve_run_config(
             "configs/dmodel256_pilot_comparison.yaml",
             output_dir=tmp_path / "dmodel256-pilot-comparison-001",
-            overrides=["evaluation.final_validation=false"],
+            overrides=["evaluation.validation.run_at_completion=false"],
         )
 
 
@@ -583,9 +583,9 @@ def test_debug_run_can_explicitly_disable_final_validation(tmp_path):
         overrides=["evaluation.final_validation=false"],
     )
 
-    assert resolved["evaluation"]["final_validation"] is False
+    assert resolved["evaluation"]["validation"]["run_at_completion"] is False
     assert (
-        resolved["evaluation"]["final_validation_reason"]
+        resolved["evaluation"]["validation"]["run_at_completion_reason"]
         == "explicitly_disabled_for_debug_run"
     )
 
@@ -1277,9 +1277,9 @@ def test_dmodel256_pilot_resolves_scaled_learning_rate_warmup_precedence_and_opt
     )
 
     training = resolved["training"]
-    assert training["learning_rate_scale_rule"] == "linear"
-    assert training["learning_rate_scale_factor"] == 4.0
-    assert training["resolved_learning_rate"] == 0.0012
+    assert training["learning_rate_scale_rule"] == "none"
+    assert training["learning_rate_scale_factor"] == 1.0
+    assert training["resolved_learning_rate"] == 0.001
     assert training["warmup_ratio"] == 0.9
     assert training["warmup_steps"] == 7
     assert training["resolved_warmup_steps"] == 7
@@ -1308,10 +1308,10 @@ def test_dmodel256_pilot_resolves_schedule_and_optimizer_defaults(
     )
 
     training = resolved["training"]
-    assert training["base_learning_rate"] == 0.0003
-    assert training["learning_rate_scale_rule"] == "linear"
-    assert training["learning_rate_scale_factor"] == 4.0
-    assert training["resolved_learning_rate"] == 0.0012
+    assert training["base_learning_rate"] == 0.001
+    assert training["learning_rate_scale_rule"] == "none"
+    assert training["learning_rate_scale_factor"] == 1.0
+    assert training["resolved_learning_rate"] == 0.001
     assert training["warmup_ratio"] == 0.01635
     assert training["warmup_steps"] == 2000
     assert training["resolved_warmup_steps"] == 2000
