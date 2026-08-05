@@ -654,7 +654,8 @@ The initial experiment will use the following contract:
    $$
 
 2. **Decision interval:** one selected global granularity or per-block profile
-   remains active for 50 optimizer steps before its reward is observed.
+   remains active for a configurable positive number of optimizer steps before
+   its reward is observed. The default interval is 50 steps.
 3. **Controller data:** every boundary evaluation uses the same deterministic
    panel of 128 examples, with a saved seed, manifest, and hash.
 4. **Initial per-block feature model:** additive block contributions only, with
