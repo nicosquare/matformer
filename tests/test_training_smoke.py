@@ -2308,3 +2308,229 @@ def test_wandb_session_uses_explicit_project_and_entity_settings(
     assert fake_wandb.init_kwargs["id"] == "debug-nested-001"
     session.close()
     assert fake_wandb.finish_calls == 1
+
+
+def test_probabilistic_adaptive_global_boundary_reward_action_and_logs(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    import src.evaluation.validation as evaluation_validation
+    import src.training.run as training_run
+
+    output_dir = tmp_path / "probabilistic-adaptive-global-smoke-001"
+    config = resolve_run_config(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+        output_dir=output_dir,
+        overrides={
+            "training.eval_batches": 4,
+            "training.max_steps": 4,
+            "model.adaptive_controller.decision_interval_steps": 2,
+        },
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "source_row_identity": list(range(660)),
+            "input_ids": [
+                [index + 1, index + 2, index + 3] for index in range(660)
+            ],
+            "attention_mask": [[1, 1, 1] for _ in range(660)],
+        }
+    )
+    controlled_components = [
+        [0.02, 0.03, 0.04],
+        [0.01, 0.02, 0.03],
+        [0.008, 0.018, 0.028],
+    ]
+    controller_calls = []
+
+    def controlled_controller_objective(*args, **kwargs):
+        dataloader = kwargs.get("dataloader")
+        if dataloader is None and len(args) >= 2:
+            dataloader = args[1]
+        granularities = kwargs.get("granularities")
+        if granularities is None and len(args) >= 3:
+            granularities = args[2]
+        boundary_step = kwargs.get("boundary_step")
+        call_index = len(controller_calls)
+        component_losses = controlled_components[call_index]
+        objective = sum(component_losses) / len(component_losses)
+        controller_calls.append(
+            {
+                "boundary_step": boundary_step,
+                "granularities": list(granularities),
+                "component_losses": list(component_losses),
+                "objective": objective,
+                "dataloader_id": id(dataloader),
+            }
+        )
+        return {
+            "boundary_step": boundary_step,
+            "split": "controller",
+            "ordered_granularities": list(granularities),
+            "ordered_component_losses": list(component_losses),
+            "objective": objective,
+            "uniform_objective": objective,
+            "evaluation_example_count": 128,
+            "evaluation_target_tokens": 256,
+            "aggregation_method": "target_token_weighted_causal_shift_float64",
+            "objective_weighting": "uniform",
+            "controller_manifest_hash": kwargs.get("controller_manifest_hash"),
+            "evaluation_status": "complete",
+            "component_results": [
+                {
+                    "granularity": granularity,
+                    "loss": loss,
+                    "evaluation_examples": 128,
+                    "evaluation_target_tokens": 256,
+                }
+                for granularity, loss in zip(granularities, component_losses)
+            ],
+        }
+
+    for module in (evaluation_validation, training_run, training_steps):
+        monkeypatch.setattr(
+            module,
+            "evaluate_controller_objective",
+            controlled_controller_objective,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            module,
+            "evaluate_controller_panel_objective",
+            controlled_controller_objective,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            module,
+            "evaluate_fixed_panel_objective",
+            controlled_controller_objective,
+            raising=False,
+        )
+
+    model = TinyNestedTrainingModel()
+    with torch.no_grad():
+        model.weight.fill_(5.0)
+    result = run_training(
+        config,
+        model=model,
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    assert [call["boundary_step"] for call in controller_calls] == [0, 2, 4]
+    assert all(
+        call["granularities"] == ["micro", "medium", "full"]
+        for call in controller_calls
+    )
+    assert len({call["dataloader_id"] for call in controller_calls}) == 1
+    for call in controller_calls:
+        assert call["objective"] == pytest.approx(
+            sum(call["component_losses"]) / len(call["component_losses"])
+        )
+
+    controller_metrics_path = output_dir / "controller_metrics.jsonl"
+    controller_events = [
+        json.loads(line)
+        for line in controller_metrics_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [event["event_type"] for event in controller_events] == [
+        "initial_boundary",
+        "completed_window",
+        "completed_window",
+    ]
+    initial_event, first_window, second_window = controller_events
+    assert "reward" not in initial_event
+    assert initial_event["boundary_step"] == 0
+    assert initial_event["ordered_component_losses"] == controlled_components[0]
+    assert initial_event["controller_objective"] == pytest.approx(0.03)
+
+    completed_events = [first_window, second_window]
+    expected_rewards = [
+        (0.03 - 0.02) / 2,
+        (0.02 - 0.018) / 2,
+    ]
+    assert [event["reward"] for event in completed_events] == pytest.approx(
+        expected_rewards
+    )
+    assert [event["pre_window_objective"] for event in completed_events] == (
+        pytest.approx([0.03, 0.02])
+    )
+    assert [event["post_window_objective"] for event in completed_events] == (
+        pytest.approx([0.02, 0.018])
+    )
+    assert [event["completed_optimizer_steps"] for event in completed_events] == [
+        2,
+        2,
+    ]
+    assert all(event["prediction_error"] is not None for event in completed_events)
+    assert all(event["uncertainty_summary"] for event in completed_events)
+
+    training_actions = model.train_forward_granularities
+    assert len(training_actions) == 4
+    assert training_actions[0] == training_actions[1]
+    assert training_actions[2] == training_actions[3]
+    assert training_actions[0] == initial_event["selected_action"][
+        "global_granularity"
+    ]
+    assert training_actions[:2] == [
+        first_window["action"]["global_granularity"]
+    ] * 2
+    assert training_actions[2:] == [
+        second_window["action"]["global_granularity"]
+    ] * 2
+
+    train_losses = [
+        float(row["loss"])
+        for row in result["metrics_rows"]
+        if row["split"] == "train"
+    ]
+    assert train_losses
+    assert min(train_losses) > max(abs(reward) for reward in expected_rewards)
+    assert [event["reward"] for event in completed_events] == pytest.approx(
+        expected_rewards
+    )
+
+    validation_rows = [
+        row for row in result["metrics_rows"] if row["split"] == "validation"
+    ]
+    assert validation_rows
+    assert not [row for row in result["metrics_rows"] if row["split"] == "controller"]
+    run_summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    assert run_summary["checkpoint_metric"] == "validation_loss"
+    assert run_summary["checkpoint_metric_value"] == pytest.approx(
+        min(float(row["loss"]) for row in validation_rows)
+    )
+    assert all(
+        run_summary["checkpoint_metric_value"]
+        != pytest.approx(call["objective"])
+        for call in controller_calls
+    )
+
+    output_lines = capsys.readouterr().out.splitlines()
+    initial_logs = [line for line in output_lines if "event=initial_boundary" in line]
+    completed_logs = [line for line in output_lines if "event=completed_window" in line]
+    assert len(initial_logs) == 1
+    assert len(completed_logs) == 2
+    initial_log = initial_logs[0]
+    assert "bayesian_gaussian_linear_thompson" in initial_log
+    assert "scope=global" in initial_log
+    assert "boundary_step=0" in initial_log
+    assert "window_index=0" in initial_log
+    assert "action=" in initial_log
+    assert "objective=" in initial_log
+    assert "uncertainty=" in initial_log
+    assert "reward=" not in initial_log
+    for window_index, line in enumerate(completed_logs):
+        assert "bayesian_gaussian_linear_thompson" in line
+        assert "scope=global" in line
+        assert f"boundary_step={(window_index + 1) * 2}" in line
+        assert f"window_index={window_index}" in line
+        assert "action=" in line
+        assert "pre_objective=" in line
+        assert "post_objective=" in line
+        assert "reward=" in line
+        assert "prediction_error=" in line
+        assert "uncertainty=" in line
+        assert "posterior_mean" not in line
+        assert "posterior_covariance" not in line

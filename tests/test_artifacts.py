@@ -2007,3 +2007,437 @@ def test_nested_run_writes_extraction_metadata_artifact(tmp_path):
     assert [entry["prefix_width"] for entry in granularities] == [8, 16, 32, 64]
     assert granularities[0]["strict_prefix_of"] == ["m", "l", "xl"]
     assert granularities[-1]["strict_prefix_of"] == []
+
+
+PROBABILISTIC_CHECKPOINT_PHASES = (
+    "initial_objective_pending",
+    "ready_for_action",
+    "active_window",
+    "boundary_evaluation_pending",
+    "terminal_incomplete",
+    "failed",
+)
+
+
+def _probabilistic_checkpoint_state(phase):
+    generator = torch.Generator(device="cpu").manual_seed(731)
+    generator_state = generator.get_state()
+    action = {
+        "scope": "global",
+        "global_granularity": "micro",
+        "block_granularities": ["micro", "micro"],
+        "feature_vector": [1.0, 0.7071067811865476, 0.4082482904638631],
+        "sampled_predicted_reward": 0.125,
+        "tie_resolution": "resolved_granularity_order",
+        "selection_round": 0,
+    }
+    window = {
+        "phase": phase,
+        "window_index": 0,
+        "decision_interval_steps": 2,
+        "boundary_step": 0,
+        "current_action": action,
+        "completed_optimizer_steps": 1,
+        "pre_window_objective": 10.0,
+        "ordered_pre_window_component_losses": [9.0, 10.0, 11.0],
+        "boundary_evaluation_status": "not_started",
+        "terminal_status": "continuing",
+    }
+    if phase == "initial_objective_pending":
+        window.update(
+            current_action=None,
+            completed_optimizer_steps=0,
+            pre_window_objective=None,
+            ordered_pre_window_component_losses=None,
+        )
+    elif phase == "ready_for_action":
+        window.update(current_action=None, completed_optimizer_steps=0)
+    elif phase == "boundary_evaluation_pending":
+        window.update(
+            completed_optimizer_steps=2,
+            boundary_evaluation_status="pending",
+        )
+    elif phase == "terminal_incomplete":
+        window.update(
+            window_index=1,
+            boundary_step=2,
+            pre_window_objective=8.0,
+            ordered_pre_window_component_losses=[7.0, 8.0, 9.0],
+            terminal_status="incomplete",
+        )
+    elif phase == "failed":
+        window.update(
+            window_index=1,
+            boundary_step=2,
+            completed_optimizer_steps=2,
+            boundary_evaluation_status="failed",
+            terminal_status="failed",
+        )
+
+    return {
+        "schema_version": 1,
+        "method_family": "bayesian_gaussian_linear_thompson",
+        "method_version": 1,
+        "strategy": "thompson",
+        "scope": "global",
+        "ordered_granularities": ["micro", "medium", "full"],
+        "block_count": 2,
+        "feature_schema": {
+            "schema_version": 1,
+            "scope": "global",
+            "encoding": "intercept_plus_sum_to_zero_contrasts",
+            "dimension": 3,
+            "coefficient_names": [
+                "intercept",
+                "global_contrast_0",
+                "global_contrast_1",
+            ],
+            "schema_hash": "feature-schema-hash",
+        },
+        "probabilistic_inputs": {
+            "resolved_prior_mean": [0.0, 0.0, 0.0],
+            "resolved_prior_covariance": [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            "observation_noise_variance": 0.01,
+            "resolved_process_noise_covariance": [
+                [0.0001, 0.0, 0.0],
+                [0.0, 0.0001, 0.0],
+                [0.0, 0.0, 0.0001],
+            ],
+            "transition_model": "identity",
+            "context_model": "intercept_only",
+            "compute_weight": 0.0,
+            "switch_weight": 0.0,
+        },
+        "manifest_hashes": {
+            "data_roles_manifest_hash": "parent-manifest-hash",
+            "optimizer_training_manifest_hash": "training-manifest-hash",
+            "controller_manifest_hash": "controller-manifest-hash",
+            "ordinary_validation_manifest_hash": "validation-manifest-hash",
+            "final_holdout_manifest_hash": "final-holdout-manifest-hash",
+        },
+        "belief": {
+            "round_index": 1,
+            "posterior_mean": torch.tensor([0.1, -0.2, 0.3], dtype=torch.float64),
+            "posterior_covariance": torch.tensor(
+                [
+                    [0.8, 0.1, 0.0],
+                    [0.1, 0.7, 0.05],
+                    [0.0, 0.05, 0.9],
+                ],
+                dtype=torch.float64,
+            ),
+            "predictive_mean": torch.tensor([0.1, -0.2, 0.3], dtype=torch.float64),
+            "predictive_covariance": torch.tensor(
+                [
+                    [0.8001, 0.1, 0.0],
+                    [0.1, 0.7001, 0.05],
+                    [0.0, 0.05, 0.9001],
+                ],
+                dtype=torch.float64,
+            ),
+            "last_prediction_step": 0,
+            "last_update_step": None,
+        },
+        "sampling": {
+            "seed_stream_name": "posterior_sampling",
+            "resolved_seed": 731,
+            "generator_state": generator_state,
+            "sample_count": 1,
+            "factorization_contract": "symmetric_eigh_float64_v1",
+        },
+        "window": window,
+        "journal": {
+            "path": "controller_metrics.jsonl",
+            "event_count": 1,
+            "last_committed_offset": 1024,
+            "last_committed_hash": "journal-event-hash",
+        },
+        "resume": {
+            "resume_count": 0,
+            "source_checkpoint": None,
+            "compatibility_status": "fresh",
+        },
+        "failure": (
+            {
+                "stage": "controller_evaluation",
+                "error_category": "non_finite_objective",
+                "posterior_updated": False,
+                "new_action_selected": False,
+            }
+            if phase == "failed"
+            else None
+        ),
+    }
+
+
+def _probabilistic_checkpoint_config(tmp_path):
+    config = resolve_run_config(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+        output_dir=tmp_path / "probabilistic-adaptive-global-smoke-001",
+        overrides={"training.eval_batches": 4},
+    )
+    config.update(
+        {
+            "data_roles_manifest_hash": "parent-manifest-hash",
+            "optimizer_training_manifest_hash": "training-manifest-hash",
+            "controller_manifest_hash": "controller-manifest-hash",
+            "validation_manifest_hash": "validation-manifest-hash",
+            "final_holdout_manifest_hash": "final-holdout-manifest-hash",
+        }
+    )
+    return config
+
+
+@pytest.mark.parametrize("phase", PROBABILISTIC_CHECKPOINT_PHASES)
+def test_probabilistic_controller_checkpoint_persists_complete_state_for_every_phase(
+    tmp_path,
+    phase,
+):
+    import src.training.checkpointing as training_checkpointing
+
+    config = _probabilistic_checkpoint_config(tmp_path)
+    model = torch.nn.Linear(1, 1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    run_state = training_checkpointing.build_initial_continuation_state(config)
+    expected_controller_state = _probabilistic_checkpoint_state(phase)
+    run_state.update(
+        {
+            "step": 1,
+            "last_completed_step": 1,
+            "probabilistic_controller_state": expected_controller_state,
+        }
+    )
+    checkpoint_path = tmp_path / phase / "checkpoint.pt"
+
+    training_checkpointing.save_model_checkpoint(
+        config,
+        model,
+        optimizer,
+        scheduler=None,
+        output_path=checkpoint_path,
+        checkpoint_fields={
+            "checkpoint_status": "latest",
+            "checkpoint_metric": None,
+            "checkpoint_metric_value": None,
+            "checkpoint_selection_step": None,
+        },
+        run_state=run_state,
+    )
+
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    persisted = checkpoint["probabilistic_controller_state"]
+    assert persisted["window"]["phase"] == phase
+    assert persisted["method_family"] == "bayesian_gaussian_linear_thompson"
+    assert persisted["method_version"] == 1
+    assert persisted["strategy"] == "thompson"
+    assert persisted["scope"] == "global"
+    assert persisted["feature_schema"] == expected_controller_state[
+        "feature_schema"
+    ]
+    assert persisted["probabilistic_inputs"] == expected_controller_state[
+        "probabilistic_inputs"
+    ]
+    assert persisted["manifest_hashes"] == expected_controller_state[
+        "manifest_hashes"
+    ]
+    assert persisted["window"] == expected_controller_state["window"]
+    assert persisted["journal"] == expected_controller_state["journal"]
+    assert persisted["resume"] == expected_controller_state["resume"]
+    assert persisted["failure"] == expected_controller_state["failure"]
+    for field_name in (
+        "posterior_mean",
+        "posterior_covariance",
+        "predictive_mean",
+        "predictive_covariance",
+    ):
+        assert torch.equal(
+            persisted["belief"][field_name],
+            expected_controller_state["belief"][field_name],
+        )
+    assert persisted["sampling"]["sample_count"] == 1
+    assert persisted["sampling"]["resolved_seed"] == 731
+    assert torch.equal(
+        persisted["sampling"]["generator_state"],
+        expected_controller_state["sampling"]["generator_state"],
+    )
+
+
+def _controller_journal_events():
+    common = {
+        "schema_version": 1,
+        "run_id": "probabilistic-adaptive-global-smoke-001",
+        "method_family": "bayesian_gaussian_linear_thompson",
+        "method_version": 1,
+        "strategy": "thompson",
+        "scope": "global",
+        "ordered_granularities": ["micro", "medium", "full"],
+        "feature_schema_hash": "feature-schema-hash",
+        "controller_manifest_hash": "controller-manifest-hash",
+        "data_roles_manifest_hash": "parent-manifest-hash",
+        "decision_interval_steps": 2,
+        "resume_count": 0,
+        "resume_source_checkpoint": None,
+    }
+    initial = {
+        **common,
+        "event_type": "initial_boundary",
+        "boundary_step": 0,
+        "window_index": 0,
+        "ordered_component_losses": [9.0, 10.0, 11.0],
+        "controller_objective": 10.0,
+        "predictive_mean": [0.0, 0.0, 0.0],
+        "predictive_covariance": [
+            [1.0001, 0.0, 0.0],
+            [0.0, 1.0001, 0.0],
+            [0.0, 0.0, 1.0001],
+        ],
+        "selected_action": {"global_granularity": "micro"},
+        "sample_count": 1,
+    }
+    completed = {
+        **common,
+        "event_type": "completed_window",
+        "boundary_step": 2,
+        "window_index": 0,
+        "boundary_step_start": 0,
+        "boundary_step_end": 2,
+        "completed_optimizer_steps": 2,
+        "action": {"global_granularity": "micro"},
+        "pre_window_objective": 10.0,
+        "post_window_objective": 8.0,
+        "ordered_component_losses": [7.0, 8.0, 9.0],
+        "reward": 1.0,
+        "predicted_reward": 0.0,
+        "prediction_error": 1.0,
+        "predictive_mean": [0.0, 0.0, 0.0],
+        "predictive_covariance": [
+            [1.0001, 0.0, 0.0],
+            [0.0, 1.0001, 0.0],
+            [0.0, 0.0, 1.0001],
+        ],
+        "gain_vector": [0.5, 0.25, 0.0],
+        "posterior_mean": [0.5, 0.25, 0.0],
+        "posterior_covariance": [
+            [0.5, -0.25, 0.0],
+            [-0.25, 0.875, 0.0],
+            [0.0, 0.0, 1.0001],
+        ],
+        "action_frequencies": {"micro": 1, "medium": 0, "full": 0},
+        "uncertainty_summary": {"mean_posterior_stddev": 0.89},
+    }
+    incomplete = {
+        **common,
+        "event_type": "terminal_incomplete",
+        "boundary_step": 3,
+        "window_index": 1,
+        "action": {"global_granularity": "medium"},
+        "completed_optimizer_steps": 1,
+        "pre_window_objective": 8.0,
+        "observation_emitted": False,
+        "sample_count": 2,
+    }
+    failure = {
+        **common,
+        "event_type": "controller_failure",
+        "boundary_step": 4,
+        "window_index": 1,
+        "failing_stage": "controller_evaluation",
+        "error_category": "non_finite_objective",
+        "last_valid_phase": "boundary_evaluation_pending",
+        "belief_hash": "last-valid-belief-hash",
+        "journal_position": 3,
+        "posterior_updated": False,
+        "new_action_selected": False,
+        "offending_field": "uniform_objective",
+    }
+    return [initial, completed, incomplete, failure]
+
+
+def test_probabilistic_controller_journal_is_append_only_and_transactional(
+    tmp_path,
+):
+    from src.utils.metrics import append_controller_event
+
+    journal_path = tmp_path / "controller_metrics.jsonl"
+    events = _controller_journal_events()
+    for event in events:
+        append_controller_event(journal_path, event)
+
+    saved_events = [
+        json.loads(line)
+        for line in journal_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert saved_events == events
+    assert [event["event_type"] for event in saved_events] == [
+        "initial_boundary",
+        "completed_window",
+        "terminal_incomplete",
+        "controller_failure",
+    ]
+    assert "reward" not in saved_events[0]
+    assert saved_events[1]["reward"] == pytest.approx(1.0)
+    assert saved_events[2]["observation_emitted"] is False
+    assert saved_events[3]["posterior_updated"] is False
+    assert saved_events[3]["new_action_selected"] is False
+    assert "posterior_mean" not in saved_events[3]
+
+    invalid_failure = dict(events[-1], posterior_updated=True)
+    with pytest.raises(ArtifactError, match="failure.*posterior_updated"):
+        append_controller_event(journal_path, invalid_failure)
+    assert len(journal_path.read_text(encoding="utf-8").splitlines()) == 4
+
+
+def test_probabilistic_controller_summary_preserves_auditable_state_and_hashes(
+    tmp_path,
+):
+    from src.utils.metrics import (
+        build_controller_summary,
+        write_controller_summary,
+    )
+
+    journal_path = tmp_path / "controller_metrics.jsonl"
+    events = _controller_journal_events()
+    journal_path.write_text(
+        "".join(json.dumps(event, sort_keys=True) + "\n" for event in events),
+        encoding="utf-8",
+    )
+    controller_state = _probabilistic_checkpoint_state("terminal_incomplete")
+
+    summary = build_controller_summary(
+        controller_state=controller_state,
+        controller_events=events,
+        controller_metrics_path=journal_path,
+    )
+    summary_path = write_controller_summary(tmp_path, summary)
+    saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+    assert summary_path == tmp_path / "controller_summary.json"
+    assert saved_summary["method_family"] == "bayesian_gaussian_linear_thompson"
+    assert saved_summary["method_version"] == 1
+    assert saved_summary["scope"] == "global"
+    assert saved_summary["completed_observation_count"] == 1
+    assert saved_summary["controller_evaluation_count"] == 2
+    assert saved_summary["action_frequencies"]["micro"] >= 1
+    assert saved_summary["final_posterior_mean"] == [0.1, -0.2, 0.3]
+    assert saved_summary["final_posterior_covariance"] == [
+        [0.8, 0.1, 0.0],
+        [0.1, 0.7, 0.05],
+        [0.0, 0.05, 0.9],
+    ]
+    assert saved_summary["uncertainty_summary"]
+    assert saved_summary["terminal_window"] == {
+        "status": "incomplete",
+        "window_index": 1,
+        "completed_optimizer_steps": 1,
+        "decision_interval_steps": 2,
+    }
+    assert saved_summary["resume_provenance"] == controller_state["resume"]
+    assert saved_summary["failure_summary"]["error_category"] == (
+        "non_finite_objective"
+    )
+    assert saved_summary["controller_metrics_path"] == str(journal_path)
+    assert len(saved_summary["controller_metrics_hash"]) == 64
