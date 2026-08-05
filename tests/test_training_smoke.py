@@ -2062,16 +2062,10 @@ def test_run_training_rejects_invalid_adaptive_pairing_before_setup(
         )
 
 
-@pytest.mark.xfail(
-    reason="Adaptive per-block runtime wiring lands in T013/T014",
-    strict=False,
-)
-def test_adaptive_per_block_smoke_shifts_patterns_and_resumes_from_checkpoint(
+def test_ucb_adaptive_per_block_smoke_preserves_state_and_resumes_from_checkpoint(
     tmp_path,
     monkeypatch,
 ):
-    import src.training.run as training_run
-
     output_dir = tmp_path / "debug-nested-001"
     tokenized_dataset = Dataset.from_dict(
         {
@@ -2080,29 +2074,28 @@ def test_adaptive_per_block_smoke_shifts_patterns_and_resumes_from_checkpoint(
         }
     )
 
-    fresh_pattern_calls = {"count": 0}
-
-    def fake_select_training_layer_granularities(config, granularities, device):
-        resume_count = int(config["run"].get("continuation", {}).get("resume_count", 0))
-        if resume_count > 0:
-            return ["m", "l"]
-
-        fresh_pattern_calls["count"] += 1
-        if fresh_pattern_calls["count"] == 1:
+    def fake_select_adaptive_sampler_layer_granularities(
+        state,
+        *,
+        block_count,
+        step,
+        phase,
+        granularities,
+        adaptive_seed,
+    ):
+        assert state.strategy_name == "ucb"
+        assert block_count == 2
+        assert phase == "training"
+        assert list(granularities) == ["s", "m", "l", "xl"]
+        assert adaptive_seed is not None
+        if step == 1:
             return ["s", "m"]
         return ["m", "l"]
 
     monkeypatch.setattr(
-        training_run,
-        "select_training_layer_granularities",
-        fake_select_training_layer_granularities,
-    )
-    monkeypatch.setattr(
-        training_run,
-        "select_training_granularities",
-        lambda *args, **kwargs: pytest.fail(
-            "adaptive_per_block should use per-block selection"
-        ),
+        training_steps,
+        "select_adaptive_sampler_layer_granularities",
+        fake_select_adaptive_sampler_layer_granularities,
     )
 
     first_config = resolve_run_config(
@@ -2112,13 +2105,14 @@ def test_adaptive_per_block_smoke_shifts_patterns_and_resumes_from_checkpoint(
         overrides=[
             "run.sampling_mode=nested-random",
             "model.granularity_sampling_mode=adaptive_per_block",
+            "model.adaptive_sampler_strategy=ucb",
             "run.continuation.enabled=true",
             "training.max_steps=2",
             "training.eval_interval=0",
             "training.batch_size_per_process=1",
             "training.learning_rate=0.01",
             "training.scheduler.kwargs.warmup_steps=0",
-            "training.token_budget=16",
+            "training.token_budget=32768",
             "outputs.save_checkpoints=true",
             "evaluation.validation=false",
         ],
@@ -2134,7 +2128,9 @@ def test_adaptive_per_block_smoke_shifts_patterns_and_resumes_from_checkpoint(
 
     first_summary = json.loads(first_result["summary_path"].read_text(encoding="utf-8"))
     assert first_summary["resolved_sampling_mode"] == "adaptive_per_block"
-    assert first_summary["continuation_state"]["status"] == "fresh"
+    assert first_summary["adaptive_sampler_strategy"] == "ucb"
+    assert first_summary["continuation_state"]["status"] == "completed"
+    assert first_summary["continuation_state"]["resume_count"] == 0
     assert first_model.train_forward_layer_granularities == [
         ["s", "m"],
         ["m", "l"],
@@ -2153,6 +2149,18 @@ def test_adaptive_per_block_smoke_shifts_patterns_and_resumes_from_checkpoint(
         for row in first_train_rows
     ] == [["s", "m"], ["m", "l"]]
 
+    first_checkpoint = torch.load(
+        output_dir / "checkpoints" / "latest.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    first_sampler_state = first_checkpoint["adaptive_sampler_state"]
+    assert first_checkpoint["adaptive_sampler_strategy"] == "ucb"
+    assert first_checkpoint["probabilistic_controller_state"] is None
+    assert first_sampler_state["strategy_name"] == "ucb"
+    assert first_sampler_state["step"] == 2
+    assert first_checkpoint["adaptive_sampler_previous_pattern"] == ["m", "l"]
+
     resumed_config = resolve_run_config(
         "configs/debug_matrix.yaml",
         run_id="debug-nested-001",
@@ -2160,13 +2168,14 @@ def test_adaptive_per_block_smoke_shifts_patterns_and_resumes_from_checkpoint(
         overrides=[
             "run.sampling_mode=nested-random",
             "model.granularity_sampling_mode=adaptive_per_block",
+            "model.adaptive_sampler_strategy=ucb",
             "run.continuation.enabled=true",
             "training.max_steps=3",
             "training.eval_interval=0",
             "training.batch_size_per_process=1",
             "training.learning_rate=0.01",
             "training.scheduler.kwargs.warmup_steps=0",
-            "training.token_budget=16",
+            "training.token_budget=32768",
             "outputs.save_checkpoints=true",
             "evaluation.validation=false",
         ],
@@ -2183,9 +2192,21 @@ def test_adaptive_per_block_smoke_shifts_patterns_and_resumes_from_checkpoint(
     resumed_summary = json.loads(
         resumed_result["summary_path"].read_text(encoding="utf-8")
     )
-    assert resumed_summary["continuation_state"]["status"] == "resumed"
+    assert resumed_summary["continuation_state"]["status"] == "completed"
     assert resumed_summary["continuation_state"]["resume_count"] == 1
+    assert resumed_summary["adaptive_sampler_strategy"] == "ucb"
     assert resumed_model.train_forward_layer_granularities[0] == ["m", "l"]
+
+    resumed_checkpoint = torch.load(
+        output_dir / "checkpoints" / "latest.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    resumed_sampler_state = resumed_checkpoint["adaptive_sampler_state"]
+    assert resumed_sampler_state["strategy_name"] == "ucb"
+    assert resumed_sampler_state["step"] == 3
+    assert resumed_checkpoint["resume_count"] == 1
+    assert resumed_checkpoint["probabilistic_controller_state"] is None
 
 
 def test_monitoring_smoke_groups_nested_and_standalone_runs_by_series(

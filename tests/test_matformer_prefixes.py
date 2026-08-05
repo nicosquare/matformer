@@ -611,3 +611,35 @@ def test_modified_llama_scales_active_prefix_gradients_by_inverse_membership():
     )
     assert torch.count_nonzero(corrected.gate_proj.weight.grad[16:]) == 0
     assert torch.count_nonzero(baseline.gate_proj.weight.grad[16:]) == 0
+
+
+@pytest.mark.parametrize("mlp_cls", [ModifiedLlamaMLP, CatLlamaMLP])
+def test_baseline_model_wiring_and_membership_correction_contract_does_not_drift(
+    mlp_cls,
+):
+    config = tiny_llama_config(num_hidden_layers=4)
+    model = ModifiedLlamaForCausalLM(config, mlp_cls=mlp_cls)
+
+    pattern = apply_granularity_pattern_to_model(
+        model,
+        ["s", "m", "l", "xl"],
+        sampling_mode="per_block",
+    )
+
+    assert pattern.pattern_type == "per_block"
+    assert pattern.selected_granularities == ("s", "m", "l", "xl")
+    assert model.current_layer_granularities == ["s", "m", "l", "xl"]
+    assert [layer.current_subset_hd for layer in model.matformer_layers] == [
+        8,
+        16,
+        32,
+        64,
+    ]
+    assert get_block_membership_counts(
+        MATFORMER_GRANULARITY_ORDER,
+        total_blocks=8,
+    ) == [4, 3, 2, 2, 1, 1, 1, 1]
+    assert get_gradient_membership_correction_scales(
+        MATFORMER_GRANULARITY_ORDER,
+        total_blocks=8,
+    ) == [1.0, 4 / 3, 2.0, 2.0, 4.0, 4.0, 4.0, 4.0]

@@ -125,3 +125,37 @@ def test_baseline_match_row_includes_non_embedding_parameter_counts():
     assert row["non_embedding_parameters_nested"] == 400
     assert row["non_embedding_parameters_standalone"] == 395
     assert row["match_notes"] == []
+
+
+def test_bayesian_only_fields_do_not_change_baseline_matching_contract():
+    nested = _debug_nested_config()
+    standalone = _debug_standalone_config("l")
+    expected = build_baseline_match_record(
+        nested,
+        standalone,
+        "l",
+        nested_counts=_counts(300),
+        standalone_counts=_counts(300),
+    )
+    nested_with_bayesian_only_fields = copy.deepcopy(nested)
+    nested_with_bayesian_only_fields["model"]["adaptive_controller"] = {
+        "method_family": "bayesian_gaussian_linear_thompson",
+        "method_version": 1,
+    }
+    nested_with_bayesian_only_fields["controller_manifest_hash"] = (
+        "controller-manifest-hash"
+    )
+    nested_with_bayesian_only_fields["final_holdout_manifest_hash"] = (
+        "final-holdout-manifest-hash"
+    )
+
+    actual = build_baseline_match_record(
+        nested_with_bayesian_only_fields,
+        standalone,
+        "l",
+        nested_counts=_counts(300),
+        standalone_counts=_counts(300),
+    )
+
+    assert actual == expected
+    assert actual["match_notes"] == []

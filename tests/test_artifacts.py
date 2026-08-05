@@ -560,7 +560,7 @@ def test_artifacts_reconstruct_standalone_mode_from_saved_files(tmp_path):
             "per_block",
             True,
             {
-                "adaptive_sampler_strategy": "thompson",
+                "adaptive_sampler_strategy": "ucb",
                 "adaptive_sampler_exploration_scale": 1.0,
                 "adaptive_sampler_decay_rate": 0.0,
                 "adaptive_sampler_reward_penalty_weight": 1.0,
@@ -577,10 +577,13 @@ def test_artifacts_record_explicit_nested_random_global_per_block_and_adaptive_p
     expected_adaptive_sampler,
 ):
     output_dir = tmp_path / "dmodel256-pilot-comparison-001"
+    overrides = [f"model.granularity_sampling_mode={sampling_mode}"]
+    if sampling_mode == "adaptive_per_block":
+        overrides.append("model.adaptive_sampler_strategy=ucb")
     config = resolve_run_config(
         "configs/dmodel256_pilot_comparison.yaml",
         output_dir=output_dir,
-        overrides=[f"model.granularity_sampling_mode={sampling_mode}"],
+        overrides=overrides,
     )
 
     if sampling_mode == "global":
@@ -2579,3 +2582,73 @@ def test_probabilistic_checkpoint_rejects_historical_heuristic_thompson_state():
             historical_state,
             checkpoint_path="historical-thompson.pt",
         )
+
+
+def test_nonadaptive_checkpoint_round_trip_remains_free_of_controller_state(tmp_path):
+    import src.training.checkpointing as training_checkpointing
+
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "run.continuation.enabled=true",
+            "model.granularity_sampling_mode=global",
+        ],
+    )
+    model = torch.nn.Linear(2, 1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    run_state = training_checkpointing.build_initial_continuation_state(config)
+    run_state.update(
+        {
+            "step": 3,
+            "last_completed_step": 3,
+            "tokens_seen": 24,
+            "content_tokens_seen": 18,
+        }
+    )
+    checkpoint_path = output_dir / "checkpoints" / "latest.pt"
+
+    training_checkpointing.save_model_checkpoint(
+        config,
+        model,
+        optimizer,
+        scheduler=None,
+        output_path=checkpoint_path,
+        checkpoint_fields={
+            "checkpoint_status": "latest",
+            "checkpoint_metric": None,
+            "checkpoint_metric_value": None,
+            "checkpoint_selection_step": None,
+        },
+        run_state=run_state,
+    )
+
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    assert checkpoint["adaptive_sampler_state"] is None
+    assert checkpoint["probabilistic_controller_state"] is None
+    assert checkpoint["adaptive_sampler_strategy"] is None
+    assert checkpoint["step"] == 3
+    assert checkpoint["tokens_seen"] == 24
+
+    restored_model = torch.nn.Linear(2, 1)
+    restored_optimizer = torch.optim.SGD(restored_model.parameters(), lr=0.01)
+    restored_state = training_checkpointing.load_checkpoint_state(
+        checkpoint_path,
+        restored_model,
+        restored_optimizer,
+        scheduler=None,
+        config=config,
+    )
+
+    assert restored_state["status"] == "resumed"
+    assert restored_state["last_completed_step"] == 3
+    assert restored_state["resume_count"] == 1
+    assert restored_state["adaptive_sampler_state"] is None
+    assert restored_state["probabilistic_controller_state"] is None
+    for parameter, restored_parameter in zip(
+        model.parameters(),
+        restored_model.parameters(),
+    ):
+        assert torch.equal(parameter, restored_parameter)

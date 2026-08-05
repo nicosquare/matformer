@@ -580,6 +580,80 @@ def test_ucb_resolution_remains_on_legacy_configuration_contract():
 
 
 @pytest.mark.parametrize(
+    "config_path, run_id, overrides, expected_run_mode, expected_model_mode, expected_training_alias, expected_granularities",
+    [
+        (
+            "configs/dmodel256_pilot_comparison.yaml",
+            None,
+            [
+                "run.sampling_mode=nested-random",
+                "model.granularity_sampling_mode=global",
+            ],
+            "nested-random",
+            "global",
+            "random",
+            ["s", "m", "l", "xl"],
+        ),
+        (
+            "configs/dmodel256_pilot_comparison.yaml",
+            None,
+            [
+                "run.sampling_mode=nested-random",
+                "model.granularity_sampling_mode=per_block",
+            ],
+            "nested-random",
+            "per_block",
+            "random",
+            ["s", "m", "l", "xl"],
+        ),
+        (
+            "configs/dmodel256_pilot_comparison.yaml",
+            None,
+            [
+                "run.sampling_mode=nested-all",
+                "model.granularity_sampling_mode=global",
+            ],
+            "nested-all",
+            "global",
+            "all",
+            ["s", "m", "l", "xl"],
+        ),
+        (
+            "configs/debug_matrix.yaml",
+            "debug-standalone-m-001",
+            [],
+            "standalone",
+            "global",
+            "all",
+            ["m"],
+        ),
+    ],
+)
+def test_non_bayesian_sampling_modes_keep_their_resolved_contract(
+    config_path,
+    run_id,
+    overrides,
+    expected_run_mode,
+    expected_model_mode,
+    expected_training_alias,
+    expected_granularities,
+):
+    resolved = resolve_run_config(
+        config_path,
+        run_id=run_id,
+        overrides=overrides,
+    )
+
+    assert resolved["run"]["sampling_mode"] == expected_run_mode
+    assert resolved["model"]["granularity_sampling_mode"] == expected_model_mode
+    assert resolved["model"]["resolved_sampling_mode"] == expected_model_mode
+    assert resolved["training"]["granularity_sampling"] == expected_training_alias
+    assert resolved["model"]["granularities"] == expected_granularities
+    assert "adaptive_sampler_strategy" not in resolved["model"]
+    assert "adaptive_controller" not in resolved["model"]
+
+
+@pytest.mark.parametrize(
     "alias, expected_mode, expected_sampling_mode",
     [
         ("all", "global", "nested-all"),
