@@ -17,9 +17,9 @@
 
 **Purpose**: Add opt-in, deterministic experiment inputs without changing the default pilot matrix
 
-- [ ] T001 [P] Add the valid Bayesian global smoke configuration with explicit prior, noise, controller-panel, and final-holdout inputs in tests/fixtures/probabilistic_adaptive_global_smoke.yaml
-- [ ] T002 [P] Add the valid Bayesian additive per-block smoke configuration using the same controller and reward contract in tests/fixtures/probabilistic_adaptive_per_block_smoke.yaml
-- [ ] T003 [P] Add an old-shaped Thompson configuration fixture that must produce a migration error in tests/fixtures/legacy_thompson_config.yaml
+- [X] T001 [P] Add the valid Bayesian global smoke configuration with explicit prior, noise, controller-panel, and final-holdout inputs in tests/fixtures/probabilistic_adaptive_global_smoke.yaml
+- [X] T002 [P] Add the valid Bayesian additive per-block smoke configuration using the same controller and reward contract in tests/fixtures/probabilistic_adaptive_per_block_smoke.yaml
+- [X] T003 [P] Add an old-shaped Thompson configuration fixture that must produce a migration error in tests/fixtures/legacy_thompson_config.yaml
 
 ---
 
