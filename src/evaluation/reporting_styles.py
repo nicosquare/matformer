@@ -29,6 +29,10 @@ SIZE_PLOT_PANELS_WITH_SAMPLING = [
     ("nested-random", "concat", "per_block"),
     ("nested-random", "slicing", "adaptive_per_block_thompson"),
     ("nested-random", "concat", "adaptive_per_block_thompson"),
+    ("nested-random", "slicing", "probabilistic_global_thompson"),
+    ("nested-random", "concat", "probabilistic_global_thompson"),
+    ("nested-random", "slicing", "probabilistic_per_block_thompson"),
+    ("nested-random", "concat", "probabilistic_per_block_thompson"),
     ("nested-random", "slicing", "adaptive_per_block_ucb"),
     ("nested-random", "concat", "adaptive_per_block_ucb"),
     ("nested-all", "slicing", None),
@@ -39,10 +43,14 @@ SCALING_GROUP_COLORS = {
     "nested-random / slicing / global": "tab:blue",
     "nested-random / slicing / per_block": "tab:cyan",
     "nested-random / slicing / adaptive_per_block_thompson": "tab:green",
+    "nested-random / slicing / probabilistic_global_thompson": "tab:blue",
+    "nested-random / slicing / probabilistic_per_block_thompson": "tab:cyan",
     "nested-random / slicing / adaptive_per_block_ucb": "tab:olive",
     "nested-random / concat / global": "tab:orange",
     "nested-random / concat / per_block": "tab:red",
     "nested-random / concat / adaptive_per_block_thompson": "tab:purple",
+    "nested-random / concat / probabilistic_global_thompson": "tab:orange",
+    "nested-random / concat / probabilistic_per_block_thompson": "tab:red",
     "nested-random / concat / adaptive_per_block_ucb": "tab:pink",
     "nested-all / slicing": "tab:purple",
     "nested-all / concat": "tab:green",
@@ -59,6 +67,8 @@ SCALING_SAMPLING_TONES = {
     "global": 0.0,
     "per_block": 0.28,
     "adaptive_per_block_thompson": 0.4,
+    "probabilistic_global_thompson": 0.16,
+    "probabilistic_per_block_thompson": 0.34,
     "adaptive_per_block_ucb": 0.55,
 }
 
@@ -66,6 +76,8 @@ SCALING_SAMPLING_MARKERS = {
     "global": "o",
     "per_block": "D",
     "adaptive_per_block_thompson": "P",
+    "probabilistic_global_thompson": "*",
+    "probabilistic_per_block_thompson": "v",
     "adaptive_per_block_ucb": "X",
 }
 
@@ -217,4 +229,3 @@ PPL_VS_SIZE_SPLIT_FIGURE_SPEC = {
         ],
     },
 }
-

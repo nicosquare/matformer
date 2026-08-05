@@ -1538,11 +1538,14 @@ def _build_initial_adaptive_sampler_state(
     model = config.get("model", {})
     if not isinstance(model, Mapping):
         model = {}
-    if model.get("granularity_sampling_mode") != "adaptive_per_block":
+    if (
+        model.get("granularity_sampling_mode") != "adaptive_per_block"
+        or model.get("adaptive_sampler_strategy") != "ucb"
+    ):
         return None
 
     state = build_adaptive_sampler_state(
-        strategy_name=str(model.get("adaptive_sampler_strategy", "thompson")),
+        strategy_name="ucb",
         exploration_scale=float(model.get("adaptive_sampler_exploration_scale", 1.0)),
         decay_rate=float(model.get("adaptive_sampler_decay_rate", 0.0)),
     )
@@ -1562,7 +1565,10 @@ def _populate_adaptive_sampler_state_metadata(
     if not isinstance(model, Mapping):
         model = {}
 
-    if model.get("granularity_sampling_mode") == "adaptive_per_block":
+    if (
+        model.get("granularity_sampling_mode") == "adaptive_per_block"
+        and model.get("adaptive_sampler_strategy") == "ucb"
+    ):
         state["adaptive_sampler_state"] = _build_initial_adaptive_sampler_state(
             config
         )
@@ -1594,10 +1600,13 @@ def _validate_loaded_adaptive_sampler_state(
     model = config.get("model", {})
     if not isinstance(model, Mapping):
         model = {}
-    if model.get("granularity_sampling_mode") != "adaptive_per_block":
+    if (
+        model.get("granularity_sampling_mode") != "adaptive_per_block"
+        or model.get("adaptive_sampler_strategy") != "ucb"
+    ):
         return
 
-    expected_strategy = str(model.get("adaptive_sampler_strategy", "thompson"))
+    expected_strategy = "ucb"
     expected_exploration_scale = float(
         model.get("adaptive_sampler_exploration_scale", 1.0)
     )
@@ -1654,7 +1663,10 @@ def _prepare_adaptive_sampler_runtime_state(
     model = config.get("model", {})
     if not isinstance(model, Mapping):
         model = {}
-    if model.get("granularity_sampling_mode") != "adaptive_per_block":
+    if (
+        model.get("granularity_sampling_mode") != "adaptive_per_block"
+        or model.get("adaptive_sampler_strategy") != "ucb"
+    ):
         run_state.pop("adaptive_sampler_state", None)
         return None
 
@@ -1663,7 +1675,7 @@ def _prepare_adaptive_sampler_runtime_state(
     )
     if adaptive_state is None:
         adaptive_state = build_adaptive_sampler_state(
-            strategy_name=str(model.get("adaptive_sampler_strategy", "thompson")),
+            strategy_name="ucb",
             exploration_scale=float(model.get("adaptive_sampler_exploration_scale", 1.0)),
             decay_rate=float(model.get("adaptive_sampler_decay_rate", 0.0)),
         )

@@ -46,6 +46,10 @@ SIZE_PLOT_PANELS_WITH_SAMPLING = [
     ("nested-random", "concat", "per_block"),
     ("nested-random", "slicing", "adaptive_per_block_thompson"),
     ("nested-random", "concat", "adaptive_per_block_thompson"),
+    ("nested-random", "slicing", "probabilistic_global_thompson"),
+    ("nested-random", "concat", "probabilistic_global_thompson"),
+    ("nested-random", "slicing", "probabilistic_per_block_thompson"),
+    ("nested-random", "concat", "probabilistic_per_block_thompson"),
     ("nested-random", "slicing", "adaptive_per_block_ucb"),
     ("nested-random", "concat", "adaptive_per_block_ucb"),
     ("nested-all", "slicing", None),
@@ -55,10 +59,14 @@ SCALING_GROUP_COLORS = {
     "nested-random / slicing / global": "tab:blue",
     "nested-random / slicing / per_block": "tab:cyan",
     "nested-random / slicing / adaptive_per_block_thompson": "tab:green",
+    "nested-random / slicing / probabilistic_global_thompson": "tab:blue",
+    "nested-random / slicing / probabilistic_per_block_thompson": "tab:cyan",
     "nested-random / slicing / adaptive_per_block_ucb": "tab:olive",
     "nested-random / concat / global": "tab:orange",
     "nested-random / concat / per_block": "tab:red",
     "nested-random / concat / adaptive_per_block_thompson": "tab:purple",
+    "nested-random / concat / probabilistic_global_thompson": "tab:orange",
+    "nested-random / concat / probabilistic_per_block_thompson": "tab:red",
     "nested-random / concat / adaptive_per_block_ucb": "tab:pink",
     "nested-all / slicing": "tab:purple",
     "nested-all / concat": "tab:green",
@@ -73,14 +81,20 @@ SCALING_SAMPLING_TONES = {
     "global": 0.0,
     "per_block": 0.28,
     "adaptive_per_block_thompson": 0.4,
+    "probabilistic_global_thompson": 0.16,
+    "probabilistic_per_block_thompson": 0.34,
     "adaptive_per_block_ucb": 0.55,
 }
 SCALING_SAMPLING_MARKERS = {
     "global": "o",
     "per_block": "D",
     "adaptive_per_block_thompson": "P",
+    "probabilistic_global_thompson": "*",
+    "probabilistic_per_block_thompson": "v",
     "adaptive_per_block_ucb": "X",
 }
+
+BAYESIAN_CONTROLLER_METHOD_FAMILY = "bayesian_gaussian_linear_thompson"
 
 PLOT_STYLE_BASE = {
     "figure_title_fontsize": 17,
@@ -244,8 +258,12 @@ def main(argv: list[str] | None = None) -> None:
 
 def parse_args(argv: list[str] | None = None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", default="outputs", help="Root containing run CSV artifacts.")
-    parser.add_argument("--output", default="outputs/figures", help="Figure output directory.")
+    parser.add_argument(
+        "--input", default="outputs", help="Root containing run CSV artifacts."
+    )
+    parser.add_argument(
+        "--output", default="outputs/figures", help="Figure output directory."
+    )
     parser.add_argument(
         "--no-refresh-counts",
         action="store_true",
@@ -311,7 +329,9 @@ def generate_figures(
                     ylabel="Perplexity",
                     output_path=output_dir / figure_spec["output_name"],
                     panel_specs=figure_spec["panel_specs"],
-                    row_filter=resolve_figure_row_filter(figure_spec["row_filter_name"]),
+                    row_filter=resolve_figure_row_filter(
+                        figure_spec["row_filter_name"]
+                    ),
                     figure_title=figure_spec["figure_title"],
                     style=figure_spec["style"],
                     figure_alias=figure_spec["figure_alias"],
@@ -325,10 +345,14 @@ def generate_figures(
                 ylabel="Perplexity",
                 output_path=output_dir
                 / reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["output_name"],
-                figure_title=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["figure_title"],
+                figure_title=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC[
+                    "figure_title"
+                ],
                 style=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["style"],
                 left_panel_spec=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["left"],
-                right_panel_spec=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["right"],
+                right_panel_spec=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC[
+                    "right"
+                ],
                 dpi=dpi,
             )
         )
@@ -491,10 +515,8 @@ def enrich_scaling_metadata_from_run_config(
             )
             if granularity_sampling_mode is not None:
                 enriched_row["granularity_sampling_mode"] = granularity_sampling_mode
-            membership_correction = (
-                membership_correction_from_saved_config(
-                    config_cache[config_path]
-                )
+            membership_correction = membership_correction_from_saved_config(
+                config_cache[config_path]
             )
             if membership_correction is not None:
                 enriched_row["membership_correction"] = membership_correction
@@ -508,6 +530,10 @@ def enrich_scaling_metadata_from_run_config(
             )
             if adaptive_sampler_strategy is not None:
                 enriched_row["adaptive_sampler_strategy"] = adaptive_sampler_strategy
+            _enrich_controller_provenance(
+                enriched_row,
+                config_cache[config_path],
+            )
         enriched_rows.append(enriched_row)
 
     return enriched_rows
@@ -555,6 +581,10 @@ def enrich_metrics_metadata_from_run_config(
             )
             if adaptive_sampler_strategy is not None:
                 enriched_row["adaptive_sampler_strategy"] = adaptive_sampler_strategy
+            _enrich_controller_provenance(
+                enriched_row,
+                config_cache[config_path],
+            )
         enriched_rows.append(enriched_row)
 
     return enriched_rows
@@ -647,6 +677,57 @@ def adaptive_sampler_strategy_from_saved_config(config: dict[str, Any]) -> str |
     if value in (None, ""):
         return None
     return str(value).strip().lower()
+
+
+def _adaptive_controller_from_saved_config(
+    config: dict[str, Any],
+) -> dict[str, Any] | None:
+    model = config.get("model")
+    if not isinstance(model, dict):
+        return None
+    controller = model.get("adaptive_controller")
+    return controller if isinstance(controller, dict) else None
+
+
+def controller_method_family_from_saved_config(
+    config: dict[str, Any],
+) -> str | None:
+    controller = _adaptive_controller_from_saved_config(config)
+    if controller is None or controller.get("method_family") in (None, ""):
+        return None
+    return str(controller["method_family"]).strip().lower()
+
+
+def controller_method_version_from_saved_config(
+    config: dict[str, Any],
+) -> Any | None:
+    controller = _adaptive_controller_from_saved_config(config)
+    if controller is None or controller.get("method_version") in (None, ""):
+        return None
+    return controller["method_version"]
+
+
+def controller_scope_from_saved_config(config: dict[str, Any]) -> str | None:
+    controller = _adaptive_controller_from_saved_config(config)
+    if controller is None or controller.get("scope") in (None, ""):
+        return None
+    return str(controller["scope"]).strip().lower()
+
+
+def _enrich_controller_provenance(
+    row: dict[str, Any],
+    config: dict[str, Any],
+) -> None:
+    provenance = {
+        "controller_method_family": controller_method_family_from_saved_config(config),
+        "controller_method_version": controller_method_version_from_saved_config(
+            config
+        ),
+        "controller_scope": controller_scope_from_saved_config(config),
+    }
+    for field_name, value in provenance.items():
+        if value not in (None, ""):
+            row[field_name] = value
 
 
 def resolved_sampling_mode_from_saved_config(config: dict[str, Any]) -> str | None:
@@ -917,13 +998,11 @@ def plot_metric_vs_size_split_panel(
     style_config: dict[str, Any],
 ) -> list[float]:
     series_keys = list(panel_spec["series_keys"])
-    panel_rows = [
-        row
-        for row in rows
-        if comparison_series_key(row) in series_keys
-    ]
+    panel_rows = [row for row in rows if comparison_series_key(row) in series_keys]
 
-    axis.set_xlabel("Non-embedding parameters", fontsize=style_config["axis_label_fontsize"])
+    axis.set_xlabel(
+        "Non-embedding parameters", fontsize=style_config["axis_label_fontsize"]
+    )
     axis.set_ylabel(ylabel, fontsize=style_config["axis_label_fontsize"])
     axis.tick_params(labelsize=style_config["tick_label_fontsize"])
     axis.grid(True, alpha=0.3)
@@ -1021,12 +1100,14 @@ def plot_metric_vs_size_panel(
             scaling_curve_sampling_label(row),
             sampling_label,
         )
-        ]
+    ]
     panel_title = f"{sampling_mode} / {variant_label}"
     if sampling_label is not None:
         panel_title = f"{panel_title} / {sampling_label}"
     axis.set_title(panel_title, fontsize=style_config["panel_title_fontsize"], pad=6)
-    axis.set_xlabel("Non-embedding parameters", fontsize=style_config["axis_label_fontsize"])
+    axis.set_xlabel(
+        "Non-embedding parameters", fontsize=style_config["axis_label_fontsize"]
+    )
     axis.set_ylabel(ylabel, fontsize=style_config["axis_label_fontsize"])
     axis.tick_params(labelsize=style_config["tick_label_fontsize"])
     axis.grid(True, alpha=0.3)
@@ -1157,7 +1238,7 @@ def comparison_series_style(
             "linestyle": "None",
             "color": style_config["series_colors"].get(
                 series_key,
-                    reporting_styles.SCALING_GROUP_COLORS["standalone"],
+                reporting_styles.SCALING_GROUP_COLORS["standalone"],
             ),
         }
 
@@ -1209,7 +1290,8 @@ def plot_metric_over_steps(
         points = [
             (to_float(row["step"]), to_float(row[metric_name]))
             for row in group_rows_for_label
-            if row.get("step") not in (None, "") and row.get(metric_name) not in (None, "")
+            if row.get("step") not in (None, "")
+            and row.get(metric_name) not in (None, "")
         ]
         if not points:
             continue
@@ -1283,10 +1365,7 @@ def plot_validation_loss_over_tokens_by_granularity_comparison_figure(
     dpi: int = 300,
     validation_loss_log_y: bool = False,
 ) -> Path:
-    granularity_rows = [
-        row for row in rows
-        if row.get("granularity") not in (None, "")
-    ]
+    granularity_rows = [row for row in rows if row.get("granularity") not in (None, "")]
 
     granularity_labels = sorted(
         {str(row["granularity"]) for row in granularity_rows},
@@ -1453,6 +1532,8 @@ def validation_comparison_method_key(row: dict[str, str]) -> str | None:
         "per_block",
         "adaptive_per_block_thompson",
         "adaptive_per_block_ucb",
+        "probabilistic_global_thompson",
+        "probabilistic_per_block_thompson",
     }:
         return None
 
@@ -1468,6 +1549,10 @@ def validation_comparison_method_order(rows: list[dict[str, str]]) -> list[str]:
         "nested-random / concat / per_block",
         "nested-random / slicing / adaptive_per_block_thompson",
         "nested-random / concat / adaptive_per_block_thompson",
+        "nested-random / slicing / probabilistic_global_thompson",
+        "nested-random / concat / probabilistic_global_thompson",
+        "nested-random / slicing / probabilistic_per_block_thompson",
+        "nested-random / concat / probabilistic_per_block_thompson",
         "nested-random / slicing / adaptive_per_block_ucb",
         "nested-random / concat / adaptive_per_block_ucb",
     ]
@@ -1492,12 +1577,16 @@ def validation_comparison_styles(method_keys: list[str]) -> dict[str, dict[str, 
         "global": "-",
         "per_block": "--",
         "adaptive_per_block_thompson": "-.",
+        "probabilistic_global_thompson": "-",
+        "probabilistic_per_block_thompson": "--",
         "adaptive_per_block_ucb": ":",
     }
     sampling_markers = {
         "global": "o",
         "per_block": "s",
         "adaptive_per_block_thompson": "^",
+        "probabilistic_global_thompson": "*",
+        "probabilistic_per_block_thompson": "v",
         "adaptive_per_block_ucb": "D",
     }
     styles: dict[str, dict[str, Any]] = {}
@@ -1530,10 +1619,7 @@ def plot_loss_over_tokens_for_experiment(
     dpi: int = 300,
     validation_loss_log_y: bool = False,
 ) -> Path:
-    granularity_rows = [
-        row for row in rows
-        if row.get("granularity") not in (None, "")
-    ]
+    granularity_rows = [row for row in rows if row.get("granularity") not in (None, "")]
 
     granularity_labels = sorted(
         {str(row["granularity"]) for row in granularity_rows},
@@ -1786,10 +1872,7 @@ def plot_consistency_results(
         return output_path
 
     pair_labels = sorted(
-        {
-            consistency_pair_label(row)
-            for row in numeric_rows
-        },
+        {consistency_pair_label(row) for row in numeric_rows},
         key=consistency_pair_sort_key,
     )
     metric_names = sorted(
@@ -1987,7 +2070,9 @@ def granularity_sort_key(value: str) -> tuple[int, str]:
     return (order.get(value, len(order)), value)
 
 
-def group_rows(rows: list[dict[str, str]], keys: list[str]) -> dict[str, list[dict[str, str]]]:
+def group_rows(
+    rows: list[dict[str, str]], keys: list[str]
+) -> dict[str, list[dict[str, str]]]:
     grouped: dict[str, list[dict[str, str]]] = {}
     for row in rows:
         label = " / ".join(row.get(key, "") for key in keys)
@@ -2002,7 +2087,9 @@ def group_scaling_rows(rows: list[dict[str, str]]) -> dict[str, list[dict[str, s
     return grouped
 
 
-def group_loss_rows_by_figure(rows: list[dict[str, str]]) -> dict[str, list[dict[str, str]]]:
+def group_loss_rows_by_figure(
+    rows: list[dict[str, str]],
+) -> dict[str, list[dict[str, str]]]:
     grouped: dict[str, list[dict[str, str]]] = {}
     for row in rows:
         grouped.setdefault(loss_figure_label(row), []).append(row)
@@ -2086,7 +2173,9 @@ def group_loss_trace_rows(
     rows: list[dict[str, str]],
     trace_kind: str,
 ) -> dict[str, list[dict[str, str]]]:
-    run_ids = {str(row["run_id"]) for row in rows if row.get("run_id") not in (None, "")}
+    run_ids = {
+        str(row["run_id"]) for row in rows if row.get("run_id") not in (None, "")
+    }
     include_run_id = len(run_ids) > 1
     grouped: dict[str, list[dict[str, str]]] = {}
 
@@ -2225,6 +2314,9 @@ def scaling_curve_sampling_label(row: dict[str, str]) -> str | None:
     resolved_sampling_mode = row.get("resolved_sampling_mode")
     if resolved_sampling_mode not in (None, ""):
         normalized = str(resolved_sampling_mode).strip().lower()
+        probabilistic_label = _probabilistic_sampling_label(row)
+        if probabilistic_label is not None:
+            return probabilistic_label
         if normalized in {"global", "per_block"}:
             return normalized
         if normalized == "adaptive_per_block":
@@ -2236,6 +2328,9 @@ def scaling_curve_sampling_label(row: dict[str, str]) -> str | None:
     granularity_sampling_mode = row.get("granularity_sampling_mode")
     if granularity_sampling_mode not in (None, ""):
         normalized = str(granularity_sampling_mode).strip().lower()
+        probabilistic_label = _probabilistic_sampling_label(row)
+        if probabilistic_label is not None:
+            return probabilistic_label
         if normalized in {"global", "per_block"}:
             return normalized
         if normalized == "adaptive_per_block":
@@ -2245,6 +2340,23 @@ def scaling_curve_sampling_label(row: dict[str, str]) -> str | None:
             return normalized
 
     return None
+
+
+def _probabilistic_sampling_label(row: dict[str, str]) -> str | None:
+    method_family = str(row.get("controller_method_family") or "").strip().lower()
+    method_version = row.get("controller_method_version")
+    strategy = adaptive_sampler_strategy_for_row(row)
+    scope = str(row.get("controller_scope") or "").strip().lower()
+    if (
+        method_family != BAYESIAN_CONTROLLER_METHOD_FAMILY
+        or method_version in (None, "")
+        or strategy != "thompson"
+        or scope not in {"global", "per_block"}
+    ):
+        return None
+    if scope == "global":
+        return "probabilistic_global_thompson"
+    return "probabilistic_per_block_thompson"
 
 
 def adaptive_sampler_strategy_for_row(row: dict[str, str]) -> str | None:
@@ -2262,9 +2374,13 @@ def display_sampling_label_for_curve(sampling_label: str | None) -> str | None:
     if sampling_label == "per_block":
         return "per_block sampling"
     if sampling_label == "adaptive_per_block_thompson":
-        return "adaptive per-block thompson"
+        return "legacy heuristic thompson"
     if sampling_label == "adaptive_per_block_ucb":
         return "adaptive per-block ucb"
+    if sampling_label == "probabilistic_global_thompson":
+        return "probabilistic global thompson"
+    if sampling_label == "probabilistic_per_block_thompson":
+        return "probabilistic per-block thompson"
     return sampling_label
 
 
@@ -2276,7 +2392,10 @@ def scaling_curve_correction_label(row: dict[str, str]) -> str | None:
             return normalized
         return None
 
-    if row.get("model_family") == "standalone" or row.get("sampling_mode") == "standalone":
+    if (
+        row.get("model_family") == "standalone"
+        or row.get("sampling_mode") == "standalone"
+    ):
         return None
 
     raw_value = row.get("membership_correction")
@@ -2334,7 +2453,9 @@ def scaling_curve_style(
         color_group_key or "",
         reporting_styles.SCALING_GROUP_COLORS.get(color_group_key or "", "tab:gray"),
     )
-    sampling_tone = reporting_styles.SCALING_SAMPLING_TONES.get(sampling_label or "global", 0.0)
+    sampling_tone = reporting_styles.SCALING_SAMPLING_TONES.get(
+        sampling_label or "global", 0.0
+    )
     style = {
         "linewidth": 1.4,
         "linestyle": correction_style["linestyle"],
@@ -2423,7 +2544,9 @@ def consistency_pair_label(row: dict[str, Any]) -> str:
     return f"{row['small_granularity']} -> {row['large_granularity']}"
 
 
-def consistency_pair_sort_key(value: str) -> tuple[tuple[int, str], tuple[int, str], str]:
+def consistency_pair_sort_key(
+    value: str,
+) -> tuple[tuple[int, str], tuple[int, str], str]:
     left, _, right = value.partition(" -> ")
     return (
         granularity_sort_key(left),
@@ -2470,7 +2593,9 @@ def loss_moving_average_window_size(point_count: int) -> int:
     if point_count <= 1:
         return point_count
 
-    window_size = max(3, math.ceil(point_count * reporting_styles.LOSS_MOVING_AVERAGE_FRACTION))
+    window_size = max(
+        3, math.ceil(point_count * reporting_styles.LOSS_MOVING_AVERAGE_FRACTION)
+    )
     if window_size % 2 == 0:
         window_size += 1
     if window_size > point_count:

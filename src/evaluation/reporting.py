@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import math
 import re
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -36,10 +35,14 @@ __all__ = [
     "resolve_plot_style",
     "resolve_series_alias",
     "safe_filename_fragment",
+    "scaling_curve_sampling_label",
     "to_float",
     "to_float_or_none",
     "main",
 ]
+
+
+BAYESIAN_CONTROLLER_METHOD_FAMILY = "bayesian_gaussian_linear_thompson"
 
 
 def resolve_plot_style(style_name: str) -> dict[str, Any]:
@@ -221,10 +224,60 @@ def display_sampling_label_for_curve(sampling_label: str | None) -> str | None:
     if sampling_label == "per_block":
         return "per_block sampling"
     if sampling_label == "adaptive_per_block_thompson":
-        return "adaptive per-block thompson"
+        return "legacy heuristic thompson"
     if sampling_label == "adaptive_per_block_ucb":
         return "adaptive per-block ucb"
+    if sampling_label == "probabilistic_global_thompson":
+        return "probabilistic global thompson"
+    if sampling_label == "probabilistic_per_block_thompson":
+        return "probabilistic per-block thompson"
     return sampling_label
+
+
+def scaling_curve_sampling_label(row: dict[str, Any]) -> str | None:
+    """Classify sampling from explicit Bayesian provenance when it is present."""
+
+    sampling_mode = row.get("sampling_mode")
+    if sampling_mode not in {"nested-random", "nested-all"}:
+        sampling_mode = row.get("resolved_run_mode")
+        if sampling_mode not in {"nested-random", "nested-all"}:
+            return None
+
+    resolved_sampling_mode = row.get("resolved_sampling_mode")
+    if resolved_sampling_mode in (None, ""):
+        resolved_sampling_mode = row.get("granularity_sampling_mode")
+    if resolved_sampling_mode in (None, ""):
+        return None
+    normalized_mode = str(resolved_sampling_mode).strip().lower()
+
+    strategy = row.get("adaptive_sampler_strategy")
+    strategy = None if strategy in (None, "") else str(strategy).strip().lower()
+    method_family = row.get("controller_method_family")
+    method_version = row.get("controller_method_version")
+    scope = row.get("controller_scope")
+    scope = None if scope in (None, "") else str(scope).strip().lower()
+    has_bayesian_provenance = (
+        str(method_family or "").strip().lower() == BAYESIAN_CONTROLLER_METHOD_FAMILY
+        and method_version not in (None, "")
+        and strategy == "thompson"
+        and scope in {"global", "per_block"}
+    )
+    if has_bayesian_provenance:
+        return (
+            "probabilistic_global_thompson"
+            if scope == "global"
+            else "probabilistic_per_block_thompson"
+        )
+
+    if normalized_mode in {"global", "per_block"}:
+        return normalized_mode
+    if normalized_mode == "adaptive_per_block":
+        if strategy == "thompson":
+            return "adaptive_per_block_thompson"
+        if strategy == "ucb":
+            return "adaptive_per_block_ucb"
+        return normalized_mode
+    return None
 
 
 def to_float(value: Any) -> float:
@@ -320,10 +373,14 @@ def generate_figures(
                 ylabel="Perplexity",
                 output_path=output_dir
                 / reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["output_name"],
-                figure_title=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["figure_title"],
+                figure_title=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC[
+                    "figure_title"
+                ],
                 style=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["style"],
                 left_panel_spec=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["left"],
-                right_panel_spec=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["right"],
+                right_panel_spec=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC[
+                    "right"
+                ],
                 dpi=dpi,
             )
         )
@@ -420,8 +477,12 @@ def generate_figures(
 
 def parse_args(argv: list[str] | None = None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", default="outputs", help="Root containing run CSV artifacts.")
-    parser.add_argument("--output", default="outputs/figures", help="Figure output directory.")
+    parser.add_argument(
+        "--input", default="outputs", help="Root containing run CSV artifacts."
+    )
+    parser.add_argument(
+        "--output", default="outputs/figures", help="Figure output directory."
+    )
     parser.add_argument(
         "--no-refresh-counts",
         action="store_true",

@@ -269,6 +269,15 @@ def train_for_steps(
 
     adaptive_sampler_state = None
     if probabilistic_controller is None:
+        if (
+            config.get("model", {}).get("granularity_sampling_mode")
+            == "adaptive_per_block"
+            and config.get("model", {}).get("adaptive_sampler_strategy") != "ucb"
+        ):
+            raise ConfigError(
+                "Legacy heuristic Thompson is not selectable; Thompson runs "
+                "require the probabilistic controller"
+            )
         adaptive_sampler_state = _prepare_adaptive_sampler_runtime_state(
             config,
             run_state,

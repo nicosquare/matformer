@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-import hashlib
 import math
-import random
 from pathlib import Path
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -17,7 +15,7 @@ from src.models.granularity import (
 )
 
 
-VALID_ADAPTIVE_SAMPLER_STRATEGIES = ("thompson", "ucb")
+VALID_ADAPTIVE_SAMPLER_STRATEGIES = ("ucb",)
 
 
 @dataclass(slots=True)
@@ -36,7 +34,7 @@ class AdaptiveSamplerBlockStat:
 class AdaptiveSamplerState:
     """Serializable state for adaptive per-block sampling."""
 
-    strategy_name: str = "thompson"
+    strategy_name: str = "ucb"
     phase: str = "fresh"
     step: int = 0
     epoch: int = 0
@@ -59,7 +57,7 @@ def validate_adaptive_sampler_strategy(strategy_name: str) -> None:
 
 
 def build_adaptive_sampler_state(
-    strategy_name: str = "thompson",
+    strategy_name: str = "ucb",
     *,
     phase: str = "fresh",
     step: int = 0,
@@ -101,7 +99,7 @@ def coerce_adaptive_sampler_state(
             for granularity, raw_stat in raw_block_stats.items():
                 stats[block_index][str(granularity)] = _coerce_block_stat(raw_stat)
 
-    strategy_name = str(state.get("strategy_name", "thompson"))
+    strategy_name = str(state.get("strategy_name", "ucb"))
     validate_adaptive_sampler_strategy(strategy_name)
     return AdaptiveSamplerState(
         strategy_name=strategy_name,
@@ -244,23 +242,11 @@ def score_adaptive_sampler_actions(
         stat = block_stats[granularity]
         mean_factor = _mean_factor(state_obj, stat, step)
         age_factor = _age_factor(stat, step)
-        if state_obj.strategy_name == "ucb":
-            exploration_bonus = _ucb_bonus(
-                exploration_scale=state_obj.exploration_scale,
-                count=stat.count,
-                step=step,
-            )
-        else:
-            exploration_bonus = _thompson_bonus(
-                state=state_obj,
-                block_index=block_index,
-                granularity=granularity,
-                step=step,
-                phase=phase,
-                count=stat.count,
-                exploration_scale=state_obj.exploration_scale,
-                adaptive_seed=adaptive_seed,
-            )
+        exploration_bonus = _ucb_bonus(
+            exploration_scale=state_obj.exploration_scale,
+            count=stat.count,
+            step=step,
+        )
         scores[granularity] = stat.mean_reward * mean_factor + (
             exploration_bonus * age_factor
         )
@@ -607,34 +593,6 @@ def _age_factor(
 
 def _ucb_bonus(*, exploration_scale: float, count: int, step: int) -> float:
     return exploration_scale * math.sqrt(math.log(max(step, 0) + 2.0)) / (count + 1.0)
-
-
-def _thompson_bonus(
-    *,
-    state: AdaptiveSamplerState,
-    block_index: int,
-    granularity: str,
-    step: int,
-    phase: str,
-    count: int,
-    exploration_scale: float,
-    adaptive_seed: int | None,
-) -> float:
-    seed_material = "|".join(
-        [
-            state.strategy_name,
-            str(block_index),
-            granularity,
-            str(step),
-            phase,
-            str(state.epoch),
-            str(count),
-            *([str(adaptive_seed)] if adaptive_seed is not None else []),
-        ]
-    ).encode("utf-8")
-    seed = int.from_bytes(hashlib.sha256(seed_material).digest()[:8], "big")
-    rng = random.Random(seed)
-    return exploration_scale * rng.gauss(0.0, 1.0) / math.sqrt(count + 1.0)
 
 
 __all__ = [

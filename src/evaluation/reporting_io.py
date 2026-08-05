@@ -11,6 +11,9 @@ from .reporting_styles import PARAMETER_COUNT_FIELDS
 
 __all__ = [
     "adaptive_sampler_strategy_from_saved_config",
+    "controller_method_family_from_saved_config",
+    "controller_method_version_from_saved_config",
+    "controller_scope_from_saved_config",
     "config_path_for_scaling_row",
     "correction_mode_from_saved_config",
     "enrich_metrics_metadata_from_run_config",
@@ -107,7 +110,9 @@ def enrich_scaling_metadata_from_run_config(
             )
             if membership_correction is not None:
                 enriched_row["membership_correction"] = membership_correction
-            correction_mode = correction_mode_from_saved_config(config_cache[config_path])
+            correction_mode = correction_mode_from_saved_config(
+                config_cache[config_path]
+            )
             if correction_mode is not None:
                 enriched_row["correction_mode"] = correction_mode
             adaptive_sampler_strategy = adaptive_sampler_strategy_from_saved_config(
@@ -115,6 +120,10 @@ def enrich_scaling_metadata_from_run_config(
             )
             if adaptive_sampler_strategy is not None:
                 enriched_row["adaptive_sampler_strategy"] = adaptive_sampler_strategy
+            _enrich_controller_provenance(
+                enriched_row,
+                config_cache[config_path],
+            )
         enriched_rows.append(enriched_row)
 
     return enriched_rows
@@ -152,7 +161,9 @@ def enrich_metrics_metadata_from_run_config(
             )
             if membership_correction is not None:
                 enriched_row["membership_correction"] = membership_correction
-            correction_mode = correction_mode_from_saved_config(config_cache[config_path])
+            correction_mode = correction_mode_from_saved_config(
+                config_cache[config_path]
+            )
             if correction_mode is not None:
                 enriched_row["correction_mode"] = correction_mode
             adaptive_sampler_strategy = adaptive_sampler_strategy_from_saved_config(
@@ -160,6 +171,10 @@ def enrich_metrics_metadata_from_run_config(
             )
             if adaptive_sampler_strategy is not None:
                 enriched_row["adaptive_sampler_strategy"] = adaptive_sampler_strategy
+            _enrich_controller_provenance(
+                enriched_row,
+                config_cache[config_path],
+            )
         enriched_rows.append(enriched_row)
 
     return enriched_rows
@@ -252,6 +267,57 @@ def adaptive_sampler_strategy_from_saved_config(config: dict[str, Any]) -> str |
     if value in (None, ""):
         return None
     return str(value).strip().lower()
+
+
+def _adaptive_controller_from_saved_config(
+    config: dict[str, Any],
+) -> dict[str, Any] | None:
+    model = config.get("model")
+    if not isinstance(model, dict):
+        return None
+    controller = model.get("adaptive_controller")
+    return controller if isinstance(controller, dict) else None
+
+
+def controller_method_family_from_saved_config(
+    config: dict[str, Any],
+) -> str | None:
+    controller = _adaptive_controller_from_saved_config(config)
+    if controller is None or controller.get("method_family") in (None, ""):
+        return None
+    return str(controller["method_family"]).strip().lower()
+
+
+def controller_method_version_from_saved_config(
+    config: dict[str, Any],
+) -> Any | None:
+    controller = _adaptive_controller_from_saved_config(config)
+    if controller is None or controller.get("method_version") in (None, ""):
+        return None
+    return controller["method_version"]
+
+
+def controller_scope_from_saved_config(config: dict[str, Any]) -> str | None:
+    controller = _adaptive_controller_from_saved_config(config)
+    if controller is None or controller.get("scope") in (None, ""):
+        return None
+    return str(controller["scope"]).strip().lower()
+
+
+def _enrich_controller_provenance(
+    row: dict[str, Any],
+    config: dict[str, Any],
+) -> None:
+    provenance = {
+        "controller_method_family": controller_method_family_from_saved_config(config),
+        "controller_method_version": controller_method_version_from_saved_config(
+            config
+        ),
+        "controller_scope": controller_scope_from_saved_config(config),
+    }
+    for field_name, value in provenance.items():
+        if value not in (None, ""):
+            row[field_name] = value
 
 
 def resolved_sampling_mode_from_saved_config(config: dict[str, Any]) -> str | None:

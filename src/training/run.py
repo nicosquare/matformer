@@ -7,11 +7,14 @@ from __future__ import annotations
 try:
     from dotenv import load_dotenv
 except ImportError:  # pragma: no cover - optional dependency
+
     def load_dotenv(*args, **kwargs):
         return None
 
+
 load_dotenv()
 
+import copy
 import json
 import os
 from pathlib import Path
@@ -74,6 +77,7 @@ from src.training.probabilistic_controller import (
     build_probabilistic_controller,
     restore_probabilistic_controller,
 )
+
 
 def run_from_config_path(
     config_path: str | Path,
@@ -232,9 +236,7 @@ def _probabilistic_source_provenance(
             "padding": "max_length",
             "attention_mask": True,
         }
-        tokenization_identity["identity_hash"] = stable_hash(
-            tokenization_identity
-        )
+        tokenization_identity["identity_hash"] = stable_hash(tokenization_identity)
         dataset["tokenization_identity"] = tokenization_identity
     return {
         "dataset_name": dataset["dataset_name"],
@@ -258,12 +260,8 @@ def _attach_probabilistic_role_provenance(
         role: manifests[role]["manifest_hash"]
         for role in training_data.PROBABILISTIC_DATA_ROLE_NAMES
     }
-    config["data_roles_manifest_hash"] = parent_manifest[
-        "parent_manifest_hash"
-    ]
-    config["optimizer_training_manifest_hash"] = manifest_hashes[
-        "optimizer_training"
-    ]
+    config["data_roles_manifest_hash"] = parent_manifest["parent_manifest_hash"]
+    config["optimizer_training_manifest_hash"] = manifest_hashes["optimizer_training"]
     config["controller_manifest_hash"] = manifest_hashes["controller"]
     config["validation_manifest_hash"] = manifest_hashes["ordinary_validation"]
     config["final_holdout_manifest_hash"] = manifest_hashes["final_holdout"]
@@ -289,20 +287,12 @@ def _attach_probabilistic_role_provenance(
             "manifest_hash": manifest_hashes["final_holdout"],
         },
     }
-    config["validation_loss_aggregation"] = (
-        "target_token_weighted_causal_shift_float64"
-    )
+    config["validation_loss_aggregation"] = "target_token_weighted_causal_shift_float64"
 
     evaluation = config["evaluation"]
-    evaluation["validation"]["manifest_hash"] = manifest_hashes[
-        "ordinary_validation"
-    ]
-    evaluation["adaptive_controller"]["manifest_hash"] = manifest_hashes[
-        "controller"
-    ]
-    evaluation["final_holdout"]["manifest_hash"] = manifest_hashes[
-        "final_holdout"
-    ]
+    evaluation["validation"]["manifest_hash"] = manifest_hashes["ordinary_validation"]
+    evaluation["adaptive_controller"]["manifest_hash"] = manifest_hashes["controller"]
+    evaluation["final_holdout"]["manifest_hash"] = manifest_hashes["final_holdout"]
     controller = config["model"]["adaptive_controller"]
     controller["controller_panel_contract"]["manifest_hash"] = manifest_hashes[
         "controller"
@@ -411,9 +401,7 @@ def _probabilistic_manifest_hashes(config: Mapping[str, Any]) -> dict[str, str]:
             config["optimizer_training_manifest_hash"]
         ),
         "controller_manifest_hash": str(config["controller_manifest_hash"]),
-        "ordinary_validation_manifest_hash": str(
-            config["validation_manifest_hash"]
-        ),
+        "ordinary_validation_manifest_hash": str(config["validation_manifest_hash"]),
         "final_holdout_manifest_hash": str(config["final_holdout_manifest_hash"]),
     }
 
@@ -457,7 +445,9 @@ def _controller_event_common_fields(
         "strategy": controller_state["strategy"],
         "scope": controller_state["scope"],
         "ordered_granularities": list(controller_state["ordered_granularities"]),
+        "feature_schema": copy.deepcopy(controller_state["feature_schema"]),
         "feature_schema_hash": controller_state["feature_schema"]["schema_hash"],
+        "probabilistic_inputs": copy.deepcopy(controller_state["probabilistic_inputs"]),
         "controller_manifest_hash": controller_state["manifest_hashes"][
             "controller_manifest_hash"
         ],
@@ -470,6 +460,22 @@ def _controller_event_common_fields(
         "resume_count": resume.get("resume_count", 0),
         "resume_source_checkpoint": resume.get("source_checkpoint"),
     }
+
+
+def _attach_probabilistic_controller_artifact_provenance(
+    config: dict[str, Any],
+    controller_state: Mapping[str, Any],
+) -> None:
+    """Persist the resolved feature identity and stable controller artifact links."""
+
+    controller_config = config["model"]["adaptive_controller"]
+    controller_config["feature_schema"] = copy.deepcopy(
+        controller_state["feature_schema"]
+    )
+    controller_config["controller_metrics_path"] = "controller_metrics.jsonl"
+    controller_config["controller_summary_path"] = "controller_summary.json"
+    config["controller_metrics_path"] = "controller_metrics.jsonl"
+    config["controller_summary_path"] = "controller_summary.json"
 
 
 def _enrich_controller_event(
@@ -648,7 +654,9 @@ def run_training(
     device = torch.device(distributed_context.device)
 
     try:
-        with training_monitoring.heartbeat_stage(heartbeat_writer, "model_initialization"):
+        with training_monitoring.heartbeat_stage(
+            heartbeat_writer, "model_initialization"
+        ):
             if model is None:
                 model = training_modeling.build_model(config)
             seed_training_randomness(config)
@@ -663,10 +671,12 @@ def run_training(
                     granularity_prefixes=config["model"].get("granularity_prefixes"),
                 )
                 print(f"[concat-diagnostic] {diagnostic}", flush=True)
-            parameter_counts_by_granularity = training_modeling.build_artifact_parameter_counts(
-                config,
-                model,
-                distributed_context,
+            parameter_counts_by_granularity = (
+                training_modeling.build_artifact_parameter_counts(
+                    config,
+                    model,
+                    distributed_context,
+                )
             )
             if parameter_counts_by_granularity:
                 attach_parameter_counts_to_config(
@@ -778,8 +788,15 @@ def run_training(
                 config,
                 run_state,
             )
-            run_state["probabilistic_controller_state"] = (
-                probabilistic_controller.state_dict()
+            controller_state = probabilistic_controller.state_dict()
+            run_state["probabilistic_controller_state"] = controller_state
+            _attach_probabilistic_controller_artifact_provenance(
+                config,
+                controller_state,
+            )
+            write_config_artifact(
+                config,
+                distributed_context=distributed_context,
             )
             controller_events = read_controller_events(
                 output_dir / "controller_metrics.jsonl"
@@ -792,9 +809,7 @@ def run_training(
         training_checkpointing.update_run_continuation_state(config, run_state)
         metrics_journal = MetricsJournal(
             output_dir,
-            flush_interval_steps=int(
-                config["outputs"]["metrics_flush_interval_steps"]
-            ),
+            flush_interval_steps=int(config["outputs"]["metrics_flush_interval_steps"]),
             checkpoint_step=int(run_state.get("last_completed_step", 0)),
             artifact_io_config=config,
             heartbeat_writer=heartbeat_writer,
@@ -867,20 +882,15 @@ def run_training(
                     distributed_context,
                     boundary_step=step,
                 )
-                training_will_continue = (
-                    int(step) < int(training["max_steps"])
-                    and int(tokens_seen) < int(training["token_budget"])
-                )
+                training_will_continue = int(step) < int(training["max_steps"]) and int(
+                    tokens_seen
+                ) < int(training["token_budget"])
                 failing_stage = "posterior_update_and_action_selection"
                 event = probabilistic_controller.complete_boundary(
                     boundary_step=step,
                     controller_objective=objective["uniform_objective"],
-                    ordered_component_losses=objective[
-                        "ordered_component_losses"
-                    ],
-                    evaluation_target_tokens=int(
-                        objective["evaluation_target_tokens"]
-                    ),
+                    ordered_component_losses=objective["ordered_component_losses"],
+                    evaluation_target_tokens=int(objective["evaluation_target_tokens"]),
                     training_will_continue=training_will_continue,
                 )
                 failing_stage = "controller_journal_commit"
@@ -954,9 +964,7 @@ def run_training(
                     event = probabilistic_controller.initialize_boundary(
                         boundary_step=boundary_step,
                         controller_objective=objective["uniform_objective"],
-                        ordered_component_losses=objective[
-                            "ordered_component_losses"
-                        ],
+                        ordered_component_losses=objective["ordered_component_losses"],
                         evaluation_target_tokens=int(
                             objective["evaluation_target_tokens"]
                         ),
@@ -1056,11 +1064,13 @@ def run_training(
                 heartbeat_writer,
                 "artifact_writing",
             ):
-                extraction_metadata_path = training_steps.write_extraction_metadata_if_nested(
-                    config,
-                    model,
-                    output_dir,
-                    distributed_context=distributed_context,
+                extraction_metadata_path = (
+                    training_steps.write_extraction_metadata_if_nested(
+                        config,
+                        model,
+                        output_dir,
+                        distributed_context=distributed_context,
+                    )
                 )
                 metrics_path = write_metrics_csv(
                     output_dir,
@@ -1099,7 +1109,9 @@ def run_training(
                         artifact_state=run_state,
                     )
 
-        training_outcome = training_steps.summarize_training_outcome(config, metrics_rows)
+        training_outcome = training_steps.summarize_training_outcome(
+            config, metrics_rows
+        )
         tokens_seen = training_outcome["tokens_seen"]
         target_model = getattr(model, "module", model)
         runtime_pattern = getattr(target_model, "current_granularity_pattern", None)
@@ -1141,46 +1153,30 @@ def run_training(
             **checkpoint_summary_fields,
             **training_modeling.distributed_summary_fields(distributed_context),
             **build_adaptive_sampler_artifact_fields(config, run_state),
-            "requested_mixed_precision": training.get(
-                "requested_mixed_precision"
-            ),
-            "resolved_mixed_precision": training.get(
-                "resolved_mixed_precision"
-            ),
+            "requested_mixed_precision": training.get("requested_mixed_precision"),
+            "resolved_mixed_precision": training.get("resolved_mixed_precision"),
             "requested_activation_checkpointing": training.get(
                 "requested_activation_checkpointing"
             ),
             "resolved_activation_checkpointing": training.get(
                 "resolved_activation_checkpointing"
             ),
-            "final_validation": config.get("evaluation", {}).get(
-                "validation", {}
-            ).get(
-                "run_at_completion"
-            ),
-            "final_validation_reason": config.get("evaluation", {}).get(
-                "validation", {}
-            ).get("run_at_completion_reason"),
+            "final_validation": config.get("evaluation", {})
+            .get("validation", {})
+            .get("run_at_completion"),
+            "final_validation_reason": config.get("evaluation", {})
+            .get("validation", {})
+            .get("run_at_completion_reason"),
             "artifact_retry_count": int(run_state.get("artifact_retry_count", 0)),
             "validation_manifest_hash": config.get("validation_manifest_hash"),
-            "validation_loss_aggregation": config.get(
-                "validation_loss_aggregation"
-            ),
-            "comparison_control_signature": config.get(
-                "comparison_control_signature"
-            ),
-            "data_roles_manifest_hash": config.get(
-                "data_roles_manifest_hash"
-            ),
+            "validation_loss_aggregation": config.get("validation_loss_aggregation"),
+            "comparison_control_signature": config.get("comparison_control_signature"),
+            "data_roles_manifest_hash": config.get("data_roles_manifest_hash"),
             "optimizer_training_manifest_hash": config.get(
                 "optimizer_training_manifest_hash"
             ),
-            "controller_manifest_hash": config.get(
-                "controller_manifest_hash"
-            ),
-            "final_holdout_manifest_hash": config.get(
-                "final_holdout_manifest_hash"
-            ),
+            "controller_manifest_hash": config.get("controller_manifest_hash"),
+            "final_holdout_manifest_hash": config.get("final_holdout_manifest_hash"),
             "data_role_manifests": config.get("data_role_manifests"),
             "controller_summary": controller_summary,
             "controller_metrics_path": (
@@ -1198,9 +1194,7 @@ def run_training(
             "last_durable_checkpoint_step": int(
                 run_state.get("last_durable_checkpoint_step", 0)
             ),
-            "deferred_metric_rows": int(
-                run_state.get("deferred_metric_rows", 0)
-            ),
+            "deferred_metric_rows": int(run_state.get("deferred_metric_rows", 0)),
             "skipped_periodic_checkpoints": int(
                 run_state.get("skipped_periodic_checkpoints", 0)
             ),
@@ -1211,6 +1205,23 @@ def run_training(
                 run_state.get("unresolved_artifact_failures", [])
             ),
         }
+        if controller_summary is not None:
+            extra_summary_fields.update(
+                {
+                    "controller_method_family": controller_summary.get("method_family"),
+                    "controller_method_version": controller_summary.get(
+                        "method_version"
+                    ),
+                    "controller_strategy": controller_summary.get("strategy"),
+                    "controller_scope": controller_summary.get("scope"),
+                    "controller_feature_schema": controller_summary.get(
+                        "feature_schema"
+                    ),
+                    "controller_probabilistic_inputs": controller_summary.get(
+                        "probabilistic_inputs"
+                    ),
+                }
+            )
         if not scaling_rows:
             extra_summary_fields["scaling_results_unavailable_reason"] = (
                 "no validation rows were produced; scaling comparisons require "
@@ -1270,7 +1281,9 @@ def run_training(
                     heartbeat_writer,
                     run_state,
                     reason="failure",
-                    step=int(run_state.get("step", run_state.get("last_completed_step", 0))),
+                    step=int(
+                        run_state.get("step", run_state.get("last_completed_step", 0))
+                    ),
                     distributed_context=distributed_context,
                     force=True,
                 )
@@ -1307,9 +1320,7 @@ def run_training(
                     str(error),
                     output_dir=output_dir,
                     tokens_seen=int(run_state.get("tokens_seen", 0)),
-                    content_tokens_seen=int(
-                        run_state.get("content_tokens_seen", 0)
-                    ),
+                    content_tokens_seen=int(run_state.get("content_tokens_seen", 0)),
                     distributed_context=distributed_context,
                 )
         except Exception as summary_error:
