@@ -59,7 +59,6 @@ from src.utils.metrics import (
     summarize_runtime_granularity_pattern_from_config,
     write_controller_summary,
     write_config_artifact,
-    write_failed_run_summary,
     write_metrics_csv,
     write_run_summary,
     write_scaling_results_csv,
@@ -1189,6 +1188,16 @@ def run_training(
                 if controller_summary_path is not None
                 else None
             ),
+            "controller_summary_hash": (
+                stable_hash(controller_summary)
+                if controller_summary is not None
+                else None
+            ),
+            "controller_metrics_hash": (
+                controller_summary.get("controller_metrics_hash")
+                if controller_summary is not None
+                else None
+            ),
             "deterministic_runtime_settings": deterministic_settings,
             "artifact_last_errno": run_state.get("artifact_last_errno"),
             "last_durable_checkpoint_step": int(
@@ -1307,7 +1316,7 @@ def run_training(
                             output_dir / "controller_metrics.jsonl"
                         ),
                     )
-                    write_controller_summary(
+                    controller_summary_path = write_controller_summary(
                         output_dir,
                         controller_summary,
                         distributed_context=distributed_context,
@@ -1315,13 +1324,57 @@ def run_training(
                         heartbeat_writer=heartbeat_writer,
                         artifact_state=run_state,
                     )
-                write_failed_run_summary(
+                failure_extra_fields = {
+                    "data_roles_manifest_hash": config.get(
+                        "data_roles_manifest_hash"
+                    ),
+                    "optimizer_training_manifest_hash": config.get(
+                        "optimizer_training_manifest_hash"
+                    ),
+                    "controller_manifest_hash": config.get(
+                        "controller_manifest_hash"
+                    ),
+                    "final_holdout_manifest_hash": config.get(
+                        "final_holdout_manifest_hash"
+                    ),
+                    "data_role_manifests": config.get("data_role_manifests"),
+                    "controller_summary": controller_summary,
+                    "controller_metrics_path": (
+                        str(output_dir / "controller_metrics.jsonl")
+                        if probabilistic_controller is not None
+                        else None
+                    ),
+                    "controller_summary_path": (
+                        str(controller_summary_path)
+                        if controller_summary_path is not None
+                        else None
+                    ),
+                    "controller_summary_hash": (
+                        stable_hash(controller_summary)
+                        if controller_summary is not None
+                        else None
+                    ),
+                    "controller_metrics_hash": (
+                        controller_summary.get("controller_metrics_hash")
+                        if controller_summary is not None
+                        else None
+                    ),
+                }
+                failure_summary = build_run_summary(
                     config,
-                    str(error),
-                    output_dir=output_dir,
                     tokens_seen=int(run_state.get("tokens_seen", 0)),
                     content_tokens_seen=int(run_state.get("content_tokens_seen", 0)),
+                    status="failed",
+                    notes=[str(error)],
+                    extra_fields=failure_extra_fields,
+                )
+                write_run_summary(
+                    output_dir,
+                    failure_summary,
                     distributed_context=distributed_context,
+                    artifact_io=config,
+                    heartbeat_writer=heartbeat_writer,
+                    artifact_state=run_state,
                 )
         except Exception as summary_error:
             print(

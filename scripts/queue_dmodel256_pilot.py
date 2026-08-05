@@ -23,6 +23,9 @@ from src.utils.model_size import derive_token_budget_slug
 
 
 DEFAULT_CONFIG_PATH = REPO_ROOT / "configs" / "dmodel256_pilot_comparison.yaml"
+PROBABILISTIC_CONFIG_PATH = (
+    REPO_ROOT / "configs" / "probabilistic_adaptive_granularity_smoke.yaml"
+)
 DEFAULT_SLURM_SCRIPT = REPO_ROOT / "scripts" / "slurm_dmodel256_pilot.sh"
 DEFAULT_OUTPUT_ROOT = "outputs"
 DEFAULT_TOKEN_BUDGET = 100_000_000
@@ -153,6 +156,14 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--include-probabilistic",
+        action="store_true",
+        help=(
+            "Explicitly add Bayesian global and per-block Thompson pilots. "
+            "When --config is omitted, use the dedicated probabilistic config."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print the sbatch commands without submitting them.",
@@ -162,6 +173,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
 
 def build_experiment_specs(
     granularities: Iterable[str] | None = None,
+    *,
+    include_probabilistic: bool = False,
 ) -> list[ExperimentSpec]:
     if granularities is None:
         resolved = resolve_run_config(DEFAULT_CONFIG_PATH)
@@ -231,6 +244,44 @@ def build_experiment_specs(
                 ),
             )
         )
+
+    if include_probabilistic:
+        # The opt-in config itself resolves to adaptive_global. Standalone rows
+        # need an explicit nonadaptive override only in this expanded matrix;
+        # keep the default ExperimentSpec objects exactly unchanged.
+        specs = [
+            ExperimentSpec(
+                label=spec.label,
+                run_overrides=spec.run_overrides,
+                model_overrides=(
+                    *spec.model_overrides,
+                    "model.granularity_sampling_mode=global",
+                ),
+            )
+            if spec.label.startswith("standalone-")
+            else spec
+            for spec in specs
+        ]
+        for scope, sampling_mode in (
+            ("global", "adaptive_global"),
+            ("per-block", "adaptive_per_block"),
+        ):
+            specs.append(
+                ExperimentSpec(
+                    label=f"probabilistic-{scope}-thompson",
+                    run_overrides=(
+                        "run.model_family=nested",
+                        "run.sampling_mode=nested-random",
+                    ),
+                    model_overrides=(
+                        "model.variant=slicing",
+                        "model.correction_mode=gmc",
+                        "model.membership_correction=true",
+                        f"model.granularity_sampling_mode={sampling_mode}",
+                        "model.adaptive_sampler_strategy=thompson",
+                    ),
+                )
+            )
 
     return specs
 
@@ -485,6 +536,7 @@ def build_queued_runs(
     settings: BatchSettings,
     slurm_partition: str | None = None,
     slurm_qos: str | None = None,
+    include_probabilistic: bool = False,
 ) -> list[QueuedRun]:
     batch_slug = _build_batch_slug(settings)
     queued_runs: list[QueuedRun] = []
@@ -498,7 +550,10 @@ def build_queued_runs(
             "Resolved pilot config must contain a non-empty model.granularities list"
         )
 
-    for spec in build_experiment_specs(resolved_granularities):
+    for spec in build_experiment_specs(
+        resolved_granularities,
+        include_probabilistic=include_probabilistic,
+    ):
         run_id = _build_run_id(spec, batch_slug)
         resolve_overrides = _build_resolve_overrides(
             output_root,
@@ -564,7 +619,13 @@ def main(argv: Iterable[str] | None = None) -> int:
     os.chdir(REPO_ROOT)
     args = parse_args(argv)
 
-    config_path = Path(args.config).expanduser()
+    configured_path = args.config
+    if (
+        args.include_probabilistic
+        and configured_path == str(DEFAULT_CONFIG_PATH)
+    ):
+        configured_path = str(PROBABILISTIC_CONFIG_PATH)
+    config_path = Path(configured_path).expanduser()
     if not config_path.is_absolute():
         config_path = (REPO_ROOT / config_path).resolve()
     slurm_script = Path(args.slurm_script).expanduser()
@@ -582,6 +643,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         settings=settings,
         slurm_partition=args.slurm_partition,
         slurm_qos=args.slurm_qos,
+        include_probabilistic=args.include_probabilistic,
     )
 
     submitted = 0

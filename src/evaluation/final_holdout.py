@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
 from datetime import datetime, timezone
@@ -65,6 +66,7 @@ def validate_final_holdout_provenance(
     config = _read_json(run_directory / "config.json")
     summary = _read_json(run_directory / "run_summary.json")
     manifest = _read_json(run_directory / "final_holdout_manifest.json")
+    controller_summary = _read_json(run_directory / "controller_summary.json")
     resolved_checkpoint = _resolve_existing_checkpoint(
         run_directory,
         checkpoint_path,
@@ -75,6 +77,12 @@ def validate_final_holdout_provenance(
         raise FinalHoldoutError(
             "Final holdout evaluation requires a completed training run"
         )
+
+    artifact_hashes = _validate_training_artifact_hashes(
+        run_directory,
+        summary,
+        controller_summary,
+    )
 
     run_id = _config_run_id(config)
     for artifact_name, artifact_run_id in (
@@ -177,6 +185,7 @@ def validate_final_holdout_provenance(
             ),
         },
         "final_holdout_manifest_hash": final_manifest_hash,
+        **artifact_hashes,
         "config": config,
         "manifest": manifest,
         "checkpoint": checkpoint,
@@ -282,6 +291,9 @@ def evaluate_final_holdout(
             "checkpoint_selection_provenance"
         ],
         "final_holdout_manifest_hash": provenance["final_holdout_manifest_hash"],
+        "run_summary_hash": provenance["run_summary_hash"],
+        "controller_summary_hash": provenance["controller_summary_hash"],
+        "controller_metrics_hash": provenance["controller_metrics_hash"],
         "ordered_granularities": granularities,
         "ordered_per_granularity_losses": ordered_losses,
         "uniform_average_loss": math.fsum(row["loss"] for row in ordered_losses)
@@ -299,6 +311,60 @@ def evaluate_final_holdout(
     if written_path is None:
         raise FinalHoldoutError("Final holdout result was not written")
     return result
+
+
+def _validate_training_artifact_hashes(
+    run_directory: Path,
+    run_summary: Mapping[str, Any],
+    controller_summary: Mapping[str, Any],
+) -> dict[str, str]:
+    """Verify the standalone controller audit chain recorded by new runs."""
+
+    controller_summary_hash = stable_hash(controller_summary)
+    expected_summary_hash = run_summary.get("controller_summary_hash")
+    if expected_summary_hash not in (None, ""):
+        if expected_summary_hash != controller_summary_hash:
+            raise FinalHoldoutError("Controller summary artifact hash mismatch")
+
+        embedded_summary = run_summary.get("controller_summary")
+        if not isinstance(embedded_summary, Mapping) or (
+            stable_hash(embedded_summary) != controller_summary_hash
+        ):
+            raise FinalHoldoutError(
+                "Run summary controller summary does not match the standalone artifact"
+            )
+
+    configured_metrics_hash = run_summary.get("controller_metrics_hash")
+    summary_metrics_hash = controller_summary.get("controller_metrics_hash")
+    if (
+        configured_metrics_hash not in (None, "")
+        and configured_metrics_hash != summary_metrics_hash
+    ):
+        raise FinalHoldoutError("Controller journal hash mismatch between summaries")
+
+    metrics_path_value = controller_summary.get(
+        "controller_metrics_path",
+        run_summary.get("controller_metrics_path", "controller_metrics.jsonl"),
+    )
+    metrics_path = _resolve_artifact_candidate(run_directory, metrics_path_value)
+    actual_metrics_hash = (
+        hashlib.sha256(metrics_path.read_bytes()).hexdigest()
+        if metrics_path.is_file()
+        else None
+    )
+    if expected_summary_hash not in (None, ""):
+        if actual_metrics_hash is None:
+            raise FinalHoldoutError("Controller journal artifact is missing")
+        if summary_metrics_hash != actual_metrics_hash:
+            raise FinalHoldoutError("Controller journal artifact hash mismatch")
+
+    return {
+        "run_summary_hash": stable_hash(run_summary),
+        "controller_summary_hash": controller_summary_hash,
+        "controller_metrics_hash": str(
+            actual_metrics_hash or summary_metrics_hash or ""
+        ),
+    }
 
 
 def _validate_manifest(manifest: Mapping[str, Any]) -> None:
@@ -486,6 +552,15 @@ def _resolve_existing_checkpoint(run_dir: Path, checkpoint_path: str | Path) -> 
 
 def _resolve_checkpoint_candidate(run_dir: Path, checkpoint_path: str | Path) -> Path:
     path = Path(checkpoint_path).expanduser()
+    if not path.is_absolute() and not path.exists():
+        path = run_dir / path
+    return path.resolve()
+
+
+def _resolve_artifact_candidate(run_dir: Path, artifact_path: Any) -> Path:
+    if not isinstance(artifact_path, (str, Path)) or not str(artifact_path):
+        return (run_dir / "controller_metrics.jsonl").resolve()
+    path = Path(artifact_path).expanduser()
     if not path.is_absolute() and not path.exists():
         path = run_dir / path
     return path.resolve()
