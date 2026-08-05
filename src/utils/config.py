@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+import numpy as np
 import yaml
 
 from src.utils.artifact_io import DEFAULT_ARTIFACT_IO
@@ -30,9 +31,17 @@ VALID_CORRECTION_MODES = {"none", "gmc", "lmc"}
 VALID_MODEL_GRANULARITY_SAMPLING_MODES = {
     "global",
     "per_block",
+    "adaptive_global",
     "adaptive_per_block",
 }
 VALID_ADAPTIVE_SAMPLER_STRATEGIES = {"thompson", "ucb"}
+PROBABILISTIC_ADAPTIVE_SAMPLING_MODES = {
+    "adaptive_global",
+    "adaptive_per_block",
+}
+BAYESIAN_CONTROLLER_METHOD_FAMILY = "bayesian_gaussian_linear_thompson"
+BAYESIAN_CONTROLLER_METHOD_VERSION = 1
+BAYESIAN_COVARIANCE_TOLERANCE = 1e-10
 VALID_LEARNING_RATE_SCALE_RULES = {"none", "linear", "sqrt"}
 VALID_OPTIMIZER_NAMES = {"adamw", "sgd"}
 VALID_COMPLETION_LABELS = {"debug", "run"}
@@ -783,37 +792,45 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
                 "model.correction_mode and model.membership_correction must not disagree"
             )
 
-    if granularity_sampling_mode == "adaptive_per_block":
+    if granularity_sampling_mode in PROBABILISTIC_ADAPTIVE_SAMPLING_MODES:
         if run.get("sampling_mode") != "nested-random":
             raise ConfigError(
-                "model.granularity_sampling_mode=adaptive_per_block requires "
+                f"model.granularity_sampling_mode={granularity_sampling_mode} requires "
                 "nested-random runs"
             )
-        _require_fields(
-            model,
-            "model",
-            [
-                "adaptive_sampler_strategy",
-                "adaptive_sampler_exploration_scale",
-                "adaptive_sampler_decay_rate",
-                "adaptive_sampler_reward_penalty_weight",
-            ],
-        )
-        _normalize_adaptive_sampler_strategy(
+        _require_fields(model, "model", ["adaptive_sampler_strategy"])
+        strategy = _normalize_adaptive_sampler_strategy(
             model["adaptive_sampler_strategy"]
         )
-        _nonnegative_finite_float(
-            model["adaptive_sampler_exploration_scale"],
-            "model.adaptive_sampler_exploration_scale",
-        )
-        _nonnegative_finite_float(
-            model["adaptive_sampler_decay_rate"],
-            "model.adaptive_sampler_decay_rate",
-        )
-        _nonnegative_finite_float(
-            model["adaptive_sampler_reward_penalty_weight"],
-            "model.adaptive_sampler_reward_penalty_weight",
-        )
+        if strategy == "thompson":
+            _validate_resolved_bayesian_adaptive_configuration(config)
+        else:
+            if granularity_sampling_mode != "adaptive_per_block":
+                raise ConfigError(
+                    "model.granularity_sampling_mode=adaptive_global does not "
+                    "support model.adaptive_sampler_strategy=ucb"
+                )
+            _require_fields(
+                model,
+                "model",
+                [
+                    "adaptive_sampler_exploration_scale",
+                    "adaptive_sampler_decay_rate",
+                    "adaptive_sampler_reward_penalty_weight",
+                ],
+            )
+            _nonnegative_finite_float(
+                model["adaptive_sampler_exploration_scale"],
+                "model.adaptive_sampler_exploration_scale",
+            )
+            _nonnegative_finite_float(
+                model["adaptive_sampler_decay_rate"],
+                "model.adaptive_sampler_decay_rate",
+            )
+            _nonnegative_finite_float(
+                model["adaptive_sampler_reward_penalty_weight"],
+                "model.adaptive_sampler_reward_penalty_weight",
+            )
 
     if "d_model" in model and "hidden_size" in model:
         if _positive_int(model["d_model"], "model.d_model") != _positive_int(
@@ -1451,7 +1468,11 @@ def _resolve_sampling_mode_defaults(
         derived_run_sampling_mode = run_sampling_mode
     elif legacy_alias_mode == "global":
         derived_run_sampling_mode = "nested-all"
-    elif canonical_mode in {"per_block", "adaptive_per_block"} or legacy_alias_mode == "per_block":
+    elif canonical_mode in {
+        "per_block",
+        "adaptive_global",
+        "adaptive_per_block",
+    } or legacy_alias_mode == "per_block":
         derived_run_sampling_mode = "nested-random"
     elif run_sampling_mode is not None:
         derived_run_sampling_mode = run_sampling_mode
@@ -1465,10 +1486,13 @@ def _resolve_sampling_mode_defaults(
             f"model.granularity_sampling_mode={canonical_mode} conflicts with {requirement}"
         )
 
-    if canonical_mode == "adaptive_per_block" and derived_run_sampling_mode != "nested-random":
+    if (
+        canonical_mode in PROBABILISTIC_ADAPTIVE_SAMPLING_MODES
+        and derived_run_sampling_mode != "nested-random"
+    ):
         _raise_granularity_sampling_conflict("nested-random runs")
     if (
-        canonical_mode == "adaptive_per_block"
+        canonical_mode in PROBABILISTIC_ADAPTIVE_SAMPLING_MODES
         and requested_granularity_sampling_alias is not None
         and requested_granularity_sampling_alias != "random"
     ):
@@ -1478,13 +1502,13 @@ def _resolve_sampling_mode_defaults(
     if derived_run_sampling_mode in {"nested-all", "standalone"} and canonical_mode != "global":
         _raise_granularity_sampling_conflict(
             "nested-random runs"
-            if canonical_mode == "adaptive_per_block"
+            if canonical_mode in PROBABILISTIC_ADAPTIVE_SAMPLING_MODES
             else "nested runs"
         )
     if model_family == "standalone" and canonical_mode != "global":
         _raise_granularity_sampling_conflict(
             "nested-random runs"
-            if canonical_mode == "adaptive_per_block"
+            if canonical_mode in PROBABILISTIC_ADAPTIVE_SAMPLING_MODES
             else "nested runs"
         )
     if requested_run_sampling_mode is not None and requested_granularity_sampling_alias is not None:
@@ -1525,6 +1549,7 @@ def _resolve_adaptive_sampler_defaults(config: dict[str, Any]) -> None:
     if not isinstance(model, dict):
         return
 
+    sampling_mode = model.get("granularity_sampling_mode")
     adaptive_fields_requested = any(
         field in model
         for field in (
@@ -1532,12 +1557,36 @@ def _resolve_adaptive_sampler_defaults(config: dict[str, Any]) -> None:
             "adaptive_sampler_exploration_scale",
             "adaptive_sampler_decay_rate",
             "adaptive_sampler_reward_penalty_weight",
+            "adaptive_controller",
         )
     )
-    if model.get("granularity_sampling_mode") != "adaptive_per_block" and not adaptive_fields_requested:
+    if (
+        sampling_mode not in PROBABILISTIC_ADAPTIVE_SAMPLING_MODES
+        and not adaptive_fields_requested
+    ):
         return
 
     strategy = model.get("adaptive_sampler_strategy", "thompson")
+    strategy = _normalize_adaptive_sampler_strategy(strategy)
+    model["adaptive_sampler_strategy"] = strategy
+
+    if sampling_mode == "adaptive_global" and strategy == "ucb":
+        raise ConfigError(
+            "model.granularity_sampling_mode=adaptive_global does not support "
+            "model.adaptive_sampler_strategy=ucb"
+        )
+
+    if sampling_mode in PROBABILISTIC_ADAPTIVE_SAMPLING_MODES and strategy == "thompson":
+        _resolve_bayesian_adaptive_configuration(config)
+        return
+
+    _resolve_legacy_adaptive_sampler_defaults(model, strategy)
+
+
+def _resolve_legacy_adaptive_sampler_defaults(
+    model: dict[str, Any],
+    strategy: str,
+) -> None:
     exploration_scale = model.get("adaptive_sampler_exploration_scale", 1.0)
     decay_rate = model.get("adaptive_sampler_decay_rate", 0.0)
     reward_penalty_weight = model.get(
@@ -1545,9 +1594,7 @@ def _resolve_adaptive_sampler_defaults(config: dict[str, Any]) -> None:
         1.0,
     )
 
-    model["adaptive_sampler_strategy"] = _normalize_adaptive_sampler_strategy(
-        strategy
-    )
+    model["adaptive_sampler_strategy"] = strategy
     model["adaptive_sampler_exploration_scale"] = _nonnegative_finite_float(
         exploration_scale,
         "model.adaptive_sampler_exploration_scale",
@@ -1560,6 +1607,317 @@ def _resolve_adaptive_sampler_defaults(config: dict[str, Any]) -> None:
         reward_penalty_weight,
         "model.adaptive_sampler_reward_penalty_weight",
     )
+
+
+def _resolve_bayesian_adaptive_configuration(config: dict[str, Any]) -> None:
+    model = config["model"]
+    evaluation = config.setdefault("evaluation", {})
+    sampling_mode = model["granularity_sampling_mode"]
+
+    legacy_fields = [
+        field_name
+        for field_name in (
+            "adaptive_sampler_exploration_scale",
+            "adaptive_sampler_decay_rate",
+            "adaptive_sampler_reward_penalty_weight",
+        )
+        if field_name in model
+    ]
+    if legacy_fields:
+        raise ConfigError(
+            "Thompson migration to the Bayesian controller cannot mix legacy "
+            f"adaptive sampler fields: {legacy_fields}"
+        )
+
+    raw_controller = model.get("adaptive_controller")
+    if not isinstance(raw_controller, Mapping):
+        raise ConfigError(
+            "Thompson migration requires an explicit Bayesian mapping at "
+            "model.adaptive_controller"
+        )
+    controller = copy.deepcopy(dict(raw_controller))
+    required_controller_fields = (
+        "prior_mean",
+        "prior_covariance",
+        "observation_noise_variance",
+        "process_noise_covariance",
+    )
+    missing_controller_fields = [
+        field_name
+        for field_name in required_controller_fields
+        if field_name not in controller
+    ]
+    if missing_controller_fields:
+        raise ConfigError(
+            "Thompson migration requires explicit Bayesian controller fields: "
+            f"{missing_controller_fields}"
+        )
+
+    granularities = model.get("granularities")
+    if not isinstance(granularities, list) or not granularities:
+        raise ConfigError(
+            "Bayesian Thompson requires model.granularities to be a non-empty list"
+        )
+    block_count = _strict_positive_int(
+        model.get("num_layers"),
+        "model.num_layers",
+    )
+    scope = "global" if sampling_mode == "adaptive_global" else "per_block"
+    feature_model = "arms" if scope == "global" else "additive"
+    coefficient_dimension = (
+        len(granularities)
+        if scope == "global"
+        else 1 + block_count * (len(granularities) - 1)
+    )
+
+    controller["decision_interval_steps"] = _strict_positive_int(
+        controller.get("decision_interval_steps", 50),
+        "model.adaptive_controller.decision_interval_steps",
+    )
+    resolved_prior_mean = _resolve_bayesian_mean(
+        controller["prior_mean"],
+        coefficient_dimension,
+        "model.adaptive_controller.prior_mean",
+    )
+    resolved_prior_covariance = _resolve_bayesian_covariance(
+        controller["prior_covariance"],
+        coefficient_dimension,
+        "model.adaptive_controller.prior_covariance",
+    )
+    observation_noise_variance = _finite_float(
+        controller["observation_noise_variance"],
+        "model.adaptive_controller.observation_noise_variance",
+    )
+    if observation_noise_variance <= 0.0:
+        raise ConfigError(
+            "model.adaptive_controller.observation_noise_variance must be positive"
+        )
+    resolved_process_noise_covariance = _resolve_bayesian_covariance(
+        controller["process_noise_covariance"],
+        coefficient_dimension,
+        "model.adaptive_controller.process_noise_covariance",
+    )
+
+    fixed_fields = {
+        "strategy": "thompson",
+        "scope": scope,
+        "feature_model": feature_model,
+        "context_model": "intercept_only",
+        "transition_model": "identity",
+        "compute_weight": 0.0,
+        "switch_weight": 0.0,
+        "method_family": BAYESIAN_CONTROLLER_METHOD_FAMILY,
+        "method_version": BAYESIAN_CONTROLLER_METHOD_VERSION,
+    }
+    for field_name, expected_value in fixed_fields.items():
+        if field_name in controller and controller[field_name] != expected_value:
+            if field_name in {"compute_weight", "switch_weight"}:
+                raise ConfigError(
+                    f"model.adaptive_controller.{field_name} must be zero"
+                )
+            raise ConfigError(
+                f"model.adaptive_controller.{field_name} must be "
+                f"{expected_value!r}"
+            )
+        controller[field_name] = expected_value
+
+    controller["coefficient_dimension"] = coefficient_dimension
+    controller["block_count"] = block_count
+    controller["ordered_granularities"] = list(granularities)
+    controller["prior_mean_input"] = copy.deepcopy(controller["prior_mean"])
+    controller["prior_covariance_input"] = copy.deepcopy(
+        controller["prior_covariance"]
+    )
+    controller["process_noise_covariance_input"] = copy.deepcopy(
+        controller["process_noise_covariance"]
+    )
+    controller["resolved_prior_mean"] = resolved_prior_mean
+    controller["resolved_prior_covariance"] = resolved_prior_covariance
+    controller["observation_noise_variance"] = observation_noise_variance
+    controller["resolved_process_noise_covariance"] = (
+        resolved_process_noise_covariance
+    )
+
+    controller_role = _resolve_fixed_bayesian_data_role(
+        evaluation,
+        "adaptive_controller",
+        {
+            "enabled": True,
+            "source": "configured_dataset_split",
+            "examples": 128,
+            "objective_weights": "uniform",
+            "fixed_manifest": True,
+        },
+    )
+    final_holdout_role = _resolve_fixed_bayesian_data_role(
+        evaluation,
+        "final_holdout",
+        {
+            "enabled": True,
+            "source": "configured_dataset_split",
+            "examples": 512,
+            "fixed_manifest": True,
+            "evaluate_during_training": False,
+        },
+    )
+    controller_role.setdefault("manifest_hash", "pending")
+    final_holdout_role.setdefault("manifest_hash", "pending")
+    controller["controller_panel_contract"] = copy.deepcopy(controller_role)
+    controller["final_holdout_contract"] = copy.deepcopy(final_holdout_role)
+
+    model["adaptive_controller"] = controller
+    evaluation["adaptive_controller"] = controller_role
+    evaluation["final_holdout"] = final_holdout_role
+
+
+def _resolve_fixed_bayesian_data_role(
+    evaluation: dict[str, Any],
+    section_name: str,
+    expected_fields: Mapping[str, Any],
+) -> dict[str, Any]:
+    section = evaluation.get(section_name)
+    if not isinstance(section, Mapping):
+        raise ConfigError(
+            "Thompson migration requires an explicit Bayesian data-role mapping "
+            f"at evaluation.{section_name}"
+        )
+    resolved = copy.deepcopy(dict(section))
+    missing_fields = [
+        field_name for field_name in expected_fields if field_name not in resolved
+    ]
+    if missing_fields:
+        raise ConfigError(
+            "Thompson migration requires explicit Bayesian data-role fields at "
+            f"evaluation.{section_name}: {missing_fields}"
+        )
+    for field_name, expected_value in expected_fields.items():
+        field_path = f"evaluation.{section_name}.{field_name}"
+        actual_value = resolved[field_name]
+        if isinstance(expected_value, bool):
+            actual_value = _normalize_bool(actual_value, field_path)
+        elif isinstance(expected_value, int):
+            actual_value = _strict_positive_int(actual_value, field_path)
+        elif isinstance(expected_value, str):
+            if not isinstance(actual_value, str):
+                raise ConfigError(f"{field_path} must be {expected_value!r}")
+            actual_value = actual_value.strip()
+        if actual_value != expected_value:
+            raise ConfigError(f"{field_path} must be {expected_value!r}")
+        resolved[field_name] = actual_value
+    return resolved
+
+
+def _resolve_bayesian_mean(
+    value: Any,
+    dimension: int,
+    field_name: str,
+) -> list[float]:
+    if isinstance(value, list):
+        if len(value) != dimension:
+            raise ConfigError(
+                f"{field_name} dimension must be {dimension}; found {len(value)}"
+            )
+        return [
+            _finite_float(component, f"{field_name}[{index}]")
+            for index, component in enumerate(value)
+        ]
+    scalar = _finite_float(value, field_name)
+    return [scalar] * dimension
+
+
+def _resolve_bayesian_covariance(
+    value: Any,
+    dimension: int,
+    field_name: str,
+) -> list[list[float]]:
+    if not isinstance(value, list):
+        scalar = _finite_float(value, field_name)
+        if scalar < 0.0:
+            raise ConfigError(f"{field_name} must be positive semidefinite")
+        return [
+            [scalar if row == column else 0.0 for column in range(dimension)]
+            for row in range(dimension)
+        ]
+
+    if len(value) != dimension:
+        raise ConfigError(
+            f"{field_name} dimension must be {dimension}; found {len(value)}"
+        )
+    is_dense = any(isinstance(component, list) for component in value)
+    if not is_dense:
+        diagonal = [
+            _finite_float(component, f"{field_name}[{index}]")
+            for index, component in enumerate(value)
+        ]
+        if any(component < 0.0 for component in diagonal):
+            raise ConfigError(f"{field_name} must be positive semidefinite")
+        return [
+            [diagonal[row] if row == column else 0.0 for column in range(dimension)]
+            for row in range(dimension)
+        ]
+
+    if any(not isinstance(row, list) or len(row) != dimension for row in value):
+        raise ConfigError(f"{field_name} dimension must be {dimension}x{dimension}")
+    dense = np.asarray(
+        [
+            [
+                _finite_float(component, f"{field_name}[{row_index}][{column_index}]")
+                for column_index, component in enumerate(row)
+            ]
+            for row_index, row in enumerate(value)
+        ],
+        dtype=np.float64,
+    )
+    scale = max(1.0, float(np.max(np.abs(dense))))
+    tolerance = BAYESIAN_COVARIANCE_TOLERANCE * scale
+    if not np.allclose(dense, dense.T, rtol=0.0, atol=tolerance):
+        raise ConfigError(f"{field_name} must be symmetric")
+    dense = (dense + dense.T) * 0.5
+    try:
+        minimum_eigenvalue = float(np.linalg.eigvalsh(dense)[0])
+    except np.linalg.LinAlgError as error:
+        raise ConfigError(
+            f"{field_name} positive semidefinite validation failed"
+        ) from error
+    if minimum_eigenvalue < -tolerance:
+        raise ConfigError(f"{field_name} must be positive semidefinite")
+    return dense.tolist()
+
+
+def _finite_float(value: Any, field_name: str) -> float:
+    number = _coerce_float(value, field_name)
+    if not math.isfinite(number):
+        raise ConfigError(f"{field_name} must be finite")
+    return number
+
+
+def _strict_positive_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ConfigError(f"{field_name} must be a positive integer")
+    return value
+
+
+def _validate_resolved_bayesian_adaptive_configuration(
+    config: Mapping[str, Any],
+) -> None:
+    expected = copy.deepcopy(dict(config))
+    _resolve_bayesian_adaptive_configuration(expected)
+
+    model = config.get("model", {})
+    evaluation = config.get("evaluation", {})
+    expected_model = expected["model"]
+    expected_evaluation = expected["evaluation"]
+    if model.get("adaptive_controller") != expected_model.get(
+        "adaptive_controller"
+    ):
+        raise ConfigError(
+            "model.adaptive_controller does not match the resolved Bayesian contract"
+        )
+    for section_name in ("adaptive_controller", "final_holdout"):
+        if evaluation.get(section_name) != expected_evaluation.get(section_name):
+            raise ConfigError(
+                f"evaluation.{section_name} does not match the resolved Bayesian contract"
+            )
 
 
 def _normalize_run_sampling_mode(raw_mode: Any) -> str:
@@ -1593,6 +1951,7 @@ def _granularity_sampling_alias_from_mode(mode: str) -> str:
     return {
         "global": "all",
         "per_block": "random",
+        "adaptive_global": "random",
         "adaptive_per_block": "random",
     }[mode]
 
@@ -1622,7 +1981,7 @@ def _build_granularity_pattern_provenance(
             if run_sampling_mode == "nested-all"
             else (
                 "single"
-                if granularity_sampling_mode == "global"
+                if granularity_sampling_mode in {"global", "adaptive_global"}
                 else "per_block"
             )
         ),

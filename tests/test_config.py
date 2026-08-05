@@ -407,13 +407,7 @@ def test_adaptive_sampler_controls_override_and_validate():
 
 
 def _resolve_probabilistic_fixture(fixture_path, *, overrides=None):
-    # The setup fixtures retain the legacy eval_batches spelling for CLI
-    # compatibility; align it with their canonical eight-example holdout so
-    # these tests isolate the Bayesian configuration contract.
-    resolved_overrides = {"training.eval_batches": 4}
-    if overrides:
-        resolved_overrides.update(overrides)
-    return resolve_run_config(fixture_path, overrides=resolved_overrides)
+    return resolve_run_config(fixture_path, overrides=overrides)
 
 
 @pytest.mark.parametrize(
@@ -466,7 +460,6 @@ def test_probabilistic_adaptive_decision_interval_defaults_to_50(tmp_path):
     ) as config_file:
         raw = yaml.safe_load(config_file)
     raw["model"]["adaptive_controller"].pop("decision_interval_steps")
-    raw["training"]["eval_batches"] = 4
     config_path = tmp_path / "probabilistic-default-window.yaml"
     config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
 

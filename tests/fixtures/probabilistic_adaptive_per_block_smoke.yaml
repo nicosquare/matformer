@@ -59,7 +59,7 @@ training:
   scheduler:
     name: cosine
   eval_interval: 2
-  eval_batches: 1
+  eval_batches: 4
   mixed_precision: none
   activation_checkpointing: false
   granularity_sampling: random

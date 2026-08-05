@@ -1,5 +1,7 @@
 """Config-driven training orchestration for MatFormer reproduction runs."""
 
+# ruff: noqa: E402  # Load .env before modules that cache environment settings.
+
 from __future__ import annotations
 
 try:
@@ -10,6 +12,7 @@ except ImportError:  # pragma: no cover - optional dependency
 
 load_dotenv()
 
+import json
 import os
 from pathlib import Path
 from typing import Any, Mapping
@@ -52,9 +55,12 @@ from src.utils.metrics import (
     write_json_artifact,
 )
 from src.utils.reproducibility import (
+    build_comparison_control_signature,
     configure_strict_determinism,
+    seed_for,
     seed_model_initialization,
     seed_training_randomness,
+    stable_hash,
 )
 
 def run_from_config_path(
@@ -84,6 +90,306 @@ def ensure_single_process_runtime() -> None:
         raise ConfigError(
             "single-process only: distributed or multi-process execution is not supported"
         )
+
+
+def uses_probabilistic_controller(config: Mapping[str, Any]) -> bool:
+    model = config.get("model", {})
+    return (
+        model.get("granularity_sampling_mode")
+        in {"adaptive_global", "adaptive_per_block"}
+        and model.get("adaptive_sampler_strategy") == "thompson"
+    )
+
+
+def prepare_probabilistic_data_roles(
+    config: dict[str, Any],
+    tokenized_dataset,
+    device: torch.device,
+    distributed_context=None,
+) -> tuple[Any, Any, Any, dict[str, Any]]:
+    """Create fixed Bayesian data roles and their runtime dataloaders."""
+
+    validation = config["evaluation"]["validation"]
+    partition = training_data.partition_probabilistic_data_roles(
+        tokenized_dataset,
+        ordinary_validation_example_count=int(validation["holdout"]["examples"]),
+        ordinary_validation_seed=seed_for(config, "validation_holdout"),
+        controller_seed=seed_for(config, "controller_panel"),
+        final_holdout_seed=seed_for(config, "final_holdout"),
+        source_provenance=_probabilistic_source_provenance(
+            config,
+            tokenized_dataset,
+        ),
+    )
+    training_data.validate_data_role_disjointness(partition["role_manifests"])
+    _attach_probabilistic_role_provenance(config, partition)
+
+    role_datasets = partition["datasets"]
+    training = config["training"]
+    batch_size = int(training["batch_size_per_process"])
+    rank = int(getattr(distributed_context, "rank", 0))
+    world_size = int(getattr(distributed_context, "world_size", 1))
+    pin_memory = device.type == "cuda"
+    if distributed_context is not None and distributed_context.enabled:
+        train_sampler = training_data.DeterministicDistributedTrainingSampler(
+            role_datasets["optimizer_training"],
+            seed_for(config, "training_sampler"),
+            rank,
+            world_size,
+        )
+        validation_sampler = training_data.DistributedValidationSampler(
+            role_datasets["ordinary_validation"],
+            rank,
+            world_size,
+        )
+        controller_sampler = training_data.DistributedValidationSampler(
+            role_datasets["controller"],
+            rank,
+            world_size,
+        )
+    else:
+        train_sampler = training_data.EpochRandomSampler(
+            role_datasets["optimizer_training"],
+            seed_for(config, "training_sampler"),
+        )
+        validation_sampler = None
+        controller_sampler = None
+
+    num_workers = int(training.get("dataloader_num_workers", 0))
+    worker_seed = seed_for(config, "dataloader_workers")
+    train_dataloader = training_data.build_language_model_dataloader(
+        role_datasets["optimizer_training"],
+        batch_size=batch_size,
+        sampler=train_sampler,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        worker_init_fn=training_data.SeededWorkerInitializer(
+            worker_seed,
+            train_sampler,
+            rank,
+            world_size,
+        ),
+    )
+    validation_dataloader = training_data.build_language_model_dataloader(
+        role_datasets["ordinary_validation"],
+        batch_size=batch_size,
+        sampler=validation_sampler,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        worker_init_fn=training_data.SeededWorkerInitializer(
+            worker_seed,
+            validation_sampler,
+            rank,
+            world_size,
+        ),
+    )
+    controller_dataloader = training_data.build_language_model_dataloader(
+        role_datasets["controller"],
+        batch_size=batch_size,
+        sampler=controller_sampler,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        worker_init_fn=training_data.SeededWorkerInitializer(
+            worker_seed,
+            controller_sampler,
+            rank,
+            world_size,
+        ),
+    )
+    return (
+        train_dataloader,
+        validation_dataloader,
+        controller_dataloader,
+        partition,
+    )
+
+
+def _probabilistic_source_provenance(
+    config: Mapping[str, Any],
+    tokenized_dataset,
+) -> dict[str, Any]:
+    dataset = config["dataset"]
+    model = config["model"]
+    tokenization_identity = dataset.get("tokenization_identity")
+    if tokenization_identity is None:
+        tokenization_identity = {
+            "preprocessing_version": 1,
+            "tokenizer_name": model.get("tokenizer_name"),
+            "context_length": model["context_length"],
+            "truncation": True,
+            "padding": "max_length",
+            "attention_mask": True,
+        }
+        tokenization_identity["identity_hash"] = stable_hash(
+            tokenization_identity
+        )
+        dataset["tokenization_identity"] = tokenization_identity
+    return {
+        "dataset_name": dataset["dataset_name"],
+        "dataset_config_name": dataset.get("dataset_config_name"),
+        "source_split": dataset["dataset_split"],
+        "source_dataset_fingerprint": dataset.get(
+            "source_dataset_fingerprint",
+            getattr(tokenized_dataset, "_fingerprint", None),
+        ),
+        "tokenization_identity": tokenization_identity,
+    }
+
+
+def _attach_probabilistic_role_provenance(
+    config: dict[str, Any],
+    partition: Mapping[str, Any],
+) -> None:
+    manifests = partition["role_manifests"]
+    parent_manifest = partition["parent_manifest"]
+    manifest_hashes = {
+        role: manifests[role]["manifest_hash"]
+        for role in training_data.PROBABILISTIC_DATA_ROLE_NAMES
+    }
+    config["data_roles_manifest_hash"] = parent_manifest[
+        "parent_manifest_hash"
+    ]
+    config["optimizer_training_manifest_hash"] = manifest_hashes[
+        "optimizer_training"
+    ]
+    config["controller_manifest_hash"] = manifest_hashes["controller"]
+    config["validation_manifest_hash"] = manifest_hashes["ordinary_validation"]
+    config["final_holdout_manifest_hash"] = manifest_hashes["final_holdout"]
+    config["data_role_manifests"] = {
+        "data_roles": {
+            "path": "data_roles_manifest.json",
+            "manifest_hash": config["data_roles_manifest_hash"],
+        },
+        "optimizer_training": {
+            "path": "training_manifest.json",
+            "manifest_hash": manifest_hashes["optimizer_training"],
+        },
+        "controller": {
+            "path": "controller_manifest.json",
+            "manifest_hash": manifest_hashes["controller"],
+        },
+        "ordinary_validation": {
+            "path": "validation_manifest.json",
+            "manifest_hash": manifest_hashes["ordinary_validation"],
+        },
+        "final_holdout": {
+            "path": "final_holdout_manifest.json",
+            "manifest_hash": manifest_hashes["final_holdout"],
+        },
+    }
+    config["validation_loss_aggregation"] = (
+        "target_token_weighted_causal_shift_float64"
+    )
+
+    evaluation = config["evaluation"]
+    evaluation["validation"]["manifest_hash"] = manifest_hashes[
+        "ordinary_validation"
+    ]
+    evaluation["adaptive_controller"]["manifest_hash"] = manifest_hashes[
+        "controller"
+    ]
+    evaluation["final_holdout"]["manifest_hash"] = manifest_hashes[
+        "final_holdout"
+    ]
+    controller = config["model"]["adaptive_controller"]
+    controller["controller_panel_contract"]["manifest_hash"] = manifest_hashes[
+        "controller"
+    ]
+    controller["final_holdout_contract"]["manifest_hash"] = manifest_hashes[
+        "final_holdout"
+    ]
+    controller["data_roles_manifest_hash"] = config["data_roles_manifest_hash"]
+    controller["optimizer_training_manifest_hash"] = manifest_hashes[
+        "optimizer_training"
+    ]
+    controller["controller_manifest_hash"] = manifest_hashes["controller"]
+    controller["ordinary_validation_manifest_hash"] = manifest_hashes[
+        "ordinary_validation"
+    ]
+    controller["final_holdout_manifest_hash"] = manifest_hashes["final_holdout"]
+
+    signature, inputs = build_comparison_control_signature(config)
+    config["comparison_control_signature"] = signature
+    config["comparison_control_inputs"] = inputs
+
+
+def write_probabilistic_data_role_artifacts(
+    config: Mapping[str, Any],
+    partition: Mapping[str, Any],
+    distributed_context=None,
+) -> None:
+    """Validate resume manifests, then atomically persist the resolved split."""
+
+    output_dir = Path(config["run"]["output_dir"])
+    manifests = partition["role_manifests"]
+    artifacts = {
+        "data_roles_manifest.json": (
+            partition["parent_manifest"],
+            "parent_manifest_hash",
+        ),
+        "training_manifest.json": (
+            manifests["optimizer_training"],
+            "manifest_hash",
+        ),
+        "controller_manifest.json": (
+            manifests["controller"],
+            "manifest_hash",
+        ),
+        "validation_manifest.json": (
+            manifests["ordinary_validation"],
+            "manifest_hash",
+        ),
+        "final_holdout_manifest.json": (
+            manifests["final_holdout"],
+            "manifest_hash",
+        ),
+    }
+    _validate_probabilistic_resume_manifests(config, output_dir, artifacts)
+    for filename, (payload, _) in artifacts.items():
+        write_json_artifact(
+            output_dir / filename,
+            payload,
+            distributed_context=distributed_context,
+            artifact_io=config,
+        )
+    write_config_artifact(config, distributed_context=distributed_context)
+
+
+def _validate_probabilistic_resume_manifests(
+    config: Mapping[str, Any],
+    output_dir: Path,
+    artifacts: Mapping[str, tuple[Mapping[str, Any], str]],
+) -> None:
+    continuation = config["run"].get("continuation", {})
+    if not continuation.get("enabled", False):
+        return
+    checkpoint_dir = output_dir / "checkpoints"
+    has_resume_checkpoint = any(
+        (checkpoint_dir / filename).exists()
+        for filename in ("latest.pt", "latest.prev.pt")
+    )
+    for filename, (expected_payload, hash_field) in artifacts.items():
+        artifact_path = output_dir / filename
+        if not artifact_path.exists():
+            if has_resume_checkpoint:
+                raise ConfigError(
+                    "Bayesian resume requires the saved data-role manifest: "
+                    f"{artifact_path}"
+                )
+            continue
+        try:
+            saved_payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ConfigError(
+                f"Unable to validate Bayesian resume manifest {artifact_path}: {error}"
+            ) from error
+        saved_hash = saved_payload.get(hash_field)
+        expected_hash = expected_payload[hash_field]
+        if saved_hash != expected_hash:
+            raise ConfigError(
+                "Bayesian resume data-role manifest hash mismatch for "
+                f"{filename}: saved={saved_hash!r}, expected={expected_hash!r}"
+            )
 
 
 def run_training(
@@ -123,6 +429,7 @@ def run_training(
         distributed_context,
     )
     parameter_counts_by_granularity = {}
+    _controller_dataloader = None
 
     with training_monitoring.heartbeat_stage(heartbeat_writer, "artifact_writing"):
         write_config_artifact(config, distributed_context=distributed_context)
@@ -191,25 +498,57 @@ def run_training(
             heartbeat_writer,
             "dataloader_creation",
         ):
-            train_dataloader, eval_dataloader = training_data.build_dataloaders(
-                config,
-                tokenized_dataset,
-                device,
-                distributed_context=distributed_context,
-            )
-            validation_manifest = config.pop("_validation_manifest")
-            if training_distributed.should_write_shared_artifact(distributed_context):
-                write_json_artifact(
-                    output_dir / "validation_manifest.json",
-                    validation_manifest,
+            if uses_probabilistic_controller(config):
+                (
+                    train_dataloader,
+                    eval_dataloader,
+                    _controller_dataloader,
+                    role_partition,
+                ) = prepare_probabilistic_data_roles(
+                    config,
+                    tokenized_dataset,
+                    device,
                     distributed_context=distributed_context,
-                    artifact_io=config,
                 )
-                print(
-                    "[validation] manifest_hash="
-                    f"{config['validation_manifest_hash']}",
-                    flush=True,
+                write_probabilistic_data_role_artifacts(
+                    config,
+                    role_partition,
+                    distributed_context=distributed_context,
                 )
+                if training_distributed.should_write_shared_artifact(
+                    distributed_context
+                ):
+                    print(
+                        "[data-roles] manifest_hash="
+                        f"{config['data_roles_manifest_hash']} "
+                        "controller_manifest_hash="
+                        f"{config['controller_manifest_hash']} "
+                        "final_holdout_manifest_hash="
+                        f"{config['final_holdout_manifest_hash']}",
+                        flush=True,
+                    )
+            else:
+                train_dataloader, eval_dataloader = training_data.build_dataloaders(
+                    config,
+                    tokenized_dataset,
+                    device,
+                    distributed_context=distributed_context,
+                )
+                validation_manifest = config.pop("_validation_manifest")
+                if training_distributed.should_write_shared_artifact(
+                    distributed_context
+                ):
+                    write_json_artifact(
+                        output_dir / "validation_manifest.json",
+                        validation_manifest,
+                        distributed_context=distributed_context,
+                        artifact_io=config,
+                    )
+                    print(
+                        "[validation] manifest_hash="
+                        f"{config['validation_manifest_hash']}",
+                        flush=True,
+                    )
         optimizer, scheduler = training_steps.build_optimizer_and_scheduler(
             model,
             training,
@@ -440,6 +779,19 @@ def run_training(
             "comparison_control_signature": config.get(
                 "comparison_control_signature"
             ),
+            "data_roles_manifest_hash": config.get(
+                "data_roles_manifest_hash"
+            ),
+            "optimizer_training_manifest_hash": config.get(
+                "optimizer_training_manifest_hash"
+            ),
+            "controller_manifest_hash": config.get(
+                "controller_manifest_hash"
+            ),
+            "final_holdout_manifest_hash": config.get(
+                "final_holdout_manifest_hash"
+            ),
+            "data_role_manifests": config.get("data_role_manifests"),
             "deterministic_runtime_settings": deterministic_settings,
             "artifact_last_errno": run_state.get("artifact_last_errno"),
             "last_durable_checkpoint_step": int(

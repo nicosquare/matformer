@@ -140,6 +140,87 @@ def evaluate_validation_per_granularity(
         _restore_runtime_granularity_state(model, runtime_state)
 
 
+def evaluate_fixed_panel_objective(
+    model,
+    dataloader,
+    granularities: list[str],
+    device: torch.device | str,
+    distributed: bool = False,
+    config: dict[str, Any] | None = None,
+    controller_manifest_hash: str | None = None,
+    boundary_step: int | None = None,
+) -> dict[str, Any]:
+    """Evaluate the uniform all-granularity objective on one fixed panel."""
+
+    ordered_granularities = [str(granularity) for granularity in granularities]
+    if not ordered_granularities:
+        raise ValueError("Controller objective requires at least one granularity")
+    if len(set(ordered_granularities)) != len(ordered_granularities):
+        raise ValueError("Controller objective granularities must be unique")
+
+    component_results = evaluate_validation_per_granularity(
+        model,
+        dataloader,
+        ordered_granularities,
+        device,
+        distributed=distributed,
+        config=config,
+    )
+    component_losses = []
+    for expected_granularity, result in zip(
+        ordered_granularities,
+        component_results,
+        strict=True,
+    ):
+        if result.get("granularity") != expected_granularity:
+            raise ValueError(
+                "Controller objective granularity order changed during evaluation"
+            )
+        component_loss = float(result["loss"])
+        if not math.isfinite(component_loss):
+            raise ValueError(
+                "Controller objective produced a non-finite component loss for "
+                f"granularity {expected_granularity!r}"
+            )
+        component_losses.append(component_loss)
+
+    uniform_objective = math.fsum(component_losses) / len(component_losses)
+    if not math.isfinite(uniform_objective):
+        raise ValueError("Controller objective is non-finite")
+
+    evaluation_example_counts = {
+        int(result["evaluation_examples"]) for result in component_results
+    }
+    evaluation_target_counts = {
+        int(result["evaluation_target_tokens"]) for result in component_results
+    }
+    if len(evaluation_example_counts) != 1 or len(evaluation_target_counts) != 1:
+        raise ValueError(
+            "Controller objective component evaluations used inconsistent panel counts"
+        )
+
+    return {
+        "boundary_step": boundary_step,
+        "split": "controller",
+        "ordered_granularities": ordered_granularities,
+        "ordered_component_losses": component_losses,
+        "objective": uniform_objective,
+        "uniform_objective": uniform_objective,
+        "evaluation_example_count": next(iter(evaluation_example_counts)),
+        "evaluation_target_tokens": next(iter(evaluation_target_counts)),
+        "aggregation_method": "target_token_weighted_causal_shift_float64",
+        "objective_weighting": "uniform",
+        "controller_manifest_hash": controller_manifest_hash,
+        "evaluation_status": "complete",
+        "component_results": component_results,
+    }
+
+
+# Keep both descriptive call-site names available while controller lifecycle code lands.
+evaluate_controller_objective = evaluate_fixed_panel_objective
+evaluate_controller_panel_objective = evaluate_fixed_panel_objective
+
+
 def _capture_runtime_granularity_state(model) -> dict[str, Any]:
     target = model.module if hasattr(model, "module") else model
     layer_granularities = getattr(target, "current_layer_granularities", None)

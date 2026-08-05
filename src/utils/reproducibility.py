@@ -14,6 +14,11 @@ import numpy as np
 SEED_STREAM_VERSION = 1
 DATA_SPLIT_VERSION = 1
 STRICT_CUBLAS_WORKSPACE_CONFIG = ":4096:8"
+PROBABILISTIC_SEED_STREAMS = (
+    "controller_panel",
+    "final_holdout",
+    "posterior_sampling",
+)
 SEED_STREAMS = (
     "model_initialization",
     "python_training",
@@ -26,6 +31,7 @@ SEED_STREAMS = (
     "granularity_selection",
     "adaptive_sampling",
     "artifact_retry_jitter",
+    *PROBABILISTIC_SEED_STREAMS,
 )
 
 _DEDICATED_RANDOM_GENERATORS: dict[str, random.Random] = {}
@@ -215,6 +221,33 @@ def stable_hash(value: Any) -> str:
     return hashlib.sha256(serialized).hexdigest()
 
 
+def probabilistic_seed_provenance(
+    config: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Resolve the independent data-role and posterior seed streams."""
+
+    seed_stream_version = int(
+        config["run"]["reproducibility"]["seed_stream_version"]
+    )
+    return {
+        stream_name: {
+            "stream_name": stream_name,
+            "seed_stream_version": seed_stream_version,
+            "resolved_seed": seed_for(config, stream_name),
+        }
+        for stream_name in PROBABILISTIC_SEED_STREAMS
+    }
+
+
+def _uses_probabilistic_adaptive_controller(config: Mapping[str, Any]) -> bool:
+    model = config.get("model", {})
+    return (
+        model.get("granularity_sampling_mode")
+        in {"adaptive_global", "adaptive_per_block"}
+        and model.get("adaptive_sampler_strategy") == "thompson"
+    )
+
+
 def build_comparison_control_signature(config: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
     run = config["run"]
     training = config["training"]
@@ -240,4 +273,15 @@ def build_comparison_control_signature(config: Mapping[str, Any]) -> tuple[str, 
         "dataset_split": dataset.get("dataset_split"),
         "tokenizer_name": model.get("tokenizer_name"),
     }
+    if _uses_probabilistic_adaptive_controller(config):
+        inputs["probabilistic_seed_streams"] = probabilistic_seed_provenance(config)
+        inputs["probabilistic_data_role_manifests"] = {
+            "data_roles": config.get("data_roles_manifest_hash"),
+            "optimizer_training": config.get(
+                "optimizer_training_manifest_hash"
+            ),
+            "controller": config.get("controller_manifest_hash"),
+            "ordinary_validation": config.get("validation_manifest_hash"),
+            "final_holdout": config.get("final_holdout_manifest_hash"),
+        }
     return stable_hash(inputs), inputs
