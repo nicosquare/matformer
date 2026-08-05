@@ -379,6 +379,74 @@ def broadcast_object(
     return object_list[0]
 
 
+def _validate_probabilistic_controller_broadcast_payload(
+    payload: Any,
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ConfigError("Broadcast Bayesian controller payload is missing")
+    controller_state = payload.get("controller_state")
+    action = payload.get("action")
+    if not isinstance(controller_state, dict):
+        raise ConfigError("Broadcast Bayesian controller state is missing")
+    if (
+        isinstance(controller_state.get("method_version"), bool)
+        or not isinstance(controller_state.get("method_version"), int)
+        or controller_state["method_version"] <= 0
+        or controller_state.get("scope") not in {"global", "per_block"}
+        or not isinstance(controller_state.get("belief"), dict)
+        or not isinstance(controller_state.get("sampling"), dict)
+    ):
+        raise ConfigError("Broadcast Bayesian controller state is incomplete")
+    round_index = controller_state["belief"].get("round_index")
+    sample_count = controller_state["sampling"].get("sample_count")
+    if (
+        isinstance(round_index, bool)
+        or not isinstance(round_index, int)
+        or round_index < 0
+        or isinstance(sample_count, bool)
+        or not isinstance(sample_count, int)
+        or sample_count < 0
+    ):
+        raise ConfigError("Broadcast Bayesian controller state is incomplete")
+    if not isinstance(action, dict):
+        raise ConfigError("Broadcast Bayesian controller action is missing")
+    scope = controller_state["scope"]
+    if scope == "global" and not isinstance(action.get("global_granularity"), str):
+        raise ConfigError("Broadcast Bayesian global action is incomplete")
+    if scope == "per_block" and not isinstance(action.get("block_granularities"), list):
+        raise ConfigError("Broadcast Bayesian per-block action is incomplete")
+    return copy.deepcopy(payload)
+
+
+def broadcast_probabilistic_controller_state(
+    *,
+    controller_state: dict[str, Any] | None,
+    action: dict[str, Any] | None,
+    context: DistributedContext | None = None,
+) -> dict[str, Any]:
+    """Broadcast rank zero's validated controller state and selected action."""
+
+    is_rank_zero = (
+        context.is_rank_zero
+        if context is not None
+        else get_rank(default=0) == 0
+    )
+    payload = None
+    if is_rank_zero:
+        if controller_state is None:
+            raise ConfigError(
+                "rank zero must provide Bayesian controller state for broadcast"
+            )
+        payload = _validate_probabilistic_controller_broadcast_payload(
+            {
+                "controller_state": controller_state,
+                "action": action,
+            }
+        )
+    received = broadcast_object(payload, context=context, src=0)
+    return _validate_probabilistic_controller_broadcast_payload(received)
+
+
 def sum_int(
     value: int,
     device: torch.device | str,

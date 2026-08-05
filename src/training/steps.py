@@ -217,6 +217,7 @@ def train_for_steps(
     monitoring_session=None,
     stage_name: str = "training",
     metrics_journal=None,
+    probabilistic_controller=None,
 ) -> list[dict[str, Any]]:
     training = config["training"]
     run = config["run"]
@@ -332,6 +333,46 @@ def train_for_steps(
                         )
                         (outputs.loss / total_losses).backward()
                     combined_loss_value = sum(detached_losses) / total_losses
+                elif model_sampling_mode == "adaptive_global" and probabilistic_controller is not None:
+                    selected_layer_granularities = (
+                        probabilistic_global_layer_granularities(
+                            config,
+                            probabilistic_controller,
+                        )
+                    )
+                    if supports_layer_granularities:
+                        configure_model_layer_granularities(
+                            model,
+                            selected_layer_granularities,
+                        )
+                    else:
+                        configure_model_granularity(
+                            model,
+                            selected_layer_granularities[0],
+                        )
+                    step_runtime_pattern_summary, step_correction_context = _runtime_granularity_artifacts(
+                        config,
+                        model,
+                    )
+                    with autocast_context(config, device):
+                        outputs = model(
+                            input_ids=batch["input_ids"],
+                            attention_mask=batch.get("attention_mask"),
+                            labels=batch["labels"],
+                        )
+                    combined_loss = outputs.loss
+                    combined_loss_value = float(
+                        combined_loss.detach().float().cpu().item()
+                    )
+                    step_metric_rows_data.append(
+                        (
+                            selected_layer_granularities[0],
+                            combined_loss_value,
+                            step_runtime_pattern_summary,
+                            step_correction_context,
+                        )
+                    )
+                    total_losses = 1
                 elif model_sampling_mode == "adaptive_per_block" and supports_layer_granularities:
                     if adaptive_sampler_state is None:
                         raise ConfigError(
@@ -459,6 +500,8 @@ def train_for_steps(
                     optimizer,
                     total_losses=total_losses,
                 )
+                if probabilistic_controller is not None:
+                    probabilistic_controller.record_successful_optimizer_step()
                 scheduler.step()
 
                 elapsed = time.time() - start_time
@@ -718,6 +761,37 @@ def select_training_layer_granularities(
         ]
         for _ in range(layer_count)
     ]
+
+
+def probabilistic_global_layer_granularities(
+    config: Mapping[str, Any],
+    probabilistic_controller,
+) -> list[str]:
+    """Repeat the active Bayesian global action for every transformer block."""
+
+    state = probabilistic_controller.state_dict()
+    window = state.get("window", {})
+    if window.get("phase") != "active_window":
+        raise ConfigError(
+            "Bayesian global training requires an active controller window"
+        )
+    action = window.get("current_action")
+    if not isinstance(action, Mapping):
+        raise ConfigError("Bayesian global controller action is missing")
+    selected = action.get("global_granularity")
+    granularities = _resolved_granularities(
+        config,
+        list(config.get("model", {}).get("granularities", [])),
+    )
+    if selected not in granularities:
+        raise ConfigError(
+            "Bayesian global controller selected an unknown granularity: "
+            f"{selected!r}"
+        )
+    block_count = int(config["model"]["num_layers"])
+    if block_count <= 0:
+        raise ConfigError("model.num_layers must be positive")
+    return [str(selected)] * block_count
 
 
 def _resolved_granularities(

@@ -11,6 +11,7 @@ except ImportError:  # pragma: no cover - optional dependency
 load_dotenv()
 
 import copy
+import math
 import os
 import shutil
 import tempfile
@@ -33,7 +34,16 @@ from src.training.distributed import (
     broadcast_object,
     should_write_shared_artifact,
 )
+from src.training.probabilistic_controller import (
+    CONTROLLER_SCHEMA_VERSION,
+    FEATURE_SCHEMA_VERSION,
+    ProbabilisticControllerError,
+    SAMPLING_FACTORIZATION_CONTRACT,
+    validate_gaussian_belief,
+)
 from src.utils.config import (
+    BAYESIAN_CONTROLLER_METHOD_FAMILY,
+    BAYESIAN_CONTROLLER_METHOD_VERSION,
     ConfigError,
     resolve_sampling_mode_from_config_sections,
 )
@@ -54,6 +64,466 @@ from src.utils.reproducibility import (
     deterministic_runtime_settings,
     restore_rng_state,
 )
+
+
+PROBABILISTIC_CONTROLLER_PHASES = {
+    "initial_objective_pending",
+    "ready_for_action",
+    "active_window",
+    "boundary_evaluation_pending",
+    "terminal_incomplete",
+    "failed",
+}
+
+
+def uses_probabilistic_controller(config: Mapping[str, Any]) -> bool:
+    model = config.get("model", {})
+    return bool(
+        isinstance(model, Mapping)
+        and model.get("granularity_sampling_mode")
+        in {"adaptive_global", "adaptive_per_block"}
+        and model.get("adaptive_sampler_strategy") == "thompson"
+    )
+
+
+def validate_probabilistic_controller_checkpoint_state(
+    controller_state: Mapping[str, Any] | None,
+    *,
+    config: Mapping[str, Any] | None = None,
+    checkpoint_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Validate the complete Bayesian state before saving or restoring it."""
+
+    location = f" at {checkpoint_path}" if checkpoint_path is not None else ""
+    if not isinstance(controller_state, Mapping):
+        raise ConfigError(
+            f"Checkpoint is missing Bayesian controller state{location}"
+        )
+    state = copy.deepcopy(dict(controller_state))
+    required_top_level = {
+        "schema_version",
+        "method_family",
+        "method_version",
+        "strategy",
+        "scope",
+        "ordered_granularities",
+        "block_count",
+        "feature_schema",
+        "probabilistic_inputs",
+        "manifest_hashes",
+        "belief",
+        "sampling",
+        "window",
+        "journal",
+        "resume",
+        "failure",
+    }
+    missing = required_top_level - set(state)
+    if missing:
+        raise ConfigError(
+            "Bayesian controller checkpoint state is incomplete"
+            f"{location}: {sorted(missing)}"
+        )
+    if state["schema_version"] != CONTROLLER_SCHEMA_VERSION:
+        raise ConfigError(f"Bayesian controller schema version mismatch{location}")
+    if state["method_family"] != BAYESIAN_CONTROLLER_METHOD_FAMILY:
+        raise ConfigError(f"Bayesian controller method family mismatch{location}")
+    if state["method_version"] != BAYESIAN_CONTROLLER_METHOD_VERSION:
+        raise ConfigError(f"Bayesian controller method version mismatch{location}")
+    if state["strategy"] != "thompson":
+        raise ConfigError(f"Bayesian controller strategy mismatch{location}")
+    if state["scope"] not in {"global", "per_block"}:
+        raise ConfigError(f"Bayesian controller scope is invalid{location}")
+
+    granularities = state["ordered_granularities"]
+    if (
+        not isinstance(granularities, list)
+        or not granularities
+        or any(not isinstance(label, str) or not label for label in granularities)
+        or len(set(granularities)) != len(granularities)
+    ):
+        raise ConfigError(
+            f"Bayesian controller ordered granularities are invalid{location}"
+        )
+    block_count = state["block_count"]
+    if isinstance(block_count, bool) or not isinstance(block_count, int) or block_count <= 0:
+        raise ConfigError(f"Bayesian controller block count is invalid{location}")
+
+    feature_schema = state["feature_schema"]
+    if not isinstance(feature_schema, Mapping):
+        raise ConfigError(f"Bayesian controller feature schema is missing{location}")
+    required_feature_fields = {
+        "schema_version",
+        "scope",
+        "encoding",
+        "dimension",
+        "coefficient_names",
+        "schema_hash",
+    }
+    missing_features = required_feature_fields - set(feature_schema)
+    if missing_features:
+        raise ConfigError(
+            f"Bayesian controller feature schema is incomplete{location}: "
+            f"{sorted(missing_features)}"
+        )
+    dimension = feature_schema["dimension"]
+    coefficient_names = feature_schema.get("coefficient_names")
+    expected_dimension = (
+        len(granularities)
+        if state["scope"] == "global"
+        else 1 + block_count * (len(granularities) - 1)
+    )
+    if (
+        feature_schema["schema_version"] != FEATURE_SCHEMA_VERSION
+        or feature_schema["scope"] != state["scope"]
+        or isinstance(dimension, bool)
+        or not isinstance(dimension, int)
+        or dimension <= 0
+        or dimension != expected_dimension
+        or not isinstance(coefficient_names, list)
+        or len(coefficient_names) != dimension
+        or any(not isinstance(name, str) or not name for name in coefficient_names)
+        or not isinstance(feature_schema["schema_hash"], str)
+        or not feature_schema["schema_hash"]
+    ):
+        raise ConfigError(f"Bayesian controller feature schema is invalid{location}")
+
+    probabilistic_inputs = state["probabilistic_inputs"]
+    required_inputs = {
+        "resolved_prior_mean",
+        "resolved_prior_covariance",
+        "observation_noise_variance",
+        "resolved_process_noise_covariance",
+        "transition_model",
+        "context_model",
+        "compute_weight",
+        "switch_weight",
+    }
+    if not isinstance(probabilistic_inputs, Mapping) or (
+        required_inputs - set(probabilistic_inputs)
+    ):
+        raise ConfigError(
+            f"Bayesian controller probabilistic inputs are incomplete{location}"
+        )
+    try:
+        prior_mean, _ = validate_gaussian_belief(
+            probabilistic_inputs["resolved_prior_mean"],
+            probabilistic_inputs["resolved_prior_covariance"],
+            state_name="checkpoint prior",
+        )
+        _, process_covariance = validate_gaussian_belief(
+            [0.0] * dimension,
+            probabilistic_inputs["resolved_process_noise_covariance"],
+            state_name="checkpoint process noise",
+        )
+    except ProbabilisticControllerError as error:
+        raise ConfigError(f"Invalid Bayesian checkpoint inputs{location}: {error}") from error
+    if prior_mean.numel() != dimension or tuple(process_covariance.shape) != (
+        dimension,
+        dimension,
+    ):
+        raise ConfigError(
+            f"Bayesian controller probabilistic input dimension mismatch{location}"
+        )
+    observation_noise = probabilistic_inputs["observation_noise_variance"]
+    compute_weight = probabilistic_inputs["compute_weight"]
+    switch_weight = probabilistic_inputs["switch_weight"]
+    numerical_values_are_valid = all(
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(float(value))
+        for value in (observation_noise, compute_weight, switch_weight)
+    )
+    if (
+        not numerical_values_are_valid
+        or float(observation_noise) <= 0.0
+        or probabilistic_inputs["transition_model"] != "identity"
+        or probabilistic_inputs["context_model"] != "intercept_only"
+        or float(compute_weight) != 0.0
+        or float(switch_weight) != 0.0
+    ):
+        raise ConfigError(f"Bayesian controller probabilistic inputs are invalid{location}")
+
+    manifests = state["manifest_hashes"]
+    required_manifests = {
+        "data_roles_manifest_hash",
+        "optimizer_training_manifest_hash",
+        "controller_manifest_hash",
+        "ordinary_validation_manifest_hash",
+        "final_holdout_manifest_hash",
+    }
+    if not isinstance(manifests, Mapping) or any(
+        not isinstance(manifests.get(name), str) or not manifests.get(name)
+        for name in required_manifests
+    ):
+        raise ConfigError(f"Bayesian controller manifest hashes are incomplete{location}")
+
+    belief = state["belief"]
+    required_belief_fields = {
+        "round_index",
+        "posterior_mean",
+        "posterior_covariance",
+        "predictive_mean",
+        "predictive_covariance",
+        "last_prediction_step",
+        "last_update_step",
+    }
+    if (
+        not isinstance(belief, Mapping)
+        or required_belief_fields - set(belief)
+        or isinstance(belief.get("round_index"), bool)
+        or not isinstance(belief.get("round_index"), int)
+        or belief["round_index"] < 0
+        or any(
+            value is not None
+            and (isinstance(value, bool) or not isinstance(value, int) or value < 0)
+            for value in (
+                belief.get("last_prediction_step"),
+                belief.get("last_update_step"),
+            )
+        )
+    ):
+        raise ConfigError(f"Bayesian controller belief is missing{location}")
+    try:
+        posterior_mean, posterior_covariance = validate_gaussian_belief(
+            belief.get("posterior_mean"),
+            belief.get("posterior_covariance"),
+            state_name="checkpoint posterior",
+        )
+        has_predictive_mean = belief.get("predictive_mean") is not None
+        has_predictive_covariance = belief.get("predictive_covariance") is not None
+        if has_predictive_mean != has_predictive_covariance:
+            raise ProbabilisticControllerError(
+                "checkpoint predictive mean and covariance must appear together"
+            )
+        if has_predictive_mean:
+            predictive_mean, predictive_covariance = validate_gaussian_belief(
+                belief.get("predictive_mean"),
+                belief.get("predictive_covariance"),
+                state_name="checkpoint predictive",
+            )
+            if predictive_mean.numel() != dimension:
+                raise ProbabilisticControllerError(
+                    "checkpoint predictive dimension must match feature schema"
+                )
+            belief = dict(belief)
+            belief["predictive_mean"] = predictive_mean
+            belief["predictive_covariance"] = predictive_covariance
+    except ProbabilisticControllerError as error:
+        raise ConfigError(f"Invalid Bayesian checkpoint belief{location}: {error}") from error
+    if posterior_mean.numel() != dimension:
+        raise ConfigError(f"Bayesian posterior dimension mismatch{location}")
+    belief = dict(belief)
+    belief["posterior_mean"] = posterior_mean
+    belief["posterior_covariance"] = posterior_covariance
+    state["belief"] = belief
+
+    sampling = state["sampling"]
+    required_sampling_fields = {
+        "seed_stream_name",
+        "resolved_seed",
+        "generator_state",
+        "sample_count",
+        "factorization_contract",
+    }
+    if (
+        not isinstance(sampling, Mapping)
+        or required_sampling_fields - set(sampling)
+        or sampling.get("seed_stream_name") != "posterior_sampling"
+        or isinstance(sampling.get("resolved_seed"), bool)
+        or not isinstance(sampling.get("resolved_seed"), int)
+        or sampling.get("factorization_contract") != SAMPLING_FACTORIZATION_CONTRACT
+        or not isinstance(sampling.get("generator_state"), torch.Tensor)
+        or isinstance(sampling.get("sample_count"), bool)
+        or not isinstance(sampling.get("sample_count"), int)
+        or sampling["sample_count"] < 0
+    ):
+        raise ConfigError(f"Bayesian controller sampling state is invalid{location}")
+    try:
+        torch.Generator(device="cpu").set_state(sampling["generator_state"].cpu())
+    except RuntimeError as error:
+        raise ConfigError(
+            f"Bayesian controller generator state is invalid{location}"
+        ) from error
+
+    window = state["window"]
+    required_window_fields = {
+        "phase",
+        "window_index",
+        "decision_interval_steps",
+        "boundary_step",
+        "current_action",
+        "completed_optimizer_steps",
+        "pre_window_objective",
+        "ordered_pre_window_component_losses",
+        "boundary_evaluation_status",
+        "terminal_status",
+    }
+    if (
+        not isinstance(window, Mapping)
+        or required_window_fields - set(window)
+        or window.get("phase") not in PROBABILISTIC_CONTROLLER_PHASES
+        or isinstance(window.get("window_index"), bool)
+        or not isinstance(window.get("window_index"), int)
+        or window["window_index"] < 0
+        or isinstance(window.get("boundary_step"), bool)
+        or not isinstance(window.get("boundary_step"), int)
+        or window["boundary_step"] < 0
+    ):
+        raise ConfigError(f"Bayesian controller window phase is invalid{location}")
+    interval = window.get("decision_interval_steps")
+    progress = window.get("completed_optimizer_steps")
+    if (
+        isinstance(interval, bool)
+        or not isinstance(interval, int)
+        or interval <= 0
+        or isinstance(progress, bool)
+        or not isinstance(progress, int)
+        or progress < 0
+        or progress > interval
+    ):
+        raise ConfigError(f"Bayesian controller window progress is invalid{location}")
+    phase = window["phase"]
+    action = window.get("current_action")
+    if phase in {"initial_objective_pending", "ready_for_action"} and action is not None:
+        raise ConfigError(f"Bayesian controller phase cannot have an action{location}")
+    if phase in {"active_window", "boundary_evaluation_pending", "terminal_incomplete"} and not isinstance(action, Mapping):
+        raise ConfigError(f"Bayesian controller phase requires an action{location}")
+    if phase == "boundary_evaluation_pending" and progress != interval:
+        raise ConfigError(f"Bayesian boundary checkpoint requires full progress{location}")
+    if phase in {"active_window", "terminal_incomplete"} and progress >= interval:
+        raise ConfigError(f"Bayesian active/incomplete progress must be below interval{location}")
+    if phase == "failed" and not isinstance(state["failure"], Mapping):
+        raise ConfigError(f"Bayesian failed checkpoint requires failure provenance{location}")
+    if phase != "failed" and state["failure"] is not None:
+        raise ConfigError(
+            f"Bayesian non-failed checkpoint cannot contain failure provenance{location}"
+        )
+    if phase == "initial_objective_pending":
+        if (
+            window["pre_window_objective"] is not None
+            or window["ordered_pre_window_component_losses"] is not None
+        ):
+            raise ConfigError(
+                f"Bayesian initial checkpoint cannot contain an objective{location}"
+            )
+    else:
+        objective = window["pre_window_objective"]
+        component_losses = window["ordered_pre_window_component_losses"]
+        if (
+            isinstance(objective, bool)
+            or not isinstance(objective, (int, float))
+            or not math.isfinite(float(objective))
+            or not isinstance(component_losses, list)
+            or len(component_losses) != len(granularities)
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                for value in component_losses
+            )
+        ):
+            raise ConfigError(
+                f"Bayesian controller objective provenance is invalid{location}"
+            )
+
+    if isinstance(action, Mapping):
+        feature_vector = action.get("feature_vector")
+        if (
+            action.get("scope") != state["scope"]
+            or not isinstance(feature_vector, (list, tuple, torch.Tensor))
+            or len(feature_vector) != dimension
+            or not bool(torch.isfinite(torch.as_tensor(feature_vector)).all())
+        ):
+            raise ConfigError(f"Bayesian controller action is invalid{location}")
+        if state["scope"] == "global":
+            selected_label = action.get("global_granularity")
+            if (
+                selected_label not in granularities
+                or action.get("block_granularities")
+                != [selected_label] * block_count
+            ):
+                raise ConfigError(
+                    f"Bayesian global controller action is invalid{location}"
+                )
+
+    journal = state["journal"]
+    if (
+        not isinstance(journal, Mapping)
+        or not isinstance(journal.get("path"), str)
+        or not journal["path"]
+        or isinstance(journal.get("event_count"), bool)
+        or not isinstance(journal.get("event_count"), int)
+        or journal["event_count"] < 0
+        or (
+            journal.get("last_committed_offset") is not None
+            and (
+                isinstance(journal["last_committed_offset"], bool)
+                or not isinstance(journal["last_committed_offset"], int)
+                or journal["last_committed_offset"] < 0
+            )
+        )
+        or (
+            journal.get("last_committed_hash") is not None
+            and not isinstance(journal["last_committed_hash"], str)
+        )
+    ):
+        raise ConfigError(f"Bayesian controller journal provenance is invalid{location}")
+    resume = state["resume"]
+    if (
+        not isinstance(resume, Mapping)
+        or isinstance(resume.get("resume_count"), bool)
+        or not isinstance(resume.get("resume_count"), int)
+        or resume["resume_count"] < 0
+        or (
+            resume.get("source_checkpoint") is not None
+            and not isinstance(resume["source_checkpoint"], str)
+        )
+        or not isinstance(resume.get("compatibility_status"), str)
+        or not resume["compatibility_status"]
+    ):
+        raise ConfigError(f"Bayesian controller resume provenance is invalid{location}")
+
+    if config is not None:
+        model = config.get("model", {})
+        controller_config = model.get("adaptive_controller", {})
+        expected_scope = controller_config.get("scope")
+        expected_granularities = list(model.get("granularities", []))
+        expected_manifests = {
+            "data_roles_manifest_hash": config.get("data_roles_manifest_hash"),
+            "optimizer_training_manifest_hash": config.get("optimizer_training_manifest_hash"),
+            "controller_manifest_hash": config.get("controller_manifest_hash"),
+            "ordinary_validation_manifest_hash": config.get("validation_manifest_hash"),
+            "final_holdout_manifest_hash": config.get("final_holdout_manifest_hash"),
+        }
+        if state["scope"] != expected_scope:
+            raise ConfigError(f"Bayesian controller scope does not match config{location}")
+        if granularities != expected_granularities:
+            raise ConfigError(
+                f"Bayesian controller granularity order does not match config{location}"
+            )
+        if block_count != int(model.get("num_layers", 0)):
+            raise ConfigError(
+                f"Bayesian controller block count does not match config{location}"
+            )
+        for name, expected_hash in expected_manifests.items():
+            if expected_hash is not None and manifests[name] != expected_hash:
+                raise ConfigError(f"Bayesian controller {name} mismatch{location}")
+        expected_inputs = {
+            "resolved_prior_mean": controller_config.get("resolved_prior_mean"),
+            "resolved_prior_covariance": controller_config.get("resolved_prior_covariance"),
+            "observation_noise_variance": controller_config.get("observation_noise_variance"),
+            "resolved_process_noise_covariance": controller_config.get("resolved_process_noise_covariance"),
+            "transition_model": controller_config.get("transition_model"),
+            "context_model": controller_config.get("context_model"),
+            "compute_weight": controller_config.get("compute_weight"),
+            "switch_weight": controller_config.get("switch_weight"),
+        }
+        if dict(probabilistic_inputs) != expected_inputs:
+            raise ConfigError(
+                f"Bayesian controller probabilistic inputs do not match config{location}"
+            )
+    return state
 
 def continuation_latest_checkpoint_policy(
     config: Mapping[str, Any],
@@ -480,6 +950,18 @@ def save_model_checkpoint(
         distributed_context,
     )
 
+    probabilistic_controller_state = run_state.get(
+        "probabilistic_controller_state"
+    )
+    if uses_probabilistic_controller(config):
+        probabilistic_controller_state = (
+            validate_probabilistic_controller_checkpoint_state(
+                probabilistic_controller_state,
+                config=config,
+                checkpoint_path=output_path,
+            )
+        )
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
             "run_id": config["run"]["run_id"],
@@ -534,6 +1016,7 @@ def save_model_checkpoint(
                 "granularity_pattern_provenance"
             ),
             "adaptive_sampler_state": run_state.get("adaptive_sampler_state"),
+            "probabilistic_controller_state": probabilistic_controller_state,
             "adaptive_sampler_previous_loss": run_state.get(
                 "adaptive_sampler_previous_loss"
             ),
@@ -947,6 +1430,7 @@ def build_initial_continuation_state(config: dict[str, Any]) -> dict[str, Any]:
             model.get("granularity_pattern_provenance")
         ),
         "adaptive_sampler_state": _build_initial_adaptive_sampler_state(config),
+        "probabilistic_controller_state": None,
         "adaptive_sampler_previous_loss": None,
         "adaptive_sampler_previous_pattern": None,
         "adaptive_reward_summary": None,
@@ -1350,6 +1834,7 @@ def load_checkpoint_state(
             "warmup_completed": False,
             "warmup_completion_step": None,
             "warmup_transition_reason": None,
+            "probabilistic_controller_state": None,
         }
         if output_dir is not None:
             state["output_dir"] = str(output_dir)
@@ -1366,6 +1851,17 @@ def load_checkpoint_state(
         checkpoint_path=checkpoint_path,
         distributed_context=distributed_context,
     )
+    probabilistic_controller_state = checkpoint.get(
+        "probabilistic_controller_state"
+    )
+    if config is not None and uses_probabilistic_controller(config):
+        probabilistic_controller_state = (
+            validate_probabilistic_controller_checkpoint_state(
+                probabilistic_controller_state,
+                config=config,
+                checkpoint_path=checkpoint_path,
+            )
+        )
     model_state_dict = checkpoint.get("model_state_dict")
     if model_state_dict is None:
         raise ConfigError(f"Checkpoint missing model_state_dict: {checkpoint_path}")
@@ -1418,6 +1914,7 @@ def load_checkpoint_state(
             "granularity_pattern_provenance"
         ),
         "adaptive_sampler_state": checkpoint.get("adaptive_sampler_state"),
+        "probabilistic_controller_state": probabilistic_controller_state,
         "adaptive_sampler_previous_loss": checkpoint.get(
             "adaptive_sampler_previous_loss"
         ),
