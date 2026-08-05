@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import math
+from itertools import product
 
 import pytest
 import torch
 
+import src.training.probabilistic_controller as probabilistic_controller
 from src.training.probabilistic_controller import (
     ProbabilisticControllerError,
     build_global_feature_schema,
+    build_probabilistic_controller,
     condition_gaussian_belief,
     encode_global_action,
     predict_gaussian_belief,
@@ -15,6 +18,8 @@ from src.training.probabilistic_controller import (
     select_global_action,
     validate_gaussian_belief,
 )
+from src.utils.config import resolve_run_config
+from src.utils.reproducibility import seed_for
 
 
 FLOAT64 = torch.float64
@@ -292,3 +297,215 @@ def test_one_arm_schema_is_intercept_only_and_always_selects_the_only_label():
     selected = select_global_action(schema, _tensor([-7.5]))
     assert selected["global_granularity"] == "only-choice"
     assert selected["sampled_predicted_reward"] == pytest.approx(-7.5)
+
+
+def test_additive_feature_schema_is_identifiable_and_uses_stable_block_coefficients():
+    labels = ["needle", "balanced", "entire"]
+    schema = probabilistic_controller.build_additive_feature_schema(
+        labels,
+        block_count=2,
+    )
+
+    assert schema["scope"] == "per_block"
+    assert schema["encoding"] == (
+        "intercept_plus_per_block_sum_to_zero_contrasts"
+    )
+    assert schema["ordered_granularities"] == labels
+    assert schema["block_count"] == 2
+    assert schema["dimension"] == 1 + 2 * (len(labels) - 1)
+    assert schema["coefficient_names"] == [
+        "intercept",
+        "block_0_contrast_0",
+        "block_0_contrast_1",
+        "block_1_contrast_0",
+        "block_1_contrast_1",
+    ]
+    assert len(schema["schema_hash"]) == 64
+    assert schema == probabilistic_controller.build_additive_feature_schema(
+        labels,
+        block_count=2,
+    )
+
+    complete_profiles = list(product(labels, repeat=2))
+    design = torch.stack(
+        [
+            probabilistic_controller.encode_additive_action(schema, profile)
+            for profile in complete_profiles
+        ]
+    )
+    assert design.shape == (len(labels) ** 2, schema["dimension"])
+    assert int(torch.linalg.matrix_rank(design)) == schema["dimension"]
+    torch.testing.assert_close(
+        design[:, 0],
+        torch.ones(len(complete_profiles), dtype=FLOAT64),
+    )
+
+
+def test_additive_selection_supports_divergent_preferences_arbitrary_labels_and_ties():
+    labels = ["needle", "entire"]
+    schema = probabilistic_controller.build_additive_feature_schema(
+        labels,
+        block_count=2,
+    )
+
+    tied = probabilistic_controller.select_additive_action(
+        schema,
+        torch.zeros(schema["dimension"], dtype=FLOAT64),
+    )
+    assert tied["scope"] == "per_block"
+    assert tied["block_granularities"] == ["needle", "needle"]
+    assert tied["tie_resolution"] == "resolved_granularity_order_per_block"
+    assert tied["sampled_predicted_reward"] == pytest.approx(0.0)
+
+    target_profile = ["needle", "entire"]
+    sampled_coefficients = probabilistic_controller.encode_additive_action(
+        schema,
+        target_profile,
+    )
+    selected = probabilistic_controller.select_additive_action(
+        schema,
+        sampled_coefficients,
+    )
+
+    assert selected["block_granularities"] == target_profile
+    torch.testing.assert_close(
+        selected["feature_vector"],
+        probabilistic_controller.encode_additive_action(schema, target_profile),
+    )
+    assert "enumerated_profiles" not in selected
+    assert "profile_scores" not in selected
+
+
+def test_additive_posterior_learns_divergent_block_preferences_from_profile_rewards():
+    labels = ["needle", "entire"]
+    schema = probabilistic_controller.build_additive_feature_schema(
+        labels,
+        block_count=2,
+    )
+    true_coefficients = _tensor([0.25, 1.5, -2.0])
+    posterior_mean = torch.zeros(schema["dimension"], dtype=FLOAT64)
+    posterior_covariance = torch.eye(schema["dimension"], dtype=FLOAT64) * 100.0
+    observation_count = 0
+
+    for profile in product(labels, repeat=2):
+        feature = probabilistic_controller.encode_additive_action(schema, profile)
+        scalar_reward = float(feature @ true_coefficients)
+        update = condition_gaussian_belief(
+            predictive_mean=posterior_mean,
+            predictive_covariance=posterior_covariance,
+            feature_vector=feature,
+            reward=scalar_reward,
+            observation_noise_variance=1e-6,
+        )
+        posterior_mean = update["posterior_mean"]
+        posterior_covariance = update["posterior_covariance"]
+        observation_count += 1
+
+    assert observation_count == len(labels) ** 2
+    torch.testing.assert_close(
+        posterior_mean,
+        true_coefficients,
+        rtol=1e-5,
+        atol=1e-7,
+    )
+    selected = probabilistic_controller.select_additive_action(
+        schema,
+        posterior_mean,
+    )
+    assert selected["block_granularities"] == ["needle", "entire"]
+
+
+@pytest.mark.parametrize(
+    "labels, block_count, expected_dimension, expected_profile",
+    [
+        (["small", "large"], 1, 2, ["small"]),
+        (["only-choice"], 3, 1, ["only-choice"] * 3),
+    ],
+)
+def test_additive_schema_handles_one_block_and_one_granularity(
+    labels,
+    block_count,
+    expected_dimension,
+    expected_profile,
+):
+    schema = probabilistic_controller.build_additive_feature_schema(
+        labels,
+        block_count=block_count,
+    )
+
+    assert schema["dimension"] == expected_dimension
+    encoded = probabilistic_controller.encode_additive_action(
+        schema,
+        expected_profile,
+    )
+    assert encoded.shape == (expected_dimension,)
+    selected = probabilistic_controller.select_additive_action(
+        schema,
+        torch.zeros(expected_dimension, dtype=FLOAT64),
+    )
+    assert selected["block_granularities"] == expected_profile
+
+
+def test_additive_complete_profile_conditions_once_on_one_scalar_window_reward(
+    tmp_path,
+):
+    config = resolve_run_config(
+        "tests/fixtures/probabilistic_adaptive_per_block_smoke.yaml",
+        output_dir=tmp_path / "probabilistic-adaptive-per-block-smoke-001",
+        overrides={"model.adaptive_controller.decision_interval_steps": 2},
+    )
+    controller = build_probabilistic_controller(
+        controller_config=config["model"]["adaptive_controller"],
+        sampling_seed=seed_for(config, "posterior_sampling"),
+        manifest_hashes={
+            "data_roles_manifest_hash": "parent-manifest-hash",
+            "optimizer_training_manifest_hash": "training-manifest-hash",
+            "controller_manifest_hash": "controller-manifest-hash",
+            "ordinary_validation_manifest_hash": "validation-manifest-hash",
+            "final_holdout_manifest_hash": "final-holdout-manifest-hash",
+        },
+    )
+    controller.initialize_boundary(
+        boundary_step=0,
+        controller_objective=10.0,
+        ordered_component_losses=[9.0, 10.0, 11.0],
+        evaluation_target_tokens=384,
+    )
+    controller.record_successful_optimizer_step()
+    controller.record_successful_optimizer_step()
+    state_before_update = controller.state_dict()
+    action = state_before_update["window"]["current_action"]
+    expected_reward = (10.0 - 8.0) / 2
+    expected_update = condition_gaussian_belief(
+        predictive_mean=state_before_update["belief"]["predictive_mean"],
+        predictive_covariance=state_before_update["belief"]["predictive_covariance"],
+        feature_vector=action["feature_vector"],
+        reward=expected_reward,
+        observation_noise_variance=state_before_update["probabilistic_inputs"][
+            "observation_noise_variance"
+        ],
+    )
+
+    event = controller.complete_boundary(
+        boundary_step=2,
+        controller_objective=8.0,
+        ordered_component_losses=[7.0, 8.0, 9.0],
+        evaluation_target_tokens=384,
+        training_will_continue=False,
+    )
+    state_after_update = controller.state_dict()
+
+    assert event["reward"] == pytest.approx(expected_reward)
+    assert event["action"]["block_granularities"] == action[
+        "block_granularities"
+    ]
+    assert "block_rewards" not in event
+    assert state_after_update["belief"]["round_index"] == 1
+    torch.testing.assert_close(
+        state_after_update["belief"]["posterior_mean"],
+        expected_update["posterior_mean"],
+    )
+    torch.testing.assert_close(
+        state_after_update["belief"]["posterior_covariance"],
+        expected_update["posterior_covariance"],
+    )

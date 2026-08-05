@@ -267,10 +267,14 @@ def train_for_steps(
     if continuation_latest_checkpoint_policy(config)["enabled"] and not run_state.get("latest_checkpoint_path"):
         run_state["latest_checkpoint_path"] = str(latest_checkpoint_path)
 
-    adaptive_sampler_state = _prepare_adaptive_sampler_runtime_state(
-        config,
-        run_state,
-    )
+    adaptive_sampler_state = None
+    if probabilistic_controller is None:
+        adaptive_sampler_state = _prepare_adaptive_sampler_runtime_state(
+            config,
+            run_state,
+        )
+    else:
+        run_state.pop("adaptive_sampler_state", None)
 
     model.train()
     with heartbeat_stage(heartbeat_writer, stage_name):
@@ -364,6 +368,43 @@ def train_for_steps(
                     step_metric_rows_data.append(
                         (
                             selected_layer_granularities[0],
+                            combined_loss_value,
+                            step_runtime_pattern_summary,
+                            step_correction_context,
+                        )
+                    )
+                    total_losses = 1
+                elif (
+                    model_sampling_mode == "adaptive_per_block"
+                    and probabilistic_controller is not None
+                ):
+                    selected_layer_granularities = (
+                        probabilistic_per_block_layer_granularities(
+                            config,
+                            probabilistic_controller,
+                        )
+                    )
+                    configure_model_layer_granularities(
+                        model,
+                        selected_layer_granularities,
+                    )
+                    step_runtime_pattern_summary, step_correction_context = _runtime_granularity_artifacts(
+                        config,
+                        model,
+                    )
+                    with autocast_context(config, device):
+                        outputs = model(
+                            input_ids=batch["input_ids"],
+                            attention_mask=batch.get("attention_mask"),
+                            labels=batch["labels"],
+                        )
+                    combined_loss = outputs.loss
+                    combined_loss_value = float(
+                        combined_loss.detach().float().cpu().item()
+                    )
+                    step_metric_rows_data.append(
+                        (
+                            ",".join(selected_layer_granularities),
                             combined_loss_value,
                             step_runtime_pattern_summary,
                             step_correction_context,
@@ -519,7 +560,12 @@ def train_for_steps(
                 elapsed = time.time() - start_time
                 peak_memory_bytes = current_peak_memory_bytes(device)
                 latest_loss = combined_loss_value
-                if model_sampling_mode == "adaptive_per_block" and adaptive_sampler_state is not None:
+                if probabilistic_controller is not None:
+                    run_state.pop("adaptive_sampler_previous_loss", None)
+                    run_state.pop("adaptive_sampler_previous_pattern", None)
+                    run_state.pop("adaptive_reward_summary", None)
+                    run_state.pop("adaptive_correction_penalty_summary", None)
+                elif model_sampling_mode == "adaptive_per_block" and adaptive_sampler_state is not None:
                     _update_adaptive_sampler_runtime_state(
                         config,
                         run_state,
@@ -825,6 +871,43 @@ def probabilistic_global_layer_granularities(
     if block_count <= 0:
         raise ConfigError("model.num_layers must be positive")
     return [str(selected)] * block_count
+
+
+def probabilistic_per_block_layer_granularities(
+    config: Mapping[str, Any],
+    probabilistic_controller,
+) -> list[str]:
+    """Return the active Bayesian profile unchanged for the current window."""
+
+    state = probabilistic_controller.state_dict()
+    if state.get("scope") != "per_block":
+        raise ConfigError(
+            "Bayesian per-block training requires a per_block controller"
+        )
+    window = state.get("window", {})
+    if window.get("phase") != "active_window":
+        raise ConfigError(
+            "Bayesian per-block training requires an active controller window"
+        )
+    action = window.get("current_action")
+    if not isinstance(action, Mapping) or action.get("scope") != "per_block":
+        raise ConfigError("Bayesian per-block controller action is missing")
+    profile = action.get("block_granularities")
+    block_count = int(config["model"]["num_layers"])
+    if not isinstance(profile, list) or len(profile) != block_count:
+        raise ConfigError(
+            "Bayesian per-block action must contain one granularity per block"
+        )
+    granularities = _resolved_granularities(
+        config,
+        list(config.get("model", {}).get("granularities", [])),
+    )
+    if any(label not in granularities for label in profile):
+        raise ConfigError(
+            "Bayesian per-block controller selected an unknown granularity: "
+            f"{profile!r}"
+        )
+    return [str(label) for label in profile]
 
 
 def _resolved_granularities(

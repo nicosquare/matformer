@@ -79,15 +79,15 @@
 
 ### Verification for User Story 2
 
-- [ ] T025 [P] [US2] Add controlled additive-feature and posterior tests for dimension `1+B(|G|-1)`, coefficient identifiability, divergent block preferences, arbitrary labels, one block, one granularity, deterministic ties, and non-duplicated reward conditioning in tests/test_probabilistic_controller.py
-- [ ] T026 [P] [US2] Add an adaptive-per-block smoke and resume test that checks fixed complete profiles, shared P1 reward semantics, additive provenance, and absence of an enumerated profile table in tests/test_training_smoke.py and tests/test_probabilistic_controller_resume.py
+- [X] T025 [P] [US2] Add controlled additive-feature and posterior tests for dimension `1+B(|G|-1)`, coefficient identifiability, divergent block preferences, arbitrary labels, one block, one granularity, deterministic ties, and non-duplicated reward conditioning in tests/test_probabilistic_controller.py
+- [X] T026 [P] [US2] Add an adaptive-per-block smoke and resume test that checks fixed complete profiles, shared P1 reward semantics, additive provenance, and absence of an enumerated profile table in tests/test_training_smoke.py and tests/test_probabilistic_controller_resume.py
 
 ### Implementation for User Story 2
 
-- [ ] T027 [US2] Extend the feature schema and action optimizer with per-block sum-to-zero contrasts, stable coefficient identities, schema hashing, and decomposed `O(B|G|)` sampled profile selection in src/training/probabilistic_controller.py
-- [ ] T028 [P] [US2] Apply and preserve one resolved granularity per transformer block throughout each decision window using the existing MatFormer profile wiring in src/training/steps.py
-- [ ] T029 [P] [US2] Extend Bayesian checkpoint and controller-summary validation with additive coefficient identities, per-block/granularity frequencies, and effect uncertainty in src/training/checkpointing.py and src/utils/metrics.py
-- [ ] T030 [US2] Run controlled additive, per-block smoke, and resume verification in tests/test_probabilistic_controller.py, tests/test_training_smoke.py, and tests/test_probabilistic_controller_resume.py
+- [X] T027 [US2] Extend the feature schema and action optimizer with per-block sum-to-zero contrasts, stable coefficient identities, schema hashing, and decomposed `O(B|G|)` sampled profile selection in src/training/probabilistic_controller.py
+- [X] T028 [P] [US2] Apply and preserve one resolved granularity per transformer block throughout each decision window using the existing MatFormer profile wiring in src/training/steps.py
+- [X] T029 [P] [US2] Extend Bayesian checkpoint and controller-summary validation with additive coefficient identities, per-block/granularity frequencies, and effect uncertainty in src/training/checkpointing.py and src/utils/metrics.py
+- [X] T030 [US2] Run controlled additive, per-block smoke, and resume verification in tests/test_probabilistic_controller.py, tests/test_training_smoke.py, and tests/test_probabilistic_controller_resume.py
 
 **Checkpoint**: User Story 2 independently demonstrates structured additive learning from complete-profile rewards while retaining the P1 controller protocol and persistence behavior.
 

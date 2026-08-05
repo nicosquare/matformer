@@ -39,6 +39,8 @@ from src.training.probabilistic_controller import (
     FEATURE_SCHEMA_VERSION,
     ProbabilisticControllerError,
     SAMPLING_FACTORIZATION_CONTRACT,
+    build_additive_feature_schema,
+    encode_additive_action,
     validate_gaussian_belief,
 )
 from src.utils.config import (
@@ -187,6 +189,16 @@ def validate_probabilistic_controller_checkpoint_state(
         or not feature_schema["schema_hash"]
     ):
         raise ConfigError(f"Bayesian controller feature schema is invalid{location}")
+    if state["scope"] == "per_block":
+        expected_feature_schema = build_additive_feature_schema(
+            granularities,
+            block_count=block_count,
+        )
+        if dict(feature_schema) != expected_feature_schema:
+            raise ConfigError(
+                "Bayesian additive feature schema coefficient identities or "
+                f"hash are incompatible{location}"
+            )
 
     probabilistic_inputs = state["probabilistic_inputs"]
     required_inputs = {
@@ -451,6 +463,29 @@ def validate_probabilistic_controller_checkpoint_state(
             ):
                 raise ConfigError(
                     f"Bayesian global controller action is invalid{location}"
+                )
+        else:
+            profile = action.get("block_granularities")
+            if (
+                action.get("global_granularity") is not None
+                or not isinstance(profile, list)
+                or len(profile) != block_count
+                or any(label not in granularities for label in profile)
+            ):
+                raise ConfigError(
+                    f"Bayesian per-block controller action is invalid{location}"
+                )
+            expected_feature_vector = encode_additive_action(
+                feature_schema,
+                profile,
+            )
+            if not torch.equal(
+                torch.as_tensor(feature_vector, dtype=torch.float64, device="cpu"),
+                expected_feature_vector,
+            ):
+                raise ConfigError(
+                    "Bayesian per-block action feature vector does not match its "
+                    f"complete profile{location}"
                 )
 
     journal = state["journal"]

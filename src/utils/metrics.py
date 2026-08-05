@@ -1545,6 +1545,11 @@ def build_controller_summary(
     terminal_status = window.get("terminal_status", "continuing")
     if terminal_status == "complete_boundary":
         terminal_status = "complete"
+    action_frequencies = controller_action_frequency_counts(events)
+    effect_uncertainty = controller_effect_uncertainty_summary(
+        state.get("feature_schema"),
+        covariance,
+    )
 
     return {
         "schema_version": int(state.get("schema_version", 1)),
@@ -1559,10 +1564,14 @@ def build_controller_summary(
         "decision_interval_steps": window.get("decision_interval_steps"),
         "completed_observation_count": len(completed),
         "controller_evaluation_count": len(evaluations),
-        "action_frequencies": controller_action_frequency_counts(events),
+        "action_frequencies": action_frequencies,
+        "per_block_granularity_frequencies": (
+            action_frequencies if state.get("scope") == "per_block" else None
+        ),
         "final_posterior_mean": belief.get("posterior_mean"),
         "final_posterior_covariance": covariance,
         "uncertainty_summary": controller_uncertainty_summary(covariance),
+        "effect_uncertainty": effect_uncertainty,
         "boundary_summaries": {
             "objective": _scalar_summary(
                 [
@@ -1613,8 +1622,53 @@ def write_controller_summary(
 
 def controller_action_frequency_counts(
     events: Iterable[Mapping[str, Any]],
-) -> dict[str, int]:
+) -> dict[str, Any]:
     event_list = list(events)
+    scope = next(
+        (
+            event.get("scope")
+            for event in event_list
+            if event.get("scope") in {"global", "per_block"}
+        ),
+        "global",
+    )
+    if scope == "per_block":
+        completed_actions = [
+            event.get("action")
+            for event in event_list
+            if event.get("event_type") == "completed_window"
+            and isinstance(event.get("action"), Mapping)
+        ]
+        counted_actions = completed_actions
+        if not counted_actions:
+            counted_actions = [
+                event.get("selected_action")
+                for event in event_list
+                if isinstance(event.get("selected_action"), Mapping)
+            ]
+        profiles = [
+            list(action.get("block_granularities", []))
+            for action in counted_actions
+            if isinstance(action.get("block_granularities"), list)
+        ]
+        labels = []
+        for event in event_list:
+            for label in event.get("ordered_granularities", []):
+                if str(label) not in labels:
+                    labels.append(str(label))
+        block_count = max((len(profile) for profile in profiles), default=0)
+        counts = {
+            f"block_{block_index}": {label: 0 for label in labels}
+            for block_index in range(block_count)
+        }
+        for profile in profiles:
+            for block_index, label in enumerate(profile):
+                block_key = f"block_{block_index}"
+                label_key = str(label)
+                counts.setdefault(block_key, {}).setdefault(label_key, 0)
+                counts[block_key][label_key] += 1
+        return counts
+
     counts: dict[str, int] = {}
     for event in event_list:
         for label in event.get("ordered_granularities", []):
@@ -1654,6 +1708,71 @@ def controller_uncertainty_summary(covariance: Any) -> dict[str, Any]:
         "max_posterior_stddev": max(diagonal),
         "posterior_covariance_trace": sum(value * value for value in diagonal),
     }
+
+
+def controller_effect_uncertainty_summary(
+    feature_schema: Any,
+    covariance: Any,
+) -> dict[str, Any]:
+    """Expose coefficient and additive block/label posterior uncertainty."""
+
+    schema = _controller_json_value(feature_schema)
+    matrix = _controller_json_value(covariance)
+    if not isinstance(schema, Mapping) or not isinstance(matrix, list) or not matrix:
+        return {}
+    dimension = int(schema.get("dimension", 0))
+    coefficient_names = schema.get("coefficient_names")
+    if (
+        dimension <= 0
+        or len(matrix) != dimension
+        or not isinstance(coefficient_names, list)
+        or len(coefficient_names) != dimension
+        or any(not isinstance(row, list) or len(row) != dimension for row in matrix)
+    ):
+        return {}
+
+    coefficient_stddev = {
+        str(name): max(float(matrix[index][index]), 0.0) ** 0.5
+        for index, name in enumerate(coefficient_names)
+    }
+    summary: dict[str, Any] = {
+        "coefficient_stddev": coefficient_stddev,
+    }
+    if schema.get("scope") != "per_block":
+        return summary
+
+    labels = list(schema.get("ordered_granularities", []))
+    basis = schema.get("contrast_basis")
+    block_count = int(schema.get("block_count", 0))
+    contrast_count = max(0, len(labels) - 1)
+    if (
+        block_count <= 0
+        or not isinstance(basis, list)
+        or len(basis) != len(labels)
+        or any(not isinstance(row, list) or len(row) != contrast_count for row in basis)
+    ):
+        return summary
+
+    per_block_effects: dict[str, dict[str, float]] = {}
+    for block_index in range(block_count):
+        block_effects = {}
+        start = 1 + block_index * contrast_count
+        for label_index, label in enumerate(labels):
+            effect = [0.0] * dimension
+            effect[start : start + contrast_count] = [
+                float(value) for value in basis[label_index]
+            ]
+            variance = sum(
+                effect[row_index]
+                * float(matrix[row_index][column_index])
+                * effect[column_index]
+                for row_index in range(dimension)
+                for column_index in range(dimension)
+            )
+            block_effects[str(label)] = max(variance, 0.0) ** 0.5
+        per_block_effects[f"block_{block_index}"] = block_effects
+    summary["per_block_granularity_effect_stddev"] = per_block_effects
+    return summary
 
 
 def build_compact_controller_metric_fields(

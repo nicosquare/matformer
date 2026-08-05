@@ -20,7 +20,7 @@ from src.utils.monitoring import group_loss_rows_by_series
 
 
 class TinyNestedTrainingModel(torch.nn.Module):
-    def __init__(self, loss_scale_by_granularity=None):
+    def __init__(self, loss_scale_by_granularity=None, granularities=None):
         super().__init__()
         self.weight = torch.nn.Parameter(torch.tensor(0.5))
         self.current_granularity = None
@@ -29,6 +29,7 @@ class TinyNestedTrainingModel(torch.nn.Module):
         self.train_forward_granularities = []
         self.train_forward_layer_granularities = []
         self.loss_scale_by_granularity = loss_scale_by_granularity
+        self.granularities = granularities
 
     def configure_subnetwork(self, granularity):
         self.current_granularity = granularity
@@ -43,6 +44,7 @@ class TinyNestedTrainingModel(torch.nn.Module):
             selected_granularities=tuple(self.current_layer_granularities),
             layer_count=len(self.current_layer_granularities),
             repeatable_source=("tiny-nested-training-model", "per_block"),
+            available_granularities=self.granularities,
         )
 
     def forward(self, input_ids, attention_mask=None, labels=None):
@@ -1557,6 +1559,11 @@ def test_real_model_training_preserves_repeated_per_block_patterns(
             "run.continuation.enabled": False,
             "model.variant": variant,
             "model.granularity_sampling_mode": sampling_mode,
+            **(
+                {"model.adaptive_sampler_strategy": "ucb"}
+                if sampling_mode == "adaptive_per_block"
+                else {}
+            ),
             "model.d_model": 16,
             "model.num_layers": 4,
             "model.num_attention_heads": 4,
@@ -2534,3 +2541,197 @@ def test_probabilistic_adaptive_global_boundary_reward_action_and_logs(
         assert "uncertainty=" in line
         assert "posterior_mean" not in line
         assert "posterior_covariance" not in line
+
+
+def test_probabilistic_adaptive_per_block_uses_fixed_profiles_and_shared_rewards(
+    tmp_path,
+    monkeypatch,
+):
+    import src.evaluation.validation as evaluation_validation
+    import src.training.run as training_run
+
+    output_dir = tmp_path / "probabilistic-adaptive-per-block-smoke-001"
+    config = resolve_run_config(
+        "tests/fixtures/probabilistic_adaptive_per_block_smoke.yaml",
+        output_dir=output_dir,
+        overrides={
+            "training.eval_batches": 4,
+            "training.max_steps": 4,
+            "model.adaptive_controller.decision_interval_steps": 2,
+        },
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "source_row_identity": list(range(660)),
+            "input_ids": [
+                [index + 1, index + 2, index + 3] for index in range(660)
+            ],
+            "attention_mask": [[1, 1, 1] for _ in range(660)],
+        }
+    )
+    controlled_components = [
+        [0.02, 0.03, 0.04],
+        [0.01, 0.02, 0.03],
+        [0.008, 0.018, 0.028],
+    ]
+    controller_calls = []
+
+    def controlled_controller_objective(*args, **kwargs):
+        dataloader = kwargs.get("dataloader")
+        if dataloader is None and len(args) >= 2:
+            dataloader = args[1]
+        granularities = kwargs.get("granularities")
+        if granularities is None and len(args) >= 3:
+            granularities = args[2]
+        boundary_step = kwargs.get("boundary_step")
+        component_losses = controlled_components[len(controller_calls)]
+        objective = sum(component_losses) / len(component_losses)
+        controller_calls.append(
+            {
+                "boundary_step": boundary_step,
+                "granularities": list(granularities),
+                "objective": objective,
+                "dataloader_id": id(dataloader),
+            }
+        )
+        return {
+            "boundary_step": boundary_step,
+            "split": "controller",
+            "ordered_granularities": list(granularities),
+            "ordered_component_losses": list(component_losses),
+            "objective": objective,
+            "uniform_objective": objective,
+            "evaluation_example_count": 128,
+            "evaluation_target_tokens": 256,
+            "aggregation_method": "target_token_weighted_causal_shift_float64",
+            "objective_weighting": "uniform",
+            "controller_manifest_hash": kwargs.get("controller_manifest_hash"),
+            "evaluation_status": "complete",
+            "component_results": [
+                {
+                    "granularity": granularity,
+                    "loss": loss,
+                    "evaluation_examples": 128,
+                    "evaluation_target_tokens": 256,
+                }
+                for granularity, loss in zip(granularities, component_losses)
+            ],
+        }
+
+    for module in (evaluation_validation, training_run, training_steps):
+        monkeypatch.setattr(
+            module,
+            "evaluate_controller_objective",
+            controlled_controller_objective,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            module,
+            "evaluate_controller_panel_objective",
+            controlled_controller_objective,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            module,
+            "evaluate_fixed_panel_objective",
+            controlled_controller_objective,
+            raising=False,
+        )
+
+    model = TinyNestedTrainingModel(
+        granularities=config["model"]["granularities"],
+    )
+    run_training(
+        config,
+        model=model,
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    assert [call["boundary_step"] for call in controller_calls] == [0, 2, 4]
+    assert len({call["dataloader_id"] for call in controller_calls}) == 1
+    controller_events = [
+        json.loads(line)
+        for line in (output_dir / "controller_metrics.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [event["event_type"] for event in controller_events] == [
+        "initial_boundary",
+        "completed_window",
+        "completed_window",
+    ]
+    initial_event, first_window, second_window = controller_events
+    expected_rewards = [(0.03 - 0.02) / 2, (0.02 - 0.018) / 2]
+    assert [first_window["reward"], second_window["reward"]] == pytest.approx(
+        expected_rewards
+    )
+    assert "reward" not in initial_event
+    assert all("block_rewards" not in event for event in controller_events)
+
+    first_profile = first_window["action"]["block_granularities"]
+    second_profile = second_window["action"]["block_granularities"]
+    assert len(first_profile) == len(second_profile) == config["model"]["num_layers"]
+    assert model.train_forward_granularities == []
+    assert model.train_forward_layer_granularities[:2] == [first_profile] * 2
+    assert model.train_forward_layer_granularities[2:] == [second_profile] * 2
+    assert initial_event["selected_action"]["block_granularities"] == first_profile
+
+    controller_summary = json.loads(
+        (output_dir / "controller_summary.json").read_text(encoding="utf-8")
+    )
+    feature_schema = controller_summary["feature_schema"]
+    assert controller_summary["scope"] == "per_block"
+    assert feature_schema["scope"] == "per_block"
+    assert feature_schema["encoding"] == (
+        "intercept_plus_per_block_sum_to_zero_contrasts"
+    )
+    assert feature_schema["dimension"] == 1 + config["model"]["num_layers"] * (
+        len(config["model"]["granularities"]) - 1
+    )
+    assert all(
+        len(event.get("action", event.get("selected_action"))["feature_vector"])
+        == feature_schema["dimension"]
+        for event in controller_events
+    )
+    expected_frequencies = {
+        f"block_{block_index}": {
+            label: sum(
+                event["action"]["block_granularities"][block_index] == label
+                for event in (first_window, second_window)
+            )
+            for label in config["model"]["granularities"]
+        }
+        for block_index in range(config["model"]["num_layers"])
+    }
+    assert controller_summary["per_block_granularity_frequencies"] == (
+        expected_frequencies
+    )
+    assert controller_summary["action_frequencies"] == expected_frequencies
+    effect_uncertainty = controller_summary["effect_uncertainty"]
+    assert set(effect_uncertainty["coefficient_stddev"]) == set(
+        feature_schema["coefficient_names"]
+    )
+    assert set(effect_uncertainty["per_block_granularity_effect_stddev"]) == set(
+        expected_frequencies
+    )
+    assert all(
+        set(block_effects) == set(config["model"]["granularities"])
+        and all(value >= 0.0 for value in block_effects.values())
+        for block_effects in effect_uncertainty[
+            "per_block_granularity_effect_stddev"
+        ].values()
+    )
+
+    persisted_config = json.loads(
+        (output_dir / "config.json").read_text(encoding="utf-8")
+    )
+    assert persisted_config["model"]["adaptive_controller"]["feature_model"] == (
+        "additive"
+    )
+    serialized_artifacts = json.dumps(
+        {"events": controller_events, "summary": controller_summary},
+        sort_keys=True,
+    )
+    assert "enumerated_profile" not in serialized_artifacts
+    assert "profile_table" not in serialized_artifacts

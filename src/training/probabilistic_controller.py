@@ -173,6 +173,46 @@ def build_global_feature_schema(
     }
 
 
+def build_additive_feature_schema(
+    ordered_granularities: Sequence[str],
+    *,
+    block_count: int,
+) -> dict[str, Any]:
+    """Build one ordered sum-to-zero contrast group per transformer block."""
+
+    global_schema = build_global_feature_schema(
+        ordered_granularities,
+        block_count=block_count,
+    )
+    labels = list(global_schema["ordered_granularities"])
+    contrast_count = max(0, len(labels) - 1)
+    coefficient_names = ["intercept"]
+    for block_index in range(int(block_count)):
+        coefficient_names.extend(
+            f"block_{block_index}_contrast_{contrast_index}"
+            for contrast_index in range(contrast_count)
+        )
+
+    schema_without_hash = {
+        "schema_version": FEATURE_SCHEMA_VERSION,
+        "scope": "per_block",
+        "encoding": "intercept_plus_per_block_sum_to_zero_contrasts",
+        "ordered_granularities": labels,
+        "block_count": int(block_count),
+        "contrast_basis": copy.deepcopy(global_schema["contrast_basis"]),
+        "coefficient_names": coefficient_names,
+        "dimension": 1 + int(block_count) * contrast_count,
+        "tie_order": {
+            "block_order": list(range(int(block_count))),
+            "granularity_order": labels,
+        },
+    }
+    return {
+        **schema_without_hash,
+        "schema_hash": stable_hash(schema_without_hash),
+    }
+
+
 def encode_global_action(
     feature_schema: Mapping[str, Any],
     granularity: str,
@@ -195,6 +235,37 @@ def encode_global_action(
         )
     row = basis[labels.index(granularity)]
     return torch.cat((torch.ones(1, dtype=FLOAT64), row))
+
+
+def encode_additive_action(
+    feature_schema: Mapping[str, Any],
+    block_granularities: Sequence[str],
+) -> torch.Tensor:
+    """Encode one complete profile without assigning separate block rewards."""
+
+    labels = list(feature_schema.get("ordered_granularities", []))
+    block_count = int(feature_schema.get("block_count", 0))
+    profile = list(block_granularities)
+    if len(profile) != block_count:
+        raise ProbabilisticControllerError(
+            "per-block action must contain one granularity per block"
+        )
+    unknown_labels = [label for label in profile if label not in labels]
+    if unknown_labels:
+        raise ProbabilisticControllerError(
+            f"unknown per-block granularities {unknown_labels}; expected {labels}"
+        )
+    basis = _float64_cpu_tensor(
+        feature_schema.get("contrast_basis"),
+        field_name="additive contrast basis",
+    )
+    expected_shape = (len(labels), max(0, len(labels) - 1))
+    if tuple(basis.shape) != expected_shape:
+        raise ProbabilisticControllerError(
+            f"additive contrast basis dimension must be {expected_shape}"
+        )
+    rows = [basis[labels.index(label)] for label in profile]
+    return torch.cat((torch.ones(1, dtype=FLOAT64), *rows))
 
 
 def predict_gaussian_belief(
@@ -364,8 +435,63 @@ def select_global_action(
     }
 
 
+def select_additive_action(
+    feature_schema: Mapping[str, Any],
+    sampled_coefficients: Any,
+) -> dict[str, Any]:
+    """Maximize an additive sample independently in O(B|G|) work."""
+
+    coefficients = _float64_cpu_tensor(
+        sampled_coefficients,
+        field_name="sampled coefficients",
+    )
+    dimension = int(feature_schema.get("dimension", -1))
+    if coefficients.ndim != 1 or coefficients.numel() != dimension:
+        raise ProbabilisticControllerError(
+            "sampled coefficient dimension must match the feature schema"
+        )
+    if not bool(torch.isfinite(coefficients).all()):
+        raise ProbabilisticControllerError(
+            "sampled coefficients must be finite"
+        )
+
+    labels = list(feature_schema.get("ordered_granularities", []))
+    block_count = int(feature_schema.get("block_count", 0))
+    basis = _float64_cpu_tensor(
+        feature_schema.get("contrast_basis"),
+        field_name="additive contrast basis",
+    )
+    contrast_count = max(0, len(labels) - 1)
+    expected_shape = (len(labels), contrast_count)
+    if tuple(basis.shape) != expected_shape:
+        raise ProbabilisticControllerError(
+            f"additive contrast basis dimension must be {expected_shape}"
+        )
+
+    selected_profile = []
+    for block_index in range(block_count):
+        start = 1 + block_index * contrast_count
+        block_coefficients = coefficients[start : start + contrast_count]
+        block_scores = [float(row @ block_coefficients) for row in basis]
+        selected_index = max(
+            range(len(labels)),
+            key=block_scores.__getitem__,
+        )
+        selected_profile.append(labels[selected_index])
+
+    feature = encode_additive_action(feature_schema, selected_profile)
+    return {
+        "scope": "per_block",
+        "global_granularity": None,
+        "block_granularities": selected_profile,
+        "feature_vector": feature,
+        "sampled_predicted_reward": float(feature @ coefficients),
+        "tie_resolution": "resolved_granularity_order_per_block",
+    }
+
+
 class ProbabilisticController:
-    """Own the global controller belief, RNG, and decision-window state."""
+    """Own Bayesian controller belief, RNG, and decision-window state."""
 
     def __init__(
         self,
@@ -379,7 +505,6 @@ class ProbabilisticController:
             "method_family": BAYESIAN_CONTROLLER_METHOD_FAMILY,
             "method_version": BAYESIAN_CONTROLLER_METHOD_VERSION,
             "strategy": "thompson",
-            "feature_model": "arms",
             "context_model": "intercept_only",
             "transition_model": "identity",
             "compute_weight": 0.0,
@@ -390,16 +515,28 @@ class ProbabilisticController:
                 raise ProbabilisticControllerError(
                     f"controller {field_name} must be {expected_value!r}"
                 )
-        if config.get("scope") != "global":
+        scope = config.get("scope")
+        if scope not in {"global", "per_block"}:
             raise ProbabilisticControllerError(
-                "T017 probabilistic controller supports global scope only"
+                "controller scope must be 'global' or 'per_block'"
+            )
+        expected_feature_model = "arms" if scope == "global" else "additive"
+        if config.get("feature_model") != expected_feature_model:
+            raise ProbabilisticControllerError(
+                f"controller feature_model must be {expected_feature_model!r}"
             )
         ordered_granularities = list(config.get("ordered_granularities", []))
         block_count = int(config.get("block_count", 0))
-        feature_schema = build_global_feature_schema(
-            ordered_granularities,
-            block_count=block_count,
-        )
+        if scope == "global":
+            feature_schema = build_global_feature_schema(
+                ordered_granularities,
+                block_count=block_count,
+            )
+        else:
+            feature_schema = build_additive_feature_schema(
+                ordered_granularities,
+                block_count=block_count,
+            )
         dimension = feature_schema["dimension"]
         prior_mean, prior_covariance = validate_gaussian_belief(
             config.get("resolved_prior_mean"),
@@ -435,7 +572,7 @@ class ProbabilisticController:
             "method_family": BAYESIAN_CONTROLLER_METHOD_FAMILY,
             "method_version": BAYESIAN_CONTROLLER_METHOD_VERSION,
             "strategy": "thompson",
-            "scope": "global",
+            "scope": scope,
             "ordered_granularities": ordered_granularities,
             "block_count": block_count,
             "feature_schema": feature_schema,
@@ -564,7 +701,10 @@ class ProbabilisticController:
             covariance=prediction["predictive_covariance"],
             generator=self._generator,
         )
-        action = select_global_action(self._state["feature_schema"], sample)
+        if self._state["scope"] == "global":
+            action = select_global_action(self._state["feature_schema"], sample)
+        else:
+            action = select_additive_action(self._state["feature_schema"], sample)
         action["selection_round"] = int(belief["round_index"])
         belief["predictive_mean"] = prediction["predictive_mean"]
         belief["predictive_covariance"] = prediction["predictive_covariance"]
@@ -884,7 +1024,7 @@ def restore_probabilistic_controller(
     source_checkpoint: str | Path,
     logger: Callable[[str], None] = print,
 ) -> ProbabilisticController:
-    """Validate and restore a complete versioned global controller state."""
+    """Validate and restore a complete versioned Bayesian controller state."""
 
     if not isinstance(saved_state, Mapping):
         raise ProbabilisticControllerError(
@@ -999,11 +1139,12 @@ def restore_probabilistic_controller(
     progress = int(window.get("completed_optimizer_steps", 0))
     interval = int(window.get("decision_interval_steps", 0))
     action = window.get("current_action")
-    action_summary = (
-        action.get("global_granularity")
-        if isinstance(action, Mapping)
-        else None
-    )
+    action_summary = None
+    if isinstance(action, Mapping):
+        if action.get("scope") == "per_block":
+            action_summary = ",".join(action.get("block_granularities", []))
+        else:
+            action_summary = action.get("global_granularity")
     logger(
         "[probabilistic-controller-resume] "
         f"source_checkpoint={source_checkpoint} "

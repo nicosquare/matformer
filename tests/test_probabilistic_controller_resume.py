@@ -35,6 +35,17 @@ def _resolved_global_config(tmp_path):
     )
 
 
+def _resolved_per_block_config(tmp_path):
+    return resolve_run_config(
+        "tests/fixtures/probabilistic_adaptive_per_block_smoke.yaml",
+        output_dir=tmp_path / "probabilistic-adaptive-per-block-smoke-001",
+        overrides={
+            "training.eval_batches": 4,
+            "model.adaptive_controller.decision_interval_steps": 2,
+        },
+    )
+
+
 def _build_controller(config):
     return build_probabilistic_controller(
         controller_config=config["model"]["adaptive_controller"],
@@ -243,6 +254,70 @@ def test_fresh_and_resumed_controller_match_from_inside_window_and_exact_boundar
     assert resumed_state["resume"]["source_checkpoint"] == str(
         tmp_path / "checkpoints" / "latest.pt"
     )
+
+
+def test_additive_per_block_resume_preserves_fixed_complete_profile_and_provenance(
+    tmp_path,
+):
+    config = _resolved_per_block_config(tmp_path)
+    uninterrupted = _build_controller(config)
+    initial_event = _initialize_controller(uninterrupted)
+    initial_state = uninterrupted.state_dict()
+    initial_profile = initial_event["selected_action"]["block_granularities"]
+
+    assert len(initial_profile) == config["model"]["num_layers"]
+    assert initial_state["scope"] == "per_block"
+    assert initial_state["feature_schema"]["encoding"] == (
+        "intercept_plus_per_block_sum_to_zero_contrasts"
+    )
+    assert initial_state["feature_schema"]["dimension"] == (
+        1
+        + config["model"]["num_layers"]
+        * (len(config["model"]["granularities"]) - 1)
+    )
+
+    uninterrupted.record_successful_optimizer_step()
+    assert uninterrupted.current_action["block_granularities"] == initial_profile
+    saved_state = copy.deepcopy(uninterrupted.state_dict())
+    checkpoint_path = tmp_path / "checkpoints" / "latest.pt"
+    resumed = restore_probabilistic_controller(
+        saved_state,
+        controller_config=config["model"]["adaptive_controller"],
+        sampling_seed=seed_for(config, "posterior_sampling"),
+        expected_manifest_hashes=MANIFEST_HASHES,
+        source_checkpoint=checkpoint_path,
+        logger=lambda _message: None,
+    )
+
+    _assert_saved_resume_identity(saved_state, resumed.state_dict())
+    assert resumed.current_action["block_granularities"] == initial_profile
+    uninterrupted.record_successful_optimizer_step()
+    resumed.record_successful_optimizer_step()
+    fresh_event = uninterrupted.complete_boundary(
+        boundary_step=2,
+        controller_objective=8.0,
+        ordered_component_losses=[7.0, 8.0, 9.0],
+        evaluation_target_tokens=384,
+        training_will_continue=True,
+    )
+    resumed_event = resumed.complete_boundary(
+        boundary_step=2,
+        controller_objective=8.0,
+        ordered_component_losses=[7.0, 8.0, 9.0],
+        evaluation_target_tokens=384,
+        training_will_continue=True,
+    )
+
+    _assert_completed_events_close(fresh_event, resumed_event)
+    assert fresh_event["reward"] == pytest.approx((10.0 - 8.0) / 2)
+    assert fresh_event["action"]["block_granularities"] == initial_profile
+    assert fresh_event["next_action"]["block_granularities"] == resumed_event[
+        "next_action"
+    ]["block_granularities"]
+    final_state = resumed.state_dict()
+    assert final_state["resume"]["source_checkpoint"] == str(checkpoint_path)
+    assert "enumerated_profile" not in repr(final_state)
+    assert "profile_table" not in repr(final_state)
 
 
 def test_terminal_incomplete_window_emits_no_observation_update_or_unused_sample(
