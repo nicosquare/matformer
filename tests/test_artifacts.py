@@ -2441,3 +2441,141 @@ def test_probabilistic_controller_summary_preserves_auditable_state_and_hashes(
     )
     assert saved_summary["controller_metrics_path"] == str(journal_path)
     assert len(saved_summary["controller_metrics_hash"]) == 64
+
+
+def test_probabilistic_artifacts_preserve_end_to_end_controller_provenance(
+    tmp_path,
+):
+    from src.utils.metrics import (
+        build_compact_controller_metric_fields,
+        build_controller_summary,
+    )
+
+    config = _probabilistic_checkpoint_config(tmp_path)
+    controller_state = _probabilistic_checkpoint_state("terminal_incomplete")
+    controller_events = _controller_journal_events()[:3]
+    journal_path = tmp_path / "controller_metrics.jsonl"
+    journal_path.write_text(
+        "".join(
+            json.dumps(event, sort_keys=True) + "\n"
+            for event in controller_events
+        ),
+        encoding="utf-8",
+    )
+    controller_summary = build_controller_summary(
+        controller_state=controller_state,
+        controller_events=controller_events,
+        controller_metrics_path=journal_path,
+    )
+    compact_metric = build_compact_controller_metric_fields(
+        controller_state,
+        controller_events[1],
+    )
+    run_summary = build_run_summary(
+        config,
+        tokens_seen=256,
+        content_tokens_seen=256,
+        extra_fields={
+            "data_roles_manifest_hash": controller_state["manifest_hashes"][
+                "data_roles_manifest_hash"
+            ],
+            "optimizer_training_manifest_hash": controller_state[
+                "manifest_hashes"
+            ]["optimizer_training_manifest_hash"],
+            "controller_manifest_hash": controller_state["manifest_hashes"][
+                "controller_manifest_hash"
+            ],
+            "final_holdout_manifest_hash": controller_state["manifest_hashes"][
+                "final_holdout_manifest_hash"
+            ],
+            "controller_summary": controller_summary,
+            "controller_metrics_path": str(journal_path),
+            "controller_summary_path": str(tmp_path / "controller_summary.json"),
+        },
+    )
+
+    controller_config = config["model"]["adaptive_controller"]
+    expected_identity = {
+        "method_family": "bayesian_gaussian_linear_thompson",
+        "method_version": 1,
+        "strategy": "thompson",
+        "scope": "global",
+    }
+    for field_name, expected_value in expected_identity.items():
+        assert controller_config[field_name] == expected_value
+        assert controller_state[field_name] == expected_value
+        assert controller_events[0][field_name] == expected_value
+        assert controller_summary[field_name] == expected_value
+
+    assert controller_state["feature_schema"]["schema_hash"] == (
+        controller_events[0]["feature_schema_hash"]
+    )
+    assert controller_state["feature_schema"] == controller_summary[
+        "feature_schema"
+    ]
+    assert controller_state["probabilistic_inputs"] == controller_summary[
+        "probabilistic_inputs"
+    ]
+    assert controller_state["manifest_hashes"] == controller_summary[
+        "manifest_hashes"
+    ]
+    assert controller_state["belief"]["posterior_mean"].tolist() == (
+        controller_summary["final_posterior_mean"]
+    )
+    assert controller_state["belief"]["posterior_covariance"].tolist() == (
+        controller_summary["final_posterior_covariance"]
+    )
+    assert controller_state["sampling"]["seed_stream_name"] == (
+        "posterior_sampling"
+    )
+    assert controller_state["sampling"]["sample_count"] == 1
+    assert controller_state["window"]["phase"] == "terminal_incomplete"
+    assert controller_summary["terminal_window"]["completed_optimizer_steps"] == 1
+    assert controller_summary["resume_provenance"] == controller_state["resume"]
+
+    assert compact_metric == {
+        "controller_method_family": expected_identity["method_family"],
+        "controller_method_version": expected_identity["method_version"],
+        "controller_strategy": expected_identity["strategy"],
+        "controller_scope": expected_identity["scope"],
+        "controller_action": "micro",
+        "controller_window_index": 1,
+        "controller_window_progress": 1,
+        "controller_boundary_step": 2,
+        "controller_latest_objective": 8.0,
+        "controller_latest_reward": 1.0,
+        "controller_latest_prediction_error": 1.0,
+        "controller_manifest_hash": "controller-manifest-hash",
+        "final_holdout_manifest_hash": "final-holdout-manifest-hash",
+        "controller_metrics_path": "controller_metrics.jsonl",
+        "controller_summary_path": "controller_summary.json",
+    }
+    assert run_summary["controller_summary"] == controller_summary
+    assert run_summary["data_roles_manifest_hash"] == "parent-manifest-hash"
+    assert run_summary["controller_manifest_hash"] == "controller-manifest-hash"
+    assert run_summary["final_holdout_manifest_hash"] == (
+        "final-holdout-manifest-hash"
+    )
+
+
+def test_probabilistic_checkpoint_rejects_historical_heuristic_thompson_state():
+    from src.training.checkpointing import (
+        validate_probabilistic_controller_checkpoint_state,
+    )
+    from src.utils.config import ConfigError
+
+    historical_state = {
+        "strategy": "thompson",
+        "mean_reward_by_granularity": {"micro": 0.25, "full": 0.5},
+        "selection_count_by_granularity": {"micro": 3, "full": 4},
+        "previous_loss": 1.75,
+    }
+
+    with pytest.raises(
+        ConfigError,
+        match="Bayesian controller checkpoint state is incomplete",
+    ):
+        validate_probabilistic_controller_checkpoint_state(
+            historical_state,
+            checkpoint_path="historical-thompson.pt",
+        )

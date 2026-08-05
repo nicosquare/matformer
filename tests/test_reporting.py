@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from src.evaluation.reporting import generate_figures
 from src.utils.metrics import write_metrics_csv, write_scaling_results_csv
 from src.utils.monitoring import group_loss_rows_by_series
@@ -156,3 +158,103 @@ def test_reporting_path_groups_loss_rows_and_writes_medium_trend_report(tmp_path
     )
     assert "- nested-random: 2 rows; granularities=s, xl" in report
     assert "average_downstream_accuracy: 0.58" in report
+
+
+@pytest.mark.parametrize(
+    "row, expected_identity, expected_display_label",
+    [
+        (
+            {
+                "sampling_mode": "nested-random",
+                "resolved_sampling_mode": "adaptive_global",
+                "adaptive_sampler_strategy": "thompson",
+                "controller_method_family": "bayesian_gaussian_linear_thompson",
+                "controller_method_version": 1,
+                "controller_scope": "global",
+            },
+            "probabilistic_global_thompson",
+            "probabilistic global thompson",
+        ),
+        (
+            {
+                "sampling_mode": "nested-random",
+                "resolved_sampling_mode": "adaptive_per_block",
+                "adaptive_sampler_strategy": "thompson",
+                "controller_method_family": "bayesian_gaussian_linear_thompson",
+                "controller_method_version": 1,
+                "controller_scope": "per_block",
+            },
+            "probabilistic_per_block_thompson",
+            "probabilistic per-block thompson",
+        ),
+        (
+            {
+                "sampling_mode": "nested-random",
+                "resolved_sampling_mode": "adaptive_per_block",
+                "adaptive_sampler_strategy": "thompson",
+            },
+            "adaptive_per_block_thompson",
+            "legacy heuristic thompson",
+        ),
+    ],
+)
+def test_reporting_uses_explicit_provenance_to_distinguish_bayesian_and_legacy_thompson(
+    row,
+    expected_identity,
+    expected_display_label,
+):
+    from src.evaluation.reporting import display_sampling_label_for_curve
+    from src.evaluation.reporting_impl import scaling_curve_sampling_label
+
+    identity = scaling_curve_sampling_label(row)
+
+    assert identity == expected_identity
+    assert display_sampling_label_for_curve(identity) == expected_display_label
+
+
+def test_reporting_preserves_ucb_identity_display_and_style():
+    from src.evaluation.reporting import display_sampling_label_for_curve
+    from src.evaluation.reporting_impl import (
+        scaling_curve_sampling_label,
+        scaling_curve_style,
+    )
+    from src.evaluation.reporting_styles import (
+        SCALING_SAMPLING_MARKERS,
+        SCALING_SAMPLING_TONES,
+    )
+
+    row = {
+        "sampling_mode": "nested-random",
+        "model_variant": "slicing",
+        "resolved_sampling_mode": "adaptive_per_block",
+        "adaptive_sampler_strategy": "ucb",
+    }
+
+    assert scaling_curve_sampling_label(row) == "adaptive_per_block_ucb"
+    assert display_sampling_label_for_curve("adaptive_per_block_ucb") == (
+        "adaptive per-block ucb"
+    )
+    assert SCALING_SAMPLING_MARKERS["adaptive_per_block_ucb"] == "X"
+    assert SCALING_SAMPLING_TONES["adaptive_per_block_ucb"] == pytest.approx(0.55)
+    assert scaling_curve_style([row])["marker"] == "X"
+
+
+def test_reporting_defines_distinct_styles_for_each_bayesian_scope():
+    from src.evaluation.reporting_styles import (
+        SCALING_SAMPLING_MARKERS,
+        SCALING_SAMPLING_TONES,
+        SIZE_PLOT_PANELS_WITH_SAMPLING,
+    )
+
+    bayesian_identities = {
+        "probabilistic_global_thompson",
+        "probabilistic_per_block_thompson",
+    }
+
+    assert bayesian_identities <= set(SCALING_SAMPLING_MARKERS)
+    assert bayesian_identities <= set(SCALING_SAMPLING_TONES)
+    assert SCALING_SAMPLING_MARKERS["probabilistic_global_thompson"] != (
+        SCALING_SAMPLING_MARKERS["probabilistic_per_block_thompson"]
+    )
+    panel_identities = {panel[2] for panel in SIZE_PLOT_PANELS_WITH_SAMPLING}
+    assert bayesian_identities <= panel_identities
