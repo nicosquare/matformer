@@ -4,6 +4,7 @@ import math
 import textwrap
 
 import pytest
+import yaml
 
 from src.utils.config import (
     ConfigError,
@@ -304,6 +305,7 @@ def test_explicit_nested_random_mode_keeps_legacy_alias_stable_for_adaptive():
             "run.sampling_mode=nested-random",
             "training.granularity_sampling=random",
             "model.granularity_sampling_mode=adaptive_per_block",
+            "model.adaptive_sampler_strategy=ucb",
         ],
     )
 
@@ -337,9 +339,12 @@ def test_explicit_model_sampling_modes_preserve_nested_random_run_mode(
     selected_granularities,
     expected_local_correction_active,
 ):
+    overrides = [f"model.granularity_sampling_mode={sampling_mode}"]
+    if sampling_mode == "adaptive_per_block":
+        overrides.append("model.adaptive_sampler_strategy=ucb")
     resolved = resolve_run_config(
         "configs/dmodel256_pilot_comparison.yaml",
-        overrides=[f"model.granularity_sampling_mode={sampling_mode}"],
+        overrides=overrides,
     )
 
     assert resolved["run"]["sampling_mode"] == "nested-random"
@@ -375,7 +380,7 @@ def test_explicit_model_sampling_modes_preserve_nested_random_run_mode(
     else:
         assert context.derived_membership_pattern == ()
     if sampling_mode == "adaptive_per_block":
-        assert resolved["model"]["adaptive_sampler_strategy"] == "thompson"
+        assert resolved["model"]["adaptive_sampler_strategy"] == "ucb"
         assert resolved["model"]["adaptive_sampler_exploration_scale"] == 1.0
         assert resolved["model"]["adaptive_sampler_decay_rate"] == 0.0
         assert resolved["model"]["adaptive_sampler_reward_penalty_weight"] == 1.0
@@ -399,6 +404,186 @@ def test_adaptive_sampler_controls_override_and_validate():
     assert resolved["model"]["adaptive_sampler_exploration_scale"] == 2.5
     assert resolved["model"]["adaptive_sampler_decay_rate"] == 0.125
     assert resolved["model"]["adaptive_sampler_reward_penalty_weight"] == 0.75
+
+
+def _resolve_probabilistic_fixture(fixture_path, *, overrides=None):
+    # The setup fixtures retain the legacy eval_batches spelling for CLI
+    # compatibility; align it with their canonical eight-example holdout so
+    # these tests isolate the Bayesian configuration contract.
+    resolved_overrides = {"training.eval_batches": 4}
+    if overrides:
+        resolved_overrides.update(overrides)
+    return resolve_run_config(fixture_path, overrides=resolved_overrides)
+
+
+@pytest.mark.parametrize(
+    "fixture_path, expected_mode, expected_scope, expected_feature_model, expected_dimension",
+    [
+        (
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            "adaptive_global",
+            "global",
+            "arms",
+            3,
+        ),
+        (
+            "tests/fixtures/probabilistic_adaptive_per_block_smoke.yaml",
+            "adaptive_per_block",
+            "per_block",
+            "additive",
+            5,
+        ),
+    ],
+)
+def test_probabilistic_adaptive_scopes_resolve_explicit_bayesian_contract(
+    fixture_path,
+    expected_mode,
+    expected_scope,
+    expected_feature_model,
+    expected_dimension,
+):
+    resolved = _resolve_probabilistic_fixture(fixture_path)
+    model = resolved["model"]
+    controller = model["adaptive_controller"]
+
+    assert model["granularity_sampling_mode"] == expected_mode
+    assert model["resolved_sampling_mode"] == expected_mode
+    assert model["adaptive_sampler_strategy"] == "thompson"
+    assert model["granularities"] == ["micro", "medium", "full"]
+    assert controller["scope"] == expected_scope
+    assert controller["feature_model"] == expected_feature_model
+    assert controller["coefficient_dimension"] == expected_dimension
+    assert controller["context_model"] == "intercept_only"
+    assert controller["transition_model"] == "identity"
+    assert controller["compute_weight"] == 0.0
+    assert controller["switch_weight"] == 0.0
+
+
+def test_probabilistic_adaptive_decision_interval_defaults_to_50(tmp_path):
+    with open(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+        encoding="utf-8",
+    ) as config_file:
+        raw = yaml.safe_load(config_file)
+    raw["model"]["adaptive_controller"].pop("decision_interval_steps")
+    raw["training"]["eval_batches"] = 4
+    config_path = tmp_path / "probabilistic-default-window.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    resolved = resolve_run_config(config_path)
+
+    assert resolved["model"]["adaptive_controller"]["decision_interval_steps"] == 50
+
+
+def test_probabilistic_adaptive_normalizes_scalar_gaussian_inputs_to_float64_shape():
+    resolved = _resolve_probabilistic_fixture(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml"
+    )
+    controller = resolved["model"]["adaptive_controller"]
+
+    assert controller["resolved_prior_mean"] == [0.0, 0.0, 0.0]
+    assert controller["resolved_prior_covariance"] == [
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ]
+    assert controller["resolved_process_noise_covariance"] == [
+        [0.0001, 0.0, 0.0],
+        [0.0, 0.0001, 0.0],
+        [0.0, 0.0, 0.0001],
+    ]
+    assert controller["observation_noise_variance"] == 0.01
+
+
+def test_probabilistic_adaptive_accepts_degenerate_psd_process_covariance():
+    resolved = _resolve_probabilistic_fixture(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+        overrides={"model.adaptive_controller.process_noise_covariance": 0.0},
+    )
+
+    assert resolved["model"]["adaptive_controller"][
+        "resolved_process_noise_covariance"
+    ] == [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+
+
+def test_legacy_thompson_configuration_requires_explicit_bayesian_migration():
+    with pytest.raises(ConfigError, match="(?i)migration.*Bayesian"):
+        resolve_run_config("tests/fixtures/legacy_thompson_config.yaml")
+
+
+@pytest.mark.parametrize(
+    "field, value, expected_message",
+    [
+        ("prior_mean", math.nan, "prior_mean.*finite"),
+        ("prior_covariance", -1.0, "prior_covariance.*positive semidefinite"),
+        ("prior_covariance", [1.0, 1.0], "prior_covariance.*dimension"),
+        (
+            "prior_covariance",
+            [[1.0, 0.5, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            "prior_covariance.*symmetric",
+        ),
+        ("observation_noise_variance", 0.0, "observation_noise_variance.*positive"),
+        ("observation_noise_variance", math.inf, "observation_noise_variance.*finite"),
+        (
+            "process_noise_covariance",
+            [0.0, -0.1, 0.0],
+            "process_noise_covariance.*positive semidefinite",
+        ),
+        (
+            "process_noise_covariance",
+            [[0.1, 0.2, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]],
+            "process_noise_covariance.*symmetric",
+        ),
+    ],
+)
+def test_probabilistic_adaptive_rejects_invalid_prior_and_noise_inputs(
+    field,
+    value,
+    expected_message,
+):
+    with pytest.raises(ConfigError, match=expected_message):
+        _resolve_probabilistic_fixture(
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            overrides={f"model.adaptive_controller.{field}": value},
+        )
+
+
+@pytest.mark.parametrize("field", ["compute_weight", "switch_weight"])
+def test_probabilistic_adaptive_rejects_nonzero_fixed_costs(field):
+    with pytest.raises(ConfigError, match=rf"{field}.*zero"):
+        _resolve_probabilistic_fixture(
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            overrides={f"model.adaptive_controller.{field}": 0.25},
+        )
+
+
+def test_adaptive_global_rejects_ucb_instead_of_falling_back():
+    with pytest.raises(ConfigError, match="adaptive_global.*ucb"):
+        _resolve_probabilistic_fixture(
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            overrides={"model.adaptive_sampler_strategy": "ucb"},
+        )
+
+
+def test_ucb_resolution_remains_on_legacy_configuration_contract():
+    resolved = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        overrides={
+            "model.granularity_sampling_mode": "adaptive_per_block",
+            "model.adaptive_sampler_strategy": "ucb",
+            "model.adaptive_sampler_exploration_scale": 2.5,
+            "model.adaptive_sampler_decay_rate": 0.125,
+            "model.adaptive_sampler_reward_penalty_weight": 0.75,
+        },
+    )
+    model = resolved["model"]
+
+    assert model["resolved_sampling_mode"] == "adaptive_per_block"
+    assert model["adaptive_sampler_strategy"] == "ucb"
+    assert model["adaptive_sampler_exploration_scale"] == 2.5
+    assert model["adaptive_sampler_decay_rate"] == 0.125
+    assert model["adaptive_sampler_reward_penalty_weight"] == 0.75
+    assert "adaptive_controller" not in model
 
 
 @pytest.mark.parametrize(

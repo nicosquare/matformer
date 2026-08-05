@@ -29,9 +29,9 @@
 
 **CRITICAL**: No user story implementation begins until configuration and four-role data provenance are valid and existing non-Bayesian paths remain isolated.
 
-- [ ] T004 [P] Add configuration-contract tests for adaptive scopes, the Thompson migration error, the 50-step default, covariance/noise validation, fixed zero costs, arbitrary granularity labels, and unchanged UCB resolution in tests/test_config.py
-- [ ] T005 [P] Add deterministic four-role split tests covering exact 128/512 counts, all six empty intersections, stable manifests/hashes, insufficient usable data, overlap rejection, and ordinary-validation preservation in tests/test_data_validation.py
-- [ ] T006 [P] Add independent controller-panel, final-holdout, and posterior-sampling seed-stream reproducibility tests in tests/test_reproducibility.py
+- [X] T004 [P] Add configuration-contract tests for adaptive scopes, the Thompson migration error, the 50-step default, covariance/noise validation, fixed zero costs, arbitrary granularity labels, and unchanged UCB resolution in tests/test_config.py
+- [X] T005 [P] Add deterministic four-role split tests covering exact 128/512 counts, all six empty intersections, stable manifests/hashes, insufficient usable data, overlap rejection, and ordinary-validation preservation in tests/test_data_validation.py
+- [X] T006 [P] Add independent controller-panel, final-holdout, and posterior-sampling seed-stream reproducibility tests in tests/test_reproducibility.py
 - [ ] T007 Implement strategy-specific Bayesian configuration normalization and preflight validation while preserving the legacy UCB configuration path in src/utils/config.py
 - [ ] T008 [P] Add named deterministic seed streams and include their resolved provenance in reproducibility signatures in src/utils/reproducibility.py
 - [ ] T009 Carry stable source-example identities through preprocessing and implement the Bayesian-only ordinary-validation/controller/final-holdout/training partition plus role and parent manifests in src/training/data.py
