@@ -14,11 +14,13 @@ from src.models.wiring import (
     prime_standalone_granularity_state,
 )
 from src.training.distributed import should_write_shared_artifact
+from src.models.granularity import resolved_granularity_artifact_fields
 from src.utils.config import resolve_training_length_for_world_size
 from src.utils.metrics import build_parameter_counts_by_granularity
 
 __all__ = [
     "build_artifact_parameter_counts",
+    "build_granularity_artifact_fields",
     "build_llama_config",
     "build_model",
     "distributed_summary_fields",
@@ -38,6 +40,14 @@ def build_artifact_parameter_counts(
         model,
         config["model"]["granularities"],
     )
+
+
+def build_granularity_artifact_fields(
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    """Expose the resolved granularity sequence used by model artifacts."""
+
+    return resolved_granularity_artifact_fields(config.get("model", {}))
 
 
 def build_model(config: dict[str, Any]):
@@ -63,6 +73,7 @@ def build_model(config: dict[str, Any]):
             model,
             config["run"]["granularity"],
             run_id=config["run"].get("run_id"),
+            available_granularities=config["model"].get("granularities"),
         )
         return model
 
@@ -93,6 +104,8 @@ def build_llama_config(config: dict[str, Any]) -> LlamaConfig:
         llama_config.d_model = model.get("d_model", model.get("hidden_size"))
     if "granularities" in model:
         llama_config.granularities = list(model["granularities"])
+    if "granularity_mode" in model:
+        llama_config.granularity_mode = str(model["granularity_mode"])
     if "granularity_prefixes" in model:
         llama_config.granularity_prefixes = copy.deepcopy(
             model["granularity_prefixes"]
@@ -103,6 +116,10 @@ def build_llama_config(config: dict[str, Any]) -> LlamaConfig:
         )
     if "ffn_prefix_metadata" in model:
         llama_config.ffn_prefix_metadata = copy.deepcopy(model["ffn_prefix_metadata"])
+        llama_config.granularity_prefix_widths = {
+            entry["name"]: int(entry["prefix_width"])
+            for entry in model["ffn_prefix_metadata"]
+        }
     if "ffn_concat_block_metadata" in model:
         llama_config.ffn_concat_block_metadata = copy.deepcopy(
             model["ffn_concat_block_metadata"]

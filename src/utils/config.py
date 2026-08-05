@@ -6,17 +6,21 @@ import copy
 import json
 import math
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 import yaml
 
+from src.utils.artifact_io import DEFAULT_ARTIFACT_IO
+from src.utils.artifact_io import retry_artifact_io
 from src.utils.model_size import (
     MODEL_FAMILY_SLUG,
     derive_model_size_slug,
     derive_token_budget_slug,
 )
 from src.utils.monitoring import DEFAULT_MONITORING_BACKEND, VALID_MONITORING_BACKENDS
+from src.utils.reproducibility import DATA_SPLIT_VERSION, SEED_STREAM_VERSION
 
 
 VALID_GRANULARITIES = {"s", "m", "l", "xl"}
@@ -34,6 +38,7 @@ VALID_OPTIMIZER_NAMES = {"adamw", "sgd"}
 VALID_COMPLETION_LABELS = {"debug", "run"}
 VALID_GRANULARITY_SAMPLING = {"all", "random"}
 VALID_PRE_NESTED_WARMUP_UNITS = {"epochs", "steps"}
+VALID_MIXED_PRECISION_MODES = {"none", "bf16", "fp16"}
 DEFAULT_MODEL_VARIANT = "slicing"
 VALID_SAMPLING_MODES = {"nested-random", "nested-all", "standalone"}
 CANONICAL_GRANULARITY_ORDER = ("s", "m", "l", "xl")
@@ -419,11 +424,38 @@ def write_resolved_config(
 
     output_path = Path(resolved_output_dir) / filename
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as config_file:
-        json.dump(config, config_file, indent=2, sort_keys=True)
-        config_file.write("\n")
+    def write_attempt(_attempt: int) -> Path:
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=output_path.parent,
+                prefix=f".{output_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as config_file:
+                temporary_path = Path(config_file.name)
+                json.dump(config, config_file, indent=2, sort_keys=True)
+                config_file.write("\n")
+                config_file.flush()
+                os.fsync(config_file.fileno())
+            os.replace(temporary_path, output_path)
+            return output_path
+        except Exception:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise
 
-    return output_path
+    return retry_artifact_io(
+        write_attempt,
+        target_path=output_path,
+        operation_name="resolved_config_replace",
+        settings=config,
+    )
 
 
 def attach_parameter_counts_to_config(
@@ -466,8 +498,14 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         raise ConfigError(
             "Missing mapping section: training.preset_registry_paths"
         )
-    _require_mapping(config, "outputs")
-    _require_mapping(config, "evaluation")
+    outputs = _require_mapping(config, "outputs")
+    artifact_io = outputs.get("artifact_io")
+    if not isinstance(artifact_io, Mapping):
+        raise ConfigError("Missing mapping section: outputs.artifact_io")
+    evaluation = _require_mapping(config, "evaluation")
+    reproducibility = run.get("reproducibility")
+    if not isinstance(reproducibility, Mapping):
+        raise ConfigError("Missing mapping section: run.reproducibility")
 
     _require_fields(
         run,
@@ -486,6 +524,8 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "family_resolution_rule",
             "output_root",
             "output_dir",
+            "seed",
+            "reproducibility",
         ],
     )
     _require_one_of_fields(
@@ -499,6 +539,7 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         [
             "base_model_name",
             "variant",
+            "granularity_mode",
             "correction_mode",
             "membership_correction",
             "granularity_sampling_mode",
@@ -542,7 +583,52 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "preset_registry_paths",
         ],
     )
-    _require_fields(continuation, "run.continuation", ["enabled"])
+    _require_fields(
+        continuation,
+        "run.continuation",
+        ["enabled", "retain_previous_latest"],
+    )
+    _require_fields(
+        outputs,
+        "outputs",
+        ["metrics_flush_interval_steps", "best_eval_retention_count", "artifact_io"],
+    )
+    _require_fields(
+        artifact_io,
+        "outputs.artifact_io",
+        list(DEFAULT_ARTIFACT_IO),
+    )
+    _require_fields(
+        evaluation,
+        "evaluation",
+        ["validation", "test"],
+    )
+    validation = evaluation.get("validation")
+    if not isinstance(validation, Mapping):
+        raise ConfigError("evaluation.validation must be a mapping")
+    holdout = validation.get("holdout")
+    if not isinstance(holdout, Mapping):
+        raise ConfigError("evaluation.validation.holdout must be a mapping")
+    test_evaluation = evaluation.get("test")
+    if not isinstance(test_evaluation, Mapping):
+        raise ConfigError("evaluation.test must be a mapping")
+    _require_fields(
+        validation,
+        "evaluation.validation",
+        [
+            "enabled",
+            "interval_steps",
+            "run_at_completion",
+            "holdout",
+            "trailing_summary_evaluations",
+        ],
+    )
+    _require_fields(
+        holdout,
+        "evaluation.validation.holdout",
+        ["source", "examples"],
+    )
+    _require_fields(test_evaluation, "evaluation.test", ["enabled"])
     _require_fields(
         monitoring,
         "monitoring",
@@ -592,6 +678,20 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             f"run.output_dir must end with run.run_id: {output_dir} vs {run_id}"
         )
 
+    seed = run.get("seed")
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ConfigError("run.seed must be an explicit nonnegative integer")
+    if reproducibility.get("mode") != "strict":
+        raise ConfigError("run.reproducibility.mode must be strict")
+    _positive_int(
+        reproducibility.get("seed_stream_version"),
+        "run.reproducibility.seed_stream_version",
+    )
+    _positive_int(
+        reproducibility.get("data_split_version"),
+        "run.reproducibility.data_split_version",
+    )
+
     model_topology = run["model_family"]
     if model_topology not in VALID_MODEL_TOPOLOGIES:
         raise ConfigError(f"Unknown training topology: {model_topology}")
@@ -632,13 +732,21 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
     if not isinstance(granularities, list) or not granularities:
         raise ConfigError("model.granularities must be a non-empty list")
 
-    unknown_granularities = [
-        granularity
+    if any(
+        not isinstance(granularity, str) or not granularity.strip()
         for granularity in granularities
-        if granularity not in VALID_GRANULARITIES
-    ]
-    if unknown_granularities:
-        raise ConfigError(f"Unknown granularities: {unknown_granularities}")
+    ):
+        raise ConfigError(
+            "model.granularities must contain only non-empty string labels"
+        )
+    if len(set(granularities)) != len(granularities):
+        raise ConfigError("model.granularities must contain unique labels")
+
+    granularity_mode = model.get("granularity_mode")
+    if granularity_mode not in {"canonical", "explicit"}:
+        raise ConfigError(
+            "model.granularity_mode must be one of ['canonical', 'explicit']"
+        )
 
     if model["variant"] not in VALID_MODEL_VARIANTS:
         raise ConfigError(
@@ -718,6 +826,102 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
 
     if not isinstance(continuation.get("enabled"), bool):
         raise ConfigError("run.continuation.enabled must be a boolean")
+    if not isinstance(continuation.get("retain_previous_latest"), bool):
+        raise ConfigError(
+            "run.continuation.retain_previous_latest must be a boolean"
+        )
+
+    _positive_int(
+        outputs.get("metrics_flush_interval_steps"),
+        "outputs.metrics_flush_interval_steps",
+    )
+    _positive_int(
+        outputs.get("best_eval_retention_count"),
+        "outputs.best_eval_retention_count",
+    )
+    _positive_int(
+        artifact_io.get("max_attempts"),
+        "outputs.artifact_io.max_attempts",
+    )
+    initial_backoff = _nonnegative_float(
+        artifact_io.get("initial_backoff_seconds"),
+        "outputs.artifact_io.initial_backoff_seconds",
+    )
+    max_backoff = _nonnegative_float(
+        artifact_io.get("max_backoff_seconds"),
+        "outputs.artifact_io.max_backoff_seconds",
+    )
+    if max_backoff < initial_backoff:
+        raise ConfigError(
+            "outputs.artifact_io.max_backoff_seconds must be greater than or "
+            "equal to initial_backoff_seconds"
+        )
+    jitter_fraction = _nonnegative_float(
+        artifact_io.get("jitter_fraction"),
+        "outputs.artifact_io.jitter_fraction",
+    )
+    if jitter_fraction > 1.0:
+        raise ConfigError("outputs.artifact_io.jitter_fraction must be <= 1")
+    if artifact_io.get("checkpoint_staging") not in {"auto", "local", "direct"}:
+        raise ConfigError(
+            "outputs.artifact_io.checkpoint_staging must be one of "
+            "['auto', 'direct', 'local']"
+        )
+    if artifact_io.get("periodic_checkpoint_failure_policy") not in {
+        "continue_if_previous",
+        "strict",
+    }:
+        raise ConfigError(
+            "outputs.artifact_io.periodic_checkpoint_failure_policy must be one "
+            "of ['continue_if_previous', 'strict']"
+        )
+    _positive_int(
+        artifact_io.get("metrics_pending_row_limit"),
+        "outputs.artifact_io.metrics_pending_row_limit",
+    )
+    if not isinstance(validation.get("enabled"), bool):
+        raise ConfigError("evaluation.validation.enabled must be a boolean")
+    _nonnegative_int(
+        validation.get("interval_steps"),
+        "evaluation.validation.interval_steps",
+    )
+    if not isinstance(validation.get("run_at_completion"), bool):
+        raise ConfigError(
+            "evaluation.validation.run_at_completion must be a boolean"
+        )
+    if holdout.get("source") != "configured_dataset_split":
+        raise ConfigError(
+            "evaluation.validation.holdout.source must be configured_dataset_split"
+        )
+    _positive_int(
+        holdout.get("examples"),
+        "evaluation.validation.holdout.examples",
+    )
+    _positive_int(
+        validation.get("trailing_summary_evaluations"),
+        "evaluation.validation.trailing_summary_evaluations",
+    )
+    if test_evaluation.get("enabled") is not False:
+        raise ConfigError("evaluation.test.enabled must be false")
+    if completion_label == "run" and not validation["run_at_completion"]:
+        raise ConfigError(
+            "evaluation.validation.run_at_completion is required when "
+            "run.completion_label=run"
+        )
+
+    requested_precision = training.get(
+        "requested_mixed_precision",
+        training.get("mixed_precision", "none"),
+    )
+    if requested_precision not in VALID_MIXED_PRECISION_MODES:
+        raise ConfigError(
+            "training.mixed_precision must be one of "
+            f"{sorted(VALID_MIXED_PRECISION_MODES)}"
+        )
+    if not isinstance(training.get("requested_activation_checkpointing"), bool):
+        raise ConfigError(
+            "training.requested_activation_checkpointing must be a boolean"
+        )
 
     if not isinstance(monitoring.get("enabled"), bool):
         raise ConfigError("monitoring.enabled must be a boolean")
@@ -795,8 +999,13 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
 
     if model_topology == "standalone":
         granularity = run.get("granularity")
-        if granularity not in VALID_GRANULARITIES:
+        if not isinstance(granularity, str) or not granularity.strip():
             raise ConfigError("standalone runs require run.granularity")
+        if granularity not in granularities:
+            raise ConfigError(
+                f"run.granularity={granularity!r} is not valid for standalone run; "
+                f"available labels={granularities}"
+            )
         if granularities != [granularity]:
             raise ConfigError(
                 "standalone runs must resolve to exactly one matching granularity"
@@ -922,6 +1131,15 @@ def _is_concat_model_path(config: Mapping[str, Any]) -> bool:
 def _resolve_model_dimension_and_granularity_metadata(config: dict[str, Any]) -> None:
     model = config.setdefault("model", {})
     run = config.get("run", {})
+    granularity_mode = model.get("granularity_mode", "canonical")
+    if not isinstance(granularity_mode, str):
+        raise ConfigError("model.granularity_mode must be a string")
+    granularity_mode = granularity_mode.strip().lower()
+    if granularity_mode not in {"canonical", "explicit"}:
+        raise ConfigError(
+            "model.granularity_mode must be one of ['canonical', 'explicit']"
+        )
+    model["granularity_mode"] = granularity_mode
 
     hidden_size = model.get("hidden_size")
     d_model = model.get("d_model")
@@ -941,17 +1159,35 @@ def _resolve_model_dimension_and_granularity_metadata(config: dict[str, Any]) ->
 
     granularities = model.get("granularities")
     if not isinstance(granularities, list) or not granularities:
+        if granularity_mode == "explicit":
+            raise ConfigError(
+                "model.granularities is required when "
+                "model.granularity_mode=explicit; provide an ordered, non-empty "
+                "label list"
+            )
         return
 
     prefixes = model.get("granularity_prefixes")
     if prefixes is None:
-        prefixes = {
-            granularity: (
-                CANONICAL_GRANULARITY_PREFIX_FRACTIONS[granularity][0]
-                / CANONICAL_GRANULARITY_PREFIX_FRACTIONS[granularity][1]
+        if granularity_mode == "explicit":
+            raise ConfigError(
+                "model.granularity_prefixes is required when "
+                "model.granularity_mode=explicit; provide one prefix fraction "
+                "for each model.granularities label"
             )
-            for granularity in granularities
-        }
+        try:
+            prefixes = {
+                granularity: (
+                    CANONICAL_GRANULARITY_PREFIX_FRACTIONS[granularity][0]
+                    / CANONICAL_GRANULARITY_PREFIX_FRACTIONS[granularity][1]
+                )
+                for granularity in granularities
+            }
+        except KeyError as error:
+            raise ConfigError(
+                "model.granularity_prefixes is required for non-canonical labels; "
+                f"provide entries for model.granularities={granularities}"
+            ) from error
     elif not isinstance(prefixes, Mapping):
         raise ConfigError("model.granularity_prefixes must be a mapping")
 
@@ -1068,6 +1304,26 @@ def _apply_run_granularities(config: dict[str, Any]) -> None:
     model = config.setdefault("model", {})
 
     if run.get("model_family") == "standalone" and "granularity" in run:
+        configured_granularities = model.get("granularities")
+        granularity_mode = str(model.get("granularity_mode", "canonical")).strip().lower()
+        if granularity_mode == "explicit" and (
+            not isinstance(configured_granularities, list)
+            or not configured_granularities
+        ):
+            raise ConfigError(
+                "model.granularities is required when "
+                "model.granularity_mode=explicit; provide an ordered, non-empty "
+                "label list before selecting run.granularity"
+            )
+        if (
+            isinstance(configured_granularities, list)
+            and configured_granularities
+            and run["granularity"] not in configured_granularities
+        ):
+            raise ConfigError(
+                f"run.granularity={run['granularity']!r} is not valid for "
+                f"standalone run; available labels={configured_granularities}"
+            )
         _apply_standalone_fixed_width(model, run["granularity"])
         model["granularities"] = [run["granularity"]]
     elif "granularities" in run:
@@ -1520,8 +1776,10 @@ def _resolve_granularity_prefix_map(
     if previous_width != resolved_intermediate_size:
         last_granularity = granularities[-1]
         raise ConfigError(
-            f"model.granularity_prefixes.{last_granularity} must resolve to "
-            f"model.intermediate_size={resolved_intermediate_size}"
+            f"model.granularity_prefixes.{last_granularity} must resolve to full "
+            f"model.intermediate_size={resolved_intermediate_size}; "
+            f"got prefix_width={previous_width} from "
+            f"fraction={resolved[last_granularity]}"
         )
 
     return resolved
@@ -1640,7 +1898,10 @@ def _apply_standalone_fixed_width(model: dict[str, Any], granularity: str) -> No
         raise ConfigError("model.granularity_prefixes must be a mapping")
 
     if granularity not in source_prefixes:
-        raise ConfigError(f"Unknown granularity for standalone run: {granularity}")
+        raise ConfigError(
+            f"run.granularity={granularity!r} is not valid for standalone run; "
+            f"available labels={list(source_prefixes)}"
+        )
 
     source_fraction = float(source_prefixes[granularity])
     intermediate_size = int(source_intermediate_size * source_fraction)
@@ -1703,9 +1964,11 @@ def _resolve_parameter_reporting_defaults(config: dict[str, Any]) -> None:
 
 
 def _resolve_long_run_defaults(config: dict[str, Any]) -> None:
+    _resolve_reproducibility_defaults(config)
     _resolve_continuation_defaults(config)
     _resolve_monitoring_defaults(config)
     _resolve_pre_nested_warmup_defaults(config)
+    _resolve_reliability_defaults(config)
 
 
 def _select_representative_parameter_counts(
@@ -1937,7 +2200,229 @@ def _resolve_continuation_defaults(config: dict[str, Any]) -> None:
         continuation.get("enabled", False),
         "run.continuation.enabled",
     )
+    continuation["retain_previous_latest"] = _normalize_bool(
+        continuation.get("retain_previous_latest", True),
+        "run.continuation.retain_previous_latest",
+    )
     run["continuation"] = continuation
+
+
+def _resolve_reliability_defaults(config: dict[str, Any]) -> None:
+    run = config.setdefault("run", {})
+    training = config.setdefault("training", {})
+    outputs = config.setdefault("outputs", {})
+    evaluation = config.setdefault("evaluation", {})
+    if not isinstance(outputs, dict):
+        raise ConfigError("outputs must be a mapping when provided")
+    if not isinstance(evaluation, dict):
+        raise ConfigError("evaluation must be a mapping when provided")
+
+    requested_precision = training.get(
+        "requested_mixed_precision",
+        training.get("mixed_precision", "none"),
+    )
+    if not isinstance(requested_precision, str):
+        raise ConfigError("training.mixed_precision must be a string")
+    requested_precision = requested_precision.strip().lower()
+    if requested_precision not in VALID_MIXED_PRECISION_MODES:
+        raise ConfigError(
+            "training.mixed_precision must be one of "
+            f"{sorted(VALID_MIXED_PRECISION_MODES)}"
+        )
+    requested_checkpointing = _normalize_bool(
+        training.get(
+            "requested_activation_checkpointing",
+            training.get("activation_checkpointing", False),
+        ),
+        "training.activation_checkpointing",
+    )
+    training["mixed_precision"] = requested_precision
+    training["requested_mixed_precision"] = requested_precision
+    training["resolved_mixed_precision"] = requested_precision
+    training["activation_checkpointing"] = requested_checkpointing
+    training["requested_activation_checkpointing"] = requested_checkpointing
+    training["resolved_activation_checkpointing"] = requested_checkpointing
+
+    outputs["metrics_flush_interval_steps"] = _positive_int(
+        outputs.get("metrics_flush_interval_steps", 100),
+        "outputs.metrics_flush_interval_steps",
+    )
+    outputs["best_eval_retention_count"] = _positive_int(
+        outputs.get("best_eval_retention_count", 1),
+        "outputs.best_eval_retention_count",
+    )
+    configured_artifact_io = outputs.get("artifact_io", {})
+    if not isinstance(configured_artifact_io, dict):
+        raise ConfigError("outputs.artifact_io must be a mapping when provided")
+    artifact_io = DEFAULT_ARTIFACT_IO | configured_artifact_io
+    artifact_io["max_attempts"] = _positive_int(
+        artifact_io["max_attempts"],
+        "outputs.artifact_io.max_attempts",
+    )
+    artifact_io["initial_backoff_seconds"] = _nonnegative_float(
+        artifact_io["initial_backoff_seconds"],
+        "outputs.artifact_io.initial_backoff_seconds",
+    )
+    artifact_io["max_backoff_seconds"] = _nonnegative_float(
+        artifact_io["max_backoff_seconds"],
+        "outputs.artifact_io.max_backoff_seconds",
+    )
+    artifact_io["jitter_fraction"] = _nonnegative_float(
+        artifact_io["jitter_fraction"],
+        "outputs.artifact_io.jitter_fraction",
+    )
+    artifact_io["checkpoint_staging"] = str(
+        artifact_io["checkpoint_staging"]
+    ).strip().lower()
+    artifact_io["periodic_checkpoint_failure_policy"] = str(
+        artifact_io["periodic_checkpoint_failure_policy"]
+    ).strip().lower()
+    artifact_io["metrics_pending_row_limit"] = _positive_int(
+        artifact_io["metrics_pending_row_limit"],
+        "outputs.artifact_io.metrics_pending_row_limit",
+    )
+    outputs["artifact_io"] = artifact_io
+
+    _resolve_evaluation_defaults(config)
+    validation = evaluation["validation"]
+    if run.get("completion_label") == "run" and not validation["run_at_completion"]:
+        raise ConfigError(
+            "evaluation.validation.run_at_completion is required when "
+            "run.completion_label=run"
+        )
+    validation["run_at_completion_reason"] = (
+        "required_for_completed_run"
+        if run.get("completion_label") == "run"
+        else (
+            "enabled_for_debug_run"
+            if validation["run_at_completion"]
+            else "explicitly_disabled_for_debug_run"
+        )
+    )
+
+
+def _resolve_reproducibility_defaults(config: dict[str, Any]) -> None:
+    run = config.setdefault("run", {})
+    if "seed" not in run:
+        raise ConfigError("run.seed must be an explicit nonnegative integer")
+    seed = run["seed"]
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ConfigError("run.seed must be an explicit nonnegative integer")
+
+    reproducibility = run.get("reproducibility", {})
+    if not isinstance(reproducibility, dict):
+        raise ConfigError("run.reproducibility must be a mapping when provided")
+    mode = reproducibility.get("mode", "strict")
+    if mode != "strict":
+        raise ConfigError("run.reproducibility.mode must be strict")
+    reproducibility["mode"] = "strict"
+    reproducibility["seed_stream_version"] = _positive_int(
+        reproducibility.get("seed_stream_version", SEED_STREAM_VERSION),
+        "run.reproducibility.seed_stream_version",
+    )
+    reproducibility["data_split_version"] = _positive_int(
+        reproducibility.get("data_split_version", DATA_SPLIT_VERSION),
+        "run.reproducibility.data_split_version",
+    )
+    run["reproducibility"] = reproducibility
+
+
+def _resolve_evaluation_defaults(config: dict[str, Any]) -> None:
+    training = config.setdefault("training", {})
+    evaluation = config.setdefault("evaluation", {})
+    raw_validation = evaluation.get("validation", False)
+    legacy_enabled = raw_validation if isinstance(raw_validation, bool) else None
+    if isinstance(raw_validation, Mapping):
+        validation = copy.deepcopy(dict(raw_validation))
+    elif isinstance(raw_validation, bool):
+        validation = {}
+    else:
+        raise ConfigError("evaluation.validation must be a boolean or mapping")
+
+    if legacy_enabled is not None:
+        validation["enabled"] = legacy_enabled
+    else:
+        validation["enabled"] = _normalize_bool(
+            validation.get("enabled", False),
+            "evaluation.validation.enabled",
+        )
+
+    legacy_interval = training.get("eval_interval")
+    canonical_interval = validation.get("interval_steps")
+    if legacy_interval is not None and canonical_interval is not None:
+        if int(legacy_interval) != int(canonical_interval):
+            raise ConfigError(
+                "Conflicting training.eval_interval and "
+                "evaluation.validation.interval_steps"
+            )
+    validation["interval_steps"] = _nonnegative_int(
+        canonical_interval if canonical_interval is not None else legacy_interval or 0,
+        "evaluation.validation.interval_steps",
+    )
+
+    legacy_completion = evaluation.get("final_validation")
+    canonical_completion = validation.get("run_at_completion")
+    if legacy_completion is not None and canonical_completion is not None:
+        if bool(legacy_completion) != bool(canonical_completion):
+            raise ConfigError(
+                "Conflicting evaluation.final_validation and "
+                "evaluation.validation.run_at_completion"
+            )
+    validation["run_at_completion"] = _normalize_bool(
+        canonical_completion
+        if canonical_completion is not None
+        else (legacy_completion if legacy_completion is not None else True),
+        "evaluation.validation.run_at_completion",
+    )
+
+    holdout = validation.get("holdout", {})
+    if not isinstance(holdout, dict):
+        raise ConfigError("evaluation.validation.holdout must be a mapping")
+    holdout["source"] = str(
+        holdout.get("source", "configured_dataset_split")
+    )
+    legacy_batches = training.get("eval_batches")
+    legacy_examples = None
+    if legacy_batches is not None:
+        legacy_examples = _positive_int(
+            legacy_batches, "training.eval_batches"
+        ) * _positive_int(
+            training.get("batch_size_per_process"),
+            "training.batch_size_per_process",
+        )
+    canonical_examples = holdout.get("examples")
+    if legacy_examples is not None and canonical_examples is not None:
+        if legacy_examples != int(canonical_examples):
+            raise ConfigError(
+                "Conflicting training.eval_batches and "
+                "evaluation.validation.holdout.examples"
+            )
+    holdout["examples"] = _positive_int(
+        canonical_examples
+        if canonical_examples is not None
+        else (legacy_examples if legacy_examples is not None else 512),
+        "evaluation.validation.holdout.examples",
+    )
+    validation["holdout"] = holdout
+    validation["trailing_summary_evaluations"] = _positive_int(
+        validation.get("trailing_summary_evaluations", 5),
+        "evaluation.validation.trailing_summary_evaluations",
+    )
+
+    test_evaluation = evaluation.get("test", {"enabled": False})
+    if not isinstance(test_evaluation, dict):
+        raise ConfigError("evaluation.test must be a mapping")
+    test_evaluation["enabled"] = _normalize_bool(
+        test_evaluation.get("enabled", False), "evaluation.test.enabled"
+    )
+    if test_evaluation["enabled"]:
+        raise ConfigError("evaluation.test.enabled must be false")
+
+    training.pop("eval_interval", None)
+    training.pop("eval_batches", None)
+    evaluation.pop("final_validation", None)
+    evaluation["validation"] = validation
+    evaluation["test"] = test_evaluation
 
 
 def _resolve_monitoring_defaults(config: dict[str, Any]) -> None:

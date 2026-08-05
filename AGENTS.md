@@ -1,5 +1,5 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read:
-`specs/008-src-layout-housekeeping/plan.md`
+`specs/009-configurable-granularity-modes/plan.md`
 <!-- SPECKIT END -->

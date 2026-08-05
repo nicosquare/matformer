@@ -68,7 +68,7 @@ def test_debug_nested_run_resolves_phase3_p1_contract(tmp_path):
 
     assert config["model"]["granularities"] == ["s", "m", "l", "xl"]
     assert config["dataset"]["dataset_phase"] == "debug"
-    assert config["evaluation"]["validation"] is True
+    assert config["evaluation"]["validation"]["enabled"] is True
 
     validate_run_config(config)
 

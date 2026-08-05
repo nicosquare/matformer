@@ -129,6 +129,127 @@ def test_resolve_debug_matrix_expands_nested_and_standalone_runs():
         validate_run_config(resolved)
 
 
+def test_canonical_granularity_resolution_preserves_legacy_layout():
+    resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
+    model = resolved["model"]
+
+    assert model["granularity_mode"] == "canonical"
+    assert model["granularities"] == ["s", "m", "l", "xl"]
+    assert model["granularity_prefixes"] == {
+        "s": 0.125,
+        "m": 0.25,
+        "l": 0.5,
+        "xl": 1.0,
+    }
+    assert [entry["prefix_width"] for entry in model["ffn_prefix_metadata"]] == [
+        128,
+        256,
+        512,
+        1024,
+    ]
+
+    validate_run_config(resolved)
+
+
+@pytest.mark.parametrize(
+    "case, overrides, expected_message",
+    [
+        (
+            "non_increasing",
+            {
+                "model.granularity_prefixes": {
+                    "micro": 0.4,
+                    "small": 0.2,
+                    "medium": 0.6,
+                    "large": 0.8,
+                    "full": 1.0,
+                }
+            },
+            "strictly nested widths",
+        ),
+        (
+            "non_positive",
+            {
+                "model.granularity_prefixes": {
+                    "micro": 0.0,
+                    "small": 0.2,
+                    "medium": 0.4,
+                    "large": 0.6,
+                    "full": 1.0,
+                }
+            },
+            "must be positive",
+        ),
+        (
+            "duplicate_labels",
+            {
+                "model.granularities": ["micro", "small", "small", "large", "full"],
+                "model.granularity_prefixes": {
+                    "micro": 0.2,
+                    "small": 0.4,
+                    "large": 0.8,
+                    "full": 1.0,
+                },
+            },
+            "strictly nested widths",
+        ),
+    ],
+)
+def test_explicit_granularity_rejects_malformed_layouts(
+    case,
+    overrides,
+    expected_message,
+):
+    with pytest.raises(ConfigError, match=expected_message):
+        resolve_run_config(
+            "tests/fixtures/explicit_granularity_smoke.yaml",
+            overrides=overrides,
+        )
+
+
+def test_explicit_concat_rejects_misaligned_prefix_widths():
+    with pytest.raises(ConfigError, match="align with CatLlama block widths"):
+        resolve_run_config(
+            "tests/fixtures/explicit_granularity_smoke.yaml",
+            overrides={
+                "model.variant": "concat",
+                "model.granularity_prefixes": {
+                    "micro": 0.25,
+                    "small": 0.375,
+                    "medium": 0.625,
+                    "large": 0.875,
+                    "full": 1.0,
+                },
+            },
+        )
+
+
+def test_explicit_concat_resolves_aligned_prefix_widths():
+    resolved = resolve_run_config(
+        "tests/fixtures/explicit_granularity_smoke.yaml",
+        overrides={
+            "model.variant": "concat",
+            "model.granularity_prefixes": {
+                "micro": 0.125,
+                "small": 0.25,
+                "medium": 0.5,
+                "large": 0.75,
+                "full": 1.0,
+            },
+        },
+    )
+
+    assert resolved["model"]["variant"] == "concat"
+    assert [
+        entry["prefix_width"]
+        for entry in resolved["model"]["ffn_concat_block_metadata"]
+    ] == [64, 128, 256, 384, 512]
+    assert [
+        entry["block_width"]
+        for entry in resolved["model"]["ffn_concat_block_metadata"]
+    ] == [64, 64, 128, 128, 128]
+
+
 def test_cli_overrides_are_parsed_and_applied():
     resolved = resolve_run_config(
         "configs/debug_matrix.yaml",
@@ -387,6 +508,7 @@ def test_write_resolved_config(tmp_path):
         "latest_checkpoint_save_interval_steps": 0,
         "latest_checkpoint_save_on_validation": True,
         "latest_checkpoint_save_on_completion": True,
+        "retain_previous_latest": True,
     }
     assert saved["monitoring"]["project"] == "dmodel256_pilot_comparison"
     assert saved["monitoring"]["job_type"] == "train"
@@ -408,7 +530,13 @@ def test_resolve_minimal_config_includes_long_run_defaults(tmp_path):
     resolved = resolve_run_config(config_path, output_dir=output_dir)
 
     assert resolved["model"]["d_model"] == 128
-    assert resolved["run"]["continuation"] == {"enabled": False}
+    assert resolved["run"]["continuation"] == {
+        "enabled": False,
+        "retain_previous_latest": True,
+    }
+    assert resolved["outputs"]["metrics_flush_interval_steps"] == 100
+    assert resolved["outputs"]["best_eval_retention_count"] == 1
+    assert resolved["evaluation"]["validation"]["run_at_completion"] is True
     assert resolved["monitoring"] == {
         "enabled": False,
         "backend": "wandb",
@@ -433,6 +561,33 @@ def test_resolve_minimal_config_includes_long_run_defaults(tmp_path):
         "completion_step": None,
         "transition_reason": None,
     }
+
+
+def test_non_debug_run_cannot_disable_final_validation(tmp_path):
+    with pytest.raises(
+        ConfigError,
+        match="evaluation.validation.run_at_completion is required",
+    ):
+        resolve_run_config(
+            "configs/dmodel256_pilot_comparison.yaml",
+            output_dir=tmp_path / "dmodel256-pilot-comparison-001",
+            overrides=["evaluation.validation.run_at_completion=false"],
+        )
+
+
+def test_debug_run_can_explicitly_disable_final_validation(tmp_path):
+    resolved = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=tmp_path / "debug-nested-001",
+        overrides=["evaluation.final_validation=false"],
+    )
+
+    assert resolved["evaluation"]["validation"]["run_at_completion"] is False
+    assert (
+        resolved["evaluation"]["validation"]["run_at_completion_reason"]
+        == "explicitly_disabled_for_debug_run"
+    )
 
 
 def test_pre_nested_warmup_validation_rules(tmp_path):
@@ -590,7 +745,10 @@ def test_debug_standalone_granularity_must_match_model_granularities():
     invalid = copy.deepcopy(resolved)
     invalid["model"]["granularities"] = ["s"]
 
-    with pytest.raises(ConfigError, match="exactly one matching granularity"):
+    with pytest.raises(
+        ConfigError,
+        match=r"run\.granularity='m'.*available labels",
+    ):
         validate_run_config(invalid)
 
 
@@ -881,6 +1039,29 @@ def test_dmodel256_pilot_config_preserves_clarified_terms_and_shape_fields():
     validate_run_config(resolved)
 
 
+def test_explicit_granularity_fixture_resolves_ordered_five_level_layout():
+    resolved = resolve_run_config("tests/fixtures/explicit_granularity_smoke.yaml")
+
+    model = resolved["model"]
+    assert model["granularity_mode"] == "explicit"
+    assert model["granularities"] == ["micro", "small", "medium", "large", "full"]
+    assert model["granularity_prefixes"] == {
+        "micro": 0.2,
+        "small": 0.4,
+        "medium": 0.6,
+        "large": 0.8,
+        "full": 1.0,
+    }
+    assert [entry["prefix_width"] for entry in model["ffn_prefix_metadata"]] == [
+        102,
+        204,
+        307,
+        409,
+        512,
+    ]
+    validate_run_config(resolved)
+
+
 def test_granularity_prefix_validation_rejects_non_monotonic_widths():
     with pytest.raises(
         ConfigError,
@@ -897,6 +1078,61 @@ def test_granularity_prefix_validation_rejects_extra_keys():
         resolve_run_config(
             "configs/dmodel256_pilot_comparison.yaml",
             overrides=["model.granularity_prefixes.extra=0.01"],
+        )
+
+
+def test_explicit_granularity_requires_labels_and_prefixes():
+    with pytest.raises(
+        ConfigError,
+        match="model.granularities is required when model.granularity_mode=explicit",
+    ):
+        resolve_run_config(
+            "tests/fixtures/explicit_granularity_smoke.yaml",
+            overrides={"model.granularities": []},
+        )
+
+    with pytest.raises(
+        ConfigError,
+        match="model.granularity_prefixes is required when model.granularity_mode=explicit",
+    ):
+        resolve_run_config(
+            "tests/fixtures/explicit_granularity_smoke.yaml",
+            overrides={"model.granularity_prefixes": None},
+        )
+
+
+def test_granularity_prefix_validation_reports_invalid_final_width():
+    with pytest.raises(
+        ConfigError,
+        match=r"must resolve to full model\.intermediate_size=512; got prefix_width=460",
+    ):
+        resolve_run_config(
+            "tests/fixtures/explicit_granularity_smoke.yaml",
+            overrides={
+                "model.granularity_prefixes": {
+                    "micro": 0.2,
+                    "small": 0.4,
+                    "medium": 0.6,
+                    "large": 0.8,
+                    "full": 0.9,
+                }
+            },
+        )
+
+
+def test_standalone_granularity_error_lists_resolved_labels():
+    with pytest.raises(
+        ConfigError,
+        match=r"run\.granularity='bogus'.*available labels",
+    ):
+        resolve_run_config(
+            "configs/dmodel256_pilot_comparison.yaml",
+            overrides=[
+                "run.run_id=dmodel256-standalone-bogus-001",
+                "run.model_family=standalone",
+                "run.sampling_mode=standalone",
+                "run.granularity=bogus",
+            ],
         )
 
 
@@ -1041,9 +1277,9 @@ def test_dmodel256_pilot_resolves_scaled_learning_rate_warmup_precedence_and_opt
     )
 
     training = resolved["training"]
-    assert training["learning_rate_scale_rule"] == "linear"
-    assert training["learning_rate_scale_factor"] == 4.0
-    assert training["resolved_learning_rate"] == 0.0012
+    assert training["learning_rate_scale_rule"] == "none"
+    assert training["learning_rate_scale_factor"] == 1.0
+    assert training["resolved_learning_rate"] == 0.001
     assert training["warmup_ratio"] == 0.9
     assert training["warmup_steps"] == 7
     assert training["resolved_warmup_steps"] == 7
@@ -1072,10 +1308,10 @@ def test_dmodel256_pilot_resolves_schedule_and_optimizer_defaults(
     )
 
     training = resolved["training"]
-    assert training["base_learning_rate"] == 0.0003
-    assert training["learning_rate_scale_rule"] == "linear"
-    assert training["learning_rate_scale_factor"] == 4.0
-    assert training["resolved_learning_rate"] == 0.0012
+    assert training["base_learning_rate"] == 0.001
+    assert training["learning_rate_scale_rule"] == "none"
+    assert training["learning_rate_scale_factor"] == 1.0
+    assert training["resolved_learning_rate"] == 0.001
     assert training["warmup_ratio"] == 0.01635
     assert training["warmup_steps"] == 2000
     assert training["resolved_warmup_steps"] == 2000

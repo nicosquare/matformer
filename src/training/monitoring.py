@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from src.training.distributed import should_write_shared_artifact
+from src.models.granularity import resolved_granularity_artifact_fields
 from src.utils.heartbeats import HeartbeatWriter, heartbeat_stage
 from src.utils.metrics import build_monitoring_summary_fields
 from src.utils.monitoring import group_loss_rows_by_series
@@ -24,10 +25,16 @@ __all__ = [
 class NoopHeartbeatWriter:
     path = None
 
+    def emit(self, event_type: str, stage: str, **fields: Any):
+        return None
+
     def stage_start(self, stage: str, **fields: Any):
         return None
 
     def stage_complete(self, stage: str, **fields: Any):
+        return None
+
+    def stage_failed(self, stage: str, **fields: Any):
         return None
 
     def heartbeat(self, stage: str, **fields: Any):
@@ -137,7 +144,7 @@ class WandbMonitoringSession(NoopMonitoringSession):
             "monitoring_tags": list(monitoring.get("tags", [])),
             "monitoring_notes": monitoring.get("notes"),
             "monitoring_mode": monitoring.get("mode"),
-            "granularities": list(config["model"]["granularities"]),
+            **resolved_granularity_artifact_fields(config["model"]),
             "granularity_sampling": training.get("granularity_sampling", "all"),
             "continuation_enabled": bool(run.get("continuation", {}).get("enabled", False)),
             "continuation_status": run.get("continuation", {}).get("status", "fresh"),
@@ -175,7 +182,18 @@ class WandbMonitoringSession(NoopMonitoringSession):
         for split, enabled in metric_split_flags.items():
             if not enabled:
                 continue
-            for granularity in config["model"]["granularities"]:
+            sampling_mode = config["model"].get(
+                "granularity_sampling_mode",
+                "global",
+            )
+            if split == "train" and sampling_mode in {
+                "per_block",
+                "adaptive_per_block",
+            }:
+                series_granularities = [sampling_mode]
+            else:
+                series_granularities = config["model"]["granularities"]
+            for granularity in series_granularities:
                 series_name = f"{split}/loss/{granularity}"
                 if series_name in self._defined_series:
                     continue
@@ -203,7 +221,16 @@ class WandbMonitoringSession(NoopMonitoringSession):
                     value = row.get("loss")
                     if value is None:
                         continue
-                    self._wandb.log({series_name: value}, step=step)
+                    payload = {series_name: value}
+                    if (
+                        row.get("split") == "train"
+                        and row.get("granularity_sampling_mode")
+                        in {"per_block", "adaptive_per_block"}
+                    ):
+                        payload["train/granularity_pattern"] = row.get(
+                            "granularity"
+                        )
+                    self._wandb.log(payload, step=step)
                     self._logged_rows.append(dict(row))
         except Exception:
             self.enabled = False
@@ -258,6 +285,19 @@ def emit_run_start_continuation_state(
         latest_checkpoint_path=latest_checkpoint_path,
         last_completed_step=last_completed_step,
         resume_count=resume_count,
+        artifact_retry_count=int(run_state.get("artifact_retry_count", 0)),
+        artifact_last_errno=run_state.get("artifact_last_errno"),
+        last_durable_checkpoint_step=int(
+            run_state.get("last_durable_checkpoint_step", 0)
+        ),
+        deferred_metric_rows=int(run_state.get("deferred_metric_rows", 0)),
+        skipped_periodic_checkpoints=int(
+            run_state.get("skipped_periodic_checkpoints", 0)
+        ),
+        checkpoint_staging_mode=run_state.get("checkpoint_staging_mode", "direct"),
+        unresolved_artifact_failures=list(
+            run_state.get("unresolved_artifact_failures", [])
+        ),
     )
 
 

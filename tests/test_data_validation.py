@@ -89,7 +89,26 @@ def test_prepare_tokenize_split_and_collate_text_dataset():
     assert len(eval_dataset) == 1
     assert tokenized.column_names == ["input_ids", "attention_mask"]
     assert batch["input_ids"].shape == (2, 4)
-    assert torch.equal(batch["labels"], batch["input_ids"])
+    assert batch["labels"].tolist() == [
+        [48, -100, -100, -100],
+        [49, 49, -100, -100],
+    ]
+
+
+def test_tokenize_text_dataset_can_avoid_arrow_cache(tmp_path):
+    source_path = tmp_path / "source"
+    Dataset.from_dict({"text": ["one", "two"]}).save_to_disk(source_path)
+    disk_dataset = Dataset.load_from_disk(source_path)
+
+    tokenized = tokenize_text_dataset(
+        disk_dataset,
+        TinyTokenizer(),
+        context_length=4,
+        keep_in_memory=True,
+    )
+
+    assert disk_dataset.cache_files
+    assert tokenized.cache_files == []
 
 
 def test_prepare_text_dataset_requires_text_column():
@@ -145,7 +164,8 @@ def test_validation_loss_perplexity_and_metric_rows():
     assert model.training is True
     assert results[0]["loss"] == 1.0
     assert results[0]["perplexity"] == perplexity_from_loss(1.0)
-    assert results[0]["tokens_seen"] == 5
+    assert results[0]["tokens_seen"] == 3
+    assert results[0]["evaluation_target_tokens"] == 3
     assert results[1]["loss"] == 2.0
 
     rows = validation_results_to_metric_rows(
@@ -162,7 +182,7 @@ def test_validation_loss_perplexity_and_metric_rows():
     )
     assert rows[0]["run_id"] == "debug-nested-001"
     assert rows[0]["granularity"] == "s"
-    assert rows[0]["tokens_seen"] == 5
-    assert rows[0]["content_tokens_seen"] == 5
+    assert rows[0]["tokens_seen"] == 3
+    assert rows[0]["content_tokens_seen"] == 3
     assert rows[1]["granularity"] == "xl"
     assert rows[0]["peak_memory_bytes"] == 2048

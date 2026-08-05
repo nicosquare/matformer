@@ -45,9 +45,31 @@ class GranularityPattern:
         return asdict(self)
 
 
-def validate_granularity(granularity: str) -> None:
-    if granularity not in MATFORMER_GRANULARITY_DISPLAY_NAMES:
+def validate_granularity(
+    granularity: str,
+    allowed_granularities: Sequence[str] | None = None,
+) -> None:
+    allowed = tuple(allowed_granularities or MATFORMER_GRANULARITY_ORDER)
+    if not isinstance(granularity, str) or not granularity.strip():
+        raise ValueError("MatFormer granularity labels must be non-empty strings")
+    if granularity not in allowed:
         raise ValueError(f"Unknown MatFormer granularity: {granularity}")
+
+
+def validate_granularity_sequence(
+    granularities: Sequence[str],
+) -> tuple[str, ...]:
+    """Validate and preserve an ordered granularity label sequence."""
+
+    if isinstance(granularities, (str, bytes)) or not granularities:
+        raise ValueError("granularities must be a non-empty sequence")
+
+    ordered = tuple(granularities)
+    for granularity in ordered:
+        validate_granularity(granularity, allowed_granularities=ordered)
+    if len(set(ordered)) != len(ordered):
+        raise ValueError("granularities must contain unique labels")
+    return ordered
 
 
 def canonical_prefix_fraction(granularity: str) -> float:
@@ -55,13 +77,29 @@ def canonical_prefix_fraction(granularity: str) -> float:
     return numerator / denominator
 
 
-def get_granularity_metadata(granularity: str) -> dict[str, Any]:
-    validate_granularity(granularity)
-    fraction = canonical_prefix_fraction(granularity)
+def get_granularity_metadata(
+    granularity: str,
+    granularity_prefixes: Mapping[str, object] | None = None,
+) -> dict[str, Any]:
+    allowed = tuple(granularity_prefixes) if granularity_prefixes is not None else None
+    validate_granularity(granularity, allowed_granularities=allowed)
+    fraction = _granularity_prefix_fraction(
+        granularity,
+        granularity_prefixes=granularity_prefixes,
+    )
+    if granularity_prefixes is None:
+        reference_fraction = canonical_prefix_fraction("m")
+    elif "m" in granularity_prefixes:
+        reference_fraction = float(granularity_prefixes["m"])
+    else:
+        reference_fraction = fraction
     metadata = GranularityMetadata(
         name=granularity,
-        display_name=MATFORMER_GRANULARITY_DISPLAY_NAMES[granularity],
-        ffn_ratio=fraction / canonical_prefix_fraction("m"),
+        display_name=MATFORMER_GRANULARITY_DISPLAY_NAMES.get(
+            granularity,
+            granularity.upper(),
+        ),
+        ffn_ratio=round(fraction / reference_fraction, 12),
         full_intermediate_fraction=fraction,
     )
     return {
@@ -76,7 +114,8 @@ def granularity_prefix_width(
     granularity: str,
     granularity_prefixes: Mapping[str, object] | None = None,
 ) -> int:
-    validate_granularity(granularity)
+    allowed = tuple(granularity_prefixes) if granularity_prefixes is not None else None
+    validate_granularity(granularity, allowed_granularities=allowed)
     fraction = _granularity_prefix_fraction(
         granularity,
         granularity_prefixes=granularity_prefixes,
@@ -95,19 +134,29 @@ def get_ffn_prefix_metadata(
     granularity_prefixes: Mapping[str, object] | None = None,
     granularities: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
-    granularities = tuple(granularities or MATFORMER_GRANULARITY_ORDER)
+    granularities = validate_granularity_sequence(
+        granularities or MATFORMER_GRANULARITY_ORDER
+    )
     resolved_prefixes = _resolve_granularity_prefixes(
         granularities,
         granularity_prefixes=granularity_prefixes,
     )
+    ratio_reference_fraction = (
+        canonical_prefix_fraction("m")
+        if granularities == MATFORMER_GRANULARITY_ORDER
+        else resolved_prefixes[granularities[0]]
+    )
     metadata = []
     for granularity in granularities:
-        granularity_metadata = get_granularity_metadata(granularity)
+        granularity_metadata = get_granularity_metadata(
+            granularity,
+            granularity_prefixes=resolved_prefixes,
+        )
         fraction = resolved_prefixes[granularity]
         entry = GranularityMetadata(
             name=granularity,
             display_name=granularity_metadata["display_name"],
-            ffn_ratio=fraction / canonical_prefix_fraction("m"),
+            ffn_ratio=round(fraction / ratio_reference_fraction, 12),
             full_intermediate_fraction=fraction,
             prefix_width=granularity_prefix_width(
                 intermediate_size,
@@ -119,7 +168,15 @@ def get_ffn_prefix_metadata(
     return metadata
 
 
-def granularity_block_count(granularity: str) -> int:
+def granularity_block_count(
+    granularity: str,
+    granularities: Sequence[str] | None = None,
+) -> int:
+    if granularities is not None:
+        ordered = validate_granularity_sequence(granularities)
+        validate_granularity(granularity, allowed_granularities=ordered)
+        return ordered.index(granularity) + 1
+
     metadata = get_granularity_metadata(granularity)
     smallest_granularity = MATFORMER_GRANULARITY_ORDER[0]
     smallest_ratio = get_granularity_metadata(smallest_granularity)["ffn_ratio"]
@@ -138,7 +195,9 @@ def get_concat_block_metadata(
     granularity_prefixes: Mapping[str, object] | None = None,
     granularities: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
-    granularities = tuple(granularities or MATFORMER_GRANULARITY_ORDER)
+    granularities = validate_granularity_sequence(
+        granularities or MATFORMER_GRANULARITY_ORDER
+    )
     prefix_metadata = get_ffn_prefix_metadata(
         intermediate_size,
         granularity_prefixes=granularity_prefixes,
@@ -171,9 +230,15 @@ def get_concat_block_metadata(
     return block_metadata
 
 
-def granularity_concat_block_count(granularity: str) -> int:
-    validate_granularity(granularity)
-    return MATFORMER_GRANULARITY_ORDER.index(granularity) + 1
+def granularity_concat_block_count(
+    granularity: str,
+    granularities: Sequence[str] | None = None,
+) -> int:
+    ordered = validate_granularity_sequence(
+        granularities or MATFORMER_GRANULARITY_ORDER
+    )
+    validate_granularity(granularity, allowed_granularities=ordered)
+    return ordered.index(granularity) + 1
 
 
 def get_block_membership_counts(
@@ -183,7 +248,14 @@ def get_block_membership_counts(
     if not granularities:
         raise ValueError("granularities must be a non-empty sequence")
 
-    block_counts = [granularity_block_count(granularity) for granularity in granularities]
+    ordered = validate_granularity_sequence(granularities)
+    if set(ordered).issubset(MATFORMER_GRANULARITY_ORDER):
+        # Preserve the canonical block geometry when callers provide a
+        # canonical subset, while explicit custom labels use their resolved
+        # sequence order as the only geometry available to this helper.
+        block_counts = [granularity_block_count(granularity) for granularity in ordered]
+    else:
+        block_counts = [index + 1 for index, _ in enumerate(ordered)]
     max_blocks = max(block_counts)
     if total_blocks is None:
         total_blocks = max_blocks
@@ -243,9 +315,21 @@ def get_concat_block_membership_counts_from_metadata(
     if not granularities:
         raise ValueError("granularities must be a non-empty sequence")
 
+    use_canonical_positions = set(granularities).issubset(
+        MATFORMER_GRANULARITY_ORDER
+    )
     prefix_widths = []
     for granularity in granularities:
-        block_index = MATFORMER_GRANULARITY_ORDER.index(granularity)
+        try:
+            block_index = (
+                MATFORMER_GRANULARITY_ORDER.index(granularity)
+                if use_canonical_positions
+                else granularities.index(granularity)
+            )
+        except ValueError as error:
+            raise ValueError(
+                f"Unknown configured granularity: {granularity}"
+            ) from error
         if block_index >= len(block_metadata):
             raise ValueError(
                 "Configured granularities exceed the available concat blocks"
@@ -375,9 +459,16 @@ def build_granularity_pattern(
     selected_granularities: Sequence[str],
     layer_count: int,
     repeatable_source: Sequence[str] | None = None,
+    available_granularities: Sequence[str] | None = None,
 ) -> GranularityPattern:
+    selected_granularities = tuple(selected_granularities)
+    if not selected_granularities:
+        raise ValueError("selected_granularities must be a non-empty sequence")
+    allowed = validate_granularity_sequence(
+        available_granularities or MATFORMER_GRANULARITY_ORDER
+    )
     for granularity in selected_granularities:
-        validate_granularity(granularity)
+        validate_granularity(granularity, allowed_granularities=allowed)
     if layer_count < 0:
         raise ValueError("layer_count must be non-negative")
     return GranularityPattern(
@@ -390,6 +481,33 @@ def build_granularity_pattern(
 
 def summarize_granularity_pattern(pattern: GranularityPattern) -> dict[str, Any]:
     return pattern.to_dict()
+
+
+def resolved_granularity_artifact_fields(
+    model: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return stable granularity metadata for experiment artifacts."""
+
+    granularities = list(model.get("granularities", []))
+    prefixes = model.get("granularity_prefixes", {})
+    if not isinstance(prefixes, Mapping):
+        prefixes = {}
+    metadata = model.get("ffn_prefix_metadata", [])
+    widths = {}
+    if isinstance(metadata, Sequence):
+        widths = {
+            str(entry["name"]): int(entry["prefix_width"])
+            for entry in metadata
+            if isinstance(entry, Mapping)
+            and "name" in entry
+            and entry.get("prefix_width") is not None
+        }
+    return {
+        "granularity_mode": model.get("granularity_mode", "canonical"),
+        "granularities": granularities,
+        "granularity_prefixes": dict(prefixes),
+        "granularity_prefix_widths": widths,
+    }
 
 
 def summarize_granularity_pattern_from_config(
@@ -467,10 +585,19 @@ def _resolve_granularity_prefixes(
     granularities: Sequence[str],
     granularity_prefixes: Mapping[str, object] | None = None,
 ) -> dict[str, float]:
-    prefixes = granularity_prefixes or {
-        granularity: canonical_prefix_fraction(granularity)
-        for granularity in granularities
-    }
+    granularities = validate_granularity_sequence(granularities)
+    if granularity_prefixes is None:
+        try:
+            prefixes = {
+                granularity: canonical_prefix_fraction(granularity)
+                for granularity in granularities
+            }
+        except KeyError as error:
+            raise ValueError(
+                "Custom granularity labels require granularity_prefixes"
+            ) from error
+    else:
+        prefixes = granularity_prefixes
     resolved = {}
     previous_fraction = 0.0
     for granularity in granularities:

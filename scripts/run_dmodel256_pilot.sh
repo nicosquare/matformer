@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Phase 4 runner: d_model=256 MatFormer-Llama/SwiGLU pilot comparison path.
-# Default comparison scope: nested-random, nested-all, and standalone S/M/L/XL.
+# Default comparison scope: nested-random, nested-all, and resolved standalone labels.
 # Standalone rows may be emitted as run_status=omitted when compute is capped.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -36,14 +36,15 @@ Usage:
 Options:
   --config PATH             Pilot config path.
   --mode MODE               comparison, nested-random, nested-all, or standalone.
-  --granularity NAME        Standalone granularity: s, m, l, or xl.
+  --granularity NAME        Standalone granularity from the resolved config.
   --run-id RUN_ID           Run id to write through a config override.
   --output-root PATH        Root for run artifacts.
   --output-dir PATH         Explicit run output directory; implies a single run.
   -h, --help                Show this message.
 
-The default comparison runs nested-random and nested-all. Standalone S/M/L/XL
-rows are emitted as omitted unless RUN_STANDALONE_BASELINES=1 is set.
+The default comparison runs nested-random and nested-all. Standalone rows for
+the resolved model.granularities are emitted as omitted unless
+RUN_STANDALONE_BASELINES=1 is set.
 USAGE
 }
 
@@ -139,12 +140,94 @@ if [[ "$MODE" == "standalone" ]]; then
 fi
 printf 'Output root: %s\n' "$OUTPUT_ROOT_VALUE"
 
+print_preflight() {
+  local resolver_bin="${PYTHON_CONFIG_BIN:-$PYTHON_BIN}"
+  local -a resolver_command
+  local -a resolver_overrides=()
+  local index
+  for ((index = 0; index < ${#FORWARDED_ARGS[@]}; index++)); do
+    if [[ "${FORWARDED_ARGS[$index]}" == "--override" ]]; then
+      resolver_overrides+=("${FORWARDED_ARGS[$((index + 1))]}")
+      index=$((index + 1))
+    fi
+  done
+  read -r -a resolver_command <<< "$resolver_bin"
+  "${resolver_command[@]}" - "$CONFIG_PATH" "${resolver_overrides[@]}" <<'PY'
+import json
+import sys
+
+from src.utils.config import resolve_run_config
+from src.utils.reproducibility import build_comparison_control_signature
+
+resolved = resolve_run_config(sys.argv[1], overrides=sys.argv[2:])
+validation = resolved["evaluation"]["validation"]
+_, controls = build_comparison_control_signature(resolved)
+print("Preflight:")
+print(f"  seed={resolved['run']['seed']} reproducibility={resolved['run']['reproducibility']}")
+print(f"  optimizer={resolved['training']['optimizer_name']} learning_rate={resolved['training']['resolved_learning_rate']}")
+print(f"  token_budget={resolved['training']['token_budget']} batch_size_per_process={resolved['training']['batch_size_per_process']}")
+print(f"  dataset_sample_limit={resolved['dataset'].get('sample_limit')} tokenization_keep_in_memory={resolved['dataset'].get('tokenization_keep_in_memory', False)}")
+print(f"  validation={json.dumps(validation, sort_keys=True)}")
+print(f"  comparison_control_inputs={json.dumps(controls, sort_keys=True)}")
+PY
+}
+
+print_preflight
+
 python_command() {
   local -a command_parts
   # Allow the Slurm wrapper to provide a launcher prefix such as
   # "python -m torch.distributed.run --nproc_per_node 4".
   read -r -a command_parts <<< "$PYTHON_BIN"
   printf '%s\n' "${command_parts[@]}"
+}
+
+resolved_granularities() {
+  local resolver_bin="${PYTHON_CONFIG_BIN:-$PYTHON_BIN}"
+  local -a resolver_overrides=()
+  local -a resolver_command
+  local index
+
+  for ((index = 0; index < ${#FORWARDED_ARGS[@]}; index++)); do
+    if [[ "${FORWARDED_ARGS[$index]}" == "--override" ]]; then
+      if [[ $((index + 1)) -ge ${#FORWARDED_ARGS[@]} ]]; then
+        echo "Missing value for --override" >&2
+        exit 2
+      fi
+      resolver_overrides+=("${FORWARDED_ARGS[$((index + 1))]}")
+      index=$((index + 1))
+    fi
+  done
+
+  read -r -a resolver_command <<< "$resolver_bin"
+  if ! command -v "${resolver_command[0]}" >/dev/null 2>&1; then
+    echo "Cannot resolve model.granularities: config resolver is unavailable: ${resolver_command[0]}" >&2
+    return 2
+  fi
+
+  local resolved_output=""
+  if ! resolved_output=$("${resolver_command[@]}" - "$CONFIG_PATH" "${resolver_overrides[@]}" <<'PY'
+import sys
+
+from src.utils.config import resolve_run_config
+
+
+config_path = sys.argv[1]
+overrides = sys.argv[2:]
+resolved = resolve_run_config(config_path, overrides=overrides)
+for granularity in resolved["model"]["granularities"]:
+    print(granularity)
+PY
+  ); then
+    echo "Cannot resolve model.granularities with the supplied config and overrides" >&2
+    return 2
+  fi
+
+  if [[ -z "$resolved_output" ]]; then
+    echo "Resolved model.granularities is empty" >&2
+    return 2
+  fi
+  printf '%s\n' "$resolved_output"
 }
 
 mode_run_id() {
@@ -176,9 +259,8 @@ mode_overrides() {
         "run.sampling_mode=nested-all"
       ;;
     standalone)
-      if [[ "$granularity" != "s" && "$granularity" != "m" \
-        && "$granularity" != "l" && "$granularity" != "xl" ]]; then
-        echo "Standalone mode requires --granularity s, m, l, or xl" >&2
+      if [[ -z "$granularity" ]]; then
+        echo "Standalone mode requires --granularity" >&2
         exit 2
       fi
       printf '%s\n' \
@@ -199,6 +281,7 @@ run_training_mode() {
   local run_id="$3"
   local -a python_cmd
   local -a train_args
+  local mode_override_output
   mapfile -t python_cmd < <(python_command)
 
   train_args=(
@@ -209,9 +292,12 @@ run_training_mode() {
     --override "run.run_id=$run_id"
   )
 
+  if ! mode_override_output="$(mode_overrides "$mode" "$granularity")"; then
+    return 2
+  fi
   while IFS= read -r override; do
     train_args+=(--override "$override")
-  done < <(mode_overrides "$mode" "$granularity")
+  done <<< "$mode_override_output"
 
   printf 'Launching %s run_id=%s\n' "$mode" "$run_id"
   "${python_cmd[@]}" "${train_args[@]}"
@@ -230,16 +316,20 @@ emit_omitted_standalone_row() {
 }
 
 run_comparison() {
+  local resolved_output
   run_training_mode nested-random "" "$(mode_run_id nested-random)"
   run_training_mode nested-all "" "$(mode_run_id nested-all)"
 
-  for granularity in s m l xl; do
+  if ! resolved_output="$(resolved_granularities)"; then
+    return 2
+  fi
+  while IFS= read -r granularity; do
     if [[ "$RUN_STANDALONE_BASELINES" == "1" ]]; then
       run_training_mode standalone "$granularity" "$(mode_run_id standalone "$granularity")"
     else
       emit_omitted_standalone_row "$granularity"
     fi
-  done
+  done <<< "$resolved_output"
 }
 
 case "$MODE" in

@@ -11,6 +11,9 @@ except ImportError:  # pragma: no cover - optional dependency
 load_dotenv()
 
 import copy
+import os
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -25,6 +28,7 @@ from src.models.adaptive_sampler import (
     summarize_adaptive_sampler_state,
     update_adaptive_sampler_state,
 )
+from src.models.granularity import resolved_granularity_artifact_fields
 from src.training.distributed import (
     broadcast_object,
     should_write_shared_artifact,
@@ -34,9 +38,21 @@ from src.utils.config import (
     resolve_sampling_mode_from_config_sections,
 )
 from src.utils.heartbeats import heartbeat_stage
+from src.utils.artifact_io import (
+    artifact_errno,
+    emit_artifact_event,
+    remove_resolved_failure,
+    resolved_artifact_io,
+    retry_artifact_io,
+)
 from src.utils.metrics import (
     best_validation_metric_value,
     build_checkpoint_summary_fields,
+)
+from src.utils.reproducibility import (
+    capture_rng_state,
+    deterministic_runtime_settings,
+    restore_rng_state,
 )
 
 def continuation_latest_checkpoint_policy(
@@ -59,6 +75,9 @@ def continuation_latest_checkpoint_policy(
 
     return {
         "enabled": enabled,
+        "retain_previous_latest": bool(
+            continuation.get("retain_previous_latest", True)
+        ),
         "save_interval_steps": interval_steps,
         "save_on_validation": bool(
             continuation.get("latest_checkpoint_save_on_validation", False)
@@ -101,7 +120,8 @@ def maybe_write_latest_checkpoint(
     distributed_context=None,
     force: bool = False,
 ) -> None:
-    if not force and not should_save_latest_checkpoint(config, step, reason):
+    pending_retry = bool(run_state.get("pending_latest_checkpoint", False))
+    if not force and not pending_retry and not should_save_latest_checkpoint(config, step, reason):
         return
     if not force and int(run_state.get("latest_checkpoint_step", 0)) == int(step):
         return
@@ -118,25 +138,111 @@ def maybe_write_latest_checkpoint(
         "checkpoint_unavailable_reason": None,
     }
 
-    with heartbeat_stage(
-        heartbeat_writer,
-        "checkpointing",
-        checkpoint_status="latest",
-        checkpoint_reason=reason,
-    ):
-        save_model_checkpoint(
+    save_error: Exception | None = None
+    try:
+        with heartbeat_stage(
+            heartbeat_writer,
+            "checkpointing",
+            checkpoint_status="latest",
+            checkpoint_reason=reason,
+            pending_retry=pending_retry,
+        ):
+            save_model_checkpoint(
+                config,
+                model,
+                optimizer,
+                scheduler,
+                latest_checkpoint_path,
+                checkpoint_fields,
+                run_state,
+                distributed_context=distributed_context,
+                heartbeat_writer=heartbeat_writer,
+            )
+    except Exception as error:
+        save_error = error
+
+    if should_write_shared_artifact(distributed_context):
+        result = {
+            "error": str(save_error) if save_error is not None else None,
+            "errno": artifact_errno(save_error) if save_error is not None else None,
+            "artifact_state": _artifact_state_fields(run_state),
+        }
+    else:
+        result = None
+    result = broadcast_object(result, distributed_context)
+    if result:
+        run_state.update(result.get("artifact_state", {}))
+    if result and result["error"] is not None:
+        if _can_defer_periodic_checkpoint(
             config,
-            model,
-            optimizer,
-            scheduler,
-            latest_checkpoint_path,
-            checkpoint_fields,
-            run_state,
-            distributed_context=distributed_context,
-        )
+            reason=reason,
+            latest_checkpoint_path=latest_checkpoint_path,
+        ):
+            run_state["pending_latest_checkpoint"] = True
+            run_state["skipped_periodic_checkpoints"] = int(
+                run_state.get("skipped_periodic_checkpoints", 0)
+            ) + 1
+            emit_artifact_event(
+                heartbeat_writer,
+                "stage_failed",
+                "checkpointing",
+                checkpoint_status="latest",
+                checkpoint_reason=reason,
+                checkpoint_pending=True,
+                skipped_periodic_checkpoints=run_state[
+                    "skipped_periodic_checkpoints"
+                ],
+                last_durable_checkpoint_step=run_state.get(
+                    "last_durable_checkpoint_step"
+                ),
+                errno=result["errno"],
+                error=result["error"],
+                recoverable=True,
+            )
+            return
+        raise OSError(
+            result["errno"],
+            result["error"],
+            str(latest_checkpoint_path),
+        ) from save_error
 
     run_state["latest_checkpoint_path"] = str(latest_checkpoint_path)
     run_state["latest_checkpoint_step"] = step
+    run_state["last_durable_checkpoint_step"] = step
+    run_state["pending_latest_checkpoint"] = False
+
+
+def _can_defer_periodic_checkpoint(
+    config: Mapping[str, Any],
+    *,
+    reason: str,
+    latest_checkpoint_path: Path,
+) -> bool:
+    artifact_io = resolved_artifact_io(config)
+    if artifact_io["periodic_checkpoint_failure_policy"] != "continue_if_previous":
+        return False
+    if reason not in {"step", "validation"}:
+        return False
+    return latest_checkpoint_path.exists() or latest_checkpoint_path.with_name(
+        "latest.prev.pt"
+    ).exists()
+
+
+def _artifact_state_fields(run_state: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: copy.deepcopy(run_state.get(key))
+        for key in (
+            "artifact_retry_count",
+            "artifact_last_errno",
+            "last_durable_checkpoint_step",
+            "deferred_metric_rows",
+            "skipped_periodic_checkpoints",
+            "checkpoint_staging_mode",
+            "pending_latest_checkpoint",
+            "pending_best_checkpoint",
+            "unresolved_artifact_failures",
+        )
+    }
 
 
 def write_checkpoint_if_needed(
@@ -179,21 +285,43 @@ def write_checkpoint_if_needed(
 
     output_path = Path(str(checkpoint_path))
 
-    with heartbeat_stage(
-        heartbeat_writer,
-        "checkpointing",
-        checkpoint_status=checkpoint_fields["checkpoint_status"],
-    ):
-        save_model_checkpoint(
-            config,
-            model,
-            optimizer,
-            scheduler,
-            output_path,
-            checkpoint_fields,
-            run_state,
-            distributed_context=distributed_context,
-        )
+    save_error: Exception | None = None
+    try:
+        with heartbeat_stage(
+            heartbeat_writer,
+            "checkpointing",
+            checkpoint_status=checkpoint_fields["checkpoint_status"],
+        ):
+            save_model_checkpoint(
+                config,
+                model,
+                optimizer,
+                scheduler,
+                output_path,
+                checkpoint_fields,
+                run_state,
+                distributed_context=distributed_context,
+                heartbeat_writer=heartbeat_writer,
+            )
+    except Exception as error:
+        save_error = error
+    if should_write_shared_artifact(distributed_context):
+        save_result = {
+            "error": str(save_error) if save_error is not None else None,
+            "errno": artifact_errno(save_error) if save_error is not None else None,
+            "artifact_state": _artifact_state_fields(run_state),
+        }
+    else:
+        save_result = None
+    save_result = broadcast_object(save_result, distributed_context)
+    if save_result:
+        run_state.update(save_result.get("artifact_state", {}))
+    if save_result and save_result["error"] is not None:
+        raise OSError(
+            save_result["errno"],
+            save_result["error"],
+            str(output_path),
+        ) from save_error
 
     return checkpoint_fields
 
@@ -210,7 +338,11 @@ def maybe_write_best_eval_checkpoint(
 ) -> None:
     if not config.get("outputs", {}).get("save_checkpoints", False):
         return
-    if not config.get("evaluation", {}).get("validation", False):
+    evaluation = config.get("evaluation", {})
+    if not (
+        evaluation.get("validation", {}).get("enabled", False)
+        or evaluation.get("validation", {}).get("run_at_completion", False)
+    ):
         return
 
     if should_write_shared_artifact(distributed_context):
@@ -230,23 +362,66 @@ def maybe_write_best_eval_checkpoint(
     checkpoint_fields = payload["checkpoint_fields"]
     checkpoint_path = Path(str(checkpoint_fields["best_checkpoint_path"]))
 
-    with heartbeat_stage(
-        heartbeat_writer,
-        "checkpointing",
-        checkpoint_status=checkpoint_fields["checkpoint_status"],
-    ):
-        save_model_checkpoint(
-            config,
-            model,
-            None,
-            None,
-            checkpoint_path,
-            checkpoint_fields,
-            run_state,
-            distributed_context=distributed_context,
+    save_error: Exception | None = None
+    try:
+        with heartbeat_stage(
+            heartbeat_writer,
+            "checkpointing",
+            checkpoint_status=checkpoint_fields["checkpoint_status"],
+        ):
+            save_model_checkpoint(
+                config,
+                model,
+                None,
+                None,
+                checkpoint_path,
+                checkpoint_fields,
+                run_state,
+                distributed_context=distributed_context,
+                heartbeat_writer=heartbeat_writer,
+            )
+    except Exception as error:
+        save_error = error
+
+    if should_write_shared_artifact(distributed_context):
+        save_result = {
+            "error": str(save_error) if save_error is not None else None,
+            "errno": artifact_errno(save_error) if save_error is not None else None,
+            "artifact_state": _artifact_state_fields(run_state),
+        }
+    else:
+        save_result = None
+    save_result = broadcast_object(save_result, distributed_context)
+    if save_result:
+        run_state.update(save_result.get("artifact_state", {}))
+    if save_result and save_result["error"] is not None:
+        run_state["pending_best_checkpoint"] = {
+            "path": str(checkpoint_path),
+            "step": step,
+            "metric": checkpoint_fields.get("checkpoint_metric"),
+            "metric_value": checkpoint_fields.get("checkpoint_metric_value"),
+        }
+        emit_artifact_event(
+            heartbeat_writer,
+            "stage_failed",
+            "checkpointing",
+            checkpoint_status="best_eval",
+            checkpoint_pending=True,
+            errno=save_result["errno"],
+            error=save_result["error"],
+            recoverable=True,
         )
+        return
 
     checkpoint_state.update(checkpoint_fields)
+    run_state.update(checkpoint_fields)
+    run_state["pending_best_checkpoint"] = None
+    _prune_best_eval_checkpoints(
+        checkpoint_path.parent,
+        retain_count=int(
+            config.get("outputs", {}).get("best_eval_retention_count", 1)
+        ),
+    )
 def build_best_eval_checkpoint_payload(
     config: dict[str, Any],
     validation_results: list[dict[str, Any]],
@@ -294,6 +469,7 @@ def save_model_checkpoint(
     checkpoint_fields: dict[str, Any],
     run_state: dict[str, Any],
     distributed_context=None,
+    heartbeat_writer=None,
 ) -> None:
     if not should_write_shared_artifact(distributed_context):
         return
@@ -305,9 +481,35 @@ def save_model_checkpoint(
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
+    payload = {
             "run_id": config["run"]["run_id"],
+            "reproducibility": {
+                "root_seed": config["run"]["seed"],
+                "seed_stream_version": config["run"]["reproducibility"][
+                    "seed_stream_version"
+                ],
+                "data_split_version": config["run"]["reproducibility"][
+                    "data_split_version"
+                ],
+                "validation_manifest_hash": config.get(
+                    "validation_manifest_hash"
+                ),
+                "comparison_control_signature": config.get(
+                    "comparison_control_signature"
+                ),
+                "batch_size_per_process": config["training"][
+                    "batch_size_per_process"
+                ],
+                "world_size": int(
+                    getattr(distributed_context, "world_size", 1)
+                ),
+                "rank_topology": list(
+                    range(int(getattr(distributed_context, "world_size", 1)))
+                ),
+                "rng_state": capture_rng_state(),
+                "deterministic_runtime_settings": deterministic_runtime_settings(),
+                "adaptive_sampler_seed_provenance": "adaptive_sampling",
+            },
             "checkpoint_status": checkpoint_fields["checkpoint_status"],
             "checkpoint_metric": checkpoint_fields["checkpoint_metric"],
             "checkpoint_metric_value": checkpoint_fields[
@@ -316,6 +518,7 @@ def save_model_checkpoint(
             "checkpoint_selection_step": checkpoint_fields[
                 "checkpoint_selection_step"
             ],
+            **resolved_granularity_artifact_fields(config.get("model", {})),
             "step": run_state.get("step", run_state.get("last_completed_step", 0)),
             "epoch": run_state.get("epoch", 0),
             "batch_index": run_state.get("batch_index", 0),
@@ -354,12 +557,278 @@ def save_model_checkpoint(
                 "adaptive_sampler_reward_penalty_weight"
             ),
             "latest_checkpoint_path": run_state.get("latest_checkpoint_path"),
+            "artifact_retry_count": run_state.get("artifact_retry_count", 0),
+            "artifact_last_errno": run_state.get("artifact_last_errno"),
+            "last_durable_checkpoint_step": run_state.get(
+                "step", run_state.get("last_completed_step", 0)
+            )
+            if output_path.name == "latest.pt"
+            else run_state.get(
+                "last_durable_checkpoint_step", 0
+            ),
+            "deferred_metric_rows": run_state.get("deferred_metric_rows", 0),
+            "skipped_periodic_checkpoints": run_state.get(
+                "skipped_periodic_checkpoints", 0
+            ),
+            "checkpoint_staging_mode": run_state.get(
+                "checkpoint_staging_mode", "direct"
+            ),
+            "unresolved_artifact_failures": run_state.get(
+                "unresolved_artifact_failures", []
+            ),
+            "best_checkpoint_path": checkpoint_fields.get(
+                "best_checkpoint_path"
+            )
+            or run_state.get("best_checkpoint_path"),
+            "best_checkpoint_metric": (
+                checkpoint_fields.get("checkpoint_metric")
+                if checkpoint_fields.get("checkpoint_status") == "best_eval"
+                else run_state.get("checkpoint_metric")
+            ),
+            "best_checkpoint_metric_value": (
+                checkpoint_fields.get("checkpoint_metric_value")
+                if checkpoint_fields.get("checkpoint_status") == "best_eval"
+                else run_state.get("checkpoint_metric_value")
+            ),
+            "best_checkpoint_selection_step": (
+                checkpoint_fields.get("checkpoint_selection_step")
+                if checkpoint_fields.get("checkpoint_status") == "best_eval"
+                else run_state.get("checkpoint_selection_step")
+            ),
             "model_state_dict": model_state_dict,
             "optimizer_state_dict": optimizer_state_dict,
             "scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
-        },
-        output_path,
+        }
+
+    artifact_io = resolved_artifact_io(config)
+    staging_path = _stage_checkpoint_payload(
+        payload,
+        output_path=output_path,
+        artifact_io=artifact_io,
+        heartbeat_writer=heartbeat_writer,
+        run_state=run_state,
     )
+    installed = False
+    rotated = False
+
+    def install_attempt(_attempt: int) -> Path:
+        nonlocal installed, rotated
+        if installed:
+            _fsync_directory(output_path.parent)
+            return output_path
+
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w+b",
+                dir=output_path.parent,
+                prefix=f".{output_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary_file:
+                temporary_path = Path(temporary_file.name)
+                if staging_path is None:
+                    torch.save(payload, temporary_file)
+                else:
+                    with staging_path.open("rb") as staged_file:
+                        shutil.copyfileobj(staged_file, temporary_file)
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+
+            if (
+                not rotated
+                and output_path.name == "latest.pt"
+                and output_path.exists()
+                and config.get("run", {})
+                .get("continuation", {})
+                .get("retain_previous_latest", True)
+                and not str(
+                    run_state.get("continuation_source_checkpoint_path") or ""
+                ).endswith("latest.prev.pt")
+            ):
+                os.replace(
+                    output_path,
+                    output_path.with_name("latest.prev.pt"),
+                )
+                rotated = True
+            os.replace(temporary_path, output_path)
+            temporary_path = None
+            installed = True
+            _fsync_directory(output_path.parent)
+            return output_path
+        finally:
+            if temporary_path is not None:
+                _unlink_best_effort(temporary_path)
+
+    try:
+        retry_artifact_io(
+            install_attempt,
+            target_path=output_path,
+            operation_name="checkpoint_install",
+            settings=artifact_io,
+            heartbeat_writer=heartbeat_writer,
+            state=run_state,
+        )
+    finally:
+        if staging_path is not None:
+            _unlink_best_effort(staging_path)
+
+    if output_path.name == "latest.pt":
+        run_state["continuation_source_checkpoint_path"] = str(output_path)
+        run_state["last_durable_checkpoint_step"] = int(
+            run_state.get("step", run_state.get("last_completed_step", 0))
+        )
+    run_state["pending_latest_checkpoint"] = False
+    remove_resolved_failure(
+        run_state,
+        operation_name="checkpoint_install",
+        target_path=output_path,
+    )
+
+
+def _stage_checkpoint_payload(
+    payload: Mapping[str, Any],
+    *,
+    output_path: Path,
+    artifact_io: Mapping[str, Any],
+    heartbeat_writer,
+    run_state: dict[str, Any],
+) -> Path | None:
+    requested_mode = str(artifact_io.get("checkpoint_staging", "auto"))
+    local_root = os.environ.get("SLURM_TMPDIR")
+    if requested_mode == "direct" or not local_root:
+        run_state["checkpoint_staging_mode"] = "direct"
+        if isinstance(payload, dict):
+            payload["checkpoint_staging_mode"] = "direct"
+        return None
+
+    staging_dir = Path(local_root)
+    estimated_size = _estimate_payload_bytes(payload)
+    try:
+        usable = staging_dir.is_dir() and os.access(staging_dir, os.W_OK)
+        enough_space = shutil.disk_usage(staging_dir).free >= max(
+            estimated_size * 2,
+            64 * 1024 * 1024,
+        )
+    except OSError:
+        usable = False
+        enough_space = False
+    if not usable or not enough_space:
+        run_state["checkpoint_staging_mode"] = "direct"
+        if isinstance(payload, dict):
+            payload["checkpoint_staging_mode"] = "direct"
+        return None
+
+    run_state["checkpoint_staging_mode"] = "slurm_tmpdir"
+    if isinstance(payload, dict):
+        payload["checkpoint_staging_mode"] = "slurm_tmpdir"
+
+    def stage_attempt(_attempt: int) -> Path:
+        staged_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w+b",
+                dir=staging_dir,
+                prefix=f"{output_path.name}.",
+                suffix=".staged",
+                delete=False,
+            ) as staged_file:
+                staged_path = Path(staged_file.name)
+                torch.save(payload, staged_file)
+                staged_file.flush()
+                os.fsync(staged_file.fileno())
+            return staged_path
+        except Exception:
+            if staged_path is not None:
+                _unlink_best_effort(staged_path)
+            raise
+
+    try:
+        staged_path = retry_artifact_io(
+            stage_attempt,
+            target_path=output_path,
+            operation_name="checkpoint_stage",
+            settings=artifact_io,
+            heartbeat_writer=heartbeat_writer,
+            state=run_state,
+        )
+    except OSError as error:
+        emit_artifact_event(
+            heartbeat_writer,
+            "stage_failed",
+            "checkpoint_stage",
+            artifact_path=str(output_path),
+            errno=error.errno,
+            fallback="direct",
+        )
+        remove_resolved_failure(
+            run_state,
+            operation_name="checkpoint_stage",
+            target_path=output_path,
+        )
+        run_state["checkpoint_staging_mode"] = "direct"
+        if isinstance(payload, dict):
+            payload["checkpoint_staging_mode"] = "direct"
+        return None
+
+    emit_artifact_event(
+        heartbeat_writer,
+        "stage_complete",
+        "checkpoint_stage",
+        artifact_path=str(output_path),
+        staging_mode="slurm_tmpdir",
+        estimated_bytes=estimated_size,
+    )
+    return staged_path
+
+
+def _estimate_payload_bytes(value: Any) -> int:
+    if torch.is_tensor(value):
+        return int(value.numel()) * int(value.element_size())
+    if isinstance(value, Mapping):
+        return sum(_estimate_payload_bytes(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return sum(_estimate_payload_bytes(item) for item in value)
+    return 256
+
+
+def _unlink_best_effort(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        return
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        directory_fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _prune_best_eval_checkpoints(
+    checkpoint_dir: Path,
+    *,
+    retain_count: int,
+) -> None:
+    checkpoints = sorted(
+        checkpoint_dir.glob("best_eval_step_*.pt"),
+        key=lambda path: (_best_checkpoint_step(path), path.name),
+        reverse=True,
+    )
+    for checkpoint_path in checkpoints[max(1, int(retain_count)) :]:
+        checkpoint_path.unlink(missing_ok=True)
+
+
+def _best_checkpoint_step(path: Path) -> int:
+    try:
+        return int(path.stem.rsplit("_", 1)[-1])
+    except ValueError:
+        return -1
 
 
 def load_model_and_optimizer_state(
@@ -434,6 +903,20 @@ def build_initial_continuation_state(config: dict[str, Any]) -> dict[str, Any]:
         "status": "fresh",
         "latest_checkpoint_path": None,
         "latest_checkpoint_step": 0,
+        "continuation_source_checkpoint_path": None,
+        "best_checkpoint_path": None,
+        "checkpoint_metric": None,
+        "checkpoint_metric_value": None,
+        "checkpoint_selection_step": None,
+        "artifact_retry_count": 0,
+        "artifact_last_errno": None,
+        "last_durable_checkpoint_step": 0,
+        "deferred_metric_rows": 0,
+        "skipped_periodic_checkpoints": 0,
+        "checkpoint_staging_mode": "direct",
+        "pending_latest_checkpoint": False,
+        "pending_best_checkpoint": None,
+        "unresolved_artifact_failures": [],
         "last_completed_step": 0,
         "resume_count": 0,
         "tokens_seen": 0,
@@ -498,6 +981,20 @@ def update_run_continuation_state(
         "status",
         "latest_checkpoint_path",
         "latest_checkpoint_step",
+        "continuation_source_checkpoint_path",
+        "best_checkpoint_path",
+        "checkpoint_metric",
+        "checkpoint_metric_value",
+        "checkpoint_selection_step",
+        "artifact_retry_count",
+        "artifact_last_errno",
+        "last_durable_checkpoint_step",
+        "deferred_metric_rows",
+        "skipped_periodic_checkpoints",
+        "checkpoint_staging_mode",
+        "pending_latest_checkpoint",
+        "pending_best_checkpoint",
+        "unresolved_artifact_failures",
         "last_completed_step",
         "resume_count",
         "tokens_seen",
@@ -754,16 +1251,61 @@ def load_run_continuation_state(
     distributed_context=None,
 ) -> dict[str, Any]:
     checkpoint_path = Path(config["run"]["output_dir"]) / "checkpoints" / "latest.pt"
+    previous_path = checkpoint_path.with_name("latest.prev.pt")
+    load_kwargs = {
+        "config": config,
+        "fallback_tokens_per_step": int(
+            config["training"]["expected_tokens_per_step"]
+        ),
+        "distributed_context": distributed_context,
+        "output_dir": config["run"]["output_dir"],
+        "run_id": config["run"]["run_id"],
+    }
+
+    primary_error: Exception | None = None
+    if checkpoint_path.exists():
+        try:
+            state = load_checkpoint_state(
+                checkpoint_path,
+                model,
+                optimizer,
+                scheduler,
+                **load_kwargs,
+            )
+            state["continuation_source_checkpoint_path"] = str(checkpoint_path)
+            return state
+        except Exception as error:
+            primary_error = error
+
+    if previous_path.exists():
+        try:
+            state = load_checkpoint_state(
+                previous_path,
+                model,
+                optimizer,
+                scheduler,
+                **load_kwargs,
+            )
+        except Exception as fallback_error:
+            if primary_error is not None:
+                raise ConfigError(
+                    "Unable to load continuation checkpoints "
+                    f"{checkpoint_path} and {previous_path}: "
+                    f"primary={primary_error}; fallback={fallback_error}"
+                ) from fallback_error
+            raise
+        state["continuation_source_checkpoint_path"] = str(previous_path)
+        state["latest_checkpoint_path"] = str(checkpoint_path)
+        return state
+
+    if primary_error is not None:
+        raise primary_error
     return load_checkpoint_state(
         checkpoint_path,
         model,
         optimizer,
         scheduler,
-        config=config,
-        fallback_tokens_per_step=int(config["training"]["expected_tokens_per_step"]),
-        distributed_context=distributed_context,
-        output_dir=config["run"]["output_dir"],
-        run_id=config["run"]["run_id"],
+        **load_kwargs,
     )
 
 
@@ -784,6 +1326,20 @@ def load_checkpoint_state(
             "status": "fresh",
             "latest_checkpoint_path": None,
             "latest_checkpoint_step": 0,
+            "continuation_source_checkpoint_path": None,
+            "best_checkpoint_path": None,
+            "checkpoint_metric": None,
+            "checkpoint_metric_value": None,
+            "checkpoint_selection_step": None,
+            "artifact_retry_count": 0,
+            "artifact_last_errno": None,
+            "last_durable_checkpoint_step": 0,
+            "deferred_metric_rows": 0,
+            "skipped_periodic_checkpoints": 0,
+            "checkpoint_staging_mode": "direct",
+            "pending_latest_checkpoint": False,
+            "pending_best_checkpoint": None,
+            "unresolved_artifact_failures": [],
             "last_completed_step": 0,
             "resume_count": 0,
             "tokens_seen": 0,
@@ -804,6 +1360,12 @@ def load_checkpoint_state(
         return state
 
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    reproducibility_payload = _validate_reproducibility_payload(
+        checkpoint,
+        config=config,
+        checkpoint_path=checkpoint_path,
+        distributed_context=distributed_context,
+    )
     model_state_dict = checkpoint.get("model_state_dict")
     if model_state_dict is None:
         raise ConfigError(f"Checkpoint missing model_state_dict: {checkpoint_path}")
@@ -819,6 +1381,8 @@ def load_checkpoint_state(
     )
     if scheduler is not None and scheduler_state_dict is not None:
         scheduler.load_state_dict(scheduler_state_dict)
+    if reproducibility_payload is not None:
+        restore_rng_state(reproducibility_payload["rng_state"])
 
     last_completed_step = int(
         checkpoint.get("step", checkpoint.get("last_completed_step", 0))
@@ -837,6 +1401,7 @@ def load_checkpoint_state(
         "status": "resumed",
         "latest_checkpoint_path": str(checkpoint_path),
         "latest_checkpoint_step": last_completed_step,
+        "continuation_source_checkpoint_path": str(checkpoint_path),
         "last_completed_step": last_completed_step,
         "resume_count": resume_count,
         "tokens_seen": tokens_seen,
@@ -871,6 +1436,31 @@ def load_checkpoint_state(
         "adaptive_sampler_reward_penalty_weight": checkpoint.get(
             "adaptive_sampler_reward_penalty_weight"
         ),
+        "best_checkpoint_path": checkpoint.get("best_checkpoint_path"),
+        "checkpoint_metric": checkpoint.get("best_checkpoint_metric"),
+        "checkpoint_metric_value": checkpoint.get(
+            "best_checkpoint_metric_value"
+        ),
+        "checkpoint_selection_step": checkpoint.get(
+            "best_checkpoint_selection_step"
+        ),
+        "artifact_retry_count": int(checkpoint.get("artifact_retry_count", 0)),
+        "artifact_last_errno": checkpoint.get("artifact_last_errno"),
+        "last_durable_checkpoint_step": int(
+            checkpoint.get("last_durable_checkpoint_step", last_completed_step)
+        ),
+        "deferred_metric_rows": int(checkpoint.get("deferred_metric_rows", 0)),
+        "skipped_periodic_checkpoints": int(
+            checkpoint.get("skipped_periodic_checkpoints", 0)
+        ),
+        "checkpoint_staging_mode": checkpoint.get(
+            "checkpoint_staging_mode", "direct"
+        ),
+        "pending_latest_checkpoint": False,
+        "pending_best_checkpoint": None,
+        "unresolved_artifact_failures": list(
+            checkpoint.get("unresolved_artifact_failures", [])
+        ),
     }
     if output_dir is not None:
         state["output_dir"] = str(output_dir)
@@ -879,3 +1469,76 @@ def load_checkpoint_state(
     if config is not None:
         _validate_loaded_adaptive_sampler_state(state, config, checkpoint_path)
     return state
+
+
+def _validate_reproducibility_payload(
+    checkpoint: Mapping[str, Any],
+    *,
+    config: Mapping[str, Any] | None,
+    checkpoint_path: Path,
+    distributed_context=None,
+) -> Mapping[str, Any] | None:
+    payload = checkpoint.get("reproducibility")
+    if not isinstance(payload, Mapping):
+        if config is not None and config.get("validation_manifest_hash") is None:
+            return None
+        raise ConfigError(
+            "Checkpoint lacks the reproducibility payload required for corrected "
+            f"runs: {checkpoint_path}"
+        )
+    required = {
+        "root_seed",
+        "seed_stream_version",
+        "data_split_version",
+        "validation_manifest_hash",
+        "comparison_control_signature",
+        "batch_size_per_process",
+        "world_size",
+        "rank_topology",
+        "rng_state",
+        "deterministic_runtime_settings",
+        "adaptive_sampler_seed_provenance",
+    }
+    missing = required - set(payload)
+    if missing:
+        raise ConfigError(
+            f"Checkpoint reproducibility payload is incomplete: {sorted(missing)}"
+        )
+    if config is None:
+        return payload
+
+    expected = {
+        "root_seed": config["run"]["seed"],
+        "seed_stream_version": config["run"]["reproducibility"][
+            "seed_stream_version"
+        ],
+        "data_split_version": config["run"]["reproducibility"][
+            "data_split_version"
+        ],
+        "validation_manifest_hash": config.get("validation_manifest_hash"),
+        "comparison_control_signature": config.get(
+            "comparison_control_signature"
+        ),
+        "batch_size_per_process": config["training"]["batch_size_per_process"],
+        "world_size": int(getattr(distributed_context, "world_size", 1)),
+    }
+    mismatches = {
+        key: (payload.get(key), value)
+        for key, value in expected.items()
+        if payload.get(key) != value
+    }
+    if mismatches:
+        raise ConfigError(
+            "Checkpoint reproducibility controls do not match the current run: "
+            f"{mismatches}"
+        )
+    expected_topology = list(range(expected["world_size"]))
+    if list(payload["rank_topology"]) != expected_topology:
+        raise ConfigError("Checkpoint rank topology does not match the current run")
+    settings = payload["deterministic_runtime_settings"]
+    if config.get("validation_manifest_hash") is not None and (
+        not isinstance(settings, Mapping)
+        or not settings.get("deterministic_algorithms", False)
+    ):
+        raise ConfigError("Checkpoint did not record strict deterministic settings")
+    return payload

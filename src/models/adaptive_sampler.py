@@ -10,7 +10,11 @@ from pathlib import Path
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from src.models.granularity import MATFORMER_GRANULARITY_ORDER, validate_granularity
+from src.models.granularity import (
+    MATFORMER_GRANULARITY_ORDER,
+    validate_granularity,
+    validate_granularity_sequence,
+)
 
 
 VALID_ADAPTIVE_SAMPLER_STRATEGIES = ("thompson", "ucb")
@@ -132,11 +136,16 @@ def normalize_adaptive_sampler_state(
         allow_missing_stats=True,
     )
 
-    ordered_granularities = tuple(granularities or MATFORMER_GRANULARITY_ORDER)
+    ordered_granularities = validate_granularity_sequence(
+        granularities or MATFORMER_GRANULARITY_ORDER
+    )
     for block_index in range(block_count):
         block_stats = state_obj.stats.setdefault(block_index, {})
         for granularity in ordered_granularities:
-            validate_granularity(granularity)
+            validate_granularity(
+                granularity,
+                allowed_granularities=ordered_granularities,
+            )
             block_stats.setdefault(granularity, AdaptiveSamplerBlockStat())
     return state_obj
 
@@ -162,10 +171,9 @@ def validate_adaptive_sampler_state(
     if state_obj.decay_rate < 0:
         raise ValueError("decay_rate must be non-negative")
 
-    ordered_granularities = tuple(granularities or MATFORMER_GRANULARITY_ORDER)
-    if granularities is not None:
-        for granularity in ordered_granularities:
-            validate_granularity(granularity)
+    ordered_granularities = validate_granularity_sequence(
+        granularities or MATFORMER_GRANULARITY_ORDER
+    )
 
     if expected_block_count is not None and expected_block_count < 0:
         raise ValueError("expected_block_count must be non-negative")
@@ -196,7 +204,10 @@ def validate_adaptive_sampler_state(
                 f"{missing_granularities}"
             )
         for granularity, block_stat in block_stats.items():
-            validate_granularity(str(granularity))
+            validate_granularity(
+                str(granularity),
+                allowed_granularities=ordered_granularities,
+            )
             if not isinstance(block_stat, AdaptiveSamplerBlockStat):
                 _coerce_block_stat(block_stat)
 
@@ -207,6 +218,7 @@ def score_adaptive_sampler_actions(
     step: int,
     phase: str,
     granularities: Sequence[str] | None = None,
+    adaptive_seed: int | None = None,
 ) -> dict[str, float]:
     """Return one score per granularity for a single transformer block."""
 
@@ -219,7 +231,9 @@ def score_adaptive_sampler_actions(
         allow_missing_stats=True,
     )
 
-    ordered_granularities = tuple(granularities or MATFORMER_GRANULARITY_ORDER)
+    ordered_granularities = validate_granularity_sequence(
+        granularities or MATFORMER_GRANULARITY_ORDER
+    )
     block_stats = _ensure_block_stats(
         state_obj,
         block_index,
@@ -245,6 +259,7 @@ def score_adaptive_sampler_actions(
                 phase=phase,
                 count=stat.count,
                 exploration_scale=state_obj.exploration_scale,
+                adaptive_seed=adaptive_seed,
             )
         scores[granularity] = stat.mean_reward * mean_factor + (
             exploration_bonus * age_factor
@@ -259,6 +274,7 @@ def select_adaptive_sampler_layer_granularities(
     step: int,
     phase: str,
     granularities: Sequence[str] | None = None,
+    adaptive_seed: int | None = None,
 ) -> list[str]:
     """Select one granularity per transformer block."""
 
@@ -273,7 +289,9 @@ def select_adaptive_sampler_layer_granularities(
     normalized_state.phase = phase
     normalized_state.step = step
 
-    ordered_granularities = tuple(granularities or MATFORMER_GRANULARITY_ORDER)
+    ordered_granularities = validate_granularity_sequence(
+        granularities or MATFORMER_GRANULARITY_ORDER
+    )
     selected: list[str] = []
     for block_index in range(block_count):
         scores = score_adaptive_sampler_actions(
@@ -282,6 +300,7 @@ def select_adaptive_sampler_layer_granularities(
             step=step,
             phase=phase,
             granularities=ordered_granularities,
+            adaptive_seed=adaptive_seed,
         )
         selected.append(
             max(
@@ -344,10 +363,6 @@ def update_adaptive_sampler_state(
     state_obj = coerce_adaptive_sampler_state(state)
     if state_obj is None:
         raise ValueError("state cannot be None")
-    validate_adaptive_sampler_state(
-        state_obj,
-        allow_missing_stats=True,
-    )
 
     step = int(reward_record.get("step", state_obj.step))
     epoch = int(reward_record.get("epoch", state_obj.epoch))
@@ -358,8 +373,26 @@ def update_adaptive_sampler_state(
     if not sampled_items:
         raise ValueError("sampled_pattern must not be empty")
 
+    validate_adaptive_sampler_state(
+        state_obj,
+        granularities=sampled_granularity_keys(
+            state_obj,
+            sampled_items[0][0],
+            fallback_granularity=sampled_items[0][1],
+        ),
+        allow_missing_stats=True,
+    )
+
     for block_index, granularity in sampled_items:
-        validate_granularity(granularity)
+        allowed_granularities = sampled_granularity_keys(
+            state_obj,
+            block_index,
+            fallback_granularity=granularity,
+        )
+        validate_granularity(
+            granularity,
+            allowed_granularities=allowed_granularities,
+        )
         block_stats = _ensure_block_stats(
             state_obj,
             block_index,
@@ -516,7 +549,10 @@ def _ensure_block_stats(
     )
     block_stats = state.stats.setdefault(block_index, {})
     for granularity in granularities:
-        validate_granularity(granularity)
+        validate_granularity(
+            granularity,
+            allowed_granularities=granularities,
+        )
         raw_stat = block_stats.get(granularity)
         if raw_stat is None:
             block_stats[granularity] = AdaptiveSamplerBlockStat()
@@ -582,6 +618,7 @@ def _thompson_bonus(
     phase: str,
     count: int,
     exploration_scale: float,
+    adaptive_seed: int | None,
 ) -> float:
     seed_material = "|".join(
         [
@@ -592,6 +629,7 @@ def _thompson_bonus(
             phase,
             str(state.epoch),
             str(count),
+            *([str(adaptive_seed)] if adaptive_seed is not None else []),
         ]
     ).encode("utf-8")
     seed = int.from_bytes(hashlib.sha256(seed_material).digest()[:8], "big")

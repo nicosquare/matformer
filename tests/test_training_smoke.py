@@ -68,6 +68,28 @@ class TinyNestedTrainingModel(torch.nn.Module):
         return SimpleNamespace(loss=loss)
 
 
+class BackwardOrderingTrainingModel(TinyNestedTrainingModel):
+    def __init__(self, loss_scale_by_granularity=None):
+        super().__init__(loss_scale_by_granularity=loss_scale_by_granularity)
+        self.autograd_events = []
+
+    def forward(self, input_ids, attention_mask=None, labels=None):
+        granularity = self.current_granularity
+        self.autograd_events.append(f"forward:{granularity}")
+        outputs = super().forward(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=labels,
+        )
+        if outputs.loss.requires_grad:
+            outputs.loss.register_hook(
+                lambda gradient, label=granularity: (
+                    self.autograd_events.append(f"backward:{label}") or gradient
+                )
+            )
+        return outputs
+
+
 class TinyNestedRuntimePatternModel(torch.nn.Module):
     def __init__(self, loss_scale_by_granularity=None):
         super().__init__()
@@ -411,12 +433,13 @@ def test_tiny_nested_training_can_sample_one_granularity_for_the_nested_random_g
             "model.granularity_sampling_mode=global",
             "run.continuation.enabled=false",
             "training.max_steps=1",
-            "training.eval_interval=0",
+            "evaluation.validation.interval_steps=0",
             "training.batch_size_per_process=1",
             "training.learning_rate=0.01",
             "training.scheduler.kwargs.warmup_steps=0",
             "outputs.save_checkpoints=false",
-            "evaluation.validation=false",
+            "evaluation.validation.enabled=false",
+            "evaluation.validation.holdout.examples=1",
         ],
     )
     tokenized_dataset = Dataset.from_dict(
@@ -428,9 +451,11 @@ def test_tiny_nested_training_can_sample_one_granularity_for_the_nested_random_g
     model = TinyNestedTrainingModel()
     captured_randrange_values = iter([2])
     monkeypatch.setattr(
-        training_steps.random,
-        "randrange",
-        lambda count: next(captured_randrange_values),
+        training_steps,
+        "dedicated_random",
+        lambda config, stream: SimpleNamespace(
+            randrange=lambda count: next(captured_randrange_values)
+        ),
     )
 
     result = run_training(
@@ -450,6 +475,10 @@ def test_tiny_nested_training_can_sample_one_granularity_for_the_nested_random_g
 
     assert summary["sampling_mode"] == "nested-random"
     assert summary["resolved_sampling_mode"] == "global"
+    assert summary["requested_mixed_precision"] == "bf16"
+    assert summary["resolved_mixed_precision"] == "none"
+    assert summary["requested_activation_checkpointing"] is True
+    assert summary["resolved_activation_checkpointing"] is False
     assert model.train_forward_granularities == ["l"]
     assert model.train_forward_layer_granularities == []
     assert [row["granularity"] for row in train_rows] == ["l"]
@@ -543,6 +572,7 @@ def _run_monitoring_smoke_case(tmp_path, run_id: str):
             "training.learning_rate=0.01",
             "training.scheduler.kwargs.warmup_steps=0",
             "evaluation.validation=false",
+            "evaluation.final_validation=false",
         ],
     )
     tokenized_dataset = Dataset.from_dict(
@@ -925,6 +955,409 @@ def test_tiny_nested_training_averages_losses_across_all_granularities_for_neste
     assert float(model.weight.grad.detach().cpu().item()) == pytest.approx(3.75)
 
 
+@pytest.mark.parametrize("correction_mode", ["none", "gmc", "lmc"])
+def test_nested_all_backpropagates_before_the_next_granularity_forward(
+    tmp_path,
+    correction_mode,
+):
+    output_dir = tmp_path / correction_mode / "debug-nested-001"
+    overrides = [
+        "run.sampling_mode=nested-all",
+        "training.max_steps=1",
+        "training.eval_interval=0",
+        "training.batch_size_per_process=1",
+        "training.learning_rate=0.01",
+        "training.gradient_clip_norm=1000",
+        "training.scheduler.kwargs.warmup_steps=0",
+        "outputs.save_checkpoints=false",
+        "evaluation.validation=false",
+        "evaluation.final_validation=false",
+        f"model.correction_mode={correction_mode}",
+    ]
+    if correction_mode == "none":
+        overrides.append("model.membership_correction=false")
+    if correction_mode == "lmc":
+        overrides.append("model.variant=concat")
+
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=overrides,
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+    model = BackwardOrderingTrainingModel(
+        loss_scale_by_granularity={"s": 1.0, "m": 2.0, "l": 4.0, "xl": 8.0}
+    )
+
+    run_training(
+        config,
+        model=model,
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    assert model.autograd_events == [
+        "forward:s",
+        "backward:s",
+        "forward:m",
+        "backward:m",
+        "forward:l",
+        "backward:l",
+        "forward:xl",
+        "backward:xl",
+    ]
+    assert float(model.weight.grad.detach().cpu().item()) == pytest.approx(3.75)
+
+
+def test_five_granularity_nested_all_keeps_only_one_graph_live_at_a_time(
+    tmp_path,
+):
+    labels = ["micro", "small", "medium", "large", "full"]
+    config = resolve_run_config(
+        "tests/fixtures/explicit_granularity_smoke.yaml",
+        output_dir=tmp_path / "explicit-granularity-smoke-001",
+        overrides=[
+            "training.max_steps=1",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "outputs.save_checkpoints=false",
+            "evaluation.validation=false",
+            "evaluation.final_validation=false",
+        ],
+    )
+    dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+    model = BackwardOrderingTrainingModel(
+        loss_scale_by_granularity={label: index for index, label in enumerate(labels, 1)}
+    )
+
+    run_training(config, model=model, tokenized_dataset=dataset, device="cpu")
+
+    assert model.autograd_events == [
+        event
+        for label in labels
+        for event in (f"forward:{label}", f"backward:{label}")
+    ]
+
+
+def test_explicit_five_granularity_training_smoke(tmp_path):
+    output_dir = tmp_path / "explicit-granularity-smoke-001"
+    config = resolve_run_config(
+        "tests/fixtures/explicit_granularity_smoke.yaml",
+        output_dir=output_dir,
+        overrides=[
+            "training.max_steps=1",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "outputs.save_checkpoints=false",
+            "evaluation.validation=false",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+    labels = ["micro", "small", "medium", "large", "full"]
+    model = TinyNestedTrainingModel(
+        loss_scale_by_granularity={
+            "micro": 1.0,
+            "small": 2.0,
+            "medium": 3.0,
+            "large": 4.0,
+            "full": 5.0,
+        }
+    )
+
+    result = run_training(
+        config,
+        model=model,
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    with result["metrics_path"].open("r", encoding="utf-8", newline="") as metrics_file:
+        train_rows = [
+            row
+            for row in csv.DictReader(metrics_file)
+            if row["split"] == "train" and row["step"] == "1"
+        ]
+
+    assert config["model"]["granularity_mode"] == "explicit"
+    assert config["model"]["granularities"] == labels
+    assert model.train_forward_granularities == labels
+    assert [row["granularity"] for row in train_rows] == labels
+    assert summary["granularity_pattern_summary"]["selected_granularities"] == labels
+    validation_rows = [
+        row for row in result["metrics_rows"] if row["split"] == "validation"
+    ]
+    assert [row["granularity"] for row in validation_rows] == labels
+    assert [row["granularity"] for row in result["scaling_rows"]] == labels
+    assert json.loads((output_dir / "config.json").read_text(encoding="utf-8"))["model"][
+        "granularities"
+    ] == labels
+
+
+def test_final_step_interval_validation_is_reused(tmp_path):
+    class ValidationCountingModel(TinyNestedTrainingModel):
+        def __init__(self):
+            super().__init__()
+            self.validation_forwards = 0
+
+        def forward(self, *args, **kwargs):
+            if not self.training:
+                self.validation_forwards += 1
+            return super().forward(*args, **kwargs)
+
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=tmp_path / "debug-nested-001",
+        overrides=[
+            "training.max_steps=1",
+            "training.eval_interval=1",
+            "training.batch_size_per_process=1",
+            "outputs.save_checkpoints=false",
+            "evaluation.validation=true",
+            "evaluation.final_validation=true",
+        ],
+    )
+    dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+    model = ValidationCountingModel()
+
+    result = run_training(config, model=model, tokenized_dataset=dataset, device="cpu")
+
+    assert model.validation_forwards == len(config["model"]["granularities"])
+    assert len(
+        [row for row in result["metrics_rows"] if row["split"] == "validation"]
+    ) == len(config["model"]["granularities"])
+
+
+def test_debug_run_without_final_validation_omits_scaling_artifact(tmp_path):
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "training.max_steps=1",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "outputs.save_checkpoints=false",
+            "evaluation.validation=false",
+            "evaluation.final_validation=false",
+        ],
+    )
+    dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+
+    result = run_training(
+        config,
+        model=TinyNestedTrainingModel(),
+        tokenized_dataset=dataset,
+        device="cpu",
+    )
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+
+    assert result["scaling_path"] is None
+    assert result["scaling_rows"] == []
+    assert not (output_dir / "scaling_results.csv").exists()
+    assert "require uniform validation metrics" in summary[
+        "scaling_results_unavailable_reason"
+    ]
+
+
+def test_training_failure_flushes_the_valid_metrics_prefix(tmp_path):
+    class FailingSecondStepModel(TinyNestedTrainingModel):
+        def __init__(self):
+            super().__init__()
+            self.training_forwards = 0
+
+        def forward(self, *args, **kwargs):
+            if self.training:
+                self.training_forwards += 1
+                if self.training_forwards == 2:
+                    raise RuntimeError("simulated training failure")
+            return super().forward(*args, **kwargs)
+
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "run.sampling_mode=nested-random",
+            "training.max_steps=2",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "outputs.metrics_flush_interval_steps=100",
+            "outputs.save_checkpoints=false",
+            "evaluation.validation=false",
+            "evaluation.final_validation=false",
+        ],
+    )
+    dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="simulated training failure"):
+        run_training(
+            config,
+            model=FailingSecondStepModel(),
+            tokenized_dataset=dataset,
+            device="cpu",
+        )
+
+    with (output_dir / "metrics.csv").open(
+        "r",
+        encoding="utf-8",
+        newline="",
+    ) as metrics_file:
+        rows = list(csv.DictReader(metrics_file))
+    assert [row["step"] for row in rows] == ["1"]
+
+
+def test_failed_continuation_load_never_overwrites_existing_checkpoint(tmp_path):
+    output_dir = tmp_path / "debug-nested-001"
+    latest_path = output_dir / "checkpoints" / "latest.pt"
+    latest_path.parent.mkdir(parents=True)
+    original_bytes = b"intentionally corrupt checkpoint"
+    latest_path.write_bytes(original_bytes)
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "run.continuation.enabled=true",
+            "training.max_steps=1",
+            "training.eval_interval=0",
+            "training.batch_size_per_process=1",
+            "outputs.save_checkpoints=true",
+            "evaluation.validation=false",
+            "evaluation.final_validation=false",
+        ],
+    )
+    dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+
+    with pytest.raises(Exception):
+        run_training(
+            config,
+            model=TinyNestedTrainingModel(),
+            tokenized_dataset=dataset,
+            device="cpu",
+        )
+
+    assert latest_path.read_bytes() == original_bytes
+
+
+def test_explicit_concat_alignment_failure_happens_before_training(tmp_path):
+    with pytest.raises(ConfigError, match="align with CatLlama block widths"):
+        resolve_run_config(
+            "tests/fixtures/explicit_granularity_smoke.yaml",
+            output_dir=tmp_path / "misaligned-concat",
+            overrides={
+                "model.variant": "concat",
+                "model.granularity_prefixes": {
+                    "micro": 0.25,
+                    "small": 0.375,
+                    "medium": 0.625,
+                    "large": 0.875,
+                    "full": 1.0,
+                },
+            },
+        )
+
+
+def test_explicit_aligned_concat_training_smoke(tmp_path):
+    output_dir = tmp_path / "explicit-granularity-smoke-001"
+    config = resolve_run_config(
+        "tests/fixtures/explicit_granularity_smoke.yaml",
+        output_dir=output_dir,
+        overrides={
+            "model.variant": "concat",
+            "model.granularity_prefixes": {
+                "micro": 0.125,
+                "small": 0.25,
+                "medium": 0.5,
+                "large": 0.75,
+                "full": 1.0,
+            },
+            "training.max_steps": 1,
+            "training.eval_interval": 0,
+            "training.batch_size_per_process": 1,
+            "training.learning_rate": 0.01,
+            "training.scheduler.kwargs.warmup_steps": 0,
+            "outputs.save_checkpoints": False,
+            "evaluation.validation": False,
+        },
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+    labels = ["micro", "small", "medium", "large", "full"]
+    model = TinyNestedTrainingModel(
+        loss_scale_by_granularity={
+            "micro": 1.0,
+            "small": 2.0,
+            "medium": 3.0,
+            "large": 4.0,
+            "full": 5.0,
+        }
+    )
+
+    result = run_training(
+        config,
+        model=model,
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    assert config["model"]["variant"] == "concat"
+    assert config["model"]["granularities"] == labels
+    assert [
+        entry["prefix_width"]
+        for entry in config["model"]["ffn_concat_block_metadata"]
+    ] == [64, 128, 256, 384, 512]
+    assert model.train_forward_granularities == labels
+    assert summary["model_variant"] == "concat"
+    assert summary["granularity_pattern_summary"]["selected_granularities"] == labels
+
+
 def test_tiny_nested_training_records_nested_all_summary_even_when_runtime_pattern_stays_single(
     tmp_path,
 ):
@@ -1068,9 +1501,11 @@ def test_tiny_nested_training_can_sample_one_granularity_per_block_per_batch(
     model = TinyNestedTrainingModel()
     randrange_values = iter([0, 1])
     monkeypatch.setattr(
-        training_steps.random,
-        "randrange",
-        lambda count: next(randrange_values),
+        training_steps,
+        "dedicated_random",
+        lambda config, stream: SimpleNamespace(
+            randrange=lambda count: next(randrange_values)
+        ),
     )
 
     result = run_training(
@@ -1091,10 +1526,122 @@ def test_tiny_nested_training_can_sample_one_granularity_per_block_per_batch(
             for row in csv.DictReader(metrics_file)
             if row["split"] == "train" and row["step"] == "1"
         ]
-    assert [row["granularity"] for row in train_rows] == ["s", "m"]
-    assert all(
-        json.loads(row["granularity_pattern_summary"])["pattern_type"] == "per_block"
-        for row in train_rows
+    assert [row["granularity"] for row in train_rows] == ["s,m"]
+    assert json.loads(train_rows[0]["granularity_pattern_summary"])[
+        "pattern_type"
+    ] == "per_block"
+    assert json.loads(train_rows[0]["granularity_pattern_summary"])[
+        "selected_granularities"
+    ] == ["s", "m"]
+
+
+@pytest.mark.parametrize("variant", ["slicing", "concat"])
+@pytest.mark.parametrize("sampling_mode", ["per_block", "adaptive_per_block"])
+def test_real_model_training_preserves_repeated_per_block_patterns(
+    tmp_path,
+    monkeypatch,
+    variant,
+    sampling_mode,
+):
+    labels = ["micro", "small", "medium", "full"]
+    layer_assignment = ["micro", "small", "micro", "full"]
+    run_id = f"real-{variant}-{sampling_mode}"
+    output_dir = tmp_path / run_id
+    config = resolve_run_config(
+        "tests/fixtures/explicit_granularity_smoke.yaml",
+        run_id=run_id,
+        output_dir=output_dir,
+        overrides={
+            "run.run_id": run_id,
+            "run.sampling_mode": "nested-random",
+            "run.continuation.enabled": False,
+            "model.variant": variant,
+            "model.granularity_sampling_mode": sampling_mode,
+            "model.d_model": 16,
+            "model.num_layers": 4,
+            "model.num_attention_heads": 4,
+            "model.context_length": 8,
+            "model.vocab_size_assumption": 32,
+            "model.granularities": labels,
+            "model.granularity_prefixes": {
+                "micro": 0.25,
+                "small": 0.5,
+                "medium": 0.75,
+                "full": 1.0,
+            },
+            "training.max_steps": 1,
+            "training.token_budget": 64,
+            "training.eval_interval": 0,
+            "training.batch_size_per_process": 1,
+            "training.learning_rate": 0.01,
+            "training.scheduler.kwargs.warmup_steps": 0,
+            "outputs.save_checkpoints": False,
+            "evaluation.validation": False,
+        },
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3, 4], [5, 6, 7, 8]],
+            "attention_mask": [[1, 1, 1, 1], [1, 1, 1, 1]],
+        }
+    )
+    model = training_modeling.build_model(config)
+
+    if sampling_mode == "per_block":
+        random_indices = iter([0, 1, 0, 3])
+        monkeypatch.setattr(
+            training_steps,
+            "dedicated_random",
+            lambda config, stream: SimpleNamespace(
+                randrange=lambda count: next(random_indices)
+            ),
+        )
+    else:
+        monkeypatch.setattr(
+            training_steps,
+            "select_adaptive_sampler_layer_granularities",
+            lambda *args, **kwargs: list(layer_assignment),
+        )
+
+    result = run_training(
+        config,
+        model=model,
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    with result["metrics_path"].open("r", encoding="utf-8", newline="") as metrics_file:
+        train_rows = [
+            row
+            for row in csv.DictReader(metrics_file)
+            if row["split"] == "train" and row["step"] == "1"
+        ]
+
+    assert model.granularity_order == tuple(labels)
+    assert model.current_layer_granularities == layer_assignment
+    assert model.current_granularity_pattern.selected_granularities == tuple(
+        layer_assignment
+    )
+    assert [
+        layer.current_granularity for layer in model.matformer_layers
+    ] == layer_assignment
+    assert summary["granularity_pattern_summary"]["selected_granularities"] == (
+        layer_assignment
+    )
+    assert [row["granularity"] for row in train_rows] == [
+        "micro,small,micro,full"
+    ]
+    assert json.loads(train_rows[0]["granularity_pattern_summary"])[
+        "selected_granularities"
+    ] == layer_assignment
+    saved_config = json.loads((output_dir / "config.json").read_text(encoding="utf-8"))
+    assert saved_config["model"]["granularities"] == labels
+    assert (
+        saved_config["model"]["granularity_pattern_provenance"][
+            "available_granularities"
+        ]
+        == labels
     )
 
 
@@ -1341,6 +1888,7 @@ def test_budgeted_training_stops_at_token_budget_before_manual_step_cap(
             "training.learning_rate=0.01",
             "training.scheduler.kwargs.warmup_steps=0",
             "evaluation.validation=false",
+            "evaluation.final_validation=false",
         ],
     )
     tokenized_dataset = Dataset.from_dict(
@@ -1369,7 +1917,7 @@ def test_budgeted_training_stops_at_token_budget_before_manual_step_cap(
     assert summary["stop_reason"] == "token_budget_reached"
     assert summary["token_budget"] == 64
     assert summary["tokens_seen"] == 64
-    assert summary["content_tokens_seen"] == 2
+    assert summary["content_tokens_seen"] == 4
     assert summary["expected_tokens_per_step"] == 64
     assert summary["derived_max_steps"] == 1
     assert summary["effective_world_size"] == 1
@@ -1382,7 +1930,7 @@ def test_budgeted_training_stops_at_token_budget_before_manual_step_cap(
         train_steps = {row["step"] for row in train_rows}
     assert train_steps == {"1"}
     assert {row["tokens_seen"] for row in train_rows} == {"64"}
-    assert {row["content_tokens_seen"] for row in train_rows} == {"2"}
+    assert {row["content_tokens_seen"] for row in train_rows} == {"4"}
 
 
 def test_config_driven_training_rejects_multi_process_execution_before_setup(

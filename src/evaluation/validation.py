@@ -9,7 +9,9 @@ from typing import Any, Iterable, Mapping
 import torch
 import torch.distributed as dist
 
+from src.training.distributed import autocast_context
 from src.utils.config import resolve_sampling_mode_from_config_sections
+from src.models.granularity import resolved_granularity_artifact_fields
 from src.utils.metrics import json_artifact_value
 
 
@@ -54,31 +56,42 @@ def evaluate_validation_loss(
     device: torch.device | str,
     granularity: str | None = None,
     distributed: bool = False,
+    config: dict[str, Any] | None = None,
 ) -> dict[str, float | int | str | None]:
     was_training = model.training
     model.eval()
 
-    loss_sum = 0.0
+    total_nll = 0.0
     batch_count = 0
-    token_count = 0
+    example_count = 0
+    target_count = 0
+    skipped_batch_count = 0
 
     with torch.no_grad():
         configure_model_granularity(model, granularity)
         for batch in dataloader:
             batch = move_batch_to_device(batch, device)
-            outputs = model(
-                input_ids=batch["input_ids"],
-                attention_mask=batch.get("attention_mask"),
-                labels=batch["labels"],
-            )
-            loss_sum += outputs.loss.detach().float().item()
             batch_count += 1
-            token_count += _count_tokens(batch)
+            example_count += int(batch["input_ids"].shape[0])
+            valid_targets = count_valid_prediction_targets(batch)
+            if valid_targets == 0:
+                skipped_batch_count += 1
+                continue
+            with autocast_context(config or {}, device):
+                outputs = model(
+                    input_ids=batch["input_ids"],
+                    attention_mask=batch.get("attention_mask"),
+                    labels=batch["labels"],
+                )
+            total_nll += float(outputs.loss.detach().double().item()) * valid_targets
+            target_count += valid_targets
 
-    loss_sum, batch_count, token_count = _reduce_validation_stats(
-        loss_sum,
+    total_nll, batch_count, example_count, target_count, skipped_batch_count = _reduce_validation_stats(
+        total_nll,
         batch_count,
-        token_count,
+        example_count,
+        target_count,
+        skipped_batch_count,
         device,
         distributed,
     )
@@ -86,12 +99,19 @@ def evaluate_validation_loss(
     if was_training:
         model.train()
 
-    loss = loss_sum / batch_count
+    if target_count == 0:
+        raise ValueError("Validation holdout contains zero valid causal prediction targets")
+    loss = total_nll / target_count
     return {
         "granularity": granularity,
         "loss": loss,
         "perplexity": perplexity_from_loss(loss),
-        "tokens_seen": token_count,
+        "tokens_seen": target_count,
+        "evaluation_examples": example_count,
+        "evaluation_batches": batch_count,
+        "evaluation_target_tokens": target_count,
+        "evaluation_skipped_batches": skipped_batch_count,
+        "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
     }
 
 
@@ -101,17 +121,60 @@ def evaluate_validation_per_granularity(
     granularities: list[str],
     device: torch.device | str,
     distributed: bool = False,
+    config: dict[str, Any] | None = None,
 ) -> list[dict[str, float | int | str | None]]:
-    return [
-        evaluate_validation_loss(
-            model,
-            dataloader,
-            device=device,
-            granularity=granularity,
-            distributed=distributed,
-        )
-        for granularity in granularities
-    ]
+    runtime_state = _capture_runtime_granularity_state(model)
+    try:
+        return [
+            evaluate_validation_loss(
+                model,
+                dataloader,
+                device=device,
+                granularity=granularity,
+                distributed=distributed,
+                config=config,
+            )
+            for granularity in granularities
+        ]
+    finally:
+        _restore_runtime_granularity_state(model, runtime_state)
+
+
+def _capture_runtime_granularity_state(model) -> dict[str, Any]:
+    target = model.module if hasattr(model, "module") else model
+    layer_granularities = getattr(target, "current_layer_granularities", None)
+    return {
+        "current_granularity": getattr(target, "current_granularity", None),
+        "current_layer_granularities": (
+            None if layer_granularities is None else list(layer_granularities)
+        ),
+        "current_granularity_pattern": getattr(
+            target,
+            "current_granularity_pattern",
+            None,
+        ),
+        "current_sampling_mode": getattr(target, "current_sampling_mode", None),
+    }
+
+
+def _restore_runtime_granularity_state(model, state: Mapping[str, Any]) -> None:
+    target = model.module if hasattr(model, "module") else model
+    pattern = state.get("current_granularity_pattern")
+    layer_granularities = state.get("current_layer_granularities")
+    pattern_type = getattr(pattern, "pattern_type", None)
+
+    if layer_granularities and pattern_type == "per_block":
+        configure_layers = getattr(target, "configure_layer_granularities", None)
+        if configure_layers is not None:
+            configure_layers(layer_granularities)
+    elif state.get("current_granularity") is not None:
+        configure_subnetwork = getattr(target, "configure_subnetwork", None)
+        if configure_subnetwork is not None:
+            configure_subnetwork(state["current_granularity"])
+
+    for field_name, value in state.items():
+        if hasattr(target, field_name):
+            setattr(target, field_name, value)
 
 
 def validation_results_to_metric_rows(
@@ -163,6 +226,7 @@ def validation_results_to_metric_rows(
                 "granularity_sampling_mode"
             ),
             "granularity": result["granularity"],
+            **resolved_granularity_artifact_fields(model),
             "granularity_pattern_summary": json_artifact_value(
                 granularity_pattern_summary
                 if granularity_pattern_summary is not None
@@ -182,6 +246,20 @@ def validation_results_to_metric_rows(
                 result["tokens_seen"]
                 if content_tokens_seen is None
                 else content_tokens_seen
+            ),
+            "evaluation_examples": result.get("evaluation_examples"),
+            "evaluation_batches": result.get("evaluation_batches"),
+            "evaluation_target_tokens": result.get("evaluation_target_tokens"),
+            "evaluation_skipped_batches": result.get(
+                "evaluation_skipped_batches"
+            ),
+            "validation_manifest_hash": config.get("validation_manifest_hash"),
+            "validation_loss_aggregation": result.get(
+                "validation_loss_aggregation",
+                config.get("validation_loss_aggregation"),
+            ),
+            "comparison_control_signature": config.get(
+                "comparison_control_signature"
             ),
             "wall_clock_seconds": wall_clock_seconds,
             "tokens_per_second": tokens_per_second,
@@ -267,26 +345,47 @@ def _count_tokens(batch: dict[str, torch.Tensor]) -> int:
     return int((labels != -100).sum().item())
 
 
+def count_valid_prediction_targets(batch: dict[str, torch.Tensor]) -> int:
+    labels = batch["labels"]
+    if labels.ndim < 2 or labels.shape[1] <= 1:
+        return 0
+    return int((labels[:, 1:] != -100).sum().item())
+
+
 def _reduce_validation_stats(
-    loss_sum: float,
+    total_nll: float,
     batch_count: int,
-    token_count: int,
+    example_count: int,
+    target_count: int,
+    skipped_batch_count: int,
     device: torch.device | str,
     distributed: bool,
-) -> tuple[float, int, int]:
-    if batch_count == 0:
+) -> tuple[float, int, int, int, int]:
+    if batch_count == 0 and not distributed:
         raise ValueError("Validation dataloader produced zero batches")
 
     if not distributed:
-        return loss_sum, batch_count, token_count
+        return total_nll, batch_count, example_count, target_count, skipped_batch_count
 
     stats = torch.tensor(
-        [loss_sum, float(batch_count), float(token_count)],
+        [
+            total_nll,
+            float(batch_count),
+            float(example_count),
+            float(target_count),
+            float(skipped_batch_count),
+        ],
         dtype=torch.float64,
         device=device,
     )
     dist.all_reduce(stats, op=dist.ReduceOp.SUM)
-    return float(stats[0].item()), int(stats[1].item()), int(stats[2].item())
+    return (
+        float(stats[0].item()),
+        int(stats[1].item()),
+        int(stats[2].item()),
+        int(stats[3].item()),
+        int(stats[4].item()),
+    )
 
 
 def _model_shape_label(run: dict[str, Any]) -> Any:

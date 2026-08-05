@@ -10,14 +10,12 @@ except ImportError:  # pragma: no cover - optional dependency
 
 load_dotenv()
 
-import random
 import time
 from pathlib import Path
 from typing import Any, Mapping
 
 import torch
 from torch.nn.utils import clip_grad_norm_
-from torch.utils.data.distributed import DistributedSampler
 from transformers import get_scheduler
 
 import src.training.checkpointing as training_checkpointing
@@ -36,18 +34,18 @@ from src.models.correction import summarize_correction_context_from_config
 from src.models.ffn import (
     get_ffn_prefix_metadata,
 )
-from src.models.granularity import summarize_granularity_pattern_from_config
+from src.models.granularity import (
+    resolved_granularity_artifact_fields,
+    summarize_granularity_pattern_from_config,
+)
 from src.training.checkpointing import (
     _prepare_adaptive_sampler_runtime_state,
     _update_adaptive_sampler_runtime_state,
     continuation_latest_checkpoint_policy,
     maybe_write_best_eval_checkpoint,
 )
-from src.training.data import (
-    build_language_model_dataloader,
-    split_train_eval_dataset,
-)
 from src.training.distributed import (
+    autocast_context,
     sum_int,
 )
 from src.training.monitoring import NoopHeartbeatWriter
@@ -67,74 +65,7 @@ from src.utils.metrics import (
     summarize_runtime_granularity_pattern_from_config,
     write_json_artifact,
 )
-
-
-def build_dataloaders(
-    config: dict[str, Any],
-    tokenized_dataset,
-    device: torch.device,
-    distributed_context=None,
-):
-    training = config["training"]
-    batch_size = training["batch_size_per_process"]
-    eval_batches = training.get("eval_batches", 1)
-    eval_example_count = max(1, eval_batches * batch_size)
-
-    train_dataset, eval_dataset = split_train_eval_dataset(
-        tokenized_dataset,
-        eval_example_count,
-    )
-    if len(train_dataset) == 0:
-        train_dataset = eval_dataset
-
-    pin_memory = device.type == "cuda"
-    train_sampler = build_distributed_sampler(
-        train_dataset,
-        distributed_context,
-        shuffle=True,
-        seed=config["run"].get("seed"),
-    )
-    eval_sampler = build_distributed_sampler(
-        eval_dataset,
-        distributed_context,
-        shuffle=False,
-        seed=config["run"].get("seed"),
-    )
-    train_dataloader = build_language_model_dataloader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=train_sampler is None,
-        sampler=train_sampler,
-        num_workers=training.get("dataloader_num_workers", 0),
-        pin_memory=pin_memory,
-    )
-    eval_dataloader = build_language_model_dataloader(
-        eval_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        sampler=eval_sampler,
-        num_workers=training.get("dataloader_num_workers", 0),
-        pin_memory=pin_memory,
-    )
-    return train_dataloader, eval_dataloader
-
-
-def build_distributed_sampler(
-    dataset,
-    distributed_context,
-    shuffle: bool,
-    seed: int | None,
-):
-    if distributed_context is None or not distributed_context.enabled:
-        return None
-
-    return DistributedSampler(
-        dataset,
-        num_replicas=distributed_context.world_size,
-        rank=distributed_context.rank,
-        shuffle=shuffle,
-        seed=0 if seed is None else int(seed),
-    )
+from src.utils.reproducibility import dedicated_random, seed_for
 
 
 def build_optimizer_and_scheduler(model, training: Mapping[str, Any]):
@@ -285,17 +216,19 @@ def train_for_steps(
     run_state: dict[str, Any] | None = None,
     monitoring_session=None,
     stage_name: str = "training",
+    metrics_journal=None,
 ) -> list[dict[str, Any]]:
     training = config["training"]
     run = config["run"]
-    granularities = config["model"]["granularities"]
+    granularities = list(config["model"]["granularities"])
     model_sampling_mode = str(config["model"].get("granularity_sampling_mode", "global"))
     run_sampling_mode = str(run.get("sampling_mode", "nested-random"))
     target_model = model.module if hasattr(model, "module") else model
     supports_layer_granularities = hasattr(target_model, "configure_layer_granularities")
     token_budget = training["token_budget"]
     max_steps = training["max_steps"]
-    eval_interval = training.get("eval_interval", 0)
+    validation_config = config.get("evaluation", {}).get("validation", {})
+    eval_interval = int(validation_config.get("interval_steps", 0))
 
     metrics_rows = []
     start_time = time.time()
@@ -351,6 +284,10 @@ def train_for_steps(
                 made_progress = True
                 step += 1
                 batch = move_batch_to_device(batch, device)
+                if count_valid_prediction_targets(batch) <= 0:
+                    raise ValueError(
+                        "Training batch contains zero valid causal prediction targets"
+                    )
                 content_tokens_seen += global_content_tokens_for_batch(
                     batch,
                     device=device,
@@ -361,7 +298,7 @@ def train_for_steps(
                 optimizer.zero_grad(set_to_none=True)
 
                 step_metric_rows_data: list[
-                    tuple[str, torch.Tensor, dict[str, Any], dict[str, Any]]
+                    tuple[str, float, dict[str, Any], dict[str, Any]]
                 ] = []
                 if run_sampling_mode == "nested-all":
                     selected_granularities = select_training_granularities(
@@ -369,33 +306,32 @@ def train_for_steps(
                         granularities,
                         device,
                     )
-                    forward_losses: list[torch.Tensor] = []
+                    detached_losses: list[float] = []
+                    total_losses = len(selected_granularities)
                     for granularity in selected_granularities:
                         configure_model_granularity(model, granularity)
                         step_runtime_pattern_summary, step_correction_context = _runtime_granularity_artifacts(
                             config,
                             model,
                         )
-                        outputs = model(
-                            input_ids=batch["input_ids"],
-                            attention_mask=batch.get("attention_mask"),
-                            labels=batch["labels"],
-                        )
-                        forward_losses.append(outputs.loss)
+                        with autocast_context(config, device):
+                            outputs = model(
+                                input_ids=batch["input_ids"],
+                                attention_mask=batch.get("attention_mask"),
+                                labels=batch["labels"],
+                            )
+                        detached_loss = float(outputs.loss.detach().float().cpu().item())
+                        detached_losses.append(detached_loss)
                         step_metric_rows_data.append(
                             (
                                 granularity,
-                                outputs.loss,
+                                detached_loss,
                                 step_runtime_pattern_summary,
                                 step_correction_context,
                             )
-                    )
-                    combined_loss = (
-                        forward_losses[0]
-                        if len(forward_losses) == 1
-                        else torch.stack(forward_losses).mean()
-                    )
-                    total_losses = len(forward_losses)
+                        )
+                        (outputs.loss / total_losses).backward()
+                    combined_loss_value = sum(detached_losses) / total_losses
                 elif model_sampling_mode == "adaptive_per_block" and supports_layer_granularities:
                     if adaptive_sampler_state is None:
                         raise ConfigError(
@@ -407,6 +343,7 @@ def train_for_steps(
                         step=step,
                         phase=stage_name,
                         granularities=granularities,
+                        adaptive_seed=seed_for(config, "adaptive_sampling"),
                     )
                     configure_model_layer_granularities(
                         model,
@@ -416,21 +353,24 @@ def train_for_steps(
                         config,
                         model,
                     )
-                    outputs = model(
-                        input_ids=batch["input_ids"],
-                        attention_mask=batch.get("attention_mask"),
-                        labels=batch["labels"],
-                    )
-                    combined_loss = outputs.loss
-                    for granularity in selected_layer_granularities:
-                        step_metric_rows_data.append(
-                            (
-                                granularity,
-                                combined_loss,
-                                step_runtime_pattern_summary,
-                                step_correction_context,
-                            )
+                    with autocast_context(config, device):
+                        outputs = model(
+                            input_ids=batch["input_ids"],
+                            attention_mask=batch.get("attention_mask"),
+                            labels=batch["labels"],
                         )
+                    combined_loss = outputs.loss
+                    combined_loss_value = float(
+                        combined_loss.detach().float().cpu().item()
+                    )
+                    step_metric_rows_data.append(
+                        (
+                            ",".join(selected_layer_granularities),
+                            combined_loss_value,
+                            step_runtime_pattern_summary,
+                            step_correction_context,
+                        )
+                    )
                     total_losses = 1
                 elif model_sampling_mode == "per_block" and supports_layer_granularities:
                     selected_layer_granularities = select_training_layer_granularities(
@@ -446,21 +386,24 @@ def train_for_steps(
                         config,
                         model,
                     )
-                    outputs = model(
-                        input_ids=batch["input_ids"],
-                        attention_mask=batch.get("attention_mask"),
-                        labels=batch["labels"],
-                    )
-                    combined_loss = outputs.loss
-                    for granularity in selected_layer_granularities:
-                        step_metric_rows_data.append(
-                            (
-                                granularity,
-                                combined_loss,
-                                step_runtime_pattern_summary,
-                                step_correction_context,
-                            )
+                    with autocast_context(config, device):
+                        outputs = model(
+                            input_ids=batch["input_ids"],
+                            attention_mask=batch.get("attention_mask"),
+                            labels=batch["labels"],
                         )
+                    combined_loss = outputs.loss
+                    combined_loss_value = float(
+                        combined_loss.detach().float().cpu().item()
+                    )
+                    step_metric_rows_data.append(
+                        (
+                            ",".join(selected_layer_granularities),
+                            combined_loss_value,
+                            step_runtime_pattern_summary,
+                            step_correction_context,
+                        )
+                    )
                     total_losses = 1
                 else:
                     selected_granularities = select_training_granularities(
@@ -475,16 +418,20 @@ def train_for_steps(
                             config,
                             model,
                         )
-                        outputs = model(
-                            input_ids=batch["input_ids"],
-                            attention_mask=batch.get("attention_mask"),
-                            labels=batch["labels"],
-                        )
+                        with autocast_context(config, device):
+                            outputs = model(
+                                input_ids=batch["input_ids"],
+                                attention_mask=batch.get("attention_mask"),
+                                labels=batch["labels"],
+                            )
                         forward_losses.append(outputs.loss)
+                        detached_loss = float(
+                            outputs.loss.detach().float().cpu().item()
+                        )
                         step_metric_rows_data.append(
                             (
                                 granularity,
-                                outputs.loss,
+                                detached_loss,
                                 step_runtime_pattern_summary,
                                 step_correction_context,
                             )
@@ -495,8 +442,12 @@ def train_for_steps(
                         else torch.stack(forward_losses).mean()
                     )
                     total_losses = len(forward_losses)
+                    combined_loss_value = float(
+                        combined_loss.detach().float().cpu().item()
+                    )
 
-                combined_loss.backward()
+                if run_sampling_mode != "nested-all":
+                    combined_loss.backward()
 
                 gradient_clip_norm = training.get("gradient_clip_norm")
                 if gradient_clip_norm is not None:
@@ -512,7 +463,7 @@ def train_for_steps(
 
                 elapsed = time.time() - start_time
                 peak_memory_bytes = current_peak_memory_bytes(device)
-                latest_loss = float(combined_loss.detach().cpu().item())
+                latest_loss = combined_loss_value
                 if model_sampling_mode == "adaptive_per_block" and adaptive_sampler_state is not None:
                     _update_adaptive_sampler_runtime_state(
                         config,
@@ -546,17 +497,6 @@ def train_for_steps(
                         "content_tokens_seen": content_tokens_seen,
                     }
                 )
-                training_checkpointing.maybe_write_latest_checkpoint(
-                    config,
-                    model,
-                    optimizer,
-                    scheduler,
-                    heartbeat_writer,
-                    run_state,
-                    reason="step",
-                    step=step,
-                    distributed_context=distributed_context,
-                )
                 maybe_emit_training_heartbeat(
                     heartbeat_writer,
                     heartbeat_cadence,
@@ -572,7 +512,7 @@ def train_for_steps(
 
                 for (
                     granularity,
-                    loss,
+                    loss_value,
                     step_runtime_pattern_summary,
                     step_correction_context,
                 ) in step_metric_rows_data:
@@ -581,7 +521,7 @@ def train_for_steps(
                             config,
                             step=step,
                             granularity=granularity,
-                            loss=float(loss.detach().cpu().item()),
+                            loss=loss_value,
                             tokens_seen=tokens_seen,
                             content_tokens_seen=content_tokens_seen,
                             wall_clock_seconds=elapsed,
@@ -591,11 +531,39 @@ def train_for_steps(
                             adaptive_artifacts=adaptive_artifacts,
                         )
                     )
-                metrics_rows.extend(step_metric_rows)
+                _record_metric_rows(
+                    metrics_rows,
+                    step_metric_rows,
+                    metrics_journal=metrics_journal,
+                )
                 if monitoring_session is not None:
                     monitoring_session.log_rows(step_metric_rows)
+                if (
+                    metrics_journal is not None
+                    and training_checkpointing.should_save_latest_checkpoint(
+                        config,
+                        step,
+                        "step",
+                    )
+                ):
+                    metrics_journal.flush()
+                training_checkpointing.maybe_write_latest_checkpoint(
+                    config,
+                    model,
+                    optimizer,
+                    scheduler,
+                    heartbeat_writer,
+                    run_state,
+                    reason="step",
+                    step=step,
+                    distributed_context=distributed_context,
+                )
 
-                if eval_interval > 0 and step % eval_interval == 0:
+                if (
+                    bool(validation_config.get("enabled", False))
+                    and eval_interval > 0
+                    and step % eval_interval == 0
+                ):
                     with heartbeat_stage(
                         heartbeat_writer,
                         "validation",
@@ -615,7 +583,36 @@ def train_for_steps(
                                 distributed_context is not None
                                 and distributed_context.enabled
                             ),
+                            config=config,
                         )
+                    validation_runtime_pattern_summary, validation_correction_context = _runtime_granularity_artifacts(
+                        config,
+                        model,
+                    )
+                    validation_metric_rows = validation_results_to_metric_rows(
+                        validation_results,
+                        config,
+                        step=step,
+                        wall_clock_seconds=elapsed,
+                        tokens_per_second=tokens_per_second,
+                        peak_memory_bytes=peak_memory_bytes,
+                        tokens_seen=tokens_seen,
+                        content_tokens_seen=content_tokens_seen,
+                        granularity_pattern_summary=validation_runtime_pattern_summary,
+                        correction_context=validation_correction_context,
+                        adaptive_artifacts=build_adaptive_sampler_artifact_fields(
+                            config,
+                            run_state,
+                        ),
+                    )
+                    _record_metric_rows(
+                        metrics_rows,
+                        validation_metric_rows,
+                        metrics_journal=metrics_journal,
+                        force=True,
+                    )
+                    if monitoring_session is not None:
+                        monitoring_session.log_rows(validation_metric_rows)
                     maybe_write_best_eval_checkpoint(
                         config,
                         model,
@@ -637,52 +634,31 @@ def train_for_steps(
                         step=step,
                         distributed_context=distributed_context,
                     )
-                    validation_runtime_pattern_summary, validation_correction_context = _runtime_granularity_artifacts(
-                        config,
-                        model,
-                    )
-                    validation_metric_rows = validation_results_to_metric_rows(
-                        validation_results,
-                        config,
-                        step=step,
-                        wall_clock_seconds=elapsed,
-                        tokens_per_second=tokens_per_second,
-                        peak_memory_bytes=peak_memory_bytes,
-                        tokens_seen=tokens_seen,
-                        content_tokens_seen=content_tokens_seen,
-                        granularity_pattern_summary=validation_runtime_pattern_summary,
-                        correction_context=validation_correction_context,
-                        adaptive_artifacts=build_adaptive_sampler_artifact_fields(
-                            config,
-                            run_state,
-                        ),
-                    )
-                    metrics_rows.extend(validation_metric_rows)
-                    if monitoring_session is not None:
-                        monitoring_session.log_rows(validation_metric_rows)
 
                 if step >= max_steps or tokens_seen >= token_budget:
                     break
             if not made_progress:
                 break
 
-    append_final_validation_if_needed(
-        metrics_rows,
-        config,
-        model,
-        eval_dataloader,
-        granularities=granularities,
-        device=device,
-        step=step,
-        tokens_seen=tokens_seen,
-        content_tokens_seen=content_tokens_seen,
-        start_time=start_time,
-        heartbeat_writer=heartbeat_writer,
-        distributed_context=distributed_context,
-        checkpoint_state=checkpoint_state,
-        run_state=run_state,
-        monitoring_session=monitoring_session,
-    )
+    if stage_name == "training":
+        append_final_validation_if_needed(
+            metrics_rows,
+            config,
+            model,
+            eval_dataloader,
+            granularities=granularities,
+            device=device,
+            step=step,
+            tokens_seen=tokens_seen,
+            content_tokens_seen=content_tokens_seen,
+            start_time=start_time,
+            heartbeat_writer=heartbeat_writer,
+            distributed_context=distributed_context,
+            checkpoint_state=checkpoint_state,
+            run_state=run_state,
+            monitoring_session=monitoring_session,
+            metrics_journal=metrics_journal,
+        )
     training_checkpointing.maybe_write_latest_checkpoint(
         config,
         model,
@@ -694,6 +670,8 @@ def train_for_steps(
         step=step,
         distributed_context=distributed_context,
     )
+    if metrics_journal is not None:
+        metrics_journal.flush()
 
     return metrics_rows
 
@@ -703,6 +681,7 @@ def select_training_granularities(
     granularities: list[str],
     device: torch.device,
 ) -> list[str]:
+    granularities = _resolved_granularities(config, granularities)
     if str(config["run"].get("sampling_mode", "nested-random")) == "nested-all":
         return list(granularities)
 
@@ -711,6 +690,7 @@ def select_training_granularities(
         return list(granularities)
     if sampling_mode == "random":
         selected_index = select_random_granularity_index(
+            config=config,
             granularity_count=len(granularities),
             device=device,
         )
@@ -723,6 +703,7 @@ def select_training_layer_granularities(
     granularities: list[str],
     device: torch.device,
 ) -> list[str]:
+    granularities = _resolved_granularities(config, granularities)
     layer_count = int(config["model"]["num_layers"])
     if layer_count <= 0:
         raise ValueError("model.num_layers must be positive")
@@ -730,6 +711,7 @@ def select_training_layer_granularities(
     return [
         granularities[
             select_random_granularity_index(
+                config=config,
                 granularity_count=len(granularities),
                 device=device,
             )
@@ -738,7 +720,22 @@ def select_training_layer_granularities(
     ]
 
 
+def _resolved_granularities(
+    config: Mapping[str, Any],
+    fallback: list[str],
+) -> list[str]:
+    """Return the ordered granularity list resolved by configuration."""
+
+    model = config.get("model", {})
+    configured = model.get("granularities") if isinstance(model, Mapping) else None
+    resolved = list(configured or fallback)
+    if not resolved:
+        raise ConfigError("model.granularities must be a non-empty resolved list")
+    return resolved
+
+
 def select_random_granularity_index(
+    config: Mapping[str, Any],
     granularity_count: int,
     device: torch.device,
 ) -> int:
@@ -748,11 +745,17 @@ def select_random_granularity_index(
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         selected_index = torch.empty((), dtype=torch.long, device=device)
         if torch.distributed.get_rank() == 0:
-            selected_index.fill_(random.randrange(granularity_count))
+            selected_index.fill_(
+                dedicated_random(config, "granularity_selection").randrange(
+                    granularity_count
+                )
+            )
         torch.distributed.broadcast(selected_index, src=0)
         return int(selected_index.item())
 
-    return random.randrange(granularity_count)
+    return dedicated_random(config, "granularity_selection").randrange(
+        granularity_count
+    )
 
 
 def configure_model_layer_granularities(
@@ -844,13 +847,20 @@ def append_final_validation_if_needed(
     checkpoint_state: dict[str, Any] | None = None,
     run_state: dict[str, Any] | None = None,
     monitoring_session=None,
+    metrics_journal=None,
 ) -> None:
-    if not config.get("evaluation", {}).get("validation", False):
+    validation_config = config.get("evaluation", {}).get("validation", {})
+    if not validation_config.get("run_at_completion", False):
         return
     has_final_validation = any(
         row["split"] == "validation" and row["step"] == step
         for row in metrics_rows
     )
+    if metrics_journal is not None:
+        has_final_validation = (
+            has_final_validation
+            or metrics_journal.has_validation_at_step(step)
+        )
     if has_final_validation:
         return
 
@@ -878,17 +888,8 @@ def append_final_validation_if_needed(
             distributed=(
                 distributed_context is not None and distributed_context.enabled
             ),
+            config=config,
         )
-    maybe_write_best_eval_checkpoint(
-        config,
-        model,
-        validation_results,
-        step,
-        heartbeat_writer,
-        checkpoint_state if checkpoint_state is not None else {},
-        run_state if run_state is not None else training_checkpointing.build_initial_continuation_state(config),
-        distributed_context=distributed_context,
-    )
     validation_metric_rows = validation_results_to_metric_rows(
         validation_results,
         config,
@@ -905,9 +906,39 @@ def append_final_validation_if_needed(
             run_state if run_state is not None else {},
         ),
     )
-    metrics_rows.extend(validation_metric_rows)
+    _record_metric_rows(
+        metrics_rows,
+        validation_metric_rows,
+        metrics_journal=metrics_journal,
+        force=True,
+    )
     if monitoring_session is not None:
         monitoring_session.log_rows(validation_metric_rows)
+    maybe_write_best_eval_checkpoint(
+        config,
+        model,
+        validation_results,
+        step,
+        heartbeat_writer,
+        checkpoint_state if checkpoint_state is not None else {},
+        run_state
+        if run_state is not None
+        else training_checkpointing.build_initial_continuation_state(config),
+        distributed_context=distributed_context,
+    )
+
+
+def _record_metric_rows(
+    metrics_rows: list[dict[str, Any]],
+    new_rows: list[dict[str, Any]],
+    *,
+    metrics_journal=None,
+    force: bool = False,
+) -> None:
+    if metrics_journal is None:
+        metrics_rows.extend(new_rows)
+        return
+    metrics_journal.append(new_rows, force=force)
 
 
 def write_extraction_metadata_if_nested(
@@ -1029,6 +1060,7 @@ def build_training_metric_row(
         ),
         "granularity_sampling_mode": model.get("granularity_sampling_mode"),
         "granularity": granularity,
+        **resolved_granularity_artifact_fields(model),
         "granularity_pattern_summary": json_artifact_value(
             granularity_pattern_summary
             if granularity_pattern_summary is not None
@@ -1081,6 +1113,13 @@ def count_content_tokens(batch: dict[str, torch.Tensor]) -> int:
     return int((batch["labels"] != -100).sum().item())
 
 
+def count_valid_prediction_targets(batch: dict[str, torch.Tensor]) -> int:
+    labels = batch["labels"]
+    if labels.ndim < 2 or labels.shape[1] <= 1:
+        return 0
+    return int((labels[:, 1:] != -100).sum().item())
+
+
 def count_batch_tokens(batch: dict[str, torch.Tensor]) -> int:
     return count_content_tokens(batch)
 
@@ -1089,15 +1128,6 @@ def current_peak_memory_bytes(device: torch.device) -> int:
     if device.type == "cuda":
         return int(torch.cuda.max_memory_allocated(device))
     return 0
-
-
-def set_random_seed(seed: int | None) -> None:
-    if seed is None:
-        return
-    random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
 
 
 def _model_shape_label(run: dict[str, Any]) -> Any:

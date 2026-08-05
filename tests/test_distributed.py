@@ -1,4 +1,6 @@
 import torch
+import pytest
+from contextlib import nullcontext
 
 import src.training.distributed as distributed
 from src.training.distributed import (
@@ -8,6 +10,82 @@ from src.training.distributed import (
     prepare_distributed_context,
     sum_int,
 )
+from src.utils.config import ConfigError
+
+
+def test_cpu_resolves_requested_bf16_and_checkpointing_to_none():
+    config = {
+        "training": {
+            "mixed_precision": "bf16",
+            "activation_checkpointing": True,
+        }
+    }
+
+    context = prepare_distributed_context(config, device="cpu")
+
+    assert context.mixed_precision == "none"
+    assert context.activation_checkpointing is False
+    assert config["training"]["requested_mixed_precision"] == "bf16"
+    assert config["training"]["resolved_mixed_precision"] == "none"
+    assert config["training"]["requested_activation_checkpointing"] is True
+    assert config["training"]["resolved_activation_checkpointing"] is False
+
+
+def test_single_process_fp16_is_rejected_explicitly():
+    with pytest.raises(ConfigError, match="fp16 is unsupported for single-process"):
+        distributed.resolve_runtime_settings(
+            {"mixed_precision": "fp16"},
+            "cuda:0",
+            single_process=True,
+        )
+
+
+def test_bf16_requires_native_cuda_support(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: False)
+
+    with pytest.raises(ConfigError, match="native CUDA BF16 support"):
+        distributed.resolve_runtime_settings(
+            {"mixed_precision": "bf16"},
+            "cuda:0",
+            single_process=True,
+        )
+
+
+def test_activation_checkpointing_applies_without_fsdp(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        distributed,
+        "apply_model_activation_checkpointing",
+        lambda model: calls.append(model),
+    )
+    model = torch.nn.Linear(2, 2)
+    context = DistributedContext(
+        enabled=False,
+        world_size=1,
+        device="cuda:0",
+        activation_checkpointing=True,
+    )
+
+    assert distributed.wrap_model_for_distributed(model, context) is model
+    assert calls == [model]
+
+
+def test_cuda_bf16_autocast_uses_resolved_runtime_setting(monkeypatch):
+    calls = []
+
+    def fake_autocast(*, device_type, dtype):
+        calls.append((device_type, dtype))
+        return nullcontext()
+
+    monkeypatch.setattr(torch, "autocast", fake_autocast)
+
+    with distributed.autocast_context(
+        {"training": {"resolved_mixed_precision": "bf16"}},
+        "cuda:0",
+    ):
+        pass
+
+    assert calls == [("cuda", torch.bfloat16)]
 
 
 def test_prepare_distributed_context_initializes_nccl_with_local_cuda_device(

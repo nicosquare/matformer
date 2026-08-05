@@ -79,8 +79,8 @@ def test_configured_training_writes_metrics_config_and_summary(tmp_path):
     )
     tokenized_dataset = Dataset.from_dict(
         {
-            "input_ids": [[1, 2, 0], [3, 4, 5], [6, 0, 0]],
-            "attention_mask": [[1, 1, 0], [1, 1, 1], [1, 0, 0]],
+            "input_ids": [[1, 2, 0], [3, 4, 5], [6, 7, 0]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1], [1, 1, 0]],
         }
     )
     model = TinyTrainModel()

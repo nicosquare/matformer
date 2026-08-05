@@ -31,7 +31,6 @@ from src.models.ffn import build_concat_layout_diagnostic
 from src.models.wiring import (
     record_runtime_sampling_provenance,
 )
-from src.training.steps import set_random_seed
 from src.utils.config import (
     ConfigError,
     attach_parameter_counts_to_config,
@@ -39,6 +38,7 @@ from src.utils.config import (
     validate_run_config,
 )
 from src.utils.metrics import (
+    MetricsJournal,
     build_checkpoint_summary_fields,
     build_monitoring_summary_fields,
     build_run_summary,
@@ -49,6 +49,12 @@ from src.utils.metrics import (
     write_metrics_csv,
     write_run_summary,
     write_scaling_results_csv,
+    write_json_artifact,
+)
+from src.utils.reproducibility import (
+    configure_strict_determinism,
+    seed_model_initialization,
+    seed_training_randomness,
 )
 
 def run_from_config_path(
@@ -89,11 +95,15 @@ def run_training(
 ) -> dict[str, Any]:
     ensure_single_process_runtime()
     validate_run_config(config)
+    deterministic_settings = configure_strict_determinism(config)
+    seed_model_initialization(config)
     run = config["run"]
     training = config["training"]
     output_dir = Path(run["output_dir"])
     run_state = training_checkpointing.build_initial_continuation_state(config)
     checkpoint_state: dict[str, Any] = {}
+    metrics_journal = None
+    continuation_load_succeeded = not bool(run["continuation"]["enabled"])
     optimizer = None
     scheduler = None
     distributed_context = training_distributed.prepare_distributed_context(
@@ -116,7 +126,6 @@ def run_training(
 
     with training_monitoring.heartbeat_stage(heartbeat_writer, "artifact_writing"):
         write_config_artifact(config, distributed_context=distributed_context)
-    set_random_seed(run.get("seed"))
 
     device = torch.device(distributed_context.device)
 
@@ -124,6 +133,7 @@ def run_training(
         with training_monitoring.heartbeat_stage(heartbeat_writer, "model_initialization"):
             if model is None:
                 model = training_modeling.build_model(config)
+            seed_training_randomness(config)
             record_runtime_sampling_provenance(model, config)
             if (
                 distributed_context.is_rank_zero
@@ -187,6 +197,19 @@ def run_training(
                 device,
                 distributed_context=distributed_context,
             )
+            validation_manifest = config.pop("_validation_manifest")
+            if training_distributed.should_write_shared_artifact(distributed_context):
+                write_json_artifact(
+                    output_dir / "validation_manifest.json",
+                    validation_manifest,
+                    distributed_context=distributed_context,
+                    artifact_io=config,
+                )
+                print(
+                    "[validation] manifest_hash="
+                    f"{config['validation_manifest_hash']}",
+                    flush=True,
+                )
         optimizer, scheduler = training_steps.build_optimizer_and_scheduler(
             model,
             training,
@@ -199,12 +222,23 @@ def run_training(
                 scheduler,
                 distributed_context=distributed_context,
             )
+            continuation_load_succeeded = True
         training_monitoring.emit_run_start_continuation_state(
             heartbeat_writer,
             run_state,
         )
         checkpoint_state.update(run_state)
         training_checkpointing.update_run_continuation_state(config, run_state)
+        metrics_journal = MetricsJournal(
+            output_dir,
+            flush_interval_steps=int(
+                config["outputs"]["metrics_flush_interval_steps"]
+            ),
+            checkpoint_step=int(run_state.get("last_completed_step", 0)),
+            artifact_io_config=config,
+            heartbeat_writer=heartbeat_writer,
+            artifact_state=run_state,
+        )
         metrics_rows = []
         if training_warmup.should_run_pre_nested_warmup(config, run_state):
             metrics_rows.extend(
@@ -221,6 +255,7 @@ def run_training(
                     checkpoint_state=checkpoint_state,
                     run_state=run_state,
                     monitoring_session=monitoring_session,
+                    metrics_journal=metrics_journal,
                 )
             )
         else:
@@ -269,8 +304,10 @@ def run_training(
                     run_state=run_state,
                     monitoring_session=monitoring_session,
                     stage_name="training",
+                    metrics_journal=metrics_journal,
                 )
             )
+        metrics_rows = metrics_journal.read_all()
         extraction_metadata_path = None
         metrics_path = None
         scaling_path = None
@@ -316,6 +353,9 @@ def run_training(
                     output_dir,
                     metrics_rows,
                     distributed_context=distributed_context,
+                    artifact_io=config,
+                    heartbeat_writer=heartbeat_writer,
+                    artifact_state=run_state,
                 )
                 write_config_artifact(config, distributed_context=distributed_context)
                 scaling_rows = build_scaling_result_rows(
@@ -323,11 +363,12 @@ def run_training(
                     metrics_rows,
                     parameter_counts_by_granularity,
                 )
-                scaling_path = write_scaling_results_csv(
-                    output_dir,
-                    scaling_rows,
-                    distributed_context=distributed_context,
-                )
+                if scaling_rows:
+                    scaling_path = write_scaling_results_csv(
+                        output_dir,
+                        scaling_rows,
+                        distributed_context=distributed_context,
+                    )
 
         training_outcome = training_steps.summarize_training_outcome(config, metrics_rows)
         tokens_seen = training_outcome["tokens_seen"]
@@ -355,6 +396,7 @@ def run_training(
             "steps_completed": training_outcome["steps_completed"],
             "stop_reason": training_outcome["stop_reason"],
             "content_tokens_seen": training_outcome["content_tokens_seen"],
+            **training_modeling.build_granularity_artifact_fields(config),
             "model_variant": config["model"]["variant"],
             "granularities": config["model"]["granularities"],
             "granularity_sampling": training.get("granularity_sampling", "all"),
@@ -370,7 +412,57 @@ def run_training(
             **checkpoint_summary_fields,
             **training_modeling.distributed_summary_fields(distributed_context),
             **build_adaptive_sampler_artifact_fields(config, run_state),
+            "requested_mixed_precision": training.get(
+                "requested_mixed_precision"
+            ),
+            "resolved_mixed_precision": training.get(
+                "resolved_mixed_precision"
+            ),
+            "requested_activation_checkpointing": training.get(
+                "requested_activation_checkpointing"
+            ),
+            "resolved_activation_checkpointing": training.get(
+                "resolved_activation_checkpointing"
+            ),
+            "final_validation": config.get("evaluation", {}).get(
+                "validation", {}
+            ).get(
+                "run_at_completion"
+            ),
+            "final_validation_reason": config.get("evaluation", {}).get(
+                "validation", {}
+            ).get("run_at_completion_reason"),
+            "artifact_retry_count": int(run_state.get("artifact_retry_count", 0)),
+            "validation_manifest_hash": config.get("validation_manifest_hash"),
+            "validation_loss_aggregation": config.get(
+                "validation_loss_aggregation"
+            ),
+            "comparison_control_signature": config.get(
+                "comparison_control_signature"
+            ),
+            "deterministic_runtime_settings": deterministic_settings,
+            "artifact_last_errno": run_state.get("artifact_last_errno"),
+            "last_durable_checkpoint_step": int(
+                run_state.get("last_durable_checkpoint_step", 0)
+            ),
+            "deferred_metric_rows": int(
+                run_state.get("deferred_metric_rows", 0)
+            ),
+            "skipped_periodic_checkpoints": int(
+                run_state.get("skipped_periodic_checkpoints", 0)
+            ),
+            "checkpoint_staging_mode": run_state.get(
+                "checkpoint_staging_mode", "direct"
+            ),
+            "unresolved_artifact_failures": list(
+                run_state.get("unresolved_artifact_failures", [])
+            ),
         }
+        if not scaling_rows:
+            extra_summary_fields["scaling_results_unavailable_reason"] = (
+                "no validation rows were produced; scaling comparisons require "
+                "uniform validation metrics"
+            )
         if metrics_path is not None:
             extra_summary_fields["metrics_path"] = str(metrics_path)
         if scaling_path is not None:
@@ -391,6 +483,9 @@ def run_training(
                 output_dir,
                 summary,
                 distributed_context=distributed_context,
+                artifact_io=config,
+                heartbeat_writer=heartbeat_writer,
+                artifact_state=run_state,
             )
 
         return {
@@ -404,8 +499,11 @@ def run_training(
         }
     except Exception as error:
         try:
+            if metrics_journal is not None:
+                metrics_journal.flush()
             if (
                 run["continuation"]["enabled"]
+                and continuation_load_succeeded
                 and model is not None
                 and optimizer is not None
                 and scheduler is not None
@@ -449,6 +547,3 @@ def run_training(
     finally:
         monitoring_session.close()
         training_distributed.destroy_distributed_process_group(distributed_context)
-
-
-    return result

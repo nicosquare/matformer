@@ -10,7 +10,7 @@
 #SBATCH --qos=cscc-gpu-qos
 #SBATCH --output=./logs/matformer_dmodel256_%j.out
 #SBATCH --error=./logs/matformer_dmodel256_%j.err
-#SBATCH --exclude=gpu-[50,51,56]
+#SBATCH --exclude=gpu-[05]
 
 set -euo pipefail
 
@@ -28,7 +28,7 @@ Options:
   --run-id RUN_ID             Run id from configs/dmodel256_pilot_comparison.yaml.
   --config PATH               Pilot config path.
   --mode MODE                 nested-random, nested-all, standalone, or comparison.
-  --granularity NAME          Standalone granularity: s, m, l, or xl.
+  --granularity NAME          Standalone granularity from the resolved config.
   --python-bin PATH           Python executable to use inside the job.
   -h, --help                  Show this message.
 
@@ -158,8 +158,10 @@ fi
 
 if [[ -n "$OUTPUT_ROOT_ARG" ]]; then
   export OUTPUT_ROOT="$OUTPUT_ROOT_ARG"
+  unset OUT
+else
+  export OUTPUT_ROOT="${OUT:-${OUTPUT_ROOT:-$ROOT_DIR/outputs}}"
 fi
-export OUTPUT_ROOT="${OUT:-${OUTPUT_ROOT:-$ROOT_DIR/outputs}}"
 export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 export TORCH_NCCL_ASYNC_ERROR_HANDLING="${TORCH_NCCL_ASYNC_ERROR_HANDLING:-1}"
 unset NCCL_ASYNC_ERROR_HANDLING
@@ -319,9 +321,8 @@ append_mode_overrides() {
       TRAIN_ARGS+=(--override "run.sampling_mode=nested-all")
       ;;
     standalone)
-      if [[ "$granularity" != "s" && "$granularity" != "m" \
-        && "$granularity" != "l" && "$granularity" != "xl" ]]; then
-        echo "Standalone mode requires --granularity s, m, l, or xl" >&2
+      if [[ -z "$granularity" ]]; then
+        echo "Standalone mode requires --granularity" >&2
         exit 2
       fi
       TRAIN_ARGS+=(--override "run.model_family=standalone")

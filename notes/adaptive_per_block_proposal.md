@@ -332,3 +332,164 @@ It only needs:
 - It gives us an experimental signal without full RL complexity.
 - It keeps the action space discrete and interpretable.
 - It preserves the existing mode surface instead of rewriting it.
+
+# TS
+
+The current “TS” implementation is a deterministic Gaussian-perturbation heuristic applied independently to every transformer block. It is not classical Bayesian Thompson Sampling with an explicit posterior.
+
+For block (b), granularity (g), and training step (t), the sampler stores:
+
+$$
+\mu_{b,g}=\text{mean reward},\qquad
+n_{b,g}=\text{selection count},\qquad
+\ell_{b,g}=\text{last selected step}.
+$$
+
+### 1. Reward
+
+Let (P_t) be the vector of granularities selected at step (t), with (B) transformer blocks. The pattern-change penalty is:
+
+$$
+p_t=\frac{1}{B}\sum_{b=1}^{B}
+\mathbf{1}\left[P_{t,b}\neq P_{t-1,b}\right].
+$$
+
+The scalar reward is:
+
+$$
+r_t = L_{t-1}-L_t-wp_t,
+$$
+
+where:
+
+- (L_t) is the current training-batch loss.
+- (w) is adaptive_sampler_reward_penalty_weight.
+- The default is (w=1).
+
+The same scalar reward is assigned to every selected ((b,g)) pair in the current pattern. The first step does not update the sampler because there is no previous loss. See src/training/checkpointing.py:1170 and src/models/
+adaptive_sampler.py:317.
+
+### 2. Statistics update
+
+For every selected pair ((b,P_{t,b})):
+
+$$
+n_{b,g}\leftarrow n_{b,g}+1
+$$
+
+$$
+\mu_{b,g}\leftarrow (1-\alpha)\mu_{b,g}+\alpha r_t
+$$
+
+$$
+\ell_{b,g}\leftarrow t,
+$$
+
+where (\alpha) is adaptive_sampler_decay_rate. See src/models/adaptive_sampler.py:386.
+
+### 3. Thompson-style draw
+
+A deterministic pseudorandom value is generated:
+
+$$
+Z_{b,g,t}\sim\mathcal{N}(0,1).
+$$
+
+Its RNG seed is the SHA-256 hash of:
+
+thompson | block | granularity | step | phase | epoch | count | adaptive_seed
+
+The exploration draw is:
+
+$$
+E_{b,g,t}=
+\frac{\sigma Z_{b,g,t}}{\sqrt{n_{b,g}+1}},
+$$
+
+where (\sigma) is adaptive_sampler_exploration_scale, defaulting to (1). See src/models/adaptive_sampler.py:612.
+
+### 4. Age factors
+
+For a previously selected pair, define:
+
+$$
+a_{b,g,t}=\max(t-\ell_{b,g},0).
+$$
+
+The reward-mean factor is:
+
+$$
+M_{b,g,t}=
+\begin{cases}
+0, & \text{never selected}\
+1, & \alpha\leq0\
+e^{-\alpha a_{b,g,t}}, & \alpha>0
+\end{cases}
+$$
+
+and the exploration-age factor is:
+
+$$
+A_{b,g,t}=
+\begin{cases}
+1, & \text{never selected}\
+\frac{1}{a_{b,g,t}+1}, & \text{otherwise}.
+\end{cases}
+$$
+
+Therefore, the complete score is:
+
+$$
+S_{b,g,t}
+
+\mu_{b,g}M_{b,g,t}
++
+A_{b,g,t}
+\frac{\sigma Z_{b,g,t}}{\sqrt{n_{b,g}+1}}.
+$$
+
+Each block independently selects:
+
+$$
+P_{t,b}=\underset{g\in
+{\text{micro, small, medium, large, full}}}{\arg\max}
+S_{b,g,t}.
+$$
+
+This is implemented in src/models/adaptive_sampler.py:215.
+
+### Important problem with the current commands
+
+The adaptive commands specify only:
+
+adaptive_sampler_strategy: thompson
+
+Therefore they inherit:
+
+adaptive_sampler_exploration_scale: 1.0
+adaptive_sampler_decay_rate: 0.0
+adaptive_sampler_reward_penalty_weight: 1.0
+
+Because (\alpha=0), the update becomes:
+
+$$
+\mu_{b,g}\leftarrow\mu_{b,g}.
+$$
+
+Since every mean starts at zero:
+
+$$
+\mu_{b,g}=0\quad\text{for the entire run}.
+$$
+
+Consequently, the currently configured sampler does not learn from rewards. The reward and pattern penalty are calculated but cannot affect future decisions. Selection reduces to:
+
+$$
+S_{b,g,t}
+
+A_{b,g,t}
+\frac{Z_{b,g,t}}{\sqrt{n_{b,g}+1}}.
+$$
+
+So the current adaptive-Thompson experiments are effectively deterministic, count/recency-weighted Gaussian exploration—not reward-driven TS. I would not launch the adaptive jobs with these defaults until we decide whether to correct
+this formulation. Global, random per-block, and standalone experiments are unaffected.

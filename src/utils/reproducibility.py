@@ -1,0 +1,243 @@
+"""Named seed streams and strict deterministic runtime helpers."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import random
+from typing import Any, Mapping
+
+import numpy as np
+
+
+SEED_STREAM_VERSION = 1
+DATA_SPLIT_VERSION = 1
+STRICT_CUBLAS_WORKSPACE_CONFIG = ":4096:8"
+SEED_STREAMS = (
+    "model_initialization",
+    "python_training",
+    "numpy_training",
+    "torch_training",
+    "dataset_selection",
+    "validation_holdout",
+    "training_sampler",
+    "dataloader_workers",
+    "granularity_selection",
+    "adaptive_sampling",
+    "artifact_retry_jitter",
+)
+
+_DEDICATED_RANDOM_GENERATORS: dict[str, random.Random] = {}
+
+
+def derive_seed(root_seed: int, stream_name: str, version: int = 1) -> int:
+    """Derive a stable nonnegative 63-bit seed from the documented contract."""
+
+    if isinstance(root_seed, bool) or not isinstance(root_seed, int) or root_seed < 0:
+        raise ValueError("run.seed must be an explicit nonnegative integer")
+    if isinstance(version, bool) or not isinstance(version, int) or version <= 0:
+        raise ValueError("run.reproducibility.seed_stream_version must be positive")
+    if stream_name not in SEED_STREAMS:
+        raise ValueError(f"Unknown reproducibility seed stream: {stream_name}")
+    material = f"{version} | {root_seed} | {stream_name}".encode("utf-8")
+    return int.from_bytes(hashlib.sha256(material).digest()[:8], "big") & (
+        (1 << 63) - 1
+    )
+
+
+def seed_for(config: Mapping[str, Any], stream_name: str) -> int:
+    run = config.get("run", {})
+    reproducibility = run.get("reproducibility", {})
+    return derive_seed(
+        run.get("seed"),
+        stream_name,
+        int(reproducibility.get("seed_stream_version", SEED_STREAM_VERSION)),
+    )
+
+
+def configure_strict_determinism(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Configure deterministic Torch behavior before any CUDA initialization."""
+
+    import torch
+
+    run = config.get("run", {})
+    reproducibility = run.get("reproducibility", {})
+    mode = str(reproducibility.get("mode", "strict"))
+    if mode != "strict":
+        raise RuntimeError(f"Unsupported reproducibility mode: {mode}")
+    if torch.cuda.is_initialized():
+        raise RuntimeError(
+            "Strict determinism must be configured before CUDA initialization"
+        )
+
+    configured_workspace = os.environ.get("CUBLAS_WORKSPACE_CONFIG")
+    if configured_workspace not in (None, STRICT_CUBLAS_WORKSPACE_CONFIG):
+        raise RuntimeError(
+            "Strict determinism requires CUBLAS_WORKSPACE_CONFIG="
+            f"{STRICT_CUBLAS_WORKSPACE_CONFIG}, got {configured_workspace!r}"
+        )
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = STRICT_CUBLAS_WORKSPACE_CONFIG
+
+    try:
+        torch.use_deterministic_algorithms(True)
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.allow_tf32 = False
+        torch.backends.cuda.matmul.allow_tf32 = False
+    except Exception as error:  # keep deterministic-operation failures visible
+        raise RuntimeError(f"Unable to enable strict Torch determinism: {error}") from error
+
+    settings = deterministic_runtime_settings()
+    if not settings["deterministic_algorithms"]:
+        raise RuntimeError("Torch did not enable deterministic algorithms")
+    return settings
+
+
+def deterministic_runtime_settings() -> dict[str, Any]:
+    import torch
+
+    return {
+        "mode": "strict",
+        "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
+        "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
+        "cudnn_benchmark": bool(torch.backends.cudnn.benchmark),
+        "cudnn_deterministic": bool(torch.backends.cudnn.deterministic),
+        "cudnn_allow_tf32": bool(torch.backends.cudnn.allow_tf32),
+        "cuda_matmul_allow_tf32": bool(torch.backends.cuda.matmul.allow_tf32),
+    }
+
+
+def seed_model_initialization(config: Mapping[str, Any]) -> None:
+    seed = seed_for(config, "model_initialization")
+    _seed_all_global_rngs(seed, seed, seed)
+
+
+def seed_training_randomness(config: Mapping[str, Any]) -> None:
+    _seed_all_global_rngs(
+        seed_for(config, "python_training"),
+        seed_for(config, "numpy_training"),
+        seed_for(config, "torch_training"),
+    )
+    _DEDICATED_RANDOM_GENERATORS.clear()
+    for stream_name in (
+        "granularity_selection",
+        "adaptive_sampling",
+        "artifact_retry_jitter",
+    ):
+        _DEDICATED_RANDOM_GENERATORS[stream_name] = random.Random(
+            seed_for(config, stream_name)
+        )
+
+
+def _seed_all_global_rngs(python_seed: int, numpy_seed: int, torch_seed: int) -> None:
+    import torch
+
+    random.seed(python_seed)
+    np.random.seed(numpy_seed % (2**32))
+    torch.manual_seed(torch_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(torch_seed)
+
+
+def dedicated_random(config: Mapping[str, Any], stream_name: str) -> random.Random:
+    generator = _DEDICATED_RANDOM_GENERATORS.get(stream_name)
+    if generator is None:
+        generator = random.Random(seed_for(config, stream_name))
+        _DEDICATED_RANDOM_GENERATORS[stream_name] = generator
+    return generator
+
+
+def capture_rng_state() -> dict[str, Any]:
+    import torch
+
+    numpy_state = np.random.get_state()
+    return {
+        "python": random.getstate(),
+        "numpy": {
+            "bit_generator": numpy_state[0],
+            "keys": numpy_state[1].tolist(),
+            "position": numpy_state[2],
+            "has_gauss": numpy_state[3],
+            "cached_gaussian": numpy_state[4],
+        },
+        "torch_cpu": torch.get_rng_state(),
+        "torch_cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
+        "dedicated": {
+            name: generator.getstate()
+            for name, generator in _DEDICATED_RANDOM_GENERATORS.items()
+        },
+    }
+
+
+def restore_rng_state(state: Mapping[str, Any]) -> None:
+    import torch
+
+    required = {"python", "numpy", "torch_cpu", "torch_cuda", "dedicated"}
+    missing = required - set(state)
+    if missing:
+        raise RuntimeError(f"Checkpoint RNG state is incomplete: {sorted(missing)}")
+    random.setstate(state["python"])
+    numpy_state = state["numpy"]
+    if not isinstance(numpy_state, Mapping):
+        raise RuntimeError("Checkpoint NumPy RNG state is malformed")
+    np.random.set_state(
+        (
+            str(numpy_state["bit_generator"]),
+            np.asarray(numpy_state["keys"], dtype=np.uint32),
+            int(numpy_state["position"]),
+            int(numpy_state["has_gauss"]),
+            float(numpy_state["cached_gaussian"]),
+        )
+    )
+    torch.set_rng_state(state["torch_cpu"])
+    cuda_states = state["torch_cuda"]
+    if torch.cuda.is_available():
+        if len(cuda_states) != torch.cuda.device_count():
+            raise RuntimeError("Checkpoint CUDA RNG topology does not match this runtime")
+        torch.cuda.set_rng_state_all(cuda_states)
+    elif cuda_states:
+        raise RuntimeError("Checkpoint contains CUDA RNG state but CUDA is unavailable")
+    _DEDICATED_RANDOM_GENERATORS.clear()
+    for name, generator_state in state["dedicated"].items():
+        generator = random.Random()
+        generator.setstate(generator_state)
+        _DEDICATED_RANDOM_GENERATORS[str(name)] = generator
+
+
+def stable_hash(value: Any) -> str:
+    serialized = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()
+
+
+def build_comparison_control_signature(config: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
+    run = config["run"]
+    training = config["training"]
+    model = config["model"]
+    dataset = config["dataset"]
+    validation = config["evaluation"]["validation"]
+    inputs = {
+        "root_seed": run["seed"],
+        "seed_stream_version": run["reproducibility"]["seed_stream_version"],
+        "validation_manifest_hash": config.get("validation_manifest_hash"),
+        "optimizer": training.get("optimizer"),
+        "learning_rate": training.get("resolved_learning_rate"),
+        "scheduler": training.get("scheduler"),
+        "warmup_steps": training.get("resolved_warmup_steps"),
+        "token_budget": training.get("token_budget"),
+        "batch_size_per_process": training.get("batch_size_per_process"),
+        "precision": training.get("resolved_mixed_precision"),
+        "context_length": model.get("context_length"),
+        "validation_interval_steps": validation.get("interval_steps"),
+        "validation_run_at_completion": validation.get("run_at_completion"),
+        "dataset_name": dataset.get("dataset_name"),
+        "dataset_config_name": dataset.get("dataset_config_name"),
+        "dataset_split": dataset.get("dataset_split"),
+        "tokenizer_name": model.get("tokenizer_name"),
+    }
+    return stable_hash(inputs), inputs

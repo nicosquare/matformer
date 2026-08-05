@@ -359,7 +359,7 @@ def parse_args(argv: list[str] | None = None):
         dest="granularities",
         help=(
             "Standalone baseline granularity to run. Repeat or use comma-separated "
-            "values. Defaults to s,m,l,xl."
+            "values. Defaults to the configured debug matrix baselines."
         ),
     )
     parser.add_argument(

@@ -220,13 +220,22 @@ class CatLlamaMLP(LlamaMLP):
             getattr(config, "granularities", MATFORMER_GRANULARITY_ORDER)
         )
         config_prefixes = getattr(config, "granularity_prefixes", None)
+        metadata_granularities = config_granularities
+        if (
+            config_prefixes is None
+            and set(config_granularities).issubset(MATFORMER_GRANULARITY_ORDER)
+            and config_granularities != MATFORMER_GRANULARITY_ORDER
+        ):
+            # Canonical concat blocks retain the full S/M/L/XL physical
+            # layout even when only a subset is sampled for the run.
+            metadata_granularities = MATFORMER_GRANULARITY_ORDER
         self.ffn_prefix_metadata = (
             [dict(entry) for entry in getattr(config, "ffn_prefix_metadata", [])]
             if getattr(config, "ffn_prefix_metadata", None)
             else get_ffn_prefix_metadata(
                 self.intermediate_size,
                 granularity_prefixes=config_prefixes,
-                granularities=config_granularities,
+                granularities=metadata_granularities,
             )
         )
         self.granularity_prefixes = {
@@ -254,7 +263,7 @@ class CatLlamaMLP(LlamaMLP):
             trained_granularities or config_granularities
         )
         max_trained_block_index = max(
-            MATFORMER_GRANULARITY_ORDER.index(granularity)
+            block_granularities.index(granularity)
             for granularity in self.trained_granularities
         )
         if max_trained_block_index >= len(self.ffn_concat_block_metadata):
@@ -377,7 +386,13 @@ class CatLlamaMLP(LlamaMLP):
 
     def configure_subnetwork(self, flag):
         self.current_granularity = flag
-        self.current_subset_blocks = granularity_concat_block_count(flag)
+        configured_granularities = tuple(
+            entry["name"] for entry in self.ffn_prefix_metadata
+        )
+        self.current_subset_blocks = granularity_concat_block_count(
+            flag,
+            granularities=configured_granularities,
+        )
         self.current_subset_hd = granularity_prefix_width(
             self.intermediate_size,
             flag,
@@ -385,7 +400,13 @@ class CatLlamaMLP(LlamaMLP):
         )
 
     def prefix_parameter_count(self, flag, trainable_only=False):
-        block_count = granularity_concat_block_count(flag)
+        configured_granularities = tuple(
+            entry["name"] for entry in self.ffn_prefix_metadata
+        )
+        block_count = granularity_concat_block_count(
+            flag,
+            granularities=configured_granularities,
+        )
         parameter_count = 0
 
         for block_index in range(block_count):

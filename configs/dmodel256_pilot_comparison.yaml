@@ -1,5 +1,10 @@
 # d_model=256 MatFormer-Llama/SwiGLU pilot comparison using a reduced
 # training-token budget.
+#
+# Granularity contract:
+# - Omitting model.granularity_mode preserves the canonical s/m/l/xl layout.
+# - Pilot launchers resolve model.granularities before creating standalone rows;
+#   they do not maintain a separate hard-coded label list.
 run:
   run_id: dmodel256-pilot-comparison-001
   phase_id: dmodel256_pilot_comparison
@@ -8,6 +13,10 @@ run:
   model_shape_label: dmodel256
   family_size_slug: 148m
   seed: 42
+  reproducibility:
+    mode: strict
+    seed_stream_version: 1
+    data_split_version: 1
   output_root: outputs
   continuation:
     enabled: true
@@ -37,8 +46,8 @@ training:
   token_budget: 100000000
   max_steps_cap: null
   batch_size_per_process: 4
-  learning_rate: 0.0003
-  learning_rate_scale_rule: linear
+  learning_rate: 0.001
+  learning_rate_scale_rule: none
   warmup_steps: 2000 # This flag overrules ratio. We set this for small experiments (e.g. up to 100M tokens), for larger experiments we set warmup_ratio instead (comment this)
   warmup_ratio: 0.01635
   # Pre-nested warmup is separate from scheduler warmup.
@@ -50,7 +59,6 @@ training:
     # Use epochs for longer runs or steps for short debug runs.
     unit: epochs
   gradient_clip_norm: 1.0
-  eval_interval: 500
   mixed_precision: bf16
   activation_checkpointing: true
   optimizer:
@@ -74,7 +82,13 @@ dataset:
   dataset_config_name: sample-10BT
   dataset_split: train
   dataset_phase: medium
-  sample_limit: null
+  # 100M sequence-token runs consume at most 97,660 examples on one GPU.
+  # Keep enough for that training path plus the 512-example validation holdout
+  # without materializing all 14.9M FineWeb sample-10BT rows into an Arrow file.
+  sample_limit: 100000
+  # Generated Arrow cache writes are unreliable on the cluster's Lustre mount.
+  # The bounded tokenized subset fits comfortably within the 64G job allocation.
+  tokenization_keep_in_memory: true
   preprocessing_notes: truncate_or_pad_to_context_length
 
 outputs:
@@ -96,7 +110,16 @@ monitoring:
   log_stage_events: true
 
 evaluation:
-  validation: true
+  validation:
+    enabled: true
+    interval_steps: 500
+    run_at_completion: true
+    holdout:
+      source: configured_dataset_split
+      examples: 512
+    trailing_summary_evaluations: 5
+  test:
+    enabled: false
   downstream_suite:
     - suite_id: minimal-downstream
       suite_type: downstream

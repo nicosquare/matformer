@@ -48,7 +48,20 @@ def heartbeat_stage(heartbeat_writer, stage: str, **fields: Any):
     heartbeat_writer.stage_start(stage, **fields)
     try:
         yield
-    finally:
+    except Exception as error:
+        stage_failed = getattr(heartbeat_writer, "stage_failed", None)
+        if stage_failed is not None:
+            try:
+                stage_failed(
+                    stage,
+                    error_type=type(error).__name__,
+                    error=str(error),
+                    **fields,
+                )
+            except Exception:
+                pass
+        raise
+    else:
         heartbeat_writer.stage_complete(stage, **fields)
 
 
@@ -221,6 +234,9 @@ class HeartbeatWriter:
 
     def stage_complete(self, stage: str, **fields: Any) -> Path:
         return self.emit("stage_complete", stage, **fields)
+
+    def stage_failed(self, stage: str, **fields: Any) -> Path:
+        return self.emit("stage_failed", stage, **fields)
 
     def heartbeat(self, stage: str, **fields: Any) -> Path:
         return self.emit("heartbeat", stage, **fields)
