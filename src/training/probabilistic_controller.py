@@ -501,6 +501,27 @@ class ProbabilisticController:
         self._state["sampling"]["generator_state"] = self._generator.get_state()
         return copy.deepcopy(self._state)
 
+    def transaction_snapshot(self) -> dict[str, Any]:
+        """Capture belief, window, journal, and controller-local RNG atomically."""
+
+        return self.state_dict()
+
+    def restore_transaction_snapshot(self, snapshot: Mapping[str, Any]) -> None:
+        restored = copy.deepcopy(dict(snapshot))
+        generator_state = restored["sampling"]["generator_state"]
+        self._generator.set_state(generator_state.cpu())
+        restored["sampling"]["generator_state"] = self._generator.get_state()
+        self._state = restored
+
+    def record_journal_commit(self, commit: Mapping[str, Any]) -> None:
+        """Attach durable journal provenance after an event append succeeds."""
+
+        journal = self._state["journal"]
+        if commit.get("path") is not None:
+            journal["path"] = str(commit["path"])
+        journal["last_committed_offset"] = int(commit["last_committed_offset"])
+        journal["last_committed_hash"] = str(commit["event_hash"])
+
     def _validate_objective(
         self,
         *,
@@ -554,6 +575,26 @@ class ProbabilisticController:
         return action
 
     def initialize_boundary(
+        self,
+        *,
+        boundary_step: int,
+        controller_objective: Any,
+        ordered_component_losses: Sequence[Any],
+        evaluation_target_tokens: int,
+    ) -> dict[str, Any]:
+        snapshot = self.transaction_snapshot()
+        try:
+            return self._initialize_boundary(
+                boundary_step=boundary_step,
+                controller_objective=controller_objective,
+                ordered_component_losses=ordered_component_losses,
+                evaluation_target_tokens=evaluation_target_tokens,
+            )
+        except Exception:
+            self.restore_transaction_snapshot(snapshot)
+            raise
+
+    def _initialize_boundary(
         self,
         *,
         boundary_step: int,
@@ -617,6 +658,28 @@ class ProbabilisticController:
             window["boundary_evaluation_status"] = "pending"
 
     def complete_boundary(
+        self,
+        *,
+        boundary_step: int,
+        controller_objective: Any,
+        ordered_component_losses: Sequence[Any],
+        evaluation_target_tokens: int,
+        training_will_continue: bool,
+    ) -> dict[str, Any]:
+        snapshot = self.transaction_snapshot()
+        try:
+            return self._complete_boundary(
+                boundary_step=boundary_step,
+                controller_objective=controller_objective,
+                ordered_component_losses=ordered_component_losses,
+                evaluation_target_tokens=evaluation_target_tokens,
+                training_will_continue=training_will_continue,
+            )
+        except Exception:
+            self.restore_transaction_snapshot(snapshot)
+            raise
+
+    def _complete_boundary(
         self,
         *,
         boundary_step: int,
@@ -701,6 +764,73 @@ class ProbabilisticController:
             event["next_action"] = copy.deepcopy(next_action)
         self._state["journal"]["event_count"] += 1
         return event
+
+    def fail(
+        self,
+        *,
+        boundary_step: int,
+        failing_stage: str,
+        error_category: str,
+        error_message: str,
+        offending_field: str | None = None,
+    ) -> dict[str, Any]:
+        """Enter the failed phase without changing belief or sampling state."""
+
+        window = self._state["window"]
+        last_valid_phase = str(window["phase"])
+        belief = self._state["belief"]
+        belief_hash = stable_hash(
+            {
+                "round_index": belief["round_index"],
+                "posterior_mean": belief["posterior_mean"].tolist(),
+                "posterior_covariance": belief["posterior_covariance"].tolist(),
+                "predictive_mean": (
+                    None
+                    if belief["predictive_mean"] is None
+                    else belief["predictive_mean"].tolist()
+                ),
+                "predictive_covariance": (
+                    None
+                    if belief["predictive_covariance"] is None
+                    else belief["predictive_covariance"].tolist()
+                ),
+            }
+        )
+        failure = {
+            "stage": str(failing_stage),
+            "error_category": str(error_category),
+            "error_message": str(error_message)[:500],
+            "offending_field": offending_field,
+            "last_valid_phase": last_valid_phase,
+            "belief_hash": belief_hash,
+            "journal_position": int(self._state["journal"]["event_count"]),
+            "posterior_updated": False,
+            "new_action_selected": False,
+        }
+        window.update(
+            phase="failed",
+            boundary_evaluation_status="failed",
+            terminal_status="failed",
+        )
+        self._state["failure"] = failure
+        self._state["journal"]["event_count"] += 1
+        return {
+            "schema_version": CONTROLLER_SCHEMA_VERSION,
+            "event_type": "controller_failure",
+            "boundary_step": int(boundary_step),
+            "window_index": int(window["window_index"]),
+            "action": copy.deepcopy(window.get("current_action")),
+            "failing_stage": failure["stage"],
+            "error_category": failure["error_category"],
+            "error_message": failure["error_message"],
+            "offending_field": offending_field,
+            "last_valid_phase": last_valid_phase,
+            "belief_hash": belief_hash,
+            "journal_position": failure["journal_position"],
+            "posterior_updated": False,
+            "new_action_selected": False,
+            "sample_count": int(self._state["sampling"]["sample_count"]),
+        }
 
     def finish_training(self) -> dict[str, Any] | None:
         window = self._state["window"]

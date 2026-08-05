@@ -399,7 +399,13 @@ def validate_probabilistic_controller_checkpoint_state(
         raise ConfigError(
             f"Bayesian non-failed checkpoint cannot contain failure provenance{location}"
         )
-    if phase == "initial_objective_pending":
+    failed_before_initial_objective = bool(
+        phase == "failed"
+        and isinstance(state.get("failure"), Mapping)
+        and state["failure"].get("last_valid_phase")
+        == "initial_objective_pending"
+    )
+    if phase == "initial_objective_pending" or failed_before_initial_objective:
         if (
             window["pre_window_objective"] is not None
             or window["ordered_pre_window_component_losses"] is not None

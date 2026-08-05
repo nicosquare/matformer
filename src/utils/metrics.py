@@ -17,6 +17,7 @@ from src.utils.config import (
     write_resolved_config,
 )
 from src.utils.artifact_io import (
+    append_jsonl_artifact,
     emit_artifact_event,
     remove_resolved_failure,
     resolved_artifact_io,
@@ -65,6 +66,21 @@ METRICS_COLUMNS = [
     "adaptive_sampler_previous_pattern",
     "adaptive_reward_summary",
     "adaptive_correction_penalty_summary",
+    "controller_method_family",
+    "controller_method_version",
+    "controller_strategy",
+    "controller_scope",
+    "controller_action",
+    "controller_window_index",
+    "controller_window_progress",
+    "controller_boundary_step",
+    "controller_latest_objective",
+    "controller_latest_reward",
+    "controller_latest_prediction_error",
+    "controller_manifest_hash",
+    "final_holdout_manifest_hash",
+    "controller_metrics_path",
+    "controller_summary_path",
     "reward",
     "correction_penalty",
     "loss",
@@ -1447,6 +1463,342 @@ def latest_metric_rows_by_granularity(
     }
 
 
+CONTROLLER_EVENT_TYPES = {
+    "initial_boundary",
+    "completed_window",
+    "terminal_incomplete",
+    "controller_failure",
+}
+
+
+def append_controller_event(
+    path: str | Path,
+    event: Mapping[str, Any],
+    *,
+    distributed_context: Any | None = None,
+    artifact_io: Mapping[str, Any] | None = None,
+    heartbeat_writer=None,
+    artifact_state: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Validate and append one committed controller lifecycle event."""
+
+    if not _should_write_shared_artifact(distributed_context):
+        return None
+    normalized = _controller_json_value(event)
+    _validate_controller_event(normalized)
+    return append_jsonl_artifact(
+        path,
+        normalized,
+        settings=artifact_io,
+        heartbeat_writer=heartbeat_writer,
+        state=artifact_state,
+    )
+
+
+def read_controller_events(path: str | Path) -> list[dict[str, Any]]:
+    journal_path = Path(path)
+    if not journal_path.exists():
+        return []
+    events = []
+    with journal_path.open("r", encoding="utf-8") as journal_file:
+        for line_number, line in enumerate(journal_file, start=1):
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise ArtifactError(
+                    f"Invalid controller journal JSON on line {line_number}"
+                ) from error
+            _validate_controller_event(event)
+            events.append(event)
+    return events
+
+
+def build_controller_summary(
+    *,
+    controller_state: Mapping[str, Any],
+    controller_events: Iterable[Mapping[str, Any]],
+    controller_metrics_path: str | Path,
+) -> dict[str, Any]:
+    """Aggregate the append-only journal without discarding final belief state."""
+
+    state = _controller_json_value(controller_state)
+    events = [_controller_json_value(event) for event in controller_events]
+    for event in events:
+        _validate_controller_event(event)
+    journal_path = Path(controller_metrics_path)
+    completed = [
+        event for event in events if event["event_type"] == "completed_window"
+    ]
+    evaluations = [
+        event
+        for event in events
+        if event["event_type"] in {"initial_boundary", "completed_window"}
+    ]
+    failures = [
+        event for event in events if event["event_type"] == "controller_failure"
+    ]
+    belief = state.get("belief", {})
+    covariance = belief.get("posterior_covariance")
+    window = state.get("window", {})
+    terminal_status = window.get("terminal_status", "continuing")
+    if terminal_status == "complete_boundary":
+        terminal_status = "complete"
+
+    return {
+        "schema_version": int(state.get("schema_version", 1)),
+        "method_family": state.get("method_family"),
+        "method_version": state.get("method_version"),
+        "strategy": state.get("strategy"),
+        "scope": state.get("scope"),
+        "ordered_granularities": list(state.get("ordered_granularities", [])),
+        "feature_schema": state.get("feature_schema"),
+        "probabilistic_inputs": state.get("probabilistic_inputs"),
+        "manifest_hashes": state.get("manifest_hashes"),
+        "decision_interval_steps": window.get("decision_interval_steps"),
+        "completed_observation_count": len(completed),
+        "controller_evaluation_count": len(evaluations),
+        "action_frequencies": controller_action_frequency_counts(events),
+        "final_posterior_mean": belief.get("posterior_mean"),
+        "final_posterior_covariance": covariance,
+        "uncertainty_summary": controller_uncertainty_summary(covariance),
+        "boundary_summaries": {
+            "objective": _scalar_summary(
+                [
+                    event.get("post_window_objective", event.get("controller_objective"))
+                    for event in evaluations
+                ]
+            ),
+            "reward": _scalar_summary([event.get("reward") for event in completed]),
+            "prediction_error": _scalar_summary(
+                [event.get("prediction_error") for event in completed]
+            ),
+        },
+        "terminal_window": {
+            "status": terminal_status,
+            "window_index": window.get("window_index"),
+            "completed_optimizer_steps": window.get("completed_optimizer_steps"),
+            "decision_interval_steps": window.get("decision_interval_steps"),
+        },
+        "resume_provenance": state.get("resume"),
+        "failure_summary": failures[-1] if failures else state.get("failure"),
+        "controller_metrics_path": str(journal_path),
+        "controller_metrics_hash": (
+            hashlib.sha256(journal_path.read_bytes()).hexdigest()
+            if journal_path.exists()
+            else hashlib.sha256(b"").hexdigest()
+        ),
+    }
+
+
+def write_controller_summary(
+    output_dir: str | Path,
+    summary: Mapping[str, Any],
+    *,
+    distributed_context: Any | None = None,
+    artifact_io: Mapping[str, Any] | None = None,
+    heartbeat_writer=None,
+    artifact_state: dict[str, Any] | None = None,
+) -> Path | None:
+    return write_json_artifact(
+        Path(output_dir) / "controller_summary.json",
+        _controller_json_value(summary),
+        distributed_context=distributed_context,
+        artifact_io=artifact_io,
+        heartbeat_writer=heartbeat_writer,
+        artifact_state=artifact_state,
+    )
+
+
+def controller_action_frequency_counts(
+    events: Iterable[Mapping[str, Any]],
+) -> dict[str, int]:
+    event_list = list(events)
+    counts: dict[str, int] = {}
+    for event in event_list:
+        for label in event.get("ordered_granularities", []):
+            counts.setdefault(str(label), 0)
+    for event in event_list:
+        if event.get("event_type") != "completed_window":
+            continue
+        action = event.get("action")
+        if not isinstance(action, Mapping):
+            continue
+        label = action.get("global_granularity")
+        if label is not None:
+            counts[str(label)] = counts.get(str(label), 0) + 1
+    if not counts:
+        for event in event_list:
+            action = event.get("selected_action")
+            if isinstance(action, Mapping) and action.get("global_granularity") is not None:
+                label = str(action["global_granularity"])
+                counts[label] = counts.get(label, 0) + 1
+    return counts
+
+
+def controller_uncertainty_summary(covariance: Any) -> dict[str, Any]:
+    matrix = _controller_json_value(covariance)
+    if not isinstance(matrix, list) or not matrix:
+        return {}
+    diagonal = []
+    for index, row in enumerate(matrix):
+        if not isinstance(row, list) or index >= len(row):
+            return {}
+        variance = float(row[index])
+        diagonal.append(max(variance, 0.0) ** 0.5)
+    return {
+        "posterior_stddev": diagonal,
+        "mean_posterior_stddev": statistics.fmean(diagonal),
+        "min_posterior_stddev": min(diagonal),
+        "max_posterior_stddev": max(diagonal),
+        "posterior_covariance_trace": sum(value * value for value in diagonal),
+    }
+
+
+def build_compact_controller_metric_fields(
+    controller_state: Mapping[str, Any] | None,
+    latest_event: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not isinstance(controller_state, Mapping):
+        return {}
+    window = controller_state.get("window", {})
+    manifests = controller_state.get("manifest_hashes", {})
+    action = window.get("current_action")
+    if not isinstance(action, Mapping) and isinstance(latest_event, Mapping):
+        action = latest_event.get("action") or latest_event.get("selected_action")
+    event = latest_event if isinstance(latest_event, Mapping) else {}
+    objective = event.get("post_window_objective", event.get("controller_objective"))
+    return {
+        "controller_method_family": controller_state.get("method_family"),
+        "controller_method_version": controller_state.get("method_version"),
+        "controller_strategy": controller_state.get("strategy"),
+        "controller_scope": controller_state.get("scope"),
+        "controller_action": _compact_action_summary(action),
+        "controller_window_index": window.get("window_index"),
+        "controller_window_progress": window.get("completed_optimizer_steps"),
+        "controller_boundary_step": window.get("boundary_step"),
+        "controller_latest_objective": objective,
+        "controller_latest_reward": event.get("reward"),
+        "controller_latest_prediction_error": event.get("prediction_error"),
+        "controller_manifest_hash": manifests.get("controller_manifest_hash"),
+        "final_holdout_manifest_hash": manifests.get("final_holdout_manifest_hash"),
+        "controller_metrics_path": controller_state.get("journal", {}).get("path"),
+        "controller_summary_path": "controller_summary.json",
+    }
+
+
+def format_controller_lifecycle_log(event: Mapping[str, Any]) -> str:
+    event_type = str(event.get("event_type"))
+    action = event.get("selected_action") or event.get("action")
+    fields = [
+        "[probabilistic-controller]",
+        f"event={event_type}",
+        f"method={event.get('method_family')}",
+        f"scope={event.get('scope')}",
+        f"boundary_step={event.get('boundary_step', event.get('boundary_step_end'))}",
+        f"window_index={event.get('window_index')}",
+        f"action={_compact_action_summary(action)}",
+    ]
+    if event_type == "initial_boundary":
+        fields.append(f"objective={event.get('controller_objective')}")
+    elif event_type == "completed_window":
+        fields.extend(
+            [
+                f"pre_objective={event.get('pre_window_objective')}",
+                f"post_objective={event.get('post_window_objective')}",
+                f"reward={event.get('reward')}",
+                f"prediction_error={event.get('prediction_error')}",
+            ]
+        )
+    elif event_type == "terminal_incomplete":
+        fields.extend(
+            [
+                "progress="
+                f"{event.get('completed_optimizer_steps')}/"
+                f"{event.get('decision_interval_steps')}",
+                f"pre_objective={event.get('pre_window_objective')}",
+                f"observation_emitted={event.get('observation_emitted')}",
+            ]
+        )
+    elif event_type == "controller_failure":
+        fields.extend(
+            [
+                f"failing_stage={event.get('failing_stage')}",
+                f"error_category={event.get('error_category')}",
+                f"posterior_updated={event.get('posterior_updated')}",
+                f"new_action_selected={event.get('new_action_selected')}",
+            ]
+        )
+    fields.append(f"uncertainty={_compact_uncertainty(event.get('uncertainty_summary'))}")
+    return " ".join(fields)
+
+
+def _validate_controller_event(event: Mapping[str, Any]) -> None:
+    event_type = event.get("event_type")
+    if event_type not in CONTROLLER_EVENT_TYPES:
+        raise ArtifactError(f"Unknown controller event type: {event_type!r}")
+    required = {
+        "schema_version",
+        "event_type",
+        "boundary_step",
+        "window_index",
+    }
+    missing = sorted(field for field in required if field not in event)
+    if missing:
+        raise ArtifactError(
+            f"Controller {event_type} event missing required fields: {missing}"
+        )
+    if event_type == "initial_boundary" and "reward" in event:
+        raise ArtifactError("initial boundary event must not contain reward")
+    if event_type == "controller_failure":
+        if event.get("posterior_updated") is not False:
+            raise ArtifactError("failure event posterior_updated must be false")
+        if event.get("new_action_selected") is not False:
+            raise ArtifactError("failure event new_action_selected must be false")
+        if "posterior_mean" in event or "posterior_covariance" in event:
+            raise ArtifactError("failure event must not contain posterior state")
+
+
+def _controller_json_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _controller_json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_controller_json_value(item) for item in value]
+    if hasattr(value, "tolist"):
+        return _controller_json_value(value.tolist())
+    if isinstance(value, Path):
+        return str(value)
+    return value
+
+
+def _compact_action_summary(action: Any) -> Any:
+    if not isinstance(action, Mapping):
+        return None
+    if action.get("global_granularity") is not None:
+        return str(action["global_granularity"])
+    block_actions = action.get("block_granularities")
+    return ",".join(str(label) for label in block_actions) if block_actions else None
+
+
+def _compact_uncertainty(summary: Any) -> Any:
+    if not isinstance(summary, Mapping):
+        return None
+    return summary.get("mean_posterior_stddev")
+
+
+def _scalar_summary(values: Iterable[Any]) -> dict[str, Any]:
+    finite_values = [float(value) for value in values if value is not None]
+    if not finite_values:
+        return {"count": 0, "mean": None, "min": None, "max": None}
+    return {
+        "count": len(finite_values),
+        "mean": statistics.fmean(finite_values),
+        "min": min(finite_values),
+        "max": max(finite_values),
+    }
+
+
 def write_json_artifact(
     path: str | Path,
     payload: Mapping[str, Any],
@@ -1654,6 +2006,21 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "adaptive_sampler_previous_pattern": None,
         "adaptive_reward_summary": None,
         "adaptive_correction_penalty_summary": None,
+        "controller_method_family": None,
+        "controller_method_version": None,
+        "controller_strategy": None,
+        "controller_scope": None,
+        "controller_action": None,
+        "controller_window_index": None,
+        "controller_window_progress": None,
+        "controller_boundary_step": None,
+        "controller_latest_objective": None,
+        "controller_latest_reward": None,
+        "controller_latest_prediction_error": None,
+        "controller_manifest_hash": None,
+        "final_holdout_manifest_hash": None,
+        "controller_metrics_path": None,
+        "controller_summary_path": None,
         "reward": None,
         "correction_penalty": None,
         "model_family_slug": None,

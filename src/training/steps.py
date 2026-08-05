@@ -61,6 +61,7 @@ from src.utils.heartbeats import (
     maybe_emit_training_heartbeat,
 )
 from src.utils.metrics import (
+    build_compact_controller_metric_fields,
     json_artifact_value,
     summarize_runtime_granularity_pattern_from_config,
     write_json_artifact,
@@ -218,6 +219,8 @@ def train_for_steps(
     stage_name: str = "training",
     metrics_journal=None,
     probabilistic_controller=None,
+    probabilistic_boundary_callback=None,
+    probabilistic_completion_callback=None,
 ) -> list[dict[str, Any]]:
     training = config["training"]
     run = config["run"]
@@ -340,16 +343,10 @@ def train_for_steps(
                             probabilistic_controller,
                         )
                     )
-                    if supports_layer_granularities:
-                        configure_model_layer_granularities(
-                            model,
-                            selected_layer_granularities,
-                        )
-                    else:
-                        configure_model_granularity(
-                            model,
-                            selected_layer_granularities[0],
-                        )
+                    configure_model_granularity(
+                        model,
+                        selected_layer_granularities[0],
+                    )
                     step_runtime_pattern_summary, step_correction_context = _runtime_granularity_artifacts(
                         config,
                         model,
@@ -503,6 +500,21 @@ def train_for_steps(
                 if probabilistic_controller is not None:
                     probabilistic_controller.record_successful_optimizer_step()
                 scheduler.step()
+                run_state.update(
+                    {
+                        "last_completed_step": step,
+                        "step": step,
+                        "epoch": current_epoch,
+                        "batch_index": batch_index_in_epoch + 1,
+                        "tokens_seen": tokens_seen,
+                        "content_tokens_seen": content_tokens_seen,
+                    }
+                )
+                if probabilistic_boundary_callback is not None:
+                    probabilistic_boundary_callback(
+                        step=step,
+                        tokens_seen=tokens_seen,
+                    )
 
                 elapsed = time.time() - start_time
                 peak_memory_bytes = current_peak_memory_bytes(device)
@@ -524,9 +536,10 @@ def train_for_steps(
                     run_state.pop("adaptive_reward_summary", None)
                     run_state.pop("adaptive_correction_penalty_summary", None)
                 tokens_per_second = tokens_seen / elapsed if elapsed > 0 else None
-                adaptive_artifacts = build_adaptive_sampler_artifact_fields(
+                adaptive_artifacts = _runtime_sampler_artifact_fields(
                     config,
                     run_state,
+                    probabilistic_controller,
                 )
                 step_metric_rows = []
                 run_state.update(
@@ -643,9 +656,10 @@ def train_for_steps(
                         content_tokens_seen=content_tokens_seen,
                         granularity_pattern_summary=validation_runtime_pattern_summary,
                         correction_context=validation_correction_context,
-                        adaptive_artifacts=build_adaptive_sampler_artifact_fields(
+                        adaptive_artifacts=_runtime_sampler_artifact_fields(
                             config,
                             run_state,
+                            probabilistic_controller,
                         ),
                     )
                     _record_metric_rows(
@@ -683,6 +697,8 @@ def train_for_steps(
             if not made_progress:
                 break
 
+    if stage_name == "training" and probabilistic_completion_callback is not None:
+        probabilistic_completion_callback(step=step, tokens_seen=tokens_seen)
     if stage_name == "training":
         append_final_validation_if_needed(
             metrics_rows,
@@ -701,6 +717,7 @@ def train_for_steps(
             run_state=run_state,
             monitoring_session=monitoring_session,
             metrics_journal=metrics_journal,
+            probabilistic_controller=probabilistic_controller,
         )
     training_checkpointing.maybe_write_latest_checkpoint(
         config,
@@ -717,6 +734,22 @@ def train_for_steps(
         metrics_journal.flush()
 
     return metrics_rows
+
+
+def _runtime_sampler_artifact_fields(
+    config: Mapping[str, Any],
+    run_state: Mapping[str, Any],
+    probabilistic_controller=None,
+) -> dict[str, Any]:
+    fields = build_adaptive_sampler_artifact_fields(config, run_state)
+    if probabilistic_controller is not None:
+        fields.update(
+            build_compact_controller_metric_fields(
+                probabilistic_controller.state_dict(),
+                run_state.get("latest_controller_event"),
+            )
+        )
+    return fields
 
 
 def select_training_granularities(
@@ -922,6 +955,7 @@ def append_final_validation_if_needed(
     run_state: dict[str, Any] | None = None,
     monitoring_session=None,
     metrics_journal=None,
+    probabilistic_controller=None,
 ) -> None:
     validation_config = config.get("evaluation", {}).get("validation", {})
     if not validation_config.get("run_at_completion", False):
@@ -975,9 +1009,10 @@ def append_final_validation_if_needed(
         content_tokens_seen=content_tokens_seen,
         granularity_pattern_summary=runtime_pattern_summary,
         correction_context=correction_context,
-        adaptive_artifacts=build_adaptive_sampler_artifact_fields(
+        adaptive_artifacts=_runtime_sampler_artifact_fields(
             config,
             run_state if run_state is not None else {},
+            probabilistic_controller,
         ),
     )
     _record_metric_rows(
