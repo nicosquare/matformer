@@ -44,8 +44,6 @@ SIZE_PLOT_PANELS_WITH_SAMPLING = [
     ("nested-random", "concat", "global"),
     ("nested-random", "slicing", "per_block"),
     ("nested-random", "concat", "per_block"),
-    ("nested-random", "slicing", "adaptive_per_block_thompson"),
-    ("nested-random", "concat", "adaptive_per_block_thompson"),
     ("nested-random", "slicing", "probabilistic_global_thompson"),
     ("nested-random", "concat", "probabilistic_global_thompson"),
     ("nested-random", "slicing", "probabilistic_per_block_thompson"),
@@ -58,13 +56,11 @@ SIZE_PLOT_PANELS_WITH_SAMPLING = [
 SCALING_GROUP_COLORS = {
     "nested-random / slicing / global": "tab:blue",
     "nested-random / slicing / per_block": "tab:cyan",
-    "nested-random / slicing / adaptive_per_block_thompson": "tab:green",
     "nested-random / slicing / probabilistic_global_thompson": "tab:blue",
     "nested-random / slicing / probabilistic_per_block_thompson": "tab:cyan",
     "nested-random / slicing / adaptive_per_block_ucb": "tab:olive",
     "nested-random / concat / global": "tab:orange",
     "nested-random / concat / per_block": "tab:red",
-    "nested-random / concat / adaptive_per_block_thompson": "tab:purple",
     "nested-random / concat / probabilistic_global_thompson": "tab:orange",
     "nested-random / concat / probabilistic_per_block_thompson": "tab:red",
     "nested-random / concat / adaptive_per_block_ucb": "tab:pink",
@@ -80,7 +76,6 @@ SCALING_CORRECTION_STYLES = {
 SCALING_SAMPLING_TONES = {
     "global": 0.0,
     "per_block": 0.28,
-    "adaptive_per_block_thompson": 0.4,
     "probabilistic_global_thompson": 0.16,
     "probabilistic_per_block_thompson": 0.34,
     "adaptive_per_block_ucb": 0.55,
@@ -88,7 +83,6 @@ SCALING_SAMPLING_TONES = {
 SCALING_SAMPLING_MARKERS = {
     "global": "o",
     "per_block": "D",
-    "adaptive_per_block_thompson": "P",
     "probabilistic_global_thompson": "*",
     "probabilistic_per_block_thompson": "v",
     "adaptive_per_block_ucb": "X",
@@ -134,8 +128,6 @@ PLOT_STYLE_PRESETS = {
             "nested-random / concat / global": "nested-random / concat / global",
             "nested-random / slicing / per_block": "nested-random / slicing / per_block",
             "nested-random / concat / per_block": "nested-random / concat / per_block",
-            "nested-random / slicing / adaptive_per_block_thompson": "nested-random / slicing / adaptive_per_block_thompson",
-            "nested-random / concat / adaptive_per_block_thompson": "nested-random / concat / adaptive_per_block_thompson",
             "nested-random / slicing / adaptive_per_block_ucb": "nested-random / slicing / adaptive_per_block_ucb",
             "nested-random / concat / adaptive_per_block_ucb": "nested-random / concat / adaptive_per_block_ucb",
         },
@@ -144,8 +136,6 @@ PLOT_STYLE_PRESETS = {
             "nested-random / concat / global": "tab:orange",
             "nested-random / slicing / per_block": "tab:cyan",
             "nested-random / concat / per_block": "tab:red",
-            "nested-random / slicing / adaptive_per_block_thompson": "tab:green",
-            "nested-random / concat / adaptive_per_block_thompson": "tab:purple",
             "nested-random / slicing / adaptive_per_block_ucb": "tab:olive",
             "nested-random / concat / adaptive_per_block_ucb": "tab:pink",
             "standalone": "tab:brown",
@@ -300,10 +290,16 @@ def generate_figures(
     figure_paths = []
     scaling_rows = read_csv_artifacts(input_root, "scaling_results.csv")
     scaling_rows = enrich_scaling_metadata_from_run_config(input_root, scaling_rows)
+    scaling_rows = filter_plot_rows(scaling_rows)
     if refresh_counts:
         scaling_rows = refresh_scaling_parameter_counts(input_root, scaling_rows)
     task_result_rows = read_csv_artifacts(input_root, "task_results.csv")
     consistency_rows = read_csv_artifacts(input_root, "consistency_results.csv")
+    consistency_rows = enrich_metrics_metadata_from_run_config(
+        input_root,
+        consistency_rows,
+    )
+    consistency_rows = filter_plot_rows(consistency_rows)
 
     if scaling_rows and task_result_rows:
         from src.evaluation.validation import aggregate_scaling_summary
@@ -380,6 +376,7 @@ def generate_figures(
             row_filter=validation_split_filter,
         )
         metrics_rows = enrich_metrics_metadata_from_run_config(input_root, metrics_rows)
+        metrics_rows = filter_plot_rows(metrics_rows)
         figure_paths.extend(
             plot_validation_loss_over_tokens_by_experiment(
                 metrics_rows,
@@ -399,6 +396,7 @@ def generate_figures(
     else:
         metrics_rows = read_csv_artifacts(input_root, "metrics.csv")
         metrics_rows = enrich_metrics_metadata_from_run_config(input_root, metrics_rows)
+        metrics_rows = filter_plot_rows(metrics_rows)
         validation_metrics_rows = [
             row for row in metrics_rows if validation_split_filter(row)
         ]
@@ -434,6 +432,21 @@ def generate_figures(
             plot_consistency_results(
                 consistency_rows,
                 output_dir / "consistency_vs_size.png",
+                dpi=dpi,
+            )
+        )
+
+    from src.evaluation.reporting import (
+        controller_timeline_filename,
+        plot_selected_granularity_over_tokens,
+    )
+    from src.evaluation.reporting_io import iter_controller_granularity_timelines
+
+    for timeline in iter_controller_granularity_timelines(input_root):
+        figure_paths.append(
+            plot_selected_granularity_over_tokens(
+                timeline,
+                output_dir / controller_timeline_filename(timeline.run_id),
                 dpi=dpi,
             )
         )
@@ -1530,7 +1543,6 @@ def validation_comparison_method_key(row: dict[str, str]) -> str | None:
     if sampling_label not in {
         "global",
         "per_block",
-        "adaptive_per_block_thompson",
         "adaptive_per_block_ucb",
         "probabilistic_global_thompson",
         "probabilistic_per_block_thompson",
@@ -1547,8 +1559,6 @@ def validation_comparison_method_order(rows: list[dict[str, str]]) -> list[str]:
         "nested-random / concat / global",
         "nested-random / slicing / per_block",
         "nested-random / concat / per_block",
-        "nested-random / slicing / adaptive_per_block_thompson",
-        "nested-random / concat / adaptive_per_block_thompson",
         "nested-random / slicing / probabilistic_global_thompson",
         "nested-random / concat / probabilistic_global_thompson",
         "nested-random / slicing / probabilistic_per_block_thompson",
@@ -1576,7 +1586,6 @@ def validation_comparison_styles(method_keys: list[str]) -> dict[str, dict[str, 
     sampling_linestyles = {
         "global": "-",
         "per_block": "--",
-        "adaptive_per_block_thompson": "-.",
         "probabilistic_global_thompson": "-",
         "probabilistic_per_block_thompson": "--",
         "adaptive_per_block_ucb": ":",
@@ -1584,7 +1593,6 @@ def validation_comparison_styles(method_keys: list[str]) -> dict[str, dict[str, 
     sampling_markers = {
         "global": "o",
         "per_block": "s",
-        "adaptive_per_block_thompson": "^",
         "probabilistic_global_thompson": "*",
         "probabilistic_per_block_thompson": "v",
         "adaptive_per_block_ucb": "D",
@@ -2357,6 +2365,26 @@ def _probabilistic_sampling_label(row: dict[str, str]) -> str | None:
     if scope == "global":
         return "probabilistic_global_thompson"
     return "probabilistic_per_block_thompson"
+
+
+def is_legacy_heuristic_thompson_row(row: dict[str, Any]) -> bool:
+    resolved_sampling_mode = row.get("resolved_sampling_mode")
+    if resolved_sampling_mode in (None, ""):
+        resolved_sampling_mode = row.get("granularity_sampling_mode")
+    normalized_mode = str(resolved_sampling_mode or "").strip().lower()
+    if normalized_mode != "adaptive_per_block":
+        return False
+
+    if adaptive_sampler_strategy_for_row(row) != "thompson":
+        return False
+
+    return _probabilistic_sampling_label(row) is None
+
+
+def filter_plot_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Exclude historical heuristic-Thompson artifacts from figures."""
+
+    return [row for row in rows if not is_legacy_heuristic_thompson_row(row)]
 
 
 def adaptive_sampler_strategy_for_row(row: dict[str, str]) -> str | None:

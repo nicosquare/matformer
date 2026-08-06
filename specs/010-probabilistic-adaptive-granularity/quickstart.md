@@ -3,6 +3,10 @@
 Commands below describe the expected workflow after implementation. Bayesian
 fixtures are opt-in and do not expand the default pilot queue.
 
+Commands that load a tokenizer or dataset require Hugging Face network access
+or an already populated, writable cache. Use the controlled workflow in
+section 12 when validating in an offline or restricted environment.
+
 ## 1. Inspect Bayesian global resolution
 
 ```bash
@@ -11,7 +15,27 @@ python train.py \
   --preflight
 ```
 
-Confirm preflight reports:
+The preflight output summarizes reproducibility and comparison-control inputs.
+To inspect the complete normalized Bayesian method mapping without loading a
+dataset, run:
+
+```bash
+python -c '
+import json
+from src.utils.config import resolve_run_config
+
+config = resolve_run_config(
+    "tests/fixtures/probabilistic_adaptive_global_smoke.yaml"
+)
+print(json.dumps({
+    "granularity_sampling_mode": config["model"]["granularity_sampling_mode"],
+    "adaptive_sampler_strategy": config["model"]["adaptive_sampler_strategy"],
+    "adaptive_controller": config["model"]["adaptive_controller"],
+}, indent=2, sort_keys=True))
+'
+```
+
+Confirm the resolved mapping contains:
 
 - `granularity_sampling_mode=adaptive_global`;
 - `adaptive_sampler_strategy=thompson`;
@@ -32,8 +56,10 @@ python train.py \
   --preflight
 ```
 
-Expected result: a migration-specific error listing missing Bayesian controller
-or data-role inputs.
+Expected result for this fixture: a migration-specific error identifying the
+legacy adaptive-sampler fields that cannot be mixed with the Bayesian
+controller. Other incomplete Thompson configurations report their missing
+Bayesian controller or data-role inputs.
 
 The explicit UCB regression remains valid:
 
@@ -85,7 +111,8 @@ python train.py \
   --config tests/fixtures/probabilistic_adaptive_global_smoke.yaml \
   --override model.adaptive_controller.decision_interval_steps=2 \
   --override training.max_steps=4 \
-  --override run.run_id=bayesian-global-smoke
+  --override run.run_id=bayesian-global-smoke \
+  --output-dir outputs/bayesian-global-smoke
 ```
 
 Inspect:
@@ -132,7 +159,8 @@ python train.py \
   --config tests/fixtures/probabilistic_adaptive_per_block_smoke.yaml \
   --override model.adaptive_controller.decision_interval_steps=2 \
   --override training.max_steps=6 \
-  --override run.run_id=bayesian-per-block-smoke
+  --override run.run_id=bayesian-per-block-smoke \
+  --output-dir outputs/bayesian-per-block-smoke
 ```
 
 Confirm the saved feature schema has dimension `1 + B(|G|-1)`, complete
@@ -189,8 +217,10 @@ python -m json.tool outputs/bayesian-global-smoke/final_holdout_results.json
 ```
 
 The result must record the fixed final manifest hash, checkpoint-selection
-provenance, ordered per-granularity target-token-weighted losses, and uniform
-average. It must not modify controller observations or checkpoint selection.
+provenance, ordered per-granularity target-token-weighted losses, uniform
+average, independent result hash, and the verified run-summary,
+controller-summary, and controller-journal hashes. It must not modify
+controller observations or checkpoint selection.
 
 ## 11. Run the compatibility matrix
 
@@ -201,8 +231,57 @@ pytest \
   tests/test_artifacts.py \
   tests/test_reporting.py \
   tests/test_training_smoke.py \
+  tests/test_matformer_prefixes.py \
+  tests/test_baseline_matching.py \
   tests/test_pilot_comparison.py
 ```
 
 Random global, random per-block, UCB, nested-all, standalone, correction,
 nonadaptive checkpointing, and the default pilot queue must remain unchanged.
+
+## 12. Run the controlled end-to-end workflow
+
+When live Hugging Face data access is unavailable, run the deterministic
+workflow coverage that exercises global boundaries, exact resume, additive
+per-block profiles, provenance classification, and post-training final-holdout
+evaluation without external downloads:
+
+```bash
+pytest -q \
+  tests/test_training_smoke.py::test_probabilistic_adaptive_global_boundary_reward_action_and_logs \
+  tests/test_probabilistic_controller_resume.py::test_fresh_and_resumed_controller_match_from_inside_window_and_exact_boundary \
+  tests/test_training_smoke.py::test_probabilistic_adaptive_per_block_uses_fixed_profiles_and_shared_rewards \
+  tests/test_artifacts.py::test_probabilistic_artifacts_preserve_end_to_end_controller_provenance \
+  tests/test_reporting.py::test_reporting_uses_explicit_provenance_to_distinguish_bayesian_and_legacy_thompson \
+  tests/test_phase2_finalize.py::test_final_holdout_requires_completed_run_and_resolves_checkpoint_fallback \
+  tests/test_phase2_finalize.py::test_final_holdout_rejects_manifest_and_checkpoint_provenance_mismatches \
+  tests/test_phase2_finalize.py::test_final_holdout_evaluates_all_granularities_deterministically_and_is_non_mutating
+```
+
+This controlled workflow verifies method behavior and artifact boundaries. It
+does not replace a live dataset-backed smoke run when network/cache access is
+available.
+
+## 13. Generate controller granularity timelines
+
+The existing figure command now discovers Bayesian controller journals
+automatically; its CLI is unchanged:
+
+```bash
+python scripts/make_figures.py --input outputs --output outputs/figures
+```
+
+Each valid Bayesian global or per-block run with at least one confirmed window
+adds:
+
+```text
+selected_granularity_over_tokens_<run-id>.png
+```
+
+The horizontal axis is planned budget tokens seen, clipped to the configured
+token budget. Global controllers use one `all blocks` row; per-block
+controllers use 1-based transformer-block rows. Colors follow the saved
+`ordered_granularities`. Completed windows and explicit terminal partial
+windows are shown, while warmup and uncommitted active-window regions remain
+blank. A malformed run emits a warning and does not prevent figures for other
+runs.

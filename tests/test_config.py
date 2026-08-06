@@ -468,6 +468,75 @@ def test_probabilistic_adaptive_decision_interval_defaults_to_50(tmp_path):
     assert resolved["model"]["adaptive_controller"]["decision_interval_steps"] == 50
 
 
+@pytest.mark.parametrize(
+    "sampling_mode, expected_scope, expected_dimension",
+    [
+        ("adaptive_global", "global", 4),
+        ("adaptive_per_block", "per_block", 49),
+    ],
+)
+def test_bayesian_thompson_preset_resolves_controller_and_data_roles(
+    sampling_mode,
+    expected_scope,
+    expected_dimension,
+):
+    resolved = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        overrides=[
+            f"model.granularity_sampling_mode={sampling_mode}",
+            "model.adaptive_sampler_strategy=thompson",
+            "model.adaptive_controller.preset=bayesian_thompson",
+        ],
+    )
+
+    controller = resolved["model"]["adaptive_controller"]
+    assert controller["preset"] == "bayesian_thompson"
+    assert controller["preset_registry_path"].endswith(
+        "configs/presets/adaptive_controller/bayesian_thompson.yaml"
+    )
+    assert controller["scope"] == expected_scope
+    assert controller["coefficient_dimension"] == expected_dimension
+    assert controller["decision_interval_steps"] == 50
+    assert controller["prior_mean_input"] == 0.0
+    assert controller["prior_covariance_input"] == 1.0
+    assert controller["observation_noise_variance"] == 0.01
+    assert controller["process_noise_covariance_input"] == 0.0001
+    assert resolved["evaluation"]["adaptive_controller"]["examples"] == 128
+    assert resolved["evaluation"]["final_holdout"]["examples"] == 512
+
+
+def test_bayesian_thompson_preset_allows_explicit_parameter_overrides():
+    resolved = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        overrides=[
+            "model.granularity_sampling_mode=adaptive_global",
+            "model.adaptive_sampler_strategy=thompson",
+            "model.adaptive_controller.preset=bayesian_thompson",
+            "model.adaptive_controller.decision_interval_steps=25",
+            "model.adaptive_controller.prior_covariance=2.0",
+        ],
+    )
+
+    controller = resolved["model"]["adaptive_controller"]
+    assert controller["decision_interval_steps"] == 25
+    assert controller["prior_covariance_input"] == 2.0
+
+
+def test_unknown_bayesian_controller_preset_fails_before_training():
+    with pytest.raises(
+        ConfigError,
+        match=r"Unknown model\.adaptive_controller\.preset='missing'",
+    ):
+        resolve_run_config(
+            "configs/dmodel256_pilot_comparison.yaml",
+            overrides=[
+                "model.granularity_sampling_mode=adaptive_global",
+                "model.adaptive_sampler_strategy=thompson",
+                "model.adaptive_controller.preset=missing",
+            ],
+        )
+
+
 def test_probabilistic_adaptive_normalizes_scalar_gaussian_inputs_to_float64_shape():
     resolved = _resolve_probabilistic_fixture(
         "tests/fixtures/probabilistic_adaptive_global_smoke.yaml"

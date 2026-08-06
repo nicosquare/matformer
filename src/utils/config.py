@@ -1611,7 +1611,6 @@ def _resolve_legacy_adaptive_sampler_defaults(
 
 def _resolve_bayesian_adaptive_configuration(config: dict[str, Any]) -> None:
     model = config["model"]
-    evaluation = config.setdefault("evaluation", {})
     sampling_mode = model["granularity_sampling_mode"]
 
     legacy_fields = [
@@ -1636,6 +1635,8 @@ def _resolve_bayesian_adaptive_configuration(config: dict[str, Any]) -> None:
             "model.adaptive_controller"
         )
     controller = copy.deepcopy(dict(raw_controller))
+    controller = _resolve_bayesian_controller_preset(config, controller)
+    evaluation = config.setdefault("evaluation", {})
     required_controller_fields = (
         "prior_mean",
         "prior_covariance",
@@ -1768,6 +1769,54 @@ def _resolve_bayesian_adaptive_configuration(config: dict[str, Any]) -> None:
     model["adaptive_controller"] = controller
     evaluation["adaptive_controller"] = controller_role
     evaluation["final_holdout"] = final_holdout_role
+
+
+def _resolve_bayesian_controller_preset(
+    config: dict[str, Any],
+    controller: dict[str, Any],
+) -> dict[str, Any]:
+    preset_name = controller.get("preset")
+    if preset_name in (None, ""):
+        return controller
+
+    if not isinstance(preset_name, str):
+        raise ConfigError("model.adaptive_controller.preset must be a string")
+
+    preset_name = preset_name.strip()
+    if not preset_name:
+        raise ConfigError(
+            "model.adaptive_controller.preset must be a non-empty string"
+        )
+
+    preset_path = (
+        PRESET_REGISTRY_ROOT / "adaptive_controller" / f"{preset_name}.yaml"
+    )
+    preset = _load_preset_registry_entry(
+        preset_path,
+        preset_name,
+        preset_field="model.adaptive_controller.preset",
+    )
+    preset_evaluation = preset.get("evaluation", {})
+    if not isinstance(preset_evaluation, Mapping):
+        raise ConfigError(
+            f"Preset registry entry {preset_path} must define evaluation as a mapping"
+        )
+
+    evaluation = config.setdefault("evaluation", {})
+    if not isinstance(evaluation, dict):
+        raise ConfigError("evaluation must be a mapping")
+    config["evaluation"] = _deep_merge_dicts(preset_evaluation, evaluation)
+
+    configured_controller = {
+        key: value for key, value in controller.items() if key != "preset"
+    }
+    resolved_controller = _deep_merge_dicts(
+        preset.get("kwargs", {}),
+        configured_controller,
+    )
+    resolved_controller["preset"] = preset_name
+    resolved_controller["preset_registry_path"] = str(preset_path)
+    return resolved_controller
 
 
 def _resolve_fixed_bayesian_data_role(
@@ -3056,10 +3105,12 @@ def _resolve_training_optimizer_preset(
 def _load_preset_registry_entry(
     preset_path: Path,
     preset_name: str,
+    *,
+    preset_field: str = "training.optimizer.preset",
 ) -> dict[str, Any]:
     if not preset_path.is_file():
         raise ConfigError(
-            f"Unknown training.optimizer.preset={preset_name!r}; "
+            f"Unknown {preset_field}={preset_name!r}; "
             f"missing registry file: {preset_path}"
         )
 

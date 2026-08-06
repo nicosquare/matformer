@@ -1,0 +1,20 @@
+name: bayesian_thompson
+kwargs:
+  decision_interval_steps: 50
+  prior_mean: 0.0
+  prior_covariance: 1.0
+  observation_noise_variance: 0.01
+  process_noise_covariance: 0.0001
+evaluation:
+  adaptive_controller:
+    enabled: true
+    source: configured_dataset_split
+    examples: 128
+    objective_weights: uniform
+    fixed_manifest: true
+  final_holdout:
+    enabled: true
+    source: configured_dataset_split
+    examples: 512
+    fixed_manifest: true
+    evaluate_during_training: false

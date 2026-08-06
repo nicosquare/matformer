@@ -12,7 +12,8 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.colors import to_rgb
+from matplotlib.colors import BoundaryNorm, ListedColormap, to_rgb
+from matplotlib.patches import Rectangle
 
 from . import reporting_styles
 from .reporting_styles import PLOT_STYLE_BASE, PLOT_STYLE_PRESETS
@@ -21,6 +22,7 @@ __all__ = [
     "axis_numeric_y_values",
     "blend_color_toward_white",
     "combine_shades",
+    "controller_timeline_filename",
     "create_figure_with_side_legend",
     "display_sampling_label_for_curve",
     "flatten_axes",
@@ -32,6 +34,7 @@ __all__ = [
     "panel_sampling_matches",
     "padded_limits",
     "place_legend_on_right",
+    "plot_selected_granularity_over_tokens",
     "resolve_plot_style",
     "resolve_series_alias",
     "safe_filename_fragment",
@@ -293,6 +296,75 @@ def to_float_or_none(value: Any) -> float | None:
         return None
 
 
+def plot_selected_granularity_over_tokens(
+    timeline,
+    output_path: Path,
+    dpi: int = 300,
+) -> Path:
+    """Render one non-interpolated categorical controller-selection timeline."""
+
+    granularities = timeline.ordered_granularities
+    color_positions = (
+        [0.5]
+        if len(granularities) == 1
+        else [index / (len(granularities) - 1) for index in range(len(granularities))]
+    )
+    color_map = ListedColormap(
+        [plt.get_cmap("viridis")(position) for position in color_positions]
+    )
+    color_norm = BoundaryNorm(
+        [index - 0.5 for index in range(len(granularities) + 1)],
+        color_map.N,
+    )
+    granularity_indices = {
+        label: index for index, label in enumerate(granularities)
+    }
+
+    figure_height = max(2.4, min(9.0, 1.6 + 0.32 * timeline.block_count))
+    figure, axis = plt.subplots(figsize=(10, figure_height))
+    for window in timeline.windows:
+        width = window.end_tokens - window.start_tokens
+        for row_index, label in enumerate(window.block_granularities, start=1):
+            axis.add_patch(
+                Rectangle(
+                    (window.start_tokens, row_index - 0.5),
+                    width,
+                    1.0,
+                    facecolor=color_map(color_norm(granularity_indices[label])),
+                    edgecolor="white",
+                    linewidth=0.25,
+                )
+            )
+
+    axis.set_xlim(0, timeline.token_budget)
+    axis.set_ylim(timeline.block_count + 0.5, 0.5)
+    axis.set_yticks(range(1, timeline.block_count + 1), timeline.row_labels)
+    axis.set_xlabel("Budget tokens seen")
+    axis.set_ylabel("Transformer block" if timeline.scope == "per_block" else "Scope")
+    axis.set_title(f"Selected granularity over tokens — {timeline.run_id}")
+    axis.grid(axis="x", alpha=0.2)
+    axis.ticklabel_format(axis="x", style="sci", scilimits=(0, 0))
+
+    scalar_mappable = matplotlib.cm.ScalarMappable(norm=color_norm, cmap=color_map)
+    colorbar = figure.colorbar(
+        scalar_mappable,
+        ax=axis,
+        ticks=range(len(granularities)),
+        pad=0.02,
+    )
+    colorbar.ax.set_yticklabels(granularities)
+    colorbar.set_label("Granularity")
+    figure.tight_layout()
+    figure.savefig(output_path, dpi=dpi)
+    plt.close(figure)
+    return output_path
+
+
+def controller_timeline_filename(run_id: str) -> str:
+    safe_run_id = re.sub(r"[^A-Za-z0-9._-]+", "_", run_id).strip("._-")
+    return f"selected_granularity_over_tokens_{safe_run_id or 'unknown'}.png"
+
+
 def generate_figures(
     input_root: str | Path,
     output_dir: str | Path,
@@ -302,6 +374,7 @@ def generate_figures(
 ) -> list[Path]:
     from . import reporting_io
     from .reporting_impl import (
+        filter_plot_rows,
         plot_consistency_results,
         plot_metric_over_steps,
         plot_metric_vs_size,
@@ -323,6 +396,7 @@ def generate_figures(
         input_root,
         scaling_rows,
     )
+    scaling_rows = filter_plot_rows(scaling_rows)
     if refresh_counts:
         scaling_rows = reporting_io.refresh_scaling_parameter_counts(
             input_root,
@@ -334,6 +408,11 @@ def generate_figures(
         input_root,
         "consistency_results.csv",
     )
+    consistency_rows = reporting_io.enrich_metrics_metadata_from_run_config(
+        input_root,
+        consistency_rows,
+    )
+    consistency_rows = filter_plot_rows(consistency_rows)
 
     if scaling_rows and task_result_rows:
         scaling_rows = aggregate_scaling_summary(scaling_rows, task_result_rows)
@@ -411,6 +490,7 @@ def generate_figures(
             input_root,
             metrics_rows,
         )
+        metrics_rows = filter_plot_rows(metrics_rows)
         figure_paths.extend(
             plot_validation_loss_over_tokens_by_experiment(
                 metrics_rows,
@@ -433,6 +513,7 @@ def generate_figures(
             input_root,
             metrics_rows,
         )
+        metrics_rows = filter_plot_rows(metrics_rows)
         validation_metrics_rows = [
             row for row in metrics_rows if reporting_io.validation_split_filter(row)
         ]
@@ -468,6 +549,15 @@ def generate_figures(
             plot_consistency_results(
                 consistency_rows,
                 output_dir / "consistency_vs_size.png",
+                dpi=dpi,
+            )
+        )
+
+    for timeline in reporting_io.iter_controller_granularity_timelines(input_root):
+        figure_paths.append(
+            plot_selected_granularity_over_tokens(
+                timeline,
+                output_dir / controller_timeline_filename(timeline.run_id),
                 dpi=dpi,
             )
         )

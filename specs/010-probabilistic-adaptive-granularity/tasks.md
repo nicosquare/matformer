@@ -126,9 +126,20 @@
 
 **Purpose**: Exercise the complete method contract and confirm compatibility after all desired stories are present
 
-- [ ] T044 Run the full focused Bayesian test set and resolve failures in tests/test_probabilistic_controller.py, tests/test_probabilistic_controller_resume.py, tests/test_data_validation.py, tests/test_config.py, tests/test_reproducibility.py, tests/test_distributed.py, tests/test_artifacts.py, tests/test_reporting.py, tests/test_phase2_finalize.py, and tests/test_training_smoke.py
-- [ ] T045 Run the baseline compatibility matrix for UCB, random modes, nested-all, standalone, granularity resolution/model wiring, gradient-membership correction, baseline matching, nonadaptive checkpointing, reporting, and the default pilot queue, and resolve behavior drift in tests/test_adaptive_sampler.py, tests/test_config.py, tests/test_artifacts.py, tests/test_reporting.py, tests/test_training_smoke.py, tests/test_matformer_prefixes.py, tests/test_baseline_matching.py, and tests/test_pilot_comparison.py
-- [ ] T046 Execute the global, resume, per-block, provenance, and final-holdout workflow and reconcile any documentation mismatch in specs/010-probabilistic-adaptive-granularity/quickstart.md
+- [X] T044 Run the full focused Bayesian test set and resolve failures in tests/test_probabilistic_controller.py, tests/test_probabilistic_controller_resume.py, tests/test_data_validation.py, tests/test_config.py, tests/test_reproducibility.py, tests/test_distributed.py, tests/test_artifacts.py, tests/test_reporting.py, tests/test_phase2_finalize.py, and tests/test_training_smoke.py
+- [X] T045 Run the baseline compatibility matrix for UCB, random modes, nested-all, standalone, granularity resolution/model wiring, gradient-membership correction, baseline matching, nonadaptive checkpointing, reporting, and the default pilot queue, and resolve behavior drift in tests/test_adaptive_sampler.py, tests/test_config.py, tests/test_artifacts.py, tests/test_reporting.py, tests/test_training_smoke.py, tests/test_matformer_prefixes.py, tests/test_baseline_matching.py, tests/test_pilot_comparison.py
+- [X] T046 Execute the global, resume, per-block, provenance, and final-holdout workflow and reconcile any documentation mismatch in specs/010-probabilistic-adaptive-granularity/quickstart.md
+
+---
+
+## Phase 7: Controller Granularity Timeline Figures
+
+**Purpose**: Make confirmed Bayesian controller selections directly inspectable over the budget-token timeline without expanding the training artifact schema.
+
+- [X] T047 Add streaming controller-journal discovery and compact completed/terminal-window normalization alongside each saved config in src/evaluation/reporting_io.py
+- [X] T048 Render ordered categorical global and per-block selection timelines and generate them automatically from both reporting paths in src/evaluation/reporting.py and src/evaluation/reporting_impl.py
+- [X] T049 Add extraction, clipping, warmup, malformed-artifact, running/failed-job, categorical-order, global-row, per-block-profile, and PNG integration coverage in tests/test_reporting.py
+- [X] T050 Run focused reporting, Bayesian controller, artifact, and finalization regression suites and document the automatic figure output in specs/010-probabilistic-adaptive-granularity/quickstart.md
 
 ---
 
