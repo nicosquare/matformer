@@ -796,14 +796,32 @@ def _build_warmup_policy(config: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(warmup, Mapping):
         warmup = {}
 
-    return {
+    policy = warmup.get("policy", "full_only")
+    resolved = {
         "enabled": bool(warmup.get("enabled", False)),
         "duration": warmup.get("duration", 0),
         "unit": warmup.get("unit", "epochs"),
+        "policy": policy,
         "completed": warmup.get("completed", False),
         "completion_step": warmup.get("completion_step"),
         "transition_reason": warmup.get("transition_reason"),
     }
+    if policy == "balanced_global":
+        resolved.update(
+            action_interval_steps=warmup.get("action_interval_steps"),
+            schedule_seed=warmup.get("schedule_seed"),
+            schedule_hash=warmup.get("schedule_hash"),
+            schedule=warmup.get("schedule"),
+            passes=warmup.get("passes"),
+            requested_steps=warmup.get("duration", 0),
+            completed_steps=warmup.get("completed_steps", 0),
+            current_window_index=warmup.get("current_window_index", 0),
+            current_window_offset=warmup.get("current_window_offset", 0),
+            per_granularity_counts=warmup.get("per_granularity_counts", {}),
+            controller_start_step=warmup.get("controller_start_step"),
+            posterior_updated_during_warmup=False,
+        )
+    return resolved
 
 
 def write_run_summary(
@@ -1468,6 +1486,10 @@ CONTROLLER_EVENT_TYPES = {
     "completed_window",
     "terminal_incomplete",
     "controller_failure",
+    "warmup_schedule_initialized",
+    "warmup_window_completed",
+    "warmup_completed",
+    "warmup_terminal_incomplete",
 }
 
 
@@ -1539,6 +1561,30 @@ def build_controller_summary(
     failures = [
         event for event in events if event["event_type"] == "controller_failure"
     ]
+    warmup_events = [
+        event for event in events if str(event.get("event_type", "")).startswith("warmup_")
+    ]
+    warmup_initialized = next(
+        (
+            event
+            for event in warmup_events
+            if event["event_type"] == "warmup_schedule_initialized"
+        ),
+        None,
+    )
+    warmup_terminal = next(
+        (
+            event
+            for event in reversed(warmup_events)
+            if event["event_type"]
+            in {"warmup_completed", "warmup_terminal_incomplete"}
+        ),
+        None,
+    )
+    initial_boundary = next(
+        (event for event in events if event["event_type"] == "initial_boundary"),
+        None,
+    )
     belief = state.get("belief", {})
     covariance = belief.get("posterior_covariance")
     window = state.get("window", {})
@@ -1562,6 +1608,73 @@ def build_controller_summary(
         "probabilistic_inputs": state.get("probabilistic_inputs"),
         "manifest_hashes": state.get("manifest_hashes"),
         "decision_interval_steps": window.get("decision_interval_steps"),
+        "warmup_policy": (
+            "balanced_global" if warmup_initialized is not None else "full_only"
+        ),
+        "requested_warmup_steps": (
+            warmup_initialized.get("requested_warmup_steps", 0)
+            if warmup_initialized is not None
+            else 0
+        ),
+        "completed_warmup_steps": (
+            warmup_terminal.get("completed_warmup_steps", 0)
+            if warmup_terminal is not None
+            else 0
+        ),
+        "warmup_schedule_seed": (
+            warmup_initialized.get("schedule_seed")
+            if warmup_initialized is not None
+            else None
+        ),
+        "warmup_schedule_hash": (
+            warmup_initialized.get("schedule_hash")
+            if warmup_initialized is not None
+            else None
+        ),
+        "warmup_schedule": (
+            warmup_initialized.get("schedule")
+            if warmup_initialized is not None
+            else None
+        ),
+        "warmup_action_interval_steps": (
+            warmup_initialized.get("action_interval_steps")
+            if warmup_initialized is not None
+            else None
+        ),
+        "warmup_action_counts": (
+            warmup_terminal.get("per_granularity_counts", {})
+            if warmup_terminal is not None
+            else {}
+        ),
+        "controller_start_step": (
+            initial_boundary.get("boundary_step")
+            if initial_boundary is not None
+            else (
+                warmup_terminal.get("controller_start_step")
+                if warmup_terminal is not None
+                else None
+            )
+        ),
+        "baseline_step": (
+            initial_boundary.get("boundary_step")
+            if initial_boundary is not None
+            else None
+        ),
+        "first_adaptive_action": (
+            initial_boundary.get("selected_action")
+            if initial_boundary is not None
+            else None
+        ),
+        "prior_untouched": (
+            initial_boundary.get("prior_untouched")
+            if initial_boundary is not None
+            else None
+        ),
+        "posterior_updated_during_warmup": any(
+            event.get("posterior_updated") is not False for event in warmup_events
+        )
+        if warmup_events
+        else False,
         "completed_observation_count": len(completed),
         "controller_evaluation_count": len(evaluations),
         "action_frequencies": action_frequencies,
@@ -1849,6 +1962,17 @@ def format_controller_lifecycle_log(event: Mapping[str, Any]) -> str:
                 f"new_action_selected={event.get('new_action_selected')}",
             ]
         )
+    elif event_type.startswith("warmup_"):
+        fields.extend(
+            [
+                f"phase={event.get('phase')}",
+                f"schedule_hash={event.get('schedule_hash')}",
+                "progress="
+                f"{event.get('completed_optimizer_steps')}/"
+                f"{event.get('action_interval_steps')}",
+                f"posterior_updated={event.get('posterior_updated')}",
+            ]
+        )
     fields.append(f"uncertainty={_compact_uncertainty(event.get('uncertainty_summary'))}")
     return " ".join(fields)
 
@@ -1877,6 +2001,13 @@ def _validate_controller_event(event: Mapping[str, Any]) -> None:
             raise ArtifactError("failure event new_action_selected must be false")
         if "posterior_mean" in event or "posterior_covariance" in event:
             raise ArtifactError("failure event must not contain posterior state")
+    if event_type.startswith("warmup_"):
+        if event.get("phase") != "warmup":
+            raise ArtifactError("warmup event phase must be warmup")
+        if event.get("posterior_updated") is not False:
+            raise ArtifactError("warmup event posterior_updated must be false")
+        if not event.get("schedule_hash"):
+            raise ArtifactError("warmup event schedule_hash is required")
 
 
 def _controller_json_value(value: Any) -> Any:

@@ -221,6 +221,8 @@ def train_for_steps(
     probabilistic_controller=None,
     probabilistic_boundary_callback=None,
     probabilistic_completion_callback=None,
+    forced_global_action=None,
+    successful_step_callback=None,
 ) -> list[dict[str, Any]]:
     training = config["training"]
     run = config["run"]
@@ -269,19 +271,20 @@ def train_for_steps(
 
     adaptive_sampler_state = None
     if probabilistic_controller is None:
-        if (
-            config.get("model", {}).get("granularity_sampling_mode")
-            == "adaptive_per_block"
-            and config.get("model", {}).get("adaptive_sampler_strategy") != "ucb"
-        ):
-            raise ConfigError(
-                "Legacy heuristic Thompson is not selectable; Thompson runs "
-                "require the probabilistic controller"
+        if forced_global_action is None:
+            if (
+                config.get("model", {}).get("granularity_sampling_mode")
+                == "adaptive_per_block"
+                and config.get("model", {}).get("adaptive_sampler_strategy") != "ucb"
+            ):
+                raise ConfigError(
+                    "Legacy heuristic Thompson is not selectable; Thompson runs "
+                    "require the probabilistic controller"
+                )
+            adaptive_sampler_state = _prepare_adaptive_sampler_runtime_state(
+                config,
+                run_state,
             )
-        adaptive_sampler_state = _prepare_adaptive_sampler_runtime_state(
-            config,
-            run_state,
-        )
     else:
         run_state.pop("adaptive_sampler_state", None)
 
@@ -317,7 +320,43 @@ def train_for_steps(
                 step_metric_rows_data: list[
                     tuple[str, float, dict[str, Any], dict[str, Any]]
                 ] = []
-                if run_sampling_mode == "nested-all":
+                if forced_global_action is not None:
+                    forced_granularity = (
+                        forced_global_action(step)
+                        if callable(forced_global_action)
+                        else forced_global_action
+                    )
+                    forced_granularity = str(forced_granularity)
+                    if forced_granularity not in granularities:
+                        raise ConfigError(
+                            "forced global action must be one of the resolved "
+                            f"granularities: {forced_granularity!r}"
+                        )
+                    configure_model_granularity(model, forced_granularity)
+                    step_runtime_pattern_summary, step_correction_context = _runtime_granularity_artifacts(
+                        config,
+                        model,
+                    )
+                    with autocast_context(config, device):
+                        outputs = model(
+                            input_ids=batch["input_ids"],
+                            attention_mask=batch.get("attention_mask"),
+                            labels=batch["labels"],
+                        )
+                    combined_loss = outputs.loss
+                    combined_loss_value = float(
+                        combined_loss.detach().float().cpu().item()
+                    )
+                    step_metric_rows_data.append(
+                        (
+                            forced_granularity,
+                            combined_loss_value,
+                            step_runtime_pattern_summary,
+                            step_correction_context,
+                        )
+                    )
+                    total_losses = 1
+                elif run_sampling_mode == "nested-all":
                     selected_granularities = select_training_granularities(
                         config,
                         granularities,
@@ -534,7 +573,7 @@ def train_for_steps(
                         combined_loss.detach().float().cpu().item()
                     )
 
-                if run_sampling_mode != "nested-all":
+                if forced_global_action is not None or run_sampling_mode != "nested-all":
                     combined_loss.backward()
 
                 gradient_clip_norm = training.get("gradient_clip_norm")
@@ -560,6 +599,8 @@ def train_for_steps(
                         "content_tokens_seen": content_tokens_seen,
                     }
                 )
+                if successful_step_callback is not None:
+                    successful_step_callback(step=step, tokens_seen=tokens_seen)
                 if probabilistic_boundary_callback is not None:
                     probabilistic_boundary_callback(
                         step=step,

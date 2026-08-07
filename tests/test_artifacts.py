@@ -228,6 +228,7 @@ def test_run_summary_includes_default_long_run_metadata(tmp_path):
         "enabled": False,
         "duration": 0,
         "unit": "epochs",
+        "policy": "full_only",
         "completed": False,
         "completion_step": None,
         "transition_reason": None,
@@ -813,6 +814,7 @@ def test_warmup_run_summary_records_completion_and_transition_fields(tmp_path):
         "enabled": True,
         "duration": 1,
         "unit": "steps",
+        "policy": "full_only",
         "active": True,
         "completed": True,
         "completion_step": 1,
@@ -822,6 +824,7 @@ def test_warmup_run_summary_records_completion_and_transition_fields(tmp_path):
         "enabled": True,
         "duration": 1,
         "unit": "steps",
+        "policy": "full_only",
         "completed": True,
         "completion_step": 1,
         "transition_reason": "warmup_duration_reached",
@@ -2444,6 +2447,93 @@ def test_probabilistic_controller_summary_preserves_auditable_state_and_hashes(
     )
     assert saved_summary["controller_metrics_path"] == str(journal_path)
     assert len(saved_summary["controller_metrics_hash"]) == 64
+
+
+def test_balanced_warmup_events_do_not_contaminate_adaptive_statistics(tmp_path):
+    from src.utils.metrics import append_controller_event, build_controller_summary
+
+    adaptive_events = _controller_journal_events()
+    common = {
+        key: adaptive_events[0][key]
+        for key in (
+            "schema_version",
+            "run_id",
+            "method_family",
+            "method_version",
+            "strategy",
+            "scope",
+            "ordered_granularities",
+            "feature_schema_hash",
+            "controller_manifest_hash",
+            "data_roles_manifest_hash",
+            "decision_interval_steps",
+            "resume_count",
+            "resume_source_checkpoint",
+        )
+    }
+    schedule = ["micro", "medium", "full", "full", "micro", "medium"]
+    warmup_events = [
+        {
+            **common,
+            "event_type": "warmup_schedule_initialized",
+            "phase": "warmup",
+            "schedule_hash": "warmup-schedule-hash",
+            "schedule_seed": 123,
+            "schedule": schedule,
+            "action_interval_steps": 2,
+            "requested_warmup_steps": 12,
+            "action": {"global_granularity": "micro"},
+            "boundary_step": 0,
+            "window_index": 0,
+            "warmup_window_index": 0,
+            "boundary_step_start": 0,
+            "boundary_step_end": 2,
+            "completed_optimizer_steps": 0,
+            "posterior_updated": False,
+        },
+        {
+            **common,
+            "event_type": "warmup_completed",
+            "phase": "warmup",
+            "schedule_hash": "warmup-schedule-hash",
+            "schedule_seed": 123,
+            "action_interval_steps": 2,
+            "requested_warmup_steps": 12,
+            "completed_warmup_steps": 12,
+            "per_granularity_counts": {"micro": 2, "medium": 2, "full": 2},
+            "controller_start_step": 12,
+            "action": {"global_granularity": "medium"},
+            "boundary_step": 12,
+            "window_index": 5,
+            "warmup_window_index": 5,
+            "boundary_step_start": 10,
+            "boundary_step_end": 12,
+            "completed_optimizer_steps": 2,
+            "posterior_updated": False,
+        },
+    ]
+    events = [*warmup_events, *adaptive_events]
+    journal_path = tmp_path / "controller_metrics.jsonl"
+    for event in events:
+        append_controller_event(journal_path, event)
+
+    summary = build_controller_summary(
+        controller_state=_probabilistic_checkpoint_state("terminal_incomplete"),
+        controller_events=events,
+        controller_metrics_path=journal_path,
+    )
+
+    assert summary["completed_observation_count"] == 1
+    assert summary["controller_evaluation_count"] == 2
+    assert summary["action_frequencies"] == {"micro": 1, "medium": 0, "full": 0}
+    assert summary["requested_warmup_steps"] == 12
+    assert summary["completed_warmup_steps"] == 12
+    assert summary["warmup_action_counts"] == {
+        "micro": 2,
+        "medium": 2,
+        "full": 2,
+    }
+    assert summary["posterior_updated_during_warmup"] is False
 
 
 def test_probabilistic_artifacts_preserve_end_to_end_controller_provenance(

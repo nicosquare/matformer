@@ -659,6 +659,12 @@ class ProbabilisticController:
         journal["last_committed_offset"] = int(commit["last_committed_offset"])
         journal["last_committed_hash"] = str(commit["event_hash"])
 
+    def record_warmup_journal_commit(self, commit: Mapping[str, Any]) -> None:
+        """Count an audit-only warmup event without changing Bayesian state."""
+
+        self._state["journal"]["event_count"] += 1
+        self.record_journal_commit(commit)
+
     def _validate_objective(
         self,
         *,

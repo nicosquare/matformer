@@ -18,6 +18,7 @@ PROBABILISTIC_SEED_STREAMS = (
     "controller_panel",
     "final_holdout",
     "posterior_sampling",
+    "pre_nested_warmup_schedule",
 )
 SEED_STREAMS = (
     "model_initialization",
@@ -219,6 +220,61 @@ def stable_hash(value: Any) -> str:
         ensure_ascii=True,
     ).encode("utf-8")
     return hashlib.sha256(serialized).hexdigest()
+
+
+def build_balanced_warmup_schedule(
+    granularities: list[str] | tuple[str, ...],
+    *,
+    passes: int,
+    seed: int,
+    action_interval_steps: int,
+    duration_steps: int,
+) -> tuple[list[str], str]:
+    """Build independently shuffled, complete granularity passes.
+
+    A local generator deliberately isolates schedule construction from all
+    training, dataloader, and posterior-sampling random state.
+    """
+
+    labels = [str(label) for label in granularities]
+    if not labels or len(set(labels)) != len(labels):
+        raise ValueError("balanced warmup granularities must be nonempty and unique")
+    if isinstance(passes, bool) or not isinstance(passes, int) or passes <= 0:
+        raise ValueError("balanced warmup passes must be a positive integer")
+    if (
+        isinstance(action_interval_steps, bool)
+        or not isinstance(action_interval_steps, int)
+        or action_interval_steps <= 0
+    ):
+        raise ValueError("balanced warmup action interval must be positive")
+    if (
+        isinstance(duration_steps, bool)
+        or not isinstance(duration_steps, int)
+        or duration_steps <= 0
+    ):
+        raise ValueError("balanced warmup duration must be positive")
+    if duration_steps != passes * action_interval_steps * len(labels):
+        raise ValueError("balanced warmup duration does not match complete passes")
+
+    generator = random.Random(int(seed))
+    schedule: list[str] = []
+    for _ in range(passes):
+        permutation = list(labels)
+        generator.shuffle(permutation)
+        schedule.extend(permutation)
+
+    schedule_identity = {
+        "version": 1,
+        "policy": "balanced_global",
+        "seed_stream_name": "pre_nested_warmup_schedule",
+        "resolved_seed": int(seed),
+        "ordered_granularities": labels,
+        "passes": int(passes),
+        "action_interval_steps": int(action_interval_steps),
+        "duration_steps": int(duration_steps),
+        "schedule": schedule,
+    }
+    return schedule, stable_hash(schedule_identity)
 
 
 def probabilistic_seed_provenance(

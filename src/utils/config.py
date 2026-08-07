@@ -21,7 +21,12 @@ from src.utils.model_size import (
     derive_token_budget_slug,
 )
 from src.utils.monitoring import DEFAULT_MONITORING_BACKEND, VALID_MONITORING_BACKENDS
-from src.utils.reproducibility import DATA_SPLIT_VERSION, SEED_STREAM_VERSION
+from src.utils.reproducibility import (
+    DATA_SPLIT_VERSION,
+    SEED_STREAM_VERSION,
+    build_balanced_warmup_schedule,
+    seed_for,
+)
 
 
 VALID_GRANULARITIES = {"s", "m", "l", "xl"}
@@ -47,6 +52,7 @@ VALID_OPTIMIZER_NAMES = {"adamw", "sgd"}
 VALID_COMPLETION_LABELS = {"debug", "run"}
 VALID_GRANULARITY_SAMPLING = {"all", "random"}
 VALID_PRE_NESTED_WARMUP_UNITS = {"epochs", "steps"}
+VALID_PRE_NESTED_WARMUP_POLICIES = {"full_only", "balanced_global"}
 VALID_MIXED_PRECISION_MODES = {"none", "bf16", "fp16"}
 DEFAULT_MODEL_VARIANT = "slicing"
 VALID_SAMPLING_MODES = {"nested-random", "nested-all", "standalone"}
@@ -1013,6 +1019,52 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         raise ConfigError(
             "training.pre_nested_warmup.duration must be positive when enabled"
         )
+    warmup_policy = warmup.get("policy")
+    if warmup_policy not in VALID_PRE_NESTED_WARMUP_POLICIES:
+        raise ConfigError(
+            "training.pre_nested_warmup.policy must be one of "
+            f"{sorted(VALID_PRE_NESTED_WARMUP_POLICIES)}"
+        )
+    if warmup_policy == "balanced_global":
+        if model.get("granularity_sampling_mode") not in (
+            "adaptive_global",
+            "adaptive_per_block",
+        ) or model.get("adaptive_sampler_strategy") != "thompson":
+            raise ConfigError(
+                "training.pre_nested_warmup.policy=balanced_global requires a "
+                "probabilistic adaptive_global or adaptive_per_block run"
+            )
+        if warmup_unit != "steps":
+            raise ConfigError(
+                "training.pre_nested_warmup.policy=balanced_global requires unit=steps"
+            )
+        interval = warmup.get("action_interval_steps")
+        if isinstance(interval, bool) or not isinstance(interval, int) or interval <= 0:
+            raise ConfigError(
+                "training.pre_nested_warmup.action_interval_steps must be a "
+                "positive integer"
+            )
+        if warmup_enabled:
+            granularities = list(model.get("granularities", []))
+            denominator = interval * len(granularities)
+            if denominator <= 0 or warmup_duration % denominator != 0:
+                raise ConfigError(
+                    "training.pre_nested_warmup.duration must be divisible by "
+                    "action_interval_steps * number of granularities"
+                )
+            passes = warmup_duration // denominator
+            if passes < 2:
+                raise ConfigError(
+                    "training.pre_nested_warmup balanced_global requires at least "
+                    "two complete passes over all granularities"
+                )
+            schedule = warmup.get("schedule")
+            if not isinstance(schedule, list) or len(schedule) != (
+                warmup_duration // interval
+            ):
+                raise ConfigError(
+                    "training.pre_nested_warmup balanced schedule is incomplete"
+                )
 
     if model_topology == "standalone":
         granularity = run.get("granularity")
@@ -2914,6 +2966,61 @@ def _resolve_pre_nested_warmup_defaults(config: dict[str, Any]) -> None:
             f"{sorted(VALID_PRE_NESTED_WARMUP_UNITS)}"
         )
     warmup["unit"] = warmup_unit
+    policy = warmup.get("policy", "full_only")
+    if not isinstance(policy, str):
+        raise ConfigError("training.pre_nested_warmup.policy must be a string")
+    policy = policy.strip()
+    if policy not in VALID_PRE_NESTED_WARMUP_POLICIES:
+        raise ConfigError(
+            "training.pre_nested_warmup.policy must be one of "
+            f"{sorted(VALID_PRE_NESTED_WARMUP_POLICIES)}"
+        )
+    warmup["policy"] = policy
+
+    if policy == "balanced_global" and warmup["enabled"]:
+        controller = config.get("model", {}).get("adaptive_controller", {})
+        default_interval = (
+            controller.get("decision_interval_steps")
+            if isinstance(controller, Mapping)
+            else None
+        )
+        raw_interval = warmup.get("action_interval_steps", default_interval)
+        if raw_interval is None:
+            raise ConfigError(
+                "training.pre_nested_warmup.action_interval_steps is required for "
+                "balanced_global warmup"
+            )
+        warmup["action_interval_steps"] = _positive_int(
+            raw_interval,
+            "training.pre_nested_warmup.action_interval_steps",
+        )
+        granularities = list(config.get("model", {}).get("granularities", []))
+        interval = warmup["action_interval_steps"]
+        denominator = int(interval) * len(granularities)
+        if denominator <= 0 or int(warmup["duration"]) % denominator != 0:
+            raise ConfigError(
+                "training.pre_nested_warmup.duration must be divisible by "
+                "action_interval_steps * number of granularities"
+            )
+        passes = int(warmup["duration"]) // denominator
+        if passes < 2:
+            raise ConfigError(
+                "training.pre_nested_warmup balanced_global requires at least two "
+                "complete passes over all granularities"
+            )
+        schedule_seed = seed_for(config, "pre_nested_warmup_schedule")
+        schedule, schedule_hash = build_balanced_warmup_schedule(
+            granularities,
+            passes=passes,
+            seed=schedule_seed,
+            action_interval_steps=int(interval),
+            duration_steps=int(warmup["duration"]),
+        )
+        warmup["schedule_seed"] = schedule_seed
+        warmup["schedule_hash"] = schedule_hash
+        warmup["schedule"] = schedule
+        warmup["passes"] = passes
+        warmup["controller_start_step"] = int(warmup["duration"])
     run = config.get("run", {})
     warmup["active"] = bool(warmup["enabled"]) and run.get("model_family") == "nested"
     warmup["completed"] = bool(warmup.get("completed", False))

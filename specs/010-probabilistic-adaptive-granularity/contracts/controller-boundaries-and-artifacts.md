@@ -5,12 +5,18 @@
 ### Fresh run after optional pre-nested warmup
 
 1. Verify the four role manifests and hashes.
-2. Evaluate the controller objective at the current optimizer step.
-3. Save the initial boundary record with no action reward.
-4. Form the predictive belief with identity transition and process covariance.
-5. Draw one coefficient sample from controller-local random state.
-6. Select one action with deterministic tie-breaking.
-7. Enter an active window with progress zero and the saved objective baseline.
+2. If balanced warmup is enabled, execute its persisted global-action schedule
+   in one continuous training-loop invocation without controller evaluation,
+   action selection, reward computation, or posterior conditioning.
+3. Assert that the controller remains `initial_objective_pending`, has zero
+   observations, and its posterior exactly equals the configured prior.
+4. Evaluate the controller objective at the warmup completion optimizer step.
+5. Save the initial boundary with the warmup schedule hash, completion step,
+   `prior_untouched: true`, and no action reward.
+6. Form the predictive belief with identity transition and process covariance.
+7. Draw one coefficient sample from controller-local random state.
+8. Select one action with deterministic tie-breaking.
+9. Enter an active window with progress zero and the saved objective baseline.
 
 ### Active window
 
@@ -53,6 +59,8 @@ Every Bayesian checkpoint includes:
 - pre-window objective and component-loss provenance;
 - last committed boundary-journal position/hash;
 - resume count, source checkpoint, and compatibility results.
+- warmup policy, schedule seed/hash/list, current window/offset, completed
+  steps, per-granularity counts, and intended controller-start step.
 
 Phase-specific requirements:
 
@@ -79,13 +87,20 @@ The controller journal is append-only and contains one JSON object per event.
 
 - `schema_version`
 - `run_id`
-- `event_type`: `initial_boundary`, `completed_window`, `terminal_incomplete`,
-  or `controller_failure`
+- `event_type`: adaptive boundary/failure events or one of the four balanced
+  warmup lifecycle events described below
 - `method_family`, `method_version`, `strategy`, `scope`
 - `ordered_granularities`, `feature_schema_hash`
 - `controller_manifest_hash`, `data_roles_manifest_hash`
 - `boundary_step`, `window_index`, `decision_interval_steps`
 - `resume_count`, `resume_source_checkpoint`
+
+Balanced warmup adds `warmup_schedule_initialized`,
+`warmup_window_completed`, `warmup_completed`, and
+`warmup_terminal_incomplete`. These records use `phase: warmup`, carry the
+schedule hash, global action repeated across blocks, warmup-window index,
+start/end steps, completed optimizer steps, and `posterior_updated: false`.
+Only rank zero appends them.
 
 ### Initial boundary fields
 
@@ -132,7 +147,13 @@ The summary contains:
 - boundary objective/reward/prediction-error summaries;
 - terminal-window status and partial progress;
 - controller journal path/hash;
-- resume provenance and any failure summary.
+- resume provenance and any failure summary;
+- requested/completed warmup steps, schedule seed/hash/list, action interval,
+  action counts, controller-start and baseline steps, first adaptive action,
+  `prior_untouched`, and `posterior_updated_during_warmup: false`.
+
+Warmup events are excluded from controller observation/evaluation counts,
+posterior diagnostics, and adaptive action-frequency statistics.
 
 ## Ordinary Metrics and Run Summary
 
@@ -148,7 +169,9 @@ Full vectors and matrices remain in the controller journal, summary, and
 checkpoints. Controller rows never use `split=validation` and never enter best
 checkpoint selection.
 
-`run_summary.json` includes the final controller summary and artifact paths.
+`run_summary.json` includes the final controller summary and artifact paths,
+and mirrors the warmup schedule metadata, counts, transition/baseline steps,
+first adaptive action, and posterior-untouched status at top level.
 The resolved `config.json` is rewritten immediately after role manifests are
 created so a later failure still leaves complete data provenance.
 
@@ -179,4 +202,3 @@ A post-training final comparison:
 4. writes `final_holdout_results.json` separately;
 5. never mutates controller state, checkpoint selection, hyperparameters, or
    the historical training/controller journal.
-

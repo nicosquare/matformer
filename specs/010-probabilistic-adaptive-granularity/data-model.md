@@ -234,6 +234,25 @@ Transition rules:
 - `active_window -> terminal_incomplete` when training ends early.
 - Any controller validation/evaluation failure enters `failed` without posterior conditioning.
 
+### PreNestedWarmupState
+
+Represents the pre-controller schedule and exact continuation point.
+
+- **policy**: legacy `full_only` or `balanced_global`
+- **requested/completed steps**: configured duration and successful optimizer updates
+- **action interval**: fixed optimizer-step width of each global-action window
+- **schedule seed/hash/list**: independent named seed provenance and immutable actions
+- **current window index/offset**: exact position, including inside-window checkpoints
+- **per-granularity counts**: complete scheduled windows per label
+- **controller-start step**: intended first fixed-panel baseline step
+- **completion state**: completion step/reason or terminal-incomplete reason
+
+Each balanced pass is one seeded permutation of all resolved granularities.
+Resume validates every identity and progress field against the checkpoint step.
+The model, optimizer, scheduler, dataloader, global step, and token counters
+continue across windows. No controller state other than journal commit
+provenance changes during this phase.
+
 ### ControllerObservation
 
 Represents the complete scientific record for one finished decision window.
@@ -320,4 +339,3 @@ Validation rules:
 - `run_summary.json`: paths, hashes, method identity, and completed controller summary
 - checkpoints: complete Bayesian live state plus existing model/optimizer/scheduler/training state
 - `final_holdout_results.json`: separate post-training comparison output
-

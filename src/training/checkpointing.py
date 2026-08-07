@@ -1051,6 +1051,9 @@ def save_model_checkpoint(
             "warmup_completed": run_state.get("warmup_completed", False),
             "warmup_completion_step": run_state.get("warmup_completion_step"),
             "warmup_transition_reason": run_state.get("warmup_transition_reason"),
+            "pre_nested_warmup_state": copy.deepcopy(
+                run_state.get("pre_nested_warmup_state")
+            ),
             "resolved_run_mode": run_state.get("resolved_run_mode"),
             "resolved_sampling_mode": run_state.get("resolved_sampling_mode"),
             "granularity_pattern_provenance": run_state.get(
@@ -1451,6 +1454,7 @@ def build_initial_continuation_state(config: dict[str, Any]) -> dict[str, Any]:
         "warmup_completed": False,
         "warmup_completion_step": None,
         "warmup_transition_reason": None,
+        "pre_nested_warmup_state": _initial_pre_nested_warmup_state(config),
         "output_dir": str(output_dir),
         "resolved_run_mode": str(
             run.get(
@@ -1887,6 +1891,11 @@ def load_checkpoint_state(
             "warmup_completed": False,
             "warmup_completion_step": None,
             "warmup_transition_reason": None,
+            "pre_nested_warmup_state": (
+                _initial_pre_nested_warmup_state(config)
+                if config is not None
+                else None
+            ),
             "probabilistic_controller_state": None,
         }
         if output_dir is not None:
@@ -1961,6 +1970,9 @@ def load_checkpoint_state(
         "warmup_completed": bool(checkpoint.get("warmup_completed", False)),
         "warmup_completion_step": checkpoint.get("warmup_completion_step"),
         "warmup_transition_reason": checkpoint.get("warmup_transition_reason"),
+        "pre_nested_warmup_state": copy.deepcopy(
+            checkpoint.get("pre_nested_warmup_state")
+        ),
         "resolved_run_mode": checkpoint.get("resolved_run_mode"),
         "resolved_sampling_mode": checkpoint.get("resolved_sampling_mode"),
         "granularity_pattern_provenance": checkpoint.get(
@@ -2017,8 +2029,45 @@ def load_checkpoint_state(
     if run_id is not None:
         state["run_id"] = str(run_id)
     if config is not None:
+        from src.training.warmup import validate_pre_nested_warmup_resume_state
+
+        state["pre_nested_warmup_state"] = validate_pre_nested_warmup_resume_state(
+            config,
+            state.get("pre_nested_warmup_state"),
+            last_completed_step=last_completed_step,
+        )
         _validate_loaded_adaptive_sampler_state(state, config, checkpoint_path)
     return state
+
+
+def _initial_pre_nested_warmup_state(
+    config: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    warmup = config.get("training", {}).get("pre_nested_warmup", {})
+    if not isinstance(warmup, Mapping):
+        return None
+    labels = [str(label) for label in config.get("model", {}).get("granularities", [])]
+    return {
+        "enabled": bool(warmup.get("enabled", False)),
+        "active": bool(warmup.get("active", False)),
+        "duration": int(warmup.get("duration", 0)),
+        "unit": str(warmup.get("unit", "epochs")),
+        "policy": str(warmup.get("policy", "full_only")),
+        "action_interval_steps": warmup.get("action_interval_steps"),
+        "schedule_seed": warmup.get("schedule_seed"),
+        "schedule_hash": warmup.get("schedule_hash"),
+        "schedule": copy.deepcopy(warmup.get("schedule")),
+        "passes": warmup.get("passes"),
+        "current_window_index": 0,
+        "current_window_offset": 0,
+        "completed_steps": 0,
+        "per_granularity_counts": {label: 0 for label in labels},
+        "controller_start_step": warmup.get("controller_start_step"),
+        "schedule_initialized": False,
+        "completed": bool(warmup.get("completed", False)),
+        "completion_step": warmup.get("completion_step"),
+        "transition_reason": warmup.get("transition_reason"),
+    }
 
 
 def _validate_reproducibility_payload(

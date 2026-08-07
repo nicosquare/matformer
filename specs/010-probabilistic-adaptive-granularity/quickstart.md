@@ -285,3 +285,29 @@ controllers use 1-based transformer-block rows. Colors follow the saved
 windows are shown, while warmup and uncommitted active-window regions remain
 blank. A malformed run emits a warning and does not prevent figures for other
 runs.
+
+## 14. Run the balanced 500-step pre-adaptive reference
+
+Resolve the complete five-granularity reference without loading data:
+
+```bash
+python train.py \
+  --config configs/probabilistic_balanced_warmup_500.yaml \
+  --preflight
+```
+
+The resolved warmup has ten 50-step windows. Each granularity appears exactly
+twice, while its position in each complete pass is determined by the
+independent `pre_nested_warmup_schedule` seed. During steps 1–500 the fixed
+controller panel is not evaluated and the posterior remains the configured
+prior. At step 500, the initial fixed-panel baseline and first Thompson action
+are recorded.
+
+For the controlled lifecycle, interruption, and terminal-budget checks:
+
+```bash
+pytest -q \
+  tests/test_training_smoke.py::test_balanced_global_warmup_precedes_controller_for_both_adaptive_scopes \
+  tests/test_training_smoke.py::test_balanced_global_warmup_resume_inside_window_matches_uninterrupted_run \
+  tests/test_training_smoke.py::test_balanced_global_warmup_terminal_budget_exhaustion_never_starts_controller
+```

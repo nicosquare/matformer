@@ -447,6 +447,7 @@ def test_probabilistic_controller_panel_partitions_and_reduces_like_single_proce
 
 def test_probabilistic_controller_rank_zero_owns_sampling_update_and_shared_outputs(
     monkeypatch,
+    tmp_path,
 ):
     rank_zero = DistributedContext(enabled=True, rank=0, world_size=2)
     nonzero = DistributedContext(enabled=True, rank=1, world_size=2)
@@ -498,6 +499,48 @@ def test_probabilistic_controller_rank_zero_owns_sampling_update_and_shared_outp
     distributed.rank_zero_only(nonzero, artifact_writes.append, "controller.jsonl")
     assert lifecycle_logs == ["completed-window"]
     assert artifact_writes == ["controller.jsonl"]
+
+    from src.utils.metrics import append_controller_event
+
+    warmup_event = {
+        "schema_version": 1,
+        "event_type": "warmup_window_completed",
+        "phase": "warmup",
+        "schedule_hash": "shared-balanced-schedule",
+        "boundary_step": 2,
+        "window_index": 0,
+        "posterior_updated": False,
+    }
+    journal_path = tmp_path / "controller_metrics.jsonl"
+    append_controller_event(
+        journal_path,
+        warmup_event,
+        distributed_context=rank_zero,
+    )
+    append_controller_event(
+        journal_path,
+        warmup_event,
+        distributed_context=nonzero,
+    )
+    assert len(journal_path.read_text(encoding="utf-8").splitlines()) == 1
+
+    from src.utils.reproducibility import build_balanced_warmup_schedule
+
+    rank_zero_schedule = build_balanced_warmup_schedule(
+        ["micro", "medium", "full"],
+        passes=2,
+        seed=123,
+        action_interval_steps=2,
+        duration_steps=12,
+    )
+    nonzero_schedule = build_balanced_warmup_schedule(
+        ["micro", "medium", "full"],
+        passes=2,
+        seed=123,
+        action_interval_steps=2,
+        duration_steps=12,
+    )
+    assert rank_zero_schedule == nonzero_schedule
 
 
 def test_probabilistic_controller_rank_zero_broadcast_requires_complete_state():

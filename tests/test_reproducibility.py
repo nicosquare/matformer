@@ -19,6 +19,7 @@ from src.training.run import run_training
 from src.utils.config import ConfigError, resolve_run_config
 from src.utils.metrics import build_scaling_result_rows
 from src.utils.reproducibility import (
+    build_balanced_warmup_schedule,
     build_comparison_control_signature,
     derive_seed,
     seed_for,
@@ -42,7 +43,43 @@ PROBABILISTIC_SEED_STREAMS = (
     "controller_panel",
     "final_holdout",
     "posterior_sampling",
+    "pre_nested_warmup_schedule",
 )
+
+
+def test_balanced_warmup_schedule_is_exact_deterministic_and_hash_stable():
+    labels = ["micro", "small", "medium", "large", "full"]
+    seed = derive_seed(42, "pre_nested_warmup_schedule")
+    schedule, schedule_hash = build_balanced_warmup_schedule(
+        labels,
+        passes=2,
+        seed=seed,
+        action_interval_steps=50,
+        duration_steps=500,
+    )
+    repeated, repeated_hash = build_balanced_warmup_schedule(
+        labels,
+        passes=2,
+        seed=seed,
+        action_interval_steps=50,
+        duration_steps=500,
+    )
+    other, other_hash = build_balanced_warmup_schedule(
+        labels,
+        passes=2,
+        seed=derive_seed(43, "pre_nested_warmup_schedule"),
+        action_interval_steps=50,
+        duration_steps=500,
+    )
+
+    assert schedule == repeated
+    assert schedule_hash == repeated_hash
+    assert schedule != other
+    assert schedule_hash != other_hash
+    assert len(schedule) == 10
+    assert all(schedule.count(label) == 2 for label in labels)
+    assert set(schedule[:5]) == set(labels)
+    assert set(schedule[5:]) == set(labels)
 
 
 def test_probabilistic_seed_streams_are_stable_distinct_and_root_seeded():

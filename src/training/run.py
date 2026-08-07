@@ -497,7 +497,84 @@ def _enrich_controller_event(
     enriched["uncertainty_summary"] = controller_uncertainty_summary(
         state["belief"]["posterior_covariance"]
     )
+    warmup = config.get("training", {}).get("pre_nested_warmup", {})
+    if (
+        enriched.get("event_type") == "initial_boundary"
+        and isinstance(warmup, Mapping)
+        and warmup.get("policy") == "balanced_global"
+        and bool(warmup.get("completed", False))
+    ):
+        enriched.update(
+            warmup_schedule_hash=warmup.get("schedule_hash"),
+            warmup_completion_step=warmup.get("completion_step"),
+            controller_start_step=warmup.get("controller_start_step"),
+            prior_untouched=True,
+        )
     return enriched
+
+
+def _assert_controller_prior_untouched_after_warmup(
+    config: Mapping[str, Any],
+    controller_state: Mapping[str, Any],
+) -> None:
+    warmup = config.get("training", {}).get("pre_nested_warmup", {})
+    if not (
+        isinstance(warmup, Mapping)
+        and warmup.get("policy") == "balanced_global"
+        and bool(warmup.get("completed", False))
+    ):
+        return
+    window = controller_state["window"]
+    belief = controller_state["belief"]
+    inputs = controller_state["probabilistic_inputs"]
+    prior_mean = torch.as_tensor(inputs["resolved_prior_mean"], dtype=torch.float64)
+    prior_covariance = torch.as_tensor(
+        inputs["resolved_prior_covariance"],
+        dtype=torch.float64,
+    )
+    posterior_mean = torch.as_tensor(belief["posterior_mean"], dtype=torch.float64)
+    posterior_covariance = torch.as_tensor(
+        belief["posterior_covariance"],
+        dtype=torch.float64,
+    )
+    if window.get("phase") != "initial_objective_pending":
+        raise ConfigError(
+            "Balanced warmup completed after the controller left "
+            "initial_objective_pending"
+        )
+    if int(belief.get("round_index", -1)) != 0:
+        raise ConfigError("Balanced warmup must not create controller observations")
+    if not torch.equal(posterior_mean, prior_mean) or not torch.equal(
+        posterior_covariance,
+        prior_covariance,
+    ):
+        raise ConfigError("Balanced warmup changed the configured controller prior")
+
+
+def _controller_warmup_run_summary_fields(
+    controller_summary: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(controller_summary, Mapping):
+        return {}
+    return {
+        "requested_warmup_steps": controller_summary.get(
+            "requested_warmup_steps", 0
+        ),
+        "completed_warmup_steps": controller_summary.get(
+            "completed_warmup_steps", 0
+        ),
+        "warmup_schedule_seed": controller_summary.get("warmup_schedule_seed"),
+        "warmup_schedule_hash": controller_summary.get("warmup_schedule_hash"),
+        "warmup_schedule": controller_summary.get("warmup_schedule"),
+        "warmup_action_counts": controller_summary.get("warmup_action_counts", {}),
+        "controller_start_step": controller_summary.get("controller_start_step"),
+        "baseline_step": controller_summary.get("baseline_step"),
+        "first_adaptive_action": controller_summary.get("first_adaptive_action"),
+        "prior_untouched": controller_summary.get("prior_untouched"),
+        "posterior_updated_during_warmup": controller_summary.get(
+            "posterior_updated_during_warmup", False
+        ),
+    }
 
 
 def _commit_controller_event(
@@ -526,7 +603,10 @@ def _commit_controller_event(
         artifact_state=run_state,
     )
     if commit is not None:
-        controller.record_journal_commit(commit)
+        if str(event.get("event_type", "")).startswith("warmup_"):
+            controller.record_warmup_journal_commit(commit)
+        else:
+            controller.record_journal_commit(commit)
         controller_events.append(enriched)
         print(format_controller_lifecycle_log(enriched), flush=True)
     run_state["latest_controller_event"] = enriched
@@ -815,6 +895,21 @@ def run_training(
             artifact_state=run_state,
         )
         metrics_rows = []
+        def commit_warmup_event(event: Mapping[str, Any]) -> None:
+            if probabilistic_controller is None:
+                raise ConfigError(
+                    "Balanced warmup events require the probabilistic controller"
+                )
+            _commit_controller_event(
+                config,
+                probabilistic_controller,
+                event,
+                controller_events,
+                distributed_context=distributed_context,
+                heartbeat_writer=heartbeat_writer,
+                run_state=run_state,
+            )
+
         if training_warmup.should_run_pre_nested_warmup(config, run_state):
             metrics_rows.extend(
                 training_warmup.run_pre_nested_warmup_phase(
@@ -831,6 +926,7 @@ def run_training(
                     run_state=run_state,
                     monitoring_session=monitoring_session,
                     metrics_journal=metrics_journal,
+                    warmup_event_callback=commit_warmup_event,
                 )
             )
         else:
@@ -948,6 +1044,10 @@ def run_training(
             controller_state = probabilistic_controller.state_dict()
             boundary_step = int(run_state.get("last_completed_step", 0))
             if controller_state["window"]["phase"] == "initial_objective_pending":
+                _assert_controller_prior_untouched_after_warmup(
+                    config,
+                    controller_state,
+                )
                 snapshot = probabilistic_controller.transaction_snapshot()
                 failing_stage = "initial_controller_evaluation"
                 try:
@@ -1229,6 +1329,7 @@ def run_training(
                     "controller_probabilistic_inputs": controller_summary.get(
                         "probabilistic_inputs"
                     ),
+                    **_controller_warmup_run_summary_fields(controller_summary),
                 }
             )
         if not scaling_rows:
@@ -1359,6 +1460,7 @@ def run_training(
                         if controller_summary is not None
                         else None
                     ),
+                    **_controller_warmup_run_summary_fields(controller_summary),
                 }
                 failure_summary = build_run_summary(
                     config,

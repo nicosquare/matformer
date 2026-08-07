@@ -143,6 +143,19 @@
 
 ---
 
+## Phase 8: Balanced Pre-Adaptive Warmup
+
+**Purpose**: Run a deterministic, exactly balanced global-granularity schedule before the Bayesian controller observes its fixed panel, while retaining the legacy full-only warmup by default.
+
+- [X] T051 Add configuration and schedule-contract tests for legacy defaults, valid Bayesian scopes, invalid policies/units/intervals/pass counts, deterministic seeded balance, independent seeds, and stable hashes in tests/test_config.py, tests/test_reproducibility.py, and tests/test_training_smoke.py
+- [X] T052 Implement the `pre_nested_warmup_schedule` seed stream, balanced schedule resolution, strict configuration validation, and resolved schedule provenance in src/utils/reproducibility.py and src/utils/config.py
+- [X] T053 Add forced global warmup actions to the continuous step loop and persist/validate exact warmup window progress, counts, schedule, and controller-start state across checkpoints in src/training/steps.py, src/training/warmup.py, and src/training/checkpointing.py
+- [X] T054 Integrate warmup lifecycle events, untouched-prior transition assertions, initial-boundary provenance, terminal-incomplete behavior, distributed rank-zero journaling, and controller/run summary fields in src/training/run.py and src/utils/metrics.py
+- [X] T055 Add global/per-block integration, inside-window resume, terminal exhaustion, artifact-schema, adaptive-statistics exclusion, and distributed agreement coverage in tests/test_training_smoke.py, tests/test_probabilistic_controller_resume.py, tests/test_artifacts.py, and tests/test_distributed.py
+- [X] T056 Document the balanced policy, artifact/state contracts, and five-granularity 500-step reference configuration in specs/010-probabilistic-adaptive-granularity/contracts/configuration.md, specs/010-probabilistic-adaptive-granularity/contracts/controller-boundaries-and-artifacts.md, specs/010-probabilistic-adaptive-granularity/data-model.md, specs/010-probabilistic-adaptive-granularity/quickstart.md, and notes/probabilistic_adaptive_granularity_experimental_notes.md
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies

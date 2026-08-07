@@ -178,3 +178,31 @@ surface and retains checkpoint-selection semantics.
 Manifest hashes are marked pending during config-only preflight because they
 cannot exist until the dataset is loaded and partitioned.
 
+## Balanced Pre-Adaptive Warmup
+
+`training.pre_nested_warmup.policy` accepts `full_only` or `balanced_global`.
+The default is `full_only`, including for configurations created before this
+field existed. `balanced_global` is valid only for Bayesian `adaptive_global`
+and `adaptive_per_block` runs, requires `unit: steps`, and defaults
+`action_interval_steps` to
+`model.adaptive_controller.decision_interval_steps`.
+
+For `G` granularities, duration `d`, and interval `a`, the resolver requires
+`d / (aG)` to be an integer of at least two. It derives the independent
+`pre_nested_warmup_schedule` seed, constructs one local-generator permutation
+of every label per pass, and persists the seed, complete schedule, pass count,
+controller-start step, and stable schedule hash.
+
+```yaml
+training:
+  pre_nested_warmup:
+    enabled: true
+    duration: 500
+    unit: steps
+    policy: balanced_global
+    action_interval_steps: 50
+```
+
+With five granularities this resolves to ten windows and exactly two windows
+per label. `configs/probabilistic_balanced_warmup_500.yaml` is the complete
+reference configuration.

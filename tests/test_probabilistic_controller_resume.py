@@ -11,7 +11,9 @@ from src.training.probabilistic_controller import (
     build_probabilistic_controller,
     restore_probabilistic_controller,
 )
-from src.utils.config import resolve_run_config
+from src.training.checkpointing import build_initial_continuation_state
+from src.training.warmup import validate_pre_nested_warmup_resume_state
+from src.utils.config import ConfigError, resolve_run_config
 from src.utils.reproducibility import seed_for
 
 
@@ -171,6 +173,48 @@ def test_initial_boundary_records_objective_before_reward_and_starts_first_windo
         state["belief"]["posterior_covariance"],
         prior_state["belief"]["posterior_covariance"],
     )
+
+
+def test_balanced_warmup_resume_state_validates_mid_window_schedule_identity(tmp_path):
+    config = resolve_run_config(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+        output_dir=tmp_path / "probabilistic-adaptive-global-smoke-001",
+        overrides={
+            "training.pre_nested_warmup.enabled": True,
+            "training.pre_nested_warmup.duration": 12,
+            "training.pre_nested_warmup.unit": "steps",
+            "training.pre_nested_warmup.policy": "balanced_global",
+            "training.pre_nested_warmup.action_interval_steps": 2,
+        },
+    )
+    state = build_initial_continuation_state(config)["pre_nested_warmup_state"]
+    first_action = state["schedule"][0]
+    state.update(
+        schedule_initialized=True,
+        completed_steps=3,
+        current_window_index=1,
+        current_window_offset=1,
+        per_granularity_counts={
+            label: int(label == first_action)
+            for label in config["model"]["granularities"]
+        },
+    )
+
+    restored = validate_pre_nested_warmup_resume_state(
+        config,
+        state,
+        last_completed_step=3,
+    )
+    assert restored == state
+
+    incompatible = copy.deepcopy(state)
+    incompatible["schedule_hash"] = "different-schedule"
+    with pytest.raises(ConfigError, match="schedule_hash does not match"):
+        validate_pre_nested_warmup_resume_state(
+            config,
+            incompatible,
+            last_completed_step=3,
+        )
 
 
 @pytest.mark.parametrize(

@@ -15,6 +15,7 @@ from src.utils.config import (
 )
 from src.models.correction import correction_context_from_config
 from src.models.granularity import build_granularity_pattern
+from src.utils.reproducibility import derive_seed
 
 
 def _write_single_run_config(tmp_path):
@@ -877,6 +878,7 @@ def test_resolve_minimal_config_includes_long_run_defaults(tmp_path):
         "enabled": False,
         "duration": 0,
         "unit": "epochs",
+        "policy": "full_only",
         "active": False,
         "completed": False,
         "completion_step": None,
@@ -926,6 +928,7 @@ def test_pre_nested_warmup_validation_rules(tmp_path):
         "enabled": True,
         "duration": 3,
         "unit": "steps",
+        "policy": "full_only",
         "active": True,
         "completed": False,
         "completion_step": None,
@@ -968,6 +971,136 @@ def test_pre_nested_warmup_validation_rules(tmp_path):
             ],
         )
 
+
+def test_balanced_global_pre_nested_warmup_resolves_schedule_and_defaults(tmp_path):
+    resolved = resolve_run_config(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+        output_dir=tmp_path / "probabilistic-adaptive-global-smoke-001",
+        overrides={
+            "training.pre_nested_warmup.enabled": True,
+            "training.pre_nested_warmup.duration": 12,
+            "training.pre_nested_warmup.unit": "steps",
+            "training.pre_nested_warmup.policy": "balanced_global",
+        },
+    )
+    warmup = resolved["training"]["pre_nested_warmup"]
+
+    assert warmup["action_interval_steps"] == 2
+    assert warmup["passes"] == 2
+    assert warmup["controller_start_step"] == 12
+    assert len(warmup["schedule"]) == 6
+    assert len(warmup["schedule_hash"]) == 64
+    assert warmup["schedule_seed"] == derive_seed(
+        resolved["run"]["seed"],
+        "pre_nested_warmup_schedule",
+    )
+    assert all(
+        warmup["schedule"].count(label) == 2
+        for label in resolved["model"]["granularities"]
+    )
+
+
+def test_five_granularity_500_step_balanced_warmup_reference_is_exactly_balanced():
+    resolved = resolve_run_config("configs/probabilistic_balanced_warmup_500.yaml")
+    warmup = resolved["training"]["pre_nested_warmup"]
+
+    assert warmup["duration"] == 500
+    assert warmup["action_interval_steps"] == 50
+    assert warmup["passes"] == 2
+    assert len(resolved["model"]["granularities"]) == 5
+    assert {
+        label: warmup["schedule"].count(label)
+        for label in resolved["model"]["granularities"]
+    } == {label: 2 for label in resolved["model"]["granularities"]}
+
+
+@pytest.mark.parametrize(
+    ("fixture", "overrides", "message"),
+    [
+        (
+            "configs/debug_matrix.yaml",
+            {
+                "training.pre_nested_warmup.enabled": True,
+                "training.pre_nested_warmup.duration": 16,
+                "training.pre_nested_warmup.unit": "steps",
+                "training.pre_nested_warmup.policy": "balanced_global",
+                "training.pre_nested_warmup.action_interval_steps": 2,
+            },
+            "requires a probabilistic",
+        ),
+        (
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            {
+                "training.pre_nested_warmup.enabled": True,
+                "training.pre_nested_warmup.duration": 12,
+                "training.pre_nested_warmup.unit": "epochs",
+                "training.pre_nested_warmup.policy": "balanced_global",
+            },
+            "requires unit=steps",
+        ),
+        (
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            {
+                "training.pre_nested_warmup.enabled": True,
+                "training.pre_nested_warmup.duration": 6,
+                "training.pre_nested_warmup.unit": "steps",
+                "training.pre_nested_warmup.policy": "balanced_global",
+                "training.pre_nested_warmup.action_interval_steps": 2,
+            },
+            "at least two complete passes",
+        ),
+        (
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            {
+                "training.pre_nested_warmup.enabled": True,
+                "training.pre_nested_warmup.duration": 13,
+                "training.pre_nested_warmup.unit": "steps",
+                "training.pre_nested_warmup.policy": "balanced_global",
+                "training.pre_nested_warmup.action_interval_steps": 2,
+            },
+            "must be divisible",
+        ),
+        (
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            {
+                "training.pre_nested_warmup.enabled": True,
+                "training.pre_nested_warmup.duration": 12,
+                "training.pre_nested_warmup.unit": "steps",
+                "training.pre_nested_warmup.policy": "balanced_global",
+                "training.pre_nested_warmup.action_interval_steps": 0,
+            },
+            "positive integer",
+        ),
+        (
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            {
+                "training.pre_nested_warmup.enabled": True,
+                "training.pre_nested_warmup.duration": 12,
+                "training.pre_nested_warmup.unit": "steps",
+                "training.pre_nested_warmup.policy": "nested_all",
+            },
+            "policy must be one of",
+        ),
+    ],
+)
+def test_balanced_global_pre_nested_warmup_rejects_invalid_contracts(
+    tmp_path,
+    fixture,
+    overrides,
+    message,
+):
+    with pytest.raises(ConfigError, match=message):
+        resolved_run_id = (
+            "debug-nested-001"
+            if fixture == "configs/debug_matrix.yaml"
+            else "probabilistic-adaptive-global-smoke-001"
+        )
+        resolve_run_config(
+            fixture,
+            run_id="debug-nested-001" if fixture == "configs/debug_matrix.yaml" else None,
+            output_dir=tmp_path / resolved_run_id,
+            overrides=overrides,
+        )
 
 def test_dmodel256_completion_label_validation():
     resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
