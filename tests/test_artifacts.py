@@ -27,7 +27,7 @@ from src.models.wiring import (
     build_global_granularity_pattern,
     build_per_block_granularity_pattern,
 )
-from src.utils.config import resolve_all_run_configs, resolve_run_config
+from src.utils.config import ConfigError, resolve_all_run_configs, resolve_run_config
 from src.utils.metrics import (
     ArtifactError,
     METRICS_COLUMNS,
@@ -45,6 +45,7 @@ from src.utils.metrics import (
 )
 from src.training.run import run_training
 from src.training.steps import build_training_metric_row
+from src.utils.reproducibility import derive_seed
 
 
 class TinyExtractionModel(torch.nn.Module):
@@ -943,13 +944,14 @@ def test_shared_family_folder_artifacts_can_be_read_directly_by_figures(tmp_path
     )
     figure_names = {path.name for path in figure_paths}
 
+    assert "medium_trend_report.md" in figure_names
     assert {
         "loss_vs_size.png",
         "ppl_vs_size.png",
         "ppl_vs_size_nested_all_no_corrections.png",
         "ppl_vs_size_nested_random_no_corrections.png",
         "ppl_vs_size_nested_random_vs_nested_all_no_corrections.png",
-    } <= figure_names
+    }.isdisjoint(figure_names)
 
 
 def test_scaling_curve_label_prefers_correction_mode_when_available():
@@ -2036,6 +2038,7 @@ def _probabilistic_checkpoint_state(phase):
         "sampled_predicted_reward": 0.125,
         "tie_resolution": "resolved_granularity_order",
         "selection_round": 0,
+        "selection_source": "thompson",
     }
     window = {
         "phase": phase,
@@ -2043,6 +2046,7 @@ def _probabilistic_checkpoint_state(phase):
         "decision_interval_steps": 2,
         "boundary_step": 0,
         "current_action": action,
+        "selection_source": "thompson",
         "completed_optimizer_steps": 1,
         "pre_window_objective": 10.0,
         "ordered_pre_window_component_losses": [9.0, 10.0, 11.0],
@@ -2052,12 +2056,17 @@ def _probabilistic_checkpoint_state(phase):
     if phase == "initial_objective_pending":
         window.update(
             current_action=None,
+            selection_source=None,
             completed_optimizer_steps=0,
             pre_window_objective=None,
             ordered_pre_window_component_losses=None,
         )
     elif phase == "ready_for_action":
-        window.update(current_action=None, completed_optimizer_steps=0)
+        window.update(
+            current_action=None,
+            selection_source=None,
+            completed_optimizer_steps=0,
+        )
     elif phase == "boundary_evaluation_pending":
         window.update(
             completed_optimizer_steps=2,
@@ -2081,7 +2090,7 @@ def _probabilistic_checkpoint_state(phase):
         )
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "method_family": "bayesian_gaussian_linear_thompson",
         "method_version": 1,
         "strategy": "thompson",
@@ -2154,6 +2163,34 @@ def _probabilistic_checkpoint_state(phase):
             "generator_state": generator_state,
             "sample_count": 1,
             "factorization_contract": "symmetric_eigh_float64_v1",
+        },
+        "reset": {
+            "contract": {
+                "enabled": False,
+                "interval_steps": None,
+                "policy": "full_prior",
+                "acquisition_policy": "balanced_global",
+                "acquisition_passes": 1,
+                "schedule_seed_stream_name": "controller_reset_schedule",
+                "schedule_seed": derive_seed(42, "controller_reset_schedule"),
+            },
+            "enabled": False,
+            "controller_start_step": None,
+            "episode_index": None,
+            "episode_start_step": None,
+            "episode_end_step": None,
+            "episode_offset_steps": 0,
+            "reset_count": 0,
+            "reset_steps": [],
+            "acquisition_completed_windows": 0,
+            "acquisition_total_windows": 0,
+            "acquisition_counts": {"micro": 0, "medium": 0, "full": 0},
+            "selection_source": None,
+            "schedule_seed": None,
+            "schedule": [],
+            "schedule_hash": None,
+            "completed_episode_count": 0,
+            "completed_episodes": [],
         },
         "window": window,
         "journal": {
@@ -2395,6 +2432,146 @@ def test_probabilistic_controller_journal_is_append_only_and_transactional(
     with pytest.raises(ArtifactError, match="failure.*posterior_updated"):
         append_controller_event(journal_path, invalid_failure)
     assert len(journal_path.read_text(encoding="utf-8").splitlines()) == 4
+
+
+def test_same_boundary_controller_events_append_as_one_transaction(tmp_path):
+    from src.utils.metrics import append_controller_events
+
+    journal_path = tmp_path / "controller_metrics.jsonl"
+    completed = _controller_journal_events()[1]
+    episode_completed = {
+        **{key: value for key, value in completed.items() if key != "event_type"},
+        "event_type": "episode_completed",
+        "episode_index": 0,
+        "episode_start_step": 0,
+        "episode_end_step": 2,
+        "episode_offset_steps": 2,
+        "completed_window_count": 1,
+        "forced_acquisition_window_count": 1,
+        "thompson_window_count": 0,
+        "schedule_seed": 17,
+        "schedule": ["micro", "medium", "full"],
+        "schedule_hash": "schedule-hash",
+        "pre_reset_posterior_mean": [0.5, 0.25, 0.0],
+        "pre_reset_posterior_covariance": [
+            [0.5, -0.25, 0.0],
+            [-0.25, 0.875, 0.0],
+            [0.0, 0.0, 1.0001],
+        ],
+    }
+
+    commit = append_controller_events(
+        journal_path,
+        [completed, episode_completed],
+    )
+
+    assert commit["event_count"] == 2
+    assert len(commit["event_hashes"]) == 2
+    saved = [
+        json.loads(line)
+        for line in journal_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [event["event_type"] for event in saved] == [
+        "completed_window",
+        "episode_completed",
+    ]
+
+
+def test_checkpoint_schema_one_is_migrated_only_for_reset_disabled_continuation(
+    tmp_path,
+):
+    from src.training.checkpointing import (
+        validate_probabilistic_controller_checkpoint_state,
+    )
+
+    config = _probabilistic_checkpoint_config(tmp_path)
+    legacy = _probabilistic_checkpoint_state("active_window")
+    legacy["schema_version"] = 1
+    legacy.pop("reset")
+    legacy["window"].pop("selection_source")
+
+    migrated = validate_probabilistic_controller_checkpoint_state(
+        legacy,
+        config=config,
+        checkpoint_path=tmp_path / "old.pt",
+    )
+    assert migrated["schema_version"] == 2
+    assert migrated["reset"]["enabled"] is False
+
+    reset_config = resolve_run_config(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+        output_dir=tmp_path / "probabilistic-adaptive-global-smoke-001",
+        overrides={
+            "model.adaptive_controller.process_noise_covariance": 0.0,
+            "model.adaptive_controller.reset.enabled": True,
+            "model.adaptive_controller.reset.interval_steps": 12,
+        },
+    )
+    with pytest.raises(
+        ConfigError,
+        match="reset-enabled continuation requires complete reset state",
+    ):
+        validate_probabilistic_controller_checkpoint_state(
+            legacy,
+            config=reset_config,
+            checkpoint_path=tmp_path / "old.pt",
+        )
+
+
+def test_controller_summary_separates_forced_and_thompson_frequencies(tmp_path):
+    from src.utils.metrics import build_controller_summary
+
+    template = _controller_journal_events()[1]
+    events = []
+    for index, (label, source) in enumerate(
+        [
+            ("micro", "forced_acquisition"),
+            ("medium", "forced_acquisition"),
+            ("micro", "thompson"),
+        ]
+    ):
+        events.append(
+            {
+                **template,
+                "window_index": index,
+                "boundary_step": 2 + 2 * index,
+                "boundary_step_start": 2 * index,
+                "boundary_step_end": 2 + 2 * index,
+                "action": {
+                    "global_granularity": label,
+                    "selection_source": source,
+                },
+                "selection_source": source,
+            }
+        )
+    journal_path = tmp_path / "controller_metrics.jsonl"
+    journal_path.write_text(
+        "".join(json.dumps(event, sort_keys=True) + "\n" for event in events),
+        encoding="utf-8",
+    )
+
+    summary = build_controller_summary(
+        controller_state=_probabilistic_checkpoint_state("terminal_incomplete"),
+        controller_events=events,
+        controller_metrics_path=journal_path,
+    )
+
+    assert summary["action_frequencies"] == {
+        "micro": 2,
+        "medium": 1,
+        "full": 0,
+    }
+    assert summary["forced_acquisition_action_frequencies"] == {
+        "micro": 1,
+        "medium": 1,
+        "full": 0,
+    }
+    assert summary["thompson_action_frequencies"] == {
+        "micro": 1,
+        "medium": 0,
+        "full": 0,
+    }
+    assert summary["thompson_action_entropy"] == pytest.approx(0.0)
 
 
 def test_probabilistic_controller_summary_preserves_auditable_state_and_hashes(
@@ -2640,9 +2817,13 @@ def test_probabilistic_artifacts_preserve_end_to_end_controller_provenance(
         "controller_latest_prediction_error": 1.0,
         "controller_manifest_hash": "controller-manifest-hash",
         "final_holdout_manifest_hash": "final-holdout-manifest-hash",
-        "controller_metrics_path": "controller_metrics.jsonl",
-        "controller_summary_path": "controller_summary.json",
-    }
+            "controller_metrics_path": "controller_metrics.jsonl",
+            "controller_summary_path": "controller_summary.json",
+            "controller_reset_enabled": False,
+            "controller_episode_index": None,
+            "controller_episode_offset_steps": 0,
+            "controller_selection_source": "thompson",
+        }
     assert run_summary["controller_summary"] == controller_summary
     assert run_summary["data_roles_manifest_hash"] == "parent-manifest-hash"
     assert run_summary["controller_manifest_hash"] == "controller-manifest-hash"

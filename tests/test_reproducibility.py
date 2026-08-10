@@ -20,6 +20,7 @@ from src.utils.config import ConfigError, resolve_run_config
 from src.utils.metrics import build_scaling_result_rows
 from src.utils.reproducibility import (
     build_balanced_warmup_schedule,
+    build_controller_reset_schedule,
     build_comparison_control_signature,
     derive_seed,
     seed_for,
@@ -44,6 +45,7 @@ PROBABILISTIC_SEED_STREAMS = (
     "final_holdout",
     "posterior_sampling",
     "pre_nested_warmup_schedule",
+    "controller_reset_schedule",
 )
 
 
@@ -98,6 +100,40 @@ def test_probabilistic_seed_streams_are_stable_distinct_and_root_seeded():
         first[stream_name] != derive_seed(43, stream_name)
         for stream_name in PROBABILISTIC_SEED_STREAMS
     )
+
+
+def test_controller_reset_episode_schedules_are_indexed_and_rng_independent():
+    labels = ["micro", "medium", "full"]
+    root_seed = derive_seed(42, "controller_reset_schedule")
+    first, first_seed, first_hash = build_controller_reset_schedule(
+        labels,
+        acquisition_passes=2,
+        root_seed=root_seed,
+        episode_index=0,
+    )
+    repeated, repeated_seed, repeated_hash = build_controller_reset_schedule(
+        labels,
+        acquisition_passes=2,
+        root_seed=root_seed,
+        episode_index=0,
+    )
+    second, second_seed, second_hash = build_controller_reset_schedule(
+        labels,
+        acquisition_passes=2,
+        root_seed=root_seed,
+        episode_index=1,
+    )
+
+    assert (first, first_seed, first_hash) == (
+        repeated,
+        repeated_seed,
+        repeated_hash,
+    )
+    assert first_seed != second_seed
+    assert first_hash != second_hash
+    assert len(first) == len(second) == 6
+    assert set(first[:3]) == set(first[3:]) == set(labels)
+    assert set(second[:3]) == set(second[3:]) == set(labels)
 
 
 def test_probabilistic_split_and_sampling_streams_reproduce_independently():

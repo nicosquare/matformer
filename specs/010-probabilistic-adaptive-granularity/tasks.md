@@ -156,6 +156,24 @@
 
 ---
 
+## Phase 9: Configurable Episodic Reset for Global Thompson Sampling
+
+**Purpose**: Optionally reset the global Thompson posterior to its configured
+prior at controller-relative episode boundaries, with balanced forced
+acquisition at the start of every episode and exact continuation semantics.
+
+- [X] T057 Add reset configuration, schedule-seed, invalid-combination, and opt-in experiment-matrix tests in tests/test_config.py and tests/test_reproducibility.py
+- [X] T058 Add controller tests for forced acquisition, posterior conditioning, Thompson RNG isolation, exact reset ordering, prior restoration, and terminal boundary behavior in tests/test_probabilistic_controller.py
+- [X] T059 Add acquisition-window, Thompson-window, exact-boundary, old-schema, and incompatible reset continuation tests in tests/test_probabilistic_controller_resume.py and tests/test_artifacts.py
+- [X] T060 Implement reset normalization, validation, complete resolved provenance, and the controller_reset_schedule seed stream in src/utils/config.py and src/utils/reproducibility.py
+- [X] T061 Increment the controller-state schema and implement episode schedules, selection sources, acquisition progress, episode archives, posterior reset, and transactional same-boundary events in src/training/probabilistic_controller.py
+- [X] T062 Persist and validate complete reset state, batch same-boundary journal records transactionally, and add source-separated action statistics and entropy in src/training/checkpointing.py, src/utils/artifact_io.py, src/utils/metrics.py, and src/training/run.py
+- [X] T063 Add the probabilistic_global_thompson_reset reporting identity and preserve existing Bayesian, legacy Thompson, and UCB identities in src/evaluation/reporting.py, src/evaluation/reporting_io.py, src/evaluation/reporting_impl.py, and src/evaluation/reporting_styles.py
+- [X] T064 Add the seed-42 no-reset/K=500/K=1000/K=2000 opt-in experiment configuration without changing the default pilot queue in configs/probabilistic_global_reset_seed42.yaml
+- [X] T065 Run focused reset, resume, artifact, reporting, training-smoke, and compatibility verification and reconcile the reset contract documentation
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies

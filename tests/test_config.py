@@ -569,6 +569,121 @@ def test_probabilistic_adaptive_accepts_degenerate_psd_process_covariance():
     ] == [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
 
 
+def test_probabilistic_reset_defaults_disabled_without_changing_thompson():
+    resolved = _resolve_probabilistic_fixture(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml"
+    )
+
+    assert resolved["model"]["adaptive_controller"]["reset"] == {
+        "enabled": False,
+        "interval_steps": None,
+        "policy": "full_prior",
+        "acquisition_policy": "balanced_global",
+        "acquisition_passes": 1,
+        "schedule_seed_stream_name": "controller_reset_schedule",
+        "schedule_seed": derive_seed(42, "controller_reset_schedule"),
+    }
+
+
+def test_probabilistic_global_reset_resolves_complete_contract():
+    resolved = _resolve_probabilistic_fixture(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+        overrides={
+            "model.adaptive_controller.process_noise_covariance": 0.0,
+            "model.adaptive_controller.reset.enabled": True,
+            "model.adaptive_controller.reset.interval_steps": 12,
+        },
+    )
+    reset = resolved["model"]["adaptive_controller"]["reset"]
+
+    assert reset["enabled"] is True
+    assert reset["interval_steps"] == 12
+    assert reset["policy"] == "full_prior"
+    assert reset["acquisition_policy"] == "balanced_global"
+    assert reset["acquisition_passes"] == 1
+    assert reset["episode_window_count"] == 6
+    assert reset["acquisition_window_count"] == 3
+    assert reset["minimum_thompson_window_count"] == 3
+
+
+@pytest.mark.parametrize(
+    "fixture_path, overrides, expected_message",
+    [
+        (
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            {
+                "model.adaptive_controller.reset.enabled": True,
+                "model.adaptive_controller.reset.interval_steps": 12,
+            },
+            "process_noise_covariance.*exactly zero",
+        ),
+        (
+            "tests/fixtures/probabilistic_adaptive_per_block_smoke.yaml",
+            {
+                "model.adaptive_controller.process_noise_covariance": 0.0,
+                "model.adaptive_controller.reset.enabled": True,
+                "model.adaptive_controller.reset.interval_steps": 12,
+            },
+            "reset.*adaptive_global",
+        ),
+        (
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            {
+                "model.adaptive_controller.process_noise_covariance": 0.0,
+                "model.adaptive_controller.reset.enabled": True,
+                "model.adaptive_controller.reset.interval_steps": 13,
+            },
+            "interval_steps.*divisible.*decision_interval_steps",
+        ),
+        (
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            {
+                "model.adaptive_controller.process_noise_covariance": 0.0,
+                "model.adaptive_controller.reset.enabled": True,
+                "model.adaptive_controller.reset.interval_steps": 10,
+            },
+            "enough windows.*acquisition.*Thompson",
+        ),
+    ],
+)
+def test_probabilistic_reset_rejects_incompatible_contracts(
+    fixture_path,
+    overrides,
+    expected_message,
+):
+    with pytest.raises(ConfigError, match=expected_message):
+        _resolve_probabilistic_fixture(fixture_path, overrides=overrides)
+
+
+def test_seed42_reset_experiment_manifest_is_opt_in_and_matched():
+    with open(
+        "configs/probabilistic_global_reset_seed42.yaml",
+        encoding="utf-8",
+    ) as config_file:
+        manifest = yaml.safe_load(config_file)
+
+    experiment = manifest["experiment"]
+    assert experiment["seed"] == 42
+    assert experiment["default_queue"] is False
+    assert experiment["invariants"]["decision_interval_steps"] == 50
+    assert experiment["invariants"]["pre_adaptive_warmup_steps"] == 500
+    assert experiment["invariants"]["process_noise_covariance"] == 0.0
+    assert experiment["invariants"]["data_manifests"] == (
+        "matched_by_seed_and_role_contract"
+    )
+    variants = manifest["variants"]
+    assert len(variants) == 4
+    assert variants[0]["overrides"] == {
+        "model.adaptive_controller.reset.enabled": False
+    }
+    assert [
+        variant["overrides"].get(
+            "model.adaptive_controller.reset.interval_steps"
+        )
+        for variant in variants[1:]
+    ] == [500, 1000, 2000]
+
+
 def test_legacy_thompson_configuration_requires_explicit_bayesian_migration():
     with pytest.raises(ConfigError, match="(?i)migration.*Bayesian"):
         resolve_run_config("tests/fixtures/legacy_thompson_config.yaml")

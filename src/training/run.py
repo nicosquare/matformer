@@ -46,7 +46,7 @@ from src.utils.config import (
 )
 from src.utils.metrics import (
     MetricsJournal,
-    append_controller_event,
+    append_controller_events,
     build_checkpoint_summary_fields,
     build_controller_summary,
     build_monitoring_summary_fields,
@@ -437,6 +437,7 @@ def _controller_event_common_fields(
     controller_state: Mapping[str, Any],
 ) -> dict[str, Any]:
     resume = controller_state["resume"]
+    reset = controller_state.get("reset", {})
     return {
         "run_id": config["run"]["run_id"],
         "method_family": controller_state["method_family"],
@@ -458,6 +459,14 @@ def _controller_event_common_fields(
         ],
         "resume_count": resume.get("resume_count", 0),
         "resume_source_checkpoint": resume.get("source_checkpoint"),
+        "reset_enabled": bool(reset.get("enabled", False)),
+        "reset_contract": copy.deepcopy(reset.get("contract")),
+        "reset_count": int(reset.get("reset_count", 0)),
+        "reset_steps": list(reset.get("reset_steps", [])),
+        "episode_index": reset.get("episode_index"),
+        "episode_start_step": reset.get("episode_start_step"),
+        "episode_end_step": reset.get("episode_end_step"),
+        "episode_offset_steps": reset.get("episode_offset_steps", 0),
     }
 
 
@@ -494,8 +503,11 @@ def _enrich_controller_event(
     enriched["action_frequencies"] = controller_action_frequency_counts(
         [*controller_events, enriched]
     )
+    event_covariance = enriched.get("posterior_covariance")
     enriched["uncertainty_summary"] = controller_uncertainty_summary(
-        state["belief"]["posterior_covariance"]
+        event_covariance
+        if event_covariance is not None
+        else state["belief"]["posterior_covariance"]
     )
     warmup = config.get("training", {}).get("pre_nested_warmup", {})
     if (
@@ -587,28 +599,51 @@ def _commit_controller_event(
     heartbeat_writer,
     run_state: dict[str, Any],
 ) -> dict[str, Any]:
-    enriched = _enrich_controller_event(
-        config,
-        controller,
-        event,
-        controller_events,
+    raw_journal_events = event.get("_journal_events")
+    if isinstance(raw_journal_events, list):
+        journal_events = [dict(item) for item in raw_journal_events]
+    else:
+        journal_events = [
+            {key: value for key, value in event.items() if key != "_journal_events"}
+        ]
+    enriched_events: list[dict[str, Any]] = []
+    for raw_event in journal_events:
+        enriched_events.append(
+            _enrich_controller_event(
+                config,
+                controller,
+                raw_event,
+                [*controller_events, *enriched_events],
+            )
+        )
+    primary_type = event.get("event_type")
+    enriched = next(
+        (
+            candidate
+            for candidate in enriched_events
+            if candidate.get("event_type") == primary_type
+        ),
+        enriched_events[-1],
     )
     journal_path = Path(config["run"]["output_dir"]) / "controller_metrics.jsonl"
-    commit = append_controller_event(
+    commit = append_controller_events(
         journal_path,
-        enriched,
+        enriched_events,
         distributed_context=distributed_context,
         artifact_io=config,
         heartbeat_writer=heartbeat_writer,
         artifact_state=run_state,
     )
     if commit is not None:
-        if str(event.get("event_type", "")).startswith("warmup_"):
+        if len(enriched_events) == 1 and str(
+            event.get("event_type", "")
+        ).startswith("warmup_"):
             controller.record_warmup_journal_commit(commit)
         else:
             controller.record_journal_commit(commit)
-        controller_events.append(enriched)
-        print(format_controller_lifecycle_log(enriched), flush=True)
+        controller_events.extend(enriched_events)
+        for committed_event in enriched_events:
+            print(format_controller_lifecycle_log(committed_event), flush=True)
     run_state["latest_controller_event"] = enriched
     run_state["probabilistic_controller_state"] = controller.state_dict()
     return enriched

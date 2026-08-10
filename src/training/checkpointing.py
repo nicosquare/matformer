@@ -37,6 +37,7 @@ from src.training.distributed import (
 from src.training.probabilistic_controller import (
     CONTROLLER_SCHEMA_VERSION,
     FEATURE_SCHEMA_VERSION,
+    LEGACY_CONTROLLER_SCHEMA_VERSION,
     ProbabilisticControllerError,
     SAMPLING_FACTORIZATION_CONTRACT,
     build_additive_feature_schema,
@@ -62,6 +63,7 @@ from src.utils.metrics import (
     build_checkpoint_summary_fields,
 )
 from src.utils.reproducibility import (
+    build_controller_reset_schedule,
     capture_rng_state,
     deterministic_runtime_settings,
     restore_rng_state,
@@ -102,6 +104,49 @@ def validate_probabilistic_controller_checkpoint_state(
             f"Checkpoint is missing Bayesian controller state{location}"
         )
     state = copy.deepcopy(dict(controller_state))
+    if state.get("schema_version") == LEGACY_CONTROLLER_SCHEMA_VERSION:
+        configured_reset = (
+            config.get("model", {}).get("adaptive_controller", {}).get("reset", {})
+            if isinstance(config, Mapping)
+            else None
+        )
+        if not isinstance(configured_reset, Mapping) or bool(
+            configured_reset.get("enabled", False)
+        ):
+            raise ConfigError(
+                "reset-enabled continuation requires complete reset state"
+                f"{location}"
+            )
+        granularities = list(state.get("ordered_granularities", []))
+        state["schema_version"] = CONTROLLER_SCHEMA_VERSION
+        state["reset"] = {
+            "contract": copy.deepcopy(dict(configured_reset)),
+            "enabled": False,
+            "controller_start_step": None,
+            "episode_index": None,
+            "episode_start_step": None,
+            "episode_end_step": None,
+            "episode_offset_steps": 0,
+            "reset_count": 0,
+            "reset_steps": [],
+            "acquisition_completed_windows": 0,
+            "acquisition_total_windows": 0,
+            "acquisition_counts": {label: 0 for label in granularities},
+            "selection_source": None,
+            "schedule_seed": None,
+            "schedule": [],
+            "schedule_hash": None,
+            "completed_episode_count": 0,
+            "completed_episodes": [],
+        }
+        legacy_window = state.get("window")
+        if isinstance(legacy_window, dict):
+            legacy_action = legacy_window.get("current_action")
+            legacy_window["selection_source"] = (
+                legacy_action.get("selection_source", "thompson")
+                if isinstance(legacy_action, Mapping)
+                else None
+            )
     required_top_level = {
         "schema_version",
         "method_family",
@@ -115,6 +160,7 @@ def validate_probabilistic_controller_checkpoint_state(
         "manifest_hashes",
         "belief",
         "sampling",
+        "reset",
         "window",
         "journal",
         "resume",
@@ -358,6 +404,106 @@ def validate_probabilistic_controller_checkpoint_state(
             f"Bayesian controller generator state is invalid{location}"
         ) from error
 
+    reset = state["reset"]
+    required_reset_fields = {
+        "contract",
+        "enabled",
+        "controller_start_step",
+        "episode_index",
+        "episode_start_step",
+        "episode_end_step",
+        "episode_offset_steps",
+        "reset_count",
+        "reset_steps",
+        "acquisition_completed_windows",
+        "acquisition_total_windows",
+        "acquisition_counts",
+        "selection_source",
+        "schedule_seed",
+        "schedule",
+        "schedule_hash",
+        "completed_episode_count",
+        "completed_episodes",
+    }
+    if (
+        not isinstance(reset, Mapping)
+        or required_reset_fields - set(reset)
+        or not isinstance(reset.get("enabled"), bool)
+    ):
+        raise ConfigError(f"Bayesian controller reset state is incomplete{location}")
+    if reset["enabled"]:
+        if state["scope"] != "global":
+            raise ConfigError(
+                f"Bayesian controller reset state requires global scope{location}"
+            )
+        if (
+            not isinstance(reset.get("reset_steps"), list)
+            or not isinstance(reset.get("acquisition_counts"), Mapping)
+            or not isinstance(reset.get("completed_episodes"), list)
+        ):
+            raise ConfigError(
+                f"Bayesian controller reset collections are invalid{location}"
+            )
+        contract = reset.get("contract")
+        if not isinstance(contract, Mapping) or not bool(contract.get("enabled")):
+            raise ConfigError(
+                f"Bayesian controller reset contract is invalid{location}"
+            )
+        if reset.get("episode_index") is None:
+            if any(
+                reset.get(name) is not None
+                for name in (
+                    "controller_start_step",
+                    "episode_start_step",
+                    "episode_end_step",
+                    "schedule_seed",
+                    "schedule_hash",
+                )
+            ) or list(reset.get("schedule", [])):
+                raise ConfigError(
+                    f"Bayesian controller uninitialized reset state is invalid{location}"
+                )
+        else:
+            integer_fields = (
+                "controller_start_step",
+                "episode_index",
+                "episode_start_step",
+                "episode_end_step",
+                "episode_offset_steps",
+                "reset_count",
+                "acquisition_completed_windows",
+                "acquisition_total_windows",
+                "completed_episode_count",
+            )
+            if any(
+                isinstance(reset.get(name), bool)
+                or not isinstance(reset.get(name), int)
+                or int(reset[name]) < 0
+                for name in integer_fields
+            ):
+                raise ConfigError(
+                    f"Bayesian controller reset episode progress is invalid{location}"
+                )
+        if int(reset["episode_offset_steps"]) > int(contract["interval_steps"]):
+            raise ConfigError(
+                f"Bayesian controller reset episode offset is invalid{location}"
+            )
+        if reset.get("episode_index") is not None:
+            expected_schedule, expected_seed, expected_hash = build_controller_reset_schedule(
+                granularities,
+                acquisition_passes=int(contract["acquisition_passes"]),
+                root_seed=int(contract["schedule_seed"]),
+                episode_index=int(reset["episode_index"]),
+            )
+            if (
+                list(reset.get("schedule", [])) != expected_schedule
+                or reset.get("schedule_seed") != expected_seed
+                or reset.get("schedule_hash") != expected_hash
+            ):
+                raise ConfigError(
+                    f"Bayesian controller reset schedule is incompatible{location}"
+                )
+
     window = state["window"]
     required_window_fields = {
         "phase",
@@ -365,6 +511,7 @@ def validate_probabilistic_controller_checkpoint_state(
         "decision_interval_steps",
         "boundary_step",
         "current_action",
+        "selection_source",
         "completed_optimizer_steps",
         "pre_window_objective",
         "ordered_pre_window_component_losses",
@@ -405,6 +552,49 @@ def validate_probabilistic_controller_checkpoint_state(
         raise ConfigError(f"Bayesian boundary checkpoint requires full progress{location}")
     if phase in {"active_window", "terminal_incomplete"} and progress >= interval:
         raise ConfigError(f"Bayesian active/incomplete progress must be below interval{location}")
+    if isinstance(action, Mapping) and window.get("selection_source") not in {
+        "forced_acquisition",
+        "thompson",
+    }:
+        raise ConfigError(
+            f"Bayesian controller selection source is invalid{location}"
+        )
+    if reset["enabled"] and reset.get("episode_index") is not None:
+        reset_interval = int(reset["contract"]["interval_steps"])
+        expected_episode_start = int(reset["controller_start_step"]) + int(
+            reset["episode_index"]
+        ) * reset_interval
+        if (
+            int(reset["episode_start_step"]) != expected_episode_start
+            or int(reset["episode_end_step"])
+            != expected_episode_start + reset_interval
+            or int(reset["reset_count"]) != len(reset["reset_steps"])
+            or int(reset["completed_episode_count"])
+            != len(reset["completed_episodes"])
+            or int(reset["acquisition_completed_windows"])
+            > int(reset["acquisition_total_windows"])
+            or sum(int(value) for value in reset["acquisition_counts"].values())
+            != int(reset["acquisition_completed_windows"])
+        ):
+            raise ConfigError(
+                f"Bayesian controller reset episode provenance is invalid{location}"
+            )
+        expected_episode_offset = (
+            int(window["boundary_step"])
+            - int(reset["episode_start_step"])
+            + int(window["completed_optimizer_steps"])
+        )
+        if expected_episode_offset != int(reset["episode_offset_steps"]):
+            raise ConfigError(
+                f"Bayesian controller reset episode offset does not match window{location}"
+            )
+        if isinstance(action, Mapping) and (
+            window.get("selection_source") != reset.get("selection_source")
+            or action.get("selection_source") != window.get("selection_source")
+        ):
+            raise ConfigError(
+                f"Bayesian controller reset selection source mismatch{location}"
+            )
     if phase == "failed" and not isinstance(state["failure"], Mapping):
         raise ConfigError(f"Bayesian failed checkpoint requires failure provenance{location}")
     if phase != "failed" and state["failure"] is not None:
@@ -563,6 +753,13 @@ def validate_probabilistic_controller_checkpoint_state(
         if dict(probabilistic_inputs) != expected_inputs:
             raise ConfigError(
                 f"Bayesian controller probabilistic inputs do not match config{location}"
+            )
+        expected_reset = controller_config.get("reset")
+        if not isinstance(expected_reset, Mapping) or dict(
+            reset.get("contract", {})
+        ) != dict(expected_reset):
+            raise ConfigError(
+                f"Bayesian controller reset contract does not match config{location}"
             )
     return state
 

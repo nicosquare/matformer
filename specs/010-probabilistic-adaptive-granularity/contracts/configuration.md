@@ -206,3 +206,33 @@ training:
 With five granularities this resolves to ten windows and exactly two windows
 per label. `configs/probabilistic_balanced_warmup_500.yaml` is the complete
 reference configuration.
+
+## Episodic Reset for Global Thompson Sampling
+
+`model.adaptive_controller.reset.enabled` defaults to `false`, preserving the
+existing Bayesian Thompson sequence. Reset is an optional variant of the same
+global controller and `thompson` strategy:
+
+```yaml
+model:
+  adaptive_controller:
+    process_noise_covariance: 0.0
+    reset:
+      enabled: true
+      interval_steps: 1000
+      policy: full_prior
+      acquisition_policy: balanced_global
+      acquisition_passes: 1
+```
+
+When enabled, reset requires `adaptive_global`, exactly zero resolved process
+noise, a positive reset interval divisible by `decision_interval_steps`, and
+at least as many Thompson windows as forced-acquisition windows in every
+episode. `full_prior` and `balanced_global` are the only supported policies.
+Every acquisition pass is a seeded permutation of all resolved granularities.
+The resolver persists the complete contract and never rewrites incompatible
+Q, K, acquisition settings, or continuation state.
+
+Reset-enabled reporting identity is
+`probabilistic_global_thompson_reset`; reset-disabled global identity remains
+`probabilistic_global_thompson`.

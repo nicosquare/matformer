@@ -202,3 +202,32 @@ A post-training final comparison:
 4. writes `final_holdout_results.json` separately;
 5. never mutates controller state, checkpoint selection, hyperparameters, or
    the historical training/controller journal.
+
+## Episodic Reset Boundary Extension
+
+Controller-state schema version 2 adds complete episodic-reset state. Schema-1
+state is accepted only when continuation resolves reset-disabled. A
+reset-enabled continuation requires the saved reset contract, controller-start
+step, episode index/start/end/offset, reset count/steps, acquisition schedule,
+seed/hash/progress/counts, selection source, current action, and completed
+episode archives to match configuration.
+
+Episode 0 begins at the initial controller baseline after optional warmup, so
+episode boundaries are relative to that controller-start step. Each episode
+begins with independently episode-seeded balanced acquisition. Forced windows
+condition the posterior normally but do not consume the Thompson generator.
+
+At a completed reset boundary, the existing single panel evaluation is reused
+to condition the final observation. The controller then archives the episode
+and pre-reset posterior. If training continues, it restores the exact configured
+prior, initializes the next episode schedule, and selects its first forced
+action. The completed-window, episode-completed, posterior-reset, and
+episode-initialized records are appended as one transactional JSONL batch. A
+run ending exactly on the boundary archives the episode without performing an
+unused reset.
+
+Reset summaries expose total, forced-acquisition, and Thompson-only action
+frequencies and entropy. Only the Thompson subset is a learned-policy
+frequency. Episode initialization/completion, posterior reset, acquisition
+progress/completion, and terminal incomplete episode provenance remain in the
+boundary journal.

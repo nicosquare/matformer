@@ -339,3 +339,25 @@ Validation rules:
 - `run_summary.json`: paths, hashes, method identity, and completed controller summary
 - checkpoints: complete Bayesian live state plus existing model/optimizer/scheduler/training state
 - `final_holdout_results.json`: separate post-training comparison output
+
+## Episodic Reset Extension
+
+`EpisodicResetState` represents the optional global-only posterior reset and
+acquisition contract:
+
+- **contract**: enabled flag, K, full-prior policy, balanced-global acquisition,
+  pass count, and root schedule seed
+- **controller start**: optimizer step after optional warmup; episode timing is
+  relative to this step
+- **live episode**: index, start/end, offset, episode seed, schedule/hash,
+  acquisition progress/counts, selection source, and current action
+- **reset history**: reset count/steps and completed episode archives containing
+  the pre-reset posterior
+- **statistics**: total, forced-acquisition, and Thompson-only frequencies and
+  entropy
+
+Forced observations use the ordinary Gaussian likelihood update but never draw
+from the posterior-sampling generator. A completed boundary that will be
+followed by more training restores the configured prior exactly; no model,
+optimizer, scheduler, scaler, dataloader, counter, panel, or Thompson generator
+is reset.

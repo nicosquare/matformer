@@ -323,6 +323,7 @@ def test_make_figures_reads_csv_artifacts(tmp_path):
     figure_paths = generate_figures(tmp_path, tmp_path / "figures")
 
     figure_names = {path.name for path in figure_paths}
+    assert {"consistency_vs_size.png", "medium_trend_report.md"} <= figure_names
     assert {
         "loss_vs_size.png",
         "ppl_vs_size.png",
@@ -330,9 +331,7 @@ def test_make_figures_reads_csv_artifacts(tmp_path):
         "ppl_vs_size_nested_random_no_corrections.png",
         "ppl_vs_size_nested_random_vs_nested_all_no_corrections.png",
         "accuracy_vs_size.png",
-        "consistency_vs_size.png",
-        "medium_trend_report.md",
-    } <= figure_names
+    }.isdisjoint(figure_names)
     for path in figure_paths:
         assert path.exists()
         assert path.stat().st_size > 0
@@ -775,6 +774,18 @@ def test_make_figures_plots_grouped_consistency_metrics_and_skips_deferred_rows(
 
 def test_make_figures_aggregates_task_results_for_accuracy_plot(tmp_path):
     run_dir = tmp_path / "dmodel256-nested-random-001"
+    run_dir.mkdir(parents=True)
+    (run_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "model": {
+                    "variant": "matformer_llama",
+                    "granularity_sampling_mode": "global",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
     write_scaling_results_csv(
         run_dir,
         [
@@ -877,7 +888,10 @@ def test_make_figures_aggregates_task_results_for_accuracy_plot(tmp_path):
         encoding="utf-8"
     )
     assert "average_downstream_accuracy: 0.8" in report
-    assert "nested-random / xl / dmodel256-nested-random-001" in report
+    assert (
+        "nested-random / matformer_llama / xl / dmodel256-nested-random-001"
+        in report
+    )
 
 
 def test_make_figures_refreshes_parameter_counts_from_run_config(tmp_path):

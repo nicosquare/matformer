@@ -1,0 +1,53 @@
+# Opt-in comparison manifest for episodic reset experiments. This file is not
+# consumed by the default pilot queue. Each variant is launched from the same
+# base config with the shared and variant dotted overrides below.
+base_config: configs/probabilistic_balanced_warmup_500.yaml
+
+experiment:
+  name: probabilistic_global_reset_seed42
+  seed: 42
+  default_queue: false
+  invariants:
+    controller_scope: global
+    strategy: thompson
+    decision_interval_steps: 50
+    pre_adaptive_warmup_steps: 500
+    prior_mean: 0.0
+    prior_covariance: 1.0
+    observation_noise_variance: 0.01
+    process_noise_covariance: 0.0
+    optimizer: adam
+    scheduler: cosine
+    training_max_steps: 4500
+    training_token_budget: 576000
+    data_manifests: matched_by_seed_and_role_contract
+
+shared_overrides:
+  model.granularity_sampling_mode: adaptive_global
+  model.adaptive_sampler_strategy: thompson
+  model.adaptive_controller.decision_interval_steps: 50
+  model.adaptive_controller.process_noise_covariance: 0.0
+  training.pre_nested_warmup.enabled: true
+  training.pre_nested_warmup.duration: 500
+  training.pre_nested_warmup.unit: steps
+  training.pre_nested_warmup.policy: balanced_global
+  training.pre_nested_warmup.action_interval_steps: 50
+  training.max_steps: 4500
+  training.token_budget: 576000
+
+variants:
+  - run_id: probabilistic-global-seed42-no-reset
+    overrides:
+      model.adaptive_controller.reset.enabled: false
+  - run_id: probabilistic-global-seed42-reset-k500
+    overrides:
+      model.adaptive_controller.reset.enabled: true
+      model.adaptive_controller.reset.interval_steps: 500
+  - run_id: probabilistic-global-seed42-reset-k1000
+    overrides:
+      model.adaptive_controller.reset.enabled: true
+      model.adaptive_controller.reset.interval_steps: 1000
+  - run_id: probabilistic-global-seed42-reset-k2000
+    overrides:
+      model.adaptive_controller.reset.enabled: true
+      model.adaptive_controller.reset.interval_steps: 2000

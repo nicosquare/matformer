@@ -6,6 +6,7 @@ import csv
 import hashlib
 import io
 import json
+import math
 import os
 import statistics
 import tempfile
@@ -18,6 +19,7 @@ from src.utils.config import (
 )
 from src.utils.artifact_io import (
     append_jsonl_artifact,
+    append_jsonl_artifacts,
     emit_artifact_event,
     remove_resolved_failure,
     resolved_artifact_io,
@@ -81,6 +83,10 @@ METRICS_COLUMNS = [
     "final_holdout_manifest_hash",
     "controller_metrics_path",
     "controller_summary_path",
+    "controller_reset_enabled",
+    "controller_episode_index",
+    "controller_episode_offset_steps",
+    "controller_selection_source",
     "reward",
     "correction_penalty",
     "loss",
@@ -1490,6 +1496,11 @@ CONTROLLER_EVENT_TYPES = {
     "warmup_window_completed",
     "warmup_completed",
     "warmup_terminal_incomplete",
+    "episode_initialized",
+    "episode_completed",
+    "posterior_reset",
+    "acquisition_progress",
+    "acquisition_completed",
 }
 
 
@@ -1509,6 +1520,33 @@ def append_controller_event(
     normalized = _controller_json_value(event)
     _validate_controller_event(normalized)
     return append_jsonl_artifact(
+        path,
+        normalized,
+        settings=artifact_io,
+        heartbeat_writer=heartbeat_writer,
+        state=artifact_state,
+    )
+
+
+def append_controller_events(
+    path: str | Path,
+    events: Iterable[Mapping[str, Any]],
+    *,
+    distributed_context: Any | None = None,
+    artifact_io: Mapping[str, Any] | None = None,
+    heartbeat_writer=None,
+    artifact_state: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Validate and transactionally append one same-boundary event batch."""
+
+    if not _should_write_shared_artifact(distributed_context):
+        return None
+    normalized = [_controller_json_value(event) for event in events]
+    if not normalized:
+        raise ArtifactError("Controller event batch must not be empty")
+    for event in normalized:
+        _validate_controller_event(event)
+    return append_jsonl_artifacts(
         path,
         normalized,
         settings=artifact_io,
@@ -1592,6 +1630,14 @@ def build_controller_summary(
     if terminal_status == "complete_boundary":
         terminal_status = "complete"
     action_frequencies = controller_action_frequency_counts(events)
+    forced_action_frequencies = controller_action_frequency_counts(
+        events,
+        selection_source="forced_acquisition",
+    )
+    thompson_action_frequencies = controller_action_frequency_counts(
+        events,
+        selection_source="thompson",
+    )
     effect_uncertainty = controller_effect_uncertainty_summary(
         state.get("feature_schema"),
         covariance,
@@ -1678,6 +1724,15 @@ def build_controller_summary(
         "completed_observation_count": len(completed),
         "controller_evaluation_count": len(evaluations),
         "action_frequencies": action_frequencies,
+        "forced_acquisition_action_frequencies": forced_action_frequencies,
+        "thompson_action_frequencies": thompson_action_frequencies,
+        "action_entropy": _action_frequency_entropy(action_frequencies),
+        "forced_acquisition_action_entropy": _action_frequency_entropy(
+            forced_action_frequencies
+        ),
+        "thompson_action_entropy": _action_frequency_entropy(
+            thompson_action_frequencies
+        ),
         "per_block_granularity_frequencies": (
             action_frequencies if state.get("scope") == "per_block" else None
         ),
@@ -1705,6 +1760,13 @@ def build_controller_summary(
         },
         "resume_provenance": state.get("resume"),
         "failure_summary": failures[-1] if failures else state.get("failure"),
+        "reset": state.get("reset"),
+        "reset_enabled": bool(state.get("reset", {}).get("enabled", False)),
+        "reset_count": state.get("reset", {}).get("reset_count", 0),
+        "reset_steps": state.get("reset", {}).get("reset_steps", []),
+        "completed_episodes": state.get("reset", {}).get(
+            "completed_episodes", []
+        ),
         "controller_metrics_path": str(journal_path),
         "controller_metrics_hash": (
             hashlib.sha256(journal_path.read_bytes()).hexdigest()
@@ -1735,6 +1797,8 @@ def write_controller_summary(
 
 def controller_action_frequency_counts(
     events: Iterable[Mapping[str, Any]],
+    *,
+    selection_source: str | None = None,
 ) -> dict[str, Any]:
     event_list = list(events)
     scope = next(
@@ -1750,10 +1814,22 @@ def controller_action_frequency_counts(
             event.get("action")
             for event in event_list
             if event.get("event_type") == "completed_window"
+            and (
+                selection_source is None
+                or event.get("selection_source", "thompson") == selection_source
+                or (
+                    isinstance(event.get("action"), Mapping)
+                    and event["action"].get(
+                        "selection_source",
+                        event.get("selection_source", "thompson"),
+                    )
+                    == selection_source
+                )
+            )
             and isinstance(event.get("action"), Mapping)
         ]
         counted_actions = completed_actions
-        if not counted_actions:
+        if not counted_actions and selection_source is None:
             counted_actions = [
                 event.get("selected_action")
                 for event in event_list
@@ -1792,16 +1868,37 @@ def controller_action_frequency_counts(
         action = event.get("action")
         if not isinstance(action, Mapping):
             continue
+        if selection_source is not None and (
+            event.get(
+                "selection_source",
+                action.get("selection_source", "thompson"),
+            )
+            != selection_source
+        ):
+            continue
         label = action.get("global_granularity")
         if label is not None:
             counts[str(label)] = counts.get(str(label), 0) + 1
-    if not counts:
+    if not counts and selection_source is None:
         for event in event_list:
             action = event.get("selected_action")
             if isinstance(action, Mapping) and action.get("global_granularity") is not None:
                 label = str(action["global_granularity"])
                 counts[label] = counts.get(label, 0) + 1
     return counts
+
+
+def _action_frequency_entropy(frequencies: Mapping[str, Any]) -> float | None:
+    counts = [
+        int(value)
+        for value in frequencies.values()
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    ]
+    total = sum(counts)
+    if total <= 0:
+        return None
+    probabilities = [count / total for count in counts if count > 0]
+    return -sum(probability * math.log(probability) for probability in probabilities)
 
 
 def controller_uncertainty_summary(covariance: Any) -> dict[str, Any]:
@@ -1917,6 +2014,16 @@ def build_compact_controller_metric_fields(
         "final_holdout_manifest_hash": manifests.get("final_holdout_manifest_hash"),
         "controller_metrics_path": controller_state.get("journal", {}).get("path"),
         "controller_summary_path": "controller_summary.json",
+        "controller_reset_enabled": bool(
+            controller_state.get("reset", {}).get("enabled", False)
+        ),
+        "controller_episode_index": controller_state.get("reset", {}).get(
+            "episode_index"
+        ),
+        "controller_episode_offset_steps": controller_state.get("reset", {}).get(
+            "episode_offset_steps"
+        ),
+        "controller_selection_source": window.get("selection_source"),
     }
 
 
@@ -1973,6 +2080,21 @@ def format_controller_lifecycle_log(event: Mapping[str, Any]) -> str:
                 f"posterior_updated={event.get('posterior_updated')}",
             ]
         )
+    elif event_type in {
+        "episode_initialized",
+        "episode_completed",
+        "posterior_reset",
+        "acquisition_progress",
+        "acquisition_completed",
+    }:
+        fields.extend(
+            [
+                f"episode_index={event.get('episode_index')}",
+                f"episode_offset_steps={event.get('episode_offset_steps')}",
+                f"selection_source={event.get('selection_source')}",
+                f"schedule_hash={event.get('schedule_hash')}",
+            ]
+        )
     fields.append(f"uncertainty={_compact_uncertainty(event.get('uncertainty_summary'))}")
     return " ".join(fields)
 
@@ -2008,6 +2130,11 @@ def _validate_controller_event(event: Mapping[str, Any]) -> None:
             raise ArtifactError("warmup event posterior_updated must be false")
         if not event.get("schedule_hash"):
             raise ArtifactError("warmup event schedule_hash is required")
+    if event_type in {"episode_initialized", "acquisition_progress", "acquisition_completed"}:
+        if not event.get("schedule_hash"):
+            raise ArtifactError(f"{event_type} event schedule_hash is required")
+    if event_type == "posterior_reset" and event.get("policy") != "full_prior":
+        raise ArtifactError("posterior reset event policy must be full_prior")
 
 
 def _controller_json_value(value: Any) -> Any:
@@ -2271,6 +2398,10 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "final_holdout_manifest_hash": None,
         "controller_metrics_path": None,
         "controller_summary_path": None,
+        "controller_reset_enabled": None,
+        "controller_episode_index": None,
+        "controller_episode_offset_steps": None,
+        "controller_selection_source": None,
         "reward": None,
         "correction_penalty": None,
         "model_family_slug": None,

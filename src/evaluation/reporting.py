@@ -86,22 +86,12 @@ def metric_row_limits_for_panel_specs(
     panel_specs: list[tuple[str, str, str | None]],
     column_count: int,
 ) -> list[tuple[float, float] | None]:
-    row_limits: list[tuple[float, float] | None] = []
     row_count = math.ceil(len(panel_specs) / column_count)
-    for row_index in range(row_count):
-        start = row_index * column_count
-        end = min(start + column_count, len(axes_list))
-        row_axes = axes_list[start:end]
-        row_values: list[float] = []
-        for axis in row_axes:
-            row_values.extend(axis_numeric_y_values(axis))
-        if not row_values:
-            row_limits.append(None)
-            continue
-        row_min = min(row_values)
-        row_max = max(row_values)
-        row_limits.append(padded_limits(row_min, row_max))
-    return row_limits
+    values: list[float] = []
+    for axis in axes_list[: len(panel_specs)]:
+        values.extend(axis_numeric_y_values(axis))
+    shared_limits = padded_limits(min(values), max(values)) if values else None
+    return [shared_limits] * row_count
 
 
 def axis_numeric_y_values(axis) -> list[float]:
@@ -232,6 +222,8 @@ def display_sampling_label_for_curve(sampling_label: str | None) -> str | None:
         return "adaptive per-block ucb"
     if sampling_label == "probabilistic_global_thompson":
         return "probabilistic global thompson"
+    if sampling_label == "probabilistic_global_thompson_reset":
+        return "probabilistic global thompson reset"
     if sampling_label == "probabilistic_per_block_thompson":
         return "probabilistic per-block thompson"
     return sampling_label
@@ -266,6 +258,9 @@ def scaling_curve_sampling_label(row: dict[str, Any]) -> str | None:
         and scope in {"global", "per_block"}
     )
     if has_bayesian_provenance:
+        reset_enabled = str(row.get("controller_reset_enabled", "")).strip().lower()
+        if scope == "global" and reset_enabled in {"1", "true", "yes"}:
+            return "probabilistic_global_thompson_reset"
         return (
             "probabilistic_global_thompson"
             if scope == "global"
@@ -445,24 +440,24 @@ def generate_figures(
                     dpi=dpi,
                 )
             )
-        figure_paths.append(
-            plot_metric_vs_size_split_comparison(
-                scaling_rows,
-                metric_name="perplexity",
-                ylabel="Perplexity",
-                output_path=output_dir
-                / reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["output_name"],
-                figure_title=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC[
-                    "figure_title"
-                ],
-                style=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["style"],
-                left_panel_spec=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["left"],
-                right_panel_spec=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC[
-                    "right"
-                ],
-                dpi=dpi,
-            )
+        split_comparison_path = plot_metric_vs_size_split_comparison(
+            scaling_rows,
+            metric_name="perplexity",
+            ylabel="Perplexity",
+            output_path=output_dir
+            / reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["output_name"],
+            figure_title=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC[
+                "figure_title"
+            ],
+            style=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["style"],
+            left_panel_spec=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["left"],
+            right_panel_spec=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC[
+                "right"
+            ],
+            dpi=dpi,
         )
+        if split_comparison_path is not None:
+            figure_paths.append(split_comparison_path)
         if any(row.get("average_downstream_accuracy") for row in scaling_rows):
             figure_paths.extend(
                 plot_metric_vs_size(

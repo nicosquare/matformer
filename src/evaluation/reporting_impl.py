@@ -334,24 +334,24 @@ def generate_figures(
                     dpi=dpi,
                 )
             )
-        figure_paths.append(
-            plot_metric_vs_size_split_comparison(
-                scaling_rows,
-                metric_name="perplexity",
-                ylabel="Perplexity",
-                output_path=output_dir
-                / reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["output_name"],
-                figure_title=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC[
-                    "figure_title"
-                ],
-                style=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["style"],
-                left_panel_spec=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["left"],
-                right_panel_spec=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC[
-                    "right"
-                ],
-                dpi=dpi,
-            )
+        split_comparison_path = plot_metric_vs_size_split_comparison(
+            scaling_rows,
+            metric_name="perplexity",
+            ylabel="Perplexity",
+            output_path=output_dir
+            / reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["output_name"],
+            figure_title=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC[
+                "figure_title"
+            ],
+            style=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["style"],
+            left_panel_spec=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["left"],
+            right_panel_spec=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC[
+                "right"
+            ],
+            dpi=dpi,
         )
+        if split_comparison_path is not None:
+            figure_paths.append(split_comparison_path)
         if any(row.get("average_downstream_accuracy") for row in scaling_rows):
             figure_paths.extend(
                 plot_metric_vs_size(
@@ -727,6 +727,18 @@ def controller_scope_from_saved_config(config: dict[str, Any]) -> str | None:
     return str(controller["scope"]).strip().lower()
 
 
+def controller_reset_enabled_from_saved_config(
+    config: dict[str, Any],
+) -> bool | None:
+    controller = _adaptive_controller_from_saved_config(config)
+    if controller is None:
+        return None
+    reset = controller.get("reset")
+    if not isinstance(reset, dict):
+        return None
+    return bool(reset.get("enabled", False))
+
+
 def _enrich_controller_provenance(
     row: dict[str, Any],
     config: dict[str, Any],
@@ -737,6 +749,9 @@ def _enrich_controller_provenance(
             config
         ),
         "controller_scope": controller_scope_from_saved_config(config),
+        "controller_reset_enabled": controller_reset_enabled_from_saved_config(
+            config
+        ),
     }
     for field_name, value in provenance.items():
         if value not in (None, ""):
@@ -788,8 +803,20 @@ def plot_metric_vs_size(
     panel_specs = panel_specs or reporting_styles.SIZE_PLOT_PANELS_DEFAULT
     style_config = resolve_plot_style(style)
     plot_rows = rows if row_filter is None else [row for row in rows if row_filter(row)]
-    column_count = 2 if len(panel_specs) > 1 else 1
-    row_count = math.ceil(len(panel_specs) / column_count)
+    available_panel_specs = [
+        panel_spec
+        for panel_spec in panel_specs
+        if metric_panel_has_numeric_points(
+            plot_rows,
+            metric_name=metric_name,
+            panel_spec=panel_spec,
+        )
+    ]
+    if not available_panel_specs:
+        return []
+
+    column_count = 2 if len(available_panel_specs) > 1 else 1
+    row_count = math.ceil(len(available_panel_specs) / column_count)
     figure, axes = plt.subplots(
         row_count,
         column_count,
@@ -801,7 +828,7 @@ def plot_metric_vs_size(
 
     for axis, (sampling_mode, variant_label, sampling_label) in zip(
         axes_list,
-        panel_specs,
+        available_panel_specs,
     ):
         plot_metric_vs_size_panel(
             axis,
@@ -814,18 +841,14 @@ def plot_metric_vs_size(
             style_config=style_config,
         )
 
-    row_limits = metric_row_limits_for_panel_specs(
-        axes_list,
-        panel_specs,
-        column_count,
-    )
-    for row_index, row_limit in enumerate(row_limits):
-        if row_limit is None:
-            continue
-        start = row_index * column_count
-        end = min(start + column_count, len(axes_list))
-        for axis in axes_list[start:end]:
-            axis.set_ylim(*row_limit)
+    displayed_axes = axes_list[: len(available_panel_specs)]
+    for axis in axes_list[len(available_panel_specs) :]:
+        axis.set_visible(False)
+
+    shared_y_limits = shared_metric_limits(displayed_axes)
+    if shared_y_limits is not None:
+        for axis in displayed_axes:
+            axis.set_ylim(*shared_y_limits)
 
     figure.suptitle(
         figure_title or f"{ylabel} vs Non-embedding parameters",
@@ -839,7 +862,7 @@ def plot_metric_vs_size(
     panel_stem = output_path.stem
     if figure_alias:
         panel_stem = f"{panel_stem}__{safe_filename_fragment(figure_alias)}"
-    for panel_spec in panel_specs:
+    for panel_spec in available_panel_specs:
         panel_path = output_path.with_name(
             f"{panel_stem}__{safe_filename_fragment(panel_spec_label(*panel_spec))}.png"
         )
@@ -851,6 +874,7 @@ def plot_metric_vs_size(
                 panel_spec=panel_spec,
                 output_path=panel_path,
                 style_config=style_config,
+                y_limits=shared_y_limits,
                 dpi=dpi,
             )
         )
@@ -869,22 +893,52 @@ def metric_row_limits_for_panel_specs(
     panel_specs: list[tuple[str, str, str | None]],
     column_count: int,
 ) -> list[tuple[float, float] | None]:
-    row_limits: list[tuple[float, float] | None] = []
     row_count = math.ceil(len(panel_specs) / column_count)
-    for row_index in range(row_count):
-        start = row_index * column_count
-        end = min(start + column_count, len(axes_list))
-        row_axes = axes_list[start:end]
-        row_values: list[float] = []
-        for axis in row_axes:
-            row_values.extend(axis_numeric_y_values(axis))
-        if not row_values:
-            row_limits.append(None)
-            continue
-        row_min = min(row_values)
-        row_max = max(row_values)
-        row_limits.append(padded_limits(row_min, row_max))
-    return row_limits
+    shared_limits = shared_metric_limits(axes_list[: len(panel_specs)])
+    return [shared_limits] * row_count
+
+
+def shared_metric_limits(axes_list: list[Any]) -> tuple[float, float] | None:
+    values: list[float] = []
+    for axis in axes_list:
+        values.extend(axis_numeric_y_values(axis))
+    if not values:
+        return None
+    return padded_limits(min(values), max(values))
+
+
+def numeric_metric_point(
+    row: dict[str, str],
+    metric_name: str,
+) -> tuple[float, float] | None:
+    x_value = to_float_or_none(row.get("non_embedding_parameters"))
+    y_value = to_float_or_none(row.get(metric_name))
+    if (
+        x_value is None
+        or y_value is None
+        or not math.isfinite(x_value)
+        or not math.isfinite(y_value)
+    ):
+        return None
+    return (x_value, y_value)
+
+
+def metric_panel_has_numeric_points(
+    rows: list[dict[str, str]],
+    metric_name: str,
+    panel_spec: tuple[str, str, str | None],
+) -> bool:
+    sampling_mode, variant_label, sampling_label = panel_spec
+    return any(
+        scaling_curve_family_label(row) == sampling_mode
+        and scaling_curve_variant_label(row) == variant_label
+        and panel_sampling_matches(
+            scaling_curve_sampling_label(row),
+            sampling_label,
+        )
+        and numeric_metric_point(row, metric_name) is not None
+        for row in rows
+    )
 
 
 def axis_numeric_y_values(axis) -> list[float]:
@@ -922,6 +976,7 @@ def plot_metric_vs_size_panel_figure(
     panel_spec: tuple[str, str, str | None],
     output_path: Path,
     style_config: dict[str, Any],
+    y_limits: tuple[float, float] | None = None,
     dpi: int = 300,
 ) -> Path:
     figure, axis = plt.subplots(figsize=(7.2, 5.0))
@@ -935,6 +990,8 @@ def plot_metric_vs_size_panel_figure(
         sampling_label=panel_spec[2],
         style_config=style_config,
     )
+    if y_limits is not None:
+        axis.set_ylim(*y_limits)
     figure.tight_layout()
     figure.savefig(output_path, bbox_inches="tight", dpi=dpi)
     plt.close(figure)
@@ -951,46 +1008,50 @@ def plot_metric_vs_size_split_comparison(
     left_panel_spec: dict[str, Any],
     right_panel_spec: dict[str, Any],
     dpi: int = 300,
-) -> Path:
+) -> Path | None:
     style_config = resolve_plot_style(style)
-    figure = plt.figure(figsize=(15.0, 8.0))
-    left_subfigure, right_subfigure = figure.subfigures(1, 2, wspace=0.06)
-    left_axis = left_subfigure.subplots()
-    right_axis = right_subfigure.subplots()
+    available_panel_specs = [
+        panel_spec
+        for panel_spec in (left_panel_spec, right_panel_spec)
+        if comparison_panel_has_numeric_points(
+            rows,
+            metric_name=metric_name,
+            panel_spec=panel_spec,
+        )
+    ]
+    if not available_panel_specs:
+        return None
 
-    left_values = plot_metric_vs_size_split_panel(
-        left_axis,
-        rows,
-        metric_name=metric_name,
-        ylabel=ylabel,
-        panel_spec=left_panel_spec,
-        style_config=style_config,
+    figure, axes = plt.subplots(
+        1,
+        len(available_panel_specs),
+        figsize=(7.5 * len(available_panel_specs), 8.0),
+        squeeze=False,
+        sharey=False,
     )
-    right_values = plot_metric_vs_size_split_panel(
-        right_axis,
-        rows,
-        metric_name=metric_name,
-        ylabel=ylabel,
-        panel_spec=right_panel_spec,
-        style_config=style_config,
-    )
+    axes_list = list(axes.flat)
+    shared_values: list[float] = []
+    for axis, panel_spec in zip(axes_list, available_panel_specs):
+        shared_values.extend(
+            plot_metric_vs_size_split_panel(
+                axis,
+                rows,
+                metric_name=metric_name,
+                ylabel=ylabel,
+                panel_spec=panel_spec,
+                style_config=style_config,
+            )
+        )
+        axis.set_title(
+            str(panel_spec["subfigure_title"]),
+            fontsize=style_config["subfigure_title_fontsize"],
+            pad=10,
+        )
 
-    shared_values = left_values + right_values
-    if shared_values:
-        shared_limits = padded_limits(min(shared_values), max(shared_values))
-        left_axis.set_ylim(*shared_limits)
-        right_axis.set_ylim(*shared_limits)
+    shared_limits = padded_limits(min(shared_values), max(shared_values))
+    for axis in axes_list:
+        axis.set_ylim(*shared_limits)
 
-    left_subfigure.suptitle(
-        str(left_panel_spec["subfigure_title"]),
-        fontsize=style_config["subfigure_title_fontsize"],
-        y=0.88,
-    )
-    right_subfigure.suptitle(
-        str(right_panel_spec["subfigure_title"]),
-        fontsize=style_config["subfigure_title_fontsize"],
-        y=0.88,
-    )
     figure.suptitle(
         figure_title,
         fontsize=style_config["figure_title_fontsize"],
@@ -1000,6 +1061,19 @@ def plot_metric_vs_size_split_comparison(
     figure.savefig(output_path, bbox_inches="tight", dpi=dpi)
     plt.close(figure)
     return output_path
+
+
+def comparison_panel_has_numeric_points(
+    rows: list[dict[str, str]],
+    metric_name: str,
+    panel_spec: dict[str, Any],
+) -> bool:
+    series_keys = set(panel_spec["series_keys"]) - {"standalone"}
+    return any(
+        comparison_series_key(row) in series_keys
+        and numeric_metric_point(row, metric_name) is not None
+        for row in rows
+    )
 
 
 def plot_metric_vs_size_split_panel(
@@ -1041,10 +1115,9 @@ def plot_metric_vs_size_split_panel(
             continue
 
         points = [
-            (to_float(row["non_embedding_parameters"]), to_float(row[metric_name]))
+            point
             for row in series_rows
-            if row.get("non_embedding_parameters") not in (None, "")
-            and row.get(metric_name) not in (None, "")
+            if (point := numeric_metric_point(row, metric_name)) is not None
         ]
         if not points:
             continue
@@ -1147,10 +1220,9 @@ def plot_metric_vs_size_panel(
             alias_map=style_config["curve_aliases"],
         )
         points = [
-            (to_float(row["non_embedding_parameters"]), to_float(row[metric_name]))
+            point
             for row in group_rows_for_label
-            if row.get("non_embedding_parameters") not in (None, "")
-            and row.get(metric_name) not in (None, "")
+            if (point := numeric_metric_point(row, metric_name)) is not None
         ]
         if not points:
             continue
@@ -1159,11 +1231,10 @@ def plot_metric_vs_size_panel(
         axis.plot(xs, ys, label=legend_label, **style)
 
     standalone_points = [
-        (to_float(row["non_embedding_parameters"]), to_float(row[metric_name]))
+        point
         for row in rows
         if scaling_curve_family_label(row) == "standalone"
-        and row.get("non_embedding_parameters") not in (None, "")
-        and row.get(metric_name) not in (None, "")
+        and (point := numeric_metric_point(row, metric_name)) is not None
     ]
     if standalone_points:
         standalone_points.sort(key=lambda point: point[0])
@@ -2363,6 +2434,9 @@ def _probabilistic_sampling_label(row: dict[str, str]) -> str | None:
     ):
         return None
     if scope == "global":
+        reset_enabled = str(row.get("controller_reset_enabled", "")).strip().lower()
+        if reset_enabled in {"1", "true", "yes"}:
+            return "probabilistic_global_thompson_reset"
         return "probabilistic_global_thompson"
     return "probabilistic_per_block_thompson"
 
@@ -2407,6 +2481,8 @@ def display_sampling_label_for_curve(sampling_label: str | None) -> str | None:
         return "adaptive per-block ucb"
     if sampling_label == "probabilistic_global_thompson":
         return "probabilistic global thompson"
+    if sampling_label == "probabilistic_global_thompson_reset":
+        return "probabilistic global thompson reset"
     if sampling_label == "probabilistic_per_block_thompson":
         return "probabilistic per-block thompson"
     return sampling_label

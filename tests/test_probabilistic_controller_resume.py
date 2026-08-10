@@ -48,6 +48,20 @@ def _resolved_per_block_config(tmp_path):
     )
 
 
+def _resolved_reset_config(tmp_path, *, interval_steps=12):
+    return resolve_run_config(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+        output_dir=tmp_path / "probabilistic-adaptive-global-smoke-001",
+        overrides={
+            "training.eval_batches": 4,
+            "model.adaptive_controller.decision_interval_steps": 2,
+            "model.adaptive_controller.process_noise_covariance": 0.0,
+            "model.adaptive_controller.reset.enabled": True,
+            "model.adaptive_controller.reset.interval_steps": interval_steps,
+        },
+    )
+
+
 def _build_controller(config):
     return build_probabilistic_controller(
         controller_config=config["model"]["adaptive_controller"],
@@ -136,6 +150,18 @@ def _assert_completed_events_close(fresh_event, resumed_event):
             rtol=1e-6,
             atol=1e-8,
         )
+
+
+def _complete_window(controller, *, boundary_step, objective=9.0):
+    while controller.state_dict()["window"]["phase"] == "active_window":
+        controller.record_successful_optimizer_step()
+    return controller.complete_boundary(
+        boundary_step=boundary_step,
+        controller_objective=objective,
+        ordered_component_losses=[objective - 1.0, objective, objective + 1.0],
+        evaluation_target_tokens=384,
+        training_will_continue=True,
+    )
 
 
 def test_initial_boundary_records_objective_before_reward_and_starts_first_window(
@@ -298,6 +324,143 @@ def test_fresh_and_resumed_controller_match_from_inside_window_and_exact_boundar
     assert resumed_state["resume"]["source_checkpoint"] == str(
         tmp_path / "checkpoints" / "latest.pt"
     )
+
+
+@pytest.mark.parametrize(
+    "completed_windows, expected_source",
+    [
+        pytest.param(0, "forced_acquisition", id="inside-acquisition-window"),
+        pytest.param(3, "thompson", id="inside-thompson-window"),
+        pytest.param(6, "forced_acquisition", id="exact-reset-boundary"),
+    ],
+)
+def test_reset_resume_matches_inside_acquisition_thompson_and_reset_boundaries(
+    tmp_path,
+    completed_windows,
+    expected_source,
+):
+    config = _resolved_reset_config(tmp_path)
+    uninterrupted = _build_controller(config)
+    _initialize_controller(uninterrupted)
+    for window_index in range(completed_windows):
+        _complete_window(
+            uninterrupted,
+            boundary_step=2 + 2 * window_index,
+            objective=9.0 - 0.1 * window_index,
+        )
+
+    if completed_windows != 6:
+        uninterrupted.record_successful_optimizer_step()
+    saved_state = copy.deepcopy(uninterrupted.state_dict())
+    assert saved_state["window"]["selection_source"] == expected_source
+    resumed = restore_probabilistic_controller(
+        saved_state,
+        controller_config=config["model"]["adaptive_controller"],
+        sampling_seed=seed_for(config, "posterior_sampling"),
+        expected_manifest_hashes=MANIFEST_HASHES,
+        source_checkpoint=tmp_path / "checkpoints" / "latest.pt",
+        logger=lambda _message: None,
+    )
+    _assert_saved_resume_identity(saved_state, resumed.state_dict())
+    _assert_nested_exact(saved_state["reset"], resumed.state_dict()["reset"])
+
+    if completed_windows != 6:
+        uninterrupted.record_successful_optimizer_step()
+        resumed.record_successful_optimizer_step()
+        fresh_event = uninterrupted.complete_boundary(
+            boundary_step=2 + 2 * completed_windows,
+            controller_objective=8.0,
+            ordered_component_losses=[7.0, 8.0, 9.0],
+            evaluation_target_tokens=384,
+            training_will_continue=True,
+        )
+        resumed_event = resumed.complete_boundary(
+            boundary_step=2 + 2 * completed_windows,
+            controller_objective=8.0,
+            ordered_component_losses=[7.0, 8.0, 9.0],
+            evaluation_target_tokens=384,
+            training_will_continue=True,
+        )
+        _assert_completed_events_close(fresh_event, resumed_event)
+    else:
+        for window_index in range(3):
+            fresh_event = _complete_window(
+                uninterrupted,
+                boundary_step=14 + 2 * window_index,
+                objective=8.0 - 0.1 * window_index,
+            )
+            resumed_event = _complete_window(
+                resumed,
+                boundary_step=14 + 2 * window_index,
+                objective=8.0 - 0.1 * window_index,
+            )
+            _assert_completed_events_close(fresh_event, resumed_event)
+
+    _assert_nested_exact(
+        uninterrupted.state_dict()["window"],
+        resumed.state_dict()["window"],
+    )
+    _assert_nested_exact(
+        uninterrupted.state_dict()["reset"],
+        resumed.state_dict()["reset"],
+    )
+    assert torch.equal(
+        uninterrupted.state_dict()["sampling"]["generator_state"],
+        resumed.state_dict()["sampling"]["generator_state"],
+    )
+
+
+def test_old_controller_schema_is_allowed_only_when_reset_is_disabled(tmp_path):
+    disabled_config = _resolved_global_config(tmp_path)
+    disabled = _build_controller(disabled_config)
+    _initialize_controller(disabled)
+    legacy_state = copy.deepcopy(disabled.state_dict())
+    legacy_state["schema_version"] = 1
+    legacy_state.pop("reset")
+    legacy_state["window"].pop("selection_source")
+
+    restored = restore_probabilistic_controller(
+        legacy_state,
+        controller_config=disabled_config["model"]["adaptive_controller"],
+        sampling_seed=seed_for(disabled_config, "posterior_sampling"),
+        expected_manifest_hashes=MANIFEST_HASHES,
+        source_checkpoint=tmp_path / "checkpoints" / "old.pt",
+        logger=lambda _message: None,
+    )
+    assert restored.state_dict()["schema_version"] == 2
+    assert restored.state_dict()["reset"]["enabled"] is False
+
+    reset_config = _resolved_reset_config(tmp_path)
+    with pytest.raises(
+        ProbabilisticControllerError,
+        match="reset-enabled continuation requires complete reset state",
+    ):
+        restore_probabilistic_controller(
+            legacy_state,
+            controller_config=reset_config["model"]["adaptive_controller"],
+            sampling_seed=seed_for(reset_config, "posterior_sampling"),
+            expected_manifest_hashes=MANIFEST_HASHES,
+            source_checkpoint=tmp_path / "checkpoints" / "old.pt",
+            logger=lambda _message: None,
+        )
+
+
+def test_reset_resume_rejects_incompatible_interval_without_mutation(tmp_path):
+    config = _resolved_reset_config(tmp_path, interval_steps=12)
+    controller = _build_controller(config)
+    _initialize_controller(controller)
+    saved_state = copy.deepcopy(controller.state_dict())
+    incompatible = _resolved_reset_config(tmp_path, interval_steps=18)
+
+    with pytest.raises(ProbabilisticControllerError, match="reset contract mismatch"):
+        restore_probabilistic_controller(
+            saved_state,
+            controller_config=incompatible["model"]["adaptive_controller"],
+            sampling_seed=seed_for(incompatible, "posterior_sampling"),
+            expected_manifest_hashes=MANIFEST_HASHES,
+            source_checkpoint=tmp_path / "checkpoints" / "latest.pt",
+            logger=lambda _message: None,
+        )
 
 
 def test_additive_per_block_resume_preserves_fixed_complete_profile_and_provenance(

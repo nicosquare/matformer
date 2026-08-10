@@ -618,6 +618,18 @@ def controller_scope_from_saved_config(config: dict[str, Any]) -> str | None:
     return str(controller["scope"]).strip().lower()
 
 
+def controller_reset_enabled_from_saved_config(
+    config: dict[str, Any],
+) -> bool | None:
+    controller = _adaptive_controller_from_saved_config(config)
+    if controller is None:
+        return None
+    reset = controller.get("reset")
+    if not isinstance(reset, dict):
+        return None
+    return bool(reset.get("enabled", False))
+
+
 def _enrich_controller_provenance(
     row: dict[str, Any],
     config: dict[str, Any],
@@ -628,6 +640,9 @@ def _enrich_controller_provenance(
             config
         ),
         "controller_scope": controller_scope_from_saved_config(config),
+        "controller_reset_enabled": controller_reset_enabled_from_saved_config(
+            config
+        ),
     }
     for field_name, value in provenance.items():
         if value not in (None, ""):

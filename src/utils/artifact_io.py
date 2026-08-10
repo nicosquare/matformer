@@ -234,12 +234,39 @@ def append_jsonl_artifact(
 ) -> dict[str, Any]:
     """Durably append one JSON object without rewriting committed records."""
 
+    return append_jsonl_artifacts(
+        path,
+        [payload],
+        settings=settings,
+        heartbeat_writer=heartbeat_writer,
+        state=state,
+    )
+
+
+def append_jsonl_artifacts(
+    path: str | Path,
+    payloads: list[Mapping[str, Any]],
+    *,
+    settings: Mapping[str, Any] | None = None,
+    heartbeat_writer=None,
+    state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Durably append a same-boundary JSONL batch as one transaction."""
+
+    if not payloads:
+        raise ValueError("JSONL artifact batch must contain at least one record")
+
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     original_offset = output_path.stat().st_size if output_path.exists() else 0
-    encoded_record = (
-        json.dumps(dict(payload), sort_keys=True, separators=(",", ":")) + "\n"
-    ).encode("utf-8")
+    encoded_records = [
+        (
+            json.dumps(dict(payload), sort_keys=True, separators=(",", ":"))
+            + "\n"
+        ).encode("utf-8")
+        for payload in payloads
+    ]
+    encoded_record = b"".join(encoded_records)
 
     def append_attempt(_attempt: int) -> dict[str, Any]:
         mode = "r+b" if output_path.exists() else "w+b"
@@ -264,6 +291,10 @@ def append_jsonl_artifact(
             "start_offset": original_offset,
             "last_committed_offset": original_offset + len(encoded_record),
             "event_hash": hashlib.sha256(encoded_record).hexdigest(),
+            "event_hashes": [
+                hashlib.sha256(record).hexdigest() for record in encoded_records
+            ],
+            "event_count": len(encoded_records),
         }
 
     return retry_artifact_io(

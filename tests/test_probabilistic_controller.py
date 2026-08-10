@@ -509,3 +509,167 @@ def test_additive_complete_profile_conditions_once_on_one_scalar_window_reward(
         state_after_update["belief"]["posterior_covariance"],
         expected_update["posterior_covariance"],
     )
+
+
+def _build_reset_controller(tmp_path):
+    config = resolve_run_config(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+        output_dir=tmp_path / "probabilistic-adaptive-global-smoke-001",
+        overrides={
+            "model.adaptive_controller.process_noise_covariance": 0.0,
+            "model.adaptive_controller.reset.enabled": True,
+            "model.adaptive_controller.reset.interval_steps": 12,
+        },
+    )
+    controller = build_probabilistic_controller(
+        controller_config=config["model"]["adaptive_controller"],
+        sampling_seed=seed_for(config, "posterior_sampling"),
+        manifest_hashes={
+            "data_roles_manifest_hash": "parent",
+            "optimizer_training_manifest_hash": "training",
+            "controller_manifest_hash": "controller",
+            "ordinary_validation_manifest_hash": "validation",
+            "final_holdout_manifest_hash": "final",
+        },
+    )
+    return config, controller
+
+
+def _finish_reset_window(controller, *, boundary_step, objective, continuing=True):
+    controller.record_successful_optimizer_step()
+    controller.record_successful_optimizer_step()
+    return controller.complete_boundary(
+        boundary_step=boundary_step,
+        controller_objective=objective,
+        ordered_component_losses=[objective - 1.0, objective, objective + 1.0],
+        evaluation_target_tokens=384,
+        training_will_continue=continuing,
+    )
+
+
+def test_reset_episode_forces_balanced_acquisition_without_advancing_thompson_rng(
+    tmp_path,
+):
+    _config, controller = _build_reset_controller(tmp_path)
+    initial = controller.initialize_boundary(
+        boundary_step=500,
+        controller_objective=10.0,
+        ordered_component_losses=[9.0, 10.0, 11.0],
+        evaluation_target_tokens=384,
+    )
+    initial_state = controller.state_dict()
+
+    assert initial["selected_action"]["selection_source"] == "forced_acquisition"
+    assert initial_state["sampling"]["sample_count"] == 0
+    assert initial_state["reset"]["controller_start_step"] == 500
+    assert initial_state["reset"]["episode_start_step"] == 500
+    assert initial_state["reset"]["episode_end_step"] == 512
+    assert [event["event_type"] for event in initial["_journal_events"]] == [
+        "episode_initialized",
+        "initial_boundary",
+    ]
+
+    forced_actions = []
+    for window_index in range(3):
+        event = _finish_reset_window(
+            controller,
+            boundary_step=502 + 2 * window_index,
+            objective=9.0 - 0.25 * window_index,
+        )
+        forced_actions.append(event["action"]["global_granularity"])
+        assert event["selection_source"] == "forced_acquisition"
+        assert controller.state_dict()["belief"]["round_index"] == window_index + 1
+
+    state = controller.state_dict()
+    assert set(forced_actions) == set(state["ordered_granularities"])
+    assert state["reset"]["acquisition_counts"] == {
+        label: 1 for label in state["ordered_granularities"]
+    }
+    assert state["sampling"]["sample_count"] == 1
+    assert state["window"]["selection_source"] == "thompson"
+
+
+def test_reset_boundary_conditions_then_archives_restores_prior_and_forces_next_episode(
+    tmp_path,
+):
+    _config, controller = _build_reset_controller(tmp_path)
+    controller.initialize_boundary(
+        boundary_step=500,
+        controller_objective=10.0,
+        ordered_component_losses=[9.0, 10.0, 11.0],
+        evaluation_target_tokens=384,
+    )
+    event = None
+    for window_index in range(6):
+        event = _finish_reset_window(
+            controller,
+            boundary_step=502 + 2 * window_index,
+            objective=9.0 - 0.1 * window_index,
+        )
+
+    assert event is not None
+    state = controller.state_dict()
+    event_types = [item["event_type"] for item in event["_journal_events"]]
+    assert event_types == [
+        "completed_window",
+        "episode_completed",
+        "posterior_reset",
+        "episode_initialized",
+    ]
+    archive = state["reset"]["completed_episodes"][0]
+    assert archive["forced_acquisition_window_count"] == 3
+    assert archive["thompson_window_count"] == 3
+    assert state["reset"]["reset_count"] == 1
+    assert state["reset"]["reset_steps"] == [512]
+    assert state["reset"]["episode_index"] == 1
+    assert state["reset"]["episode_start_step"] == 512
+    assert state["reset"]["episode_offset_steps"] == 0
+    assert state["window"]["selection_source"] == "forced_acquisition"
+    assert state["sampling"]["sample_count"] == 3
+    torch.testing.assert_close(
+        state["belief"]["posterior_mean"],
+        torch.tensor(
+            state["probabilistic_inputs"]["resolved_prior_mean"],
+            dtype=FLOAT64,
+        ),
+        rtol=0.0,
+        atol=0.0,
+    )
+    torch.testing.assert_close(
+        state["belief"]["posterior_covariance"],
+        torch.tensor(
+            state["probabilistic_inputs"]["resolved_prior_covariance"],
+            dtype=FLOAT64,
+        ),
+        rtol=0.0,
+        atol=0.0,
+    )
+
+
+def test_exact_terminal_episode_boundary_archives_without_unused_reset(tmp_path):
+    _config, controller = _build_reset_controller(tmp_path)
+    controller.initialize_boundary(
+        boundary_step=0,
+        controller_objective=10.0,
+        ordered_component_losses=[9.0, 10.0, 11.0],
+        evaluation_target_tokens=384,
+    )
+    final_event = None
+    for window_index in range(6):
+        final_event = _finish_reset_window(
+            controller,
+            boundary_step=2 + 2 * window_index,
+            objective=9.0 - 0.1 * window_index,
+            continuing=window_index < 5,
+        )
+
+    state = controller.state_dict()
+    assert final_event is not None
+    assert [item["event_type"] for item in final_event["_journal_events"]] == [
+        "completed_window",
+        "episode_completed",
+    ]
+    assert state["reset"]["completed_episode_count"] == 1
+    assert state["reset"]["reset_count"] == 0
+    assert state["reset"]["reset_steps"] == []
+    assert state["window"]["phase"] == "ready_for_action"

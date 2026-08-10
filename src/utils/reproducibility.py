@@ -19,6 +19,7 @@ PROBABILISTIC_SEED_STREAMS = (
     "final_holdout",
     "posterior_sampling",
     "pre_nested_warmup_schedule",
+    "controller_reset_schedule",
 )
 SEED_STREAMS = (
     "model_initialization",
@@ -275,6 +276,60 @@ def build_balanced_warmup_schedule(
         "schedule": schedule,
     }
     return schedule, stable_hash(schedule_identity)
+
+
+def build_controller_reset_schedule(
+    granularities: list[str] | tuple[str, ...],
+    *,
+    acquisition_passes: int,
+    root_seed: int,
+    episode_index: int,
+) -> tuple[list[str], int, str]:
+    """Build deterministic, episode-indexed balanced acquisition passes."""
+
+    labels = [str(label) for label in granularities]
+    if not labels or len(set(labels)) != len(labels):
+        raise ValueError("controller reset granularities must be nonempty and unique")
+    if (
+        isinstance(acquisition_passes, bool)
+        or not isinstance(acquisition_passes, int)
+        or acquisition_passes <= 0
+    ):
+        raise ValueError("controller reset acquisition passes must be positive")
+    if isinstance(root_seed, bool) or not isinstance(root_seed, int) or root_seed < 0:
+        raise ValueError("controller reset root seed must be nonnegative")
+    if (
+        isinstance(episode_index, bool)
+        or not isinstance(episode_index, int)
+        or episode_index < 0
+    ):
+        raise ValueError("controller reset episode index must be nonnegative")
+
+    seed_material = (
+        f"controller-reset-schedule-v1 | {root_seed} | {episode_index}"
+    ).encode("utf-8")
+    episode_seed = int.from_bytes(
+        hashlib.sha256(seed_material).digest()[:8], "big"
+    ) & ((1 << 63) - 1)
+    generator = random.Random(episode_seed)
+    schedule: list[str] = []
+    for _ in range(acquisition_passes):
+        permutation = list(labels)
+        generator.shuffle(permutation)
+        schedule.extend(permutation)
+
+    identity = {
+        "version": 1,
+        "policy": "balanced_global",
+        "seed_stream_name": "controller_reset_schedule",
+        "root_seed": int(root_seed),
+        "episode_index": int(episode_index),
+        "episode_seed": int(episode_seed),
+        "ordered_granularities": labels,
+        "acquisition_passes": int(acquisition_passes),
+        "schedule": schedule,
+    }
+    return schedule, episode_seed, stable_hash(identity)
 
 
 def probabilistic_seed_provenance(

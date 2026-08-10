@@ -53,6 +53,8 @@ VALID_COMPLETION_LABELS = {"debug", "run"}
 VALID_GRANULARITY_SAMPLING = {"all", "random"}
 VALID_PRE_NESTED_WARMUP_UNITS = {"epochs", "steps"}
 VALID_PRE_NESTED_WARMUP_POLICIES = {"full_only", "balanced_global"}
+VALID_CONTROLLER_RESET_POLICIES = {"full_prior"}
+VALID_CONTROLLER_RESET_ACQUISITION_POLICIES = {"balanced_global"}
 VALID_MIXED_PRECISION_MODES = {"none", "bf16", "fp16"}
 DEFAULT_MODEL_VARIANT = "slicing"
 VALID_SAMPLING_MODES = {"nested-random", "nested-all", "standalone"}
@@ -1790,6 +1792,12 @@ def _resolve_bayesian_adaptive_configuration(config: dict[str, Any]) -> None:
     controller["resolved_process_noise_covariance"] = (
         resolved_process_noise_covariance
     )
+    controller["reset"] = _resolve_controller_reset_configuration(
+        config,
+        controller,
+        scope=scope,
+        ordered_granularities=list(granularities),
+    )
 
     controller_role = _resolve_fixed_bayesian_data_role(
         evaluation,
@@ -1821,6 +1829,115 @@ def _resolve_bayesian_adaptive_configuration(config: dict[str, Any]) -> None:
     model["adaptive_controller"] = controller
     evaluation["adaptive_controller"] = controller_role
     evaluation["final_holdout"] = final_holdout_role
+
+
+def _resolve_controller_reset_configuration(
+    config: dict[str, Any],
+    controller: Mapping[str, Any],
+    *,
+    scope: str,
+    ordered_granularities: list[str],
+) -> dict[str, Any]:
+    raw_reset = controller.get("reset", {})
+    if raw_reset is None:
+        raw_reset = {}
+    if not isinstance(raw_reset, Mapping):
+        raise ConfigError("model.adaptive_controller.reset must be a mapping")
+    reset = copy.deepcopy(dict(raw_reset))
+    reset["enabled"] = _normalize_bool(
+        reset.get("enabled", False),
+        "model.adaptive_controller.reset.enabled",
+    )
+
+    policy = reset.get("policy", "full_prior")
+    if not isinstance(policy, str) or policy.strip() not in VALID_CONTROLLER_RESET_POLICIES:
+        raise ConfigError(
+            "model.adaptive_controller.reset.policy must be 'full_prior'"
+        )
+    reset["policy"] = policy.strip()
+    acquisition_policy = reset.get("acquisition_policy", "balanced_global")
+    if (
+        not isinstance(acquisition_policy, str)
+        or acquisition_policy.strip()
+        not in VALID_CONTROLLER_RESET_ACQUISITION_POLICIES
+    ):
+        raise ConfigError(
+            "model.adaptive_controller.reset.acquisition_policy must be "
+            "'balanced_global'"
+        )
+    reset["acquisition_policy"] = acquisition_policy.strip()
+    reset["acquisition_passes"] = _strict_positive_int(
+        reset.get("acquisition_passes", 1),
+        "model.adaptive_controller.reset.acquisition_passes",
+    )
+    reset["schedule_seed_stream_name"] = "controller_reset_schedule"
+    reset["schedule_seed"] = seed_for(config, "controller_reset_schedule")
+
+    if not reset["enabled"]:
+        interval = reset.get("interval_steps")
+        if interval is not None:
+            interval = _strict_positive_int(
+                interval,
+                "model.adaptive_controller.reset.interval_steps",
+            )
+        return {
+            "enabled": False,
+            "interval_steps": interval,
+            "policy": reset["policy"],
+            "acquisition_policy": reset["acquisition_policy"],
+            "acquisition_passes": reset["acquisition_passes"],
+            "schedule_seed_stream_name": reset["schedule_seed_stream_name"],
+            "schedule_seed": reset["schedule_seed"],
+        }
+
+    if scope != "global":
+        raise ConfigError(
+            "model.adaptive_controller.reset is supported only for adaptive_global"
+        )
+    resolved_process_noise = np.asarray(
+        controller["resolved_process_noise_covariance"],
+        dtype=np.float64,
+    )
+    if not np.all(resolved_process_noise == 0.0):
+        raise ConfigError(
+            "model.adaptive_controller.process_noise_covariance must be exactly "
+            "zero when reset is enabled"
+        )
+    if "interval_steps" not in reset:
+        raise ConfigError(
+            "model.adaptive_controller.reset.interval_steps is required when reset "
+            "is enabled"
+        )
+    interval_steps = _strict_positive_int(
+        reset["interval_steps"],
+        "model.adaptive_controller.reset.interval_steps",
+    )
+    decision_interval = int(controller["decision_interval_steps"])
+    if interval_steps % decision_interval != 0:
+        raise ConfigError(
+            "model.adaptive_controller.reset.interval_steps must be divisible by "
+            "model.adaptive_controller.decision_interval_steps"
+        )
+    episode_windows = interval_steps // decision_interval
+    acquisition_windows = len(ordered_granularities) * reset["acquisition_passes"]
+    if episode_windows < 2 * acquisition_windows:
+        raise ConfigError(
+            "model.adaptive_controller.reset.interval_steps must provide enough "
+            "windows for acquisition plus at least an equal number of Thompson "
+            "windows"
+        )
+    return {
+        "enabled": True,
+        "interval_steps": interval_steps,
+        "policy": reset["policy"],
+        "acquisition_policy": reset["acquisition_policy"],
+        "acquisition_passes": reset["acquisition_passes"],
+        "schedule_seed_stream_name": reset["schedule_seed_stream_name"],
+        "schedule_seed": reset["schedule_seed"],
+        "episode_window_count": episode_windows,
+        "acquisition_window_count": acquisition_windows,
+        "minimum_thompson_window_count": acquisition_windows,
+    }
 
 
 def _resolve_bayesian_controller_preset(

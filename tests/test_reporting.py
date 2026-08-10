@@ -218,7 +218,7 @@ def test_reporting_path_groups_loss_rows_and_writes_medium_trend_report(tmp_path
     figure_paths = generate_figures(tmp_path, tmp_path / "figures", refresh_counts=False)
     figure_names = {path.name for path in figure_paths}
 
-    assert "loss_vs_size.png" in figure_names
+    assert "loss_vs_size.png" not in figure_names
     assert "medium_trend_report.md" in figure_names
     assert any(name.startswith("validation_loss_over_tokens_") for name in figure_names)
 
@@ -227,6 +227,125 @@ def test_reporting_path_groups_loss_rows_and_writes_medium_trend_report(tmp_path
     )
     assert "- nested-random: 2 rows; granularities=s, xl" in report
     assert "average_downstream_accuracy: 0.58" in report
+
+
+def test_multi_panel_size_figures_skip_empty_panels_and_share_y_limits(
+    tmp_path,
+    monkeypatch,
+):
+    from matplotlib.figure import Figure
+
+    from src.evaluation.reporting_impl import plot_metric_vs_size
+
+    saved_figures = []
+
+    def capture_figure(figure, output_path, **_kwargs):
+        saved_figures.append((Path(output_path), figure))
+
+    monkeypatch.setattr(Figure, "savefig", capture_figure)
+    monkeypatch.setattr("src.evaluation.reporting_impl.plt.close", lambda _figure: None)
+
+    rows = [
+        {
+            "sampling_mode": "nested-random",
+            "model_variant": "slicing",
+            "resolved_sampling_mode": "global",
+            "non_embedding_parameters": 100,
+            "loss": 1.0,
+        },
+        {
+            "sampling_mode": "nested-random",
+            "model_variant": "slicing",
+            "resolved_sampling_mode": "global",
+            "non_embedding_parameters": 200,
+            "loss": 2.0,
+        },
+        {
+            "sampling_mode": "nested-random",
+            "model_variant": "concat",
+            "resolved_sampling_mode": "per_block",
+            "non_embedding_parameters": 100,
+            "loss": 10.0,
+        },
+        {
+            "sampling_mode": "nested-random",
+            "model_variant": "concat",
+            "resolved_sampling_mode": "per_block",
+            "non_embedding_parameters": 200,
+            "loss": 20.0,
+        },
+    ]
+    panel_specs = [
+        ("nested-random", "slicing", "global"),
+        ("nested-random", "concat", "per_block"),
+        ("nested-all", "slicing", None),
+    ]
+
+    output_paths = plot_metric_vs_size(
+        rows,
+        metric_name="loss",
+        ylabel="Loss",
+        output_path=tmp_path / "loss_vs_size.png",
+        panel_specs=panel_specs,
+    )
+
+    assert [path.name for path in output_paths] == [
+        "loss_vs_size.png",
+        "loss_vs_size__nested_random_slicing_global.png",
+        "loss_vs_size__nested_random_concat_per_block.png",
+    ]
+    assert len(saved_figures) == 3
+
+    combined_figure = saved_figures[0][1]
+    displayed_axes = [axis for axis in combined_figure.axes if axis.get_visible()]
+    assert len(displayed_axes) == 2
+    assert displayed_axes[0].get_ylim() == pytest.approx(displayed_axes[1].get_ylim())
+    assert displayed_axes[0].get_ylim() == pytest.approx((-0.52, 21.52))
+    assert all(
+        text.get_text() != "No numeric points found"
+        for axis in displayed_axes
+        for text in axis.texts
+    )
+
+    for _, panel_figure in saved_figures[1:]:
+        assert panel_figure.axes[0].get_ylim() == pytest.approx(
+            displayed_axes[0].get_ylim()
+        )
+
+
+def test_multi_panel_size_figure_is_not_written_without_numeric_panels(
+    tmp_path,
+    monkeypatch,
+):
+    from matplotlib.figure import Figure
+
+    from src.evaluation.reporting_impl import plot_metric_vs_size
+
+    saved_paths = []
+    monkeypatch.setattr(
+        Figure,
+        "savefig",
+        lambda _figure, output_path, **_kwargs: saved_paths.append(Path(output_path)),
+    )
+
+    output_paths = plot_metric_vs_size(
+        [
+            {
+                "sampling_mode": "nested-random",
+                "model_variant": "slicing",
+                "resolved_sampling_mode": "global",
+                "non_embedding_parameters": 100,
+                "loss": "",
+            }
+        ],
+        metric_name="loss",
+        ylabel="Loss",
+        output_path=tmp_path / "loss_vs_size.png",
+        panel_specs=[("nested-random", "slicing", "global")],
+    )
+
+    assert output_paths == []
+    assert saved_paths == []
 
 
 @pytest.mark.parametrize(
@@ -243,6 +362,19 @@ def test_reporting_path_groups_loss_rows_and_writes_medium_trend_report(tmp_path
             },
             "probabilistic_global_thompson",
             "probabilistic global thompson",
+        ),
+        (
+            {
+                "sampling_mode": "nested-random",
+                "resolved_sampling_mode": "adaptive_global",
+                "adaptive_sampler_strategy": "thompson",
+                "controller_method_family": "bayesian_gaussian_linear_thompson",
+                "controller_method_version": 1,
+                "controller_scope": "global",
+                "controller_reset_enabled": True,
+            },
+            "probabilistic_global_thompson_reset",
+            "probabilistic global thompson reset",
         ),
         (
             {

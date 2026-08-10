@@ -15,11 +15,12 @@ from src.utils.config import (
     BAYESIAN_CONTROLLER_METHOD_VERSION,
     BAYESIAN_COVARIANCE_TOLERANCE,
 )
-from src.utils.reproducibility import stable_hash
+from src.utils.reproducibility import build_controller_reset_schedule, stable_hash
 
 
 FLOAT64 = torch.float64
-CONTROLLER_SCHEMA_VERSION = 1
+CONTROLLER_SCHEMA_VERSION = 2
+LEGACY_CONTROLLER_SCHEMA_VERSION = 1
 FEATURE_SCHEMA_VERSION = 1
 SAMPLING_FACTORIZATION_CONTRACT = "symmetric_eigh_float64_v1"
 
@@ -565,6 +566,12 @@ class ProbabilisticController:
             raise ProbabilisticControllerError(
                 "decision interval steps must be a positive integer"
             )
+        reset_contract = copy.deepcopy(dict(config.get("reset", {})))
+        reset_enabled = bool(reset_contract.get("enabled", False))
+        if reset_enabled and scope != "global":
+            raise ProbabilisticControllerError(
+                "episodic reset is supported only for the global controller"
+            )
 
         self._generator = torch.Generator(device="cpu").manual_seed(int(sampling_seed))
         self._state: dict[str, Any] = {
@@ -603,12 +610,39 @@ class ProbabilisticController:
                 "sample_count": 0,
                 "factorization_contract": SAMPLING_FACTORIZATION_CONTRACT,
             },
+            "reset": {
+                "contract": reset_contract,
+                "enabled": reset_enabled,
+                "controller_start_step": None,
+                "episode_index": None,
+                "episode_start_step": None,
+                "episode_end_step": None,
+                "episode_offset_steps": 0,
+                "reset_count": 0,
+                "reset_steps": [],
+                "acquisition_completed_windows": 0,
+                "acquisition_total_windows": (
+                    int(reset_contract.get("acquisition_window_count", 0))
+                    if reset_enabled
+                    else 0
+                ),
+                "acquisition_counts": {
+                    label: 0 for label in ordered_granularities
+                },
+                "selection_source": None,
+                "schedule_seed": None,
+                "schedule": [],
+                "schedule_hash": None,
+                "completed_episode_count": 0,
+                "completed_episodes": [],
+            },
             "window": {
                 "phase": "initial_objective_pending",
                 "window_index": 0,
                 "decision_interval_steps": interval,
                 "boundary_step": 0,
                 "current_action": None,
+                "selection_source": None,
                 "completed_optimizer_steps": 0,
                 "pre_window_objective": None,
                 "ordered_pre_window_component_losses": None,
@@ -695,13 +729,7 @@ class ProbabilisticController:
         return objective, losses, evaluation_target_tokens
 
     def _predict_and_select(self, *, boundary_step: int) -> dict[str, Any]:
-        belief = self._state["belief"]
-        inputs = self._state["probabilistic_inputs"]
-        prediction = predict_gaussian_belief(
-            posterior_mean=belief["posterior_mean"],
-            posterior_covariance=belief["posterior_covariance"],
-            process_noise_covariance=inputs["resolved_process_noise_covariance"],
-        )
+        prediction = self._predict(boundary_step=boundary_step)
         sample = sample_gaussian_coefficients(
             mean=prediction["predictive_mean"],
             covariance=prediction["predictive_covariance"],
@@ -711,14 +739,114 @@ class ProbabilisticController:
             action = select_global_action(self._state["feature_schema"], sample)
         else:
             action = select_additive_action(self._state["feature_schema"], sample)
-        action["selection_round"] = int(belief["round_index"])
-        belief["predictive_mean"] = prediction["predictive_mean"]
-        belief["predictive_covariance"] = prediction["predictive_covariance"]
-        belief["last_prediction_step"] = int(boundary_step)
+        action["selection_source"] = "thompson"
+        action["selection_round"] = int(self._state["belief"]["round_index"])
         sampling = self._state["sampling"]
         sampling["sample_count"] = int(sampling["sample_count"]) + 1
         sampling["generator_state"] = self._generator.get_state()
         return action
+
+    def _predict(self, *, boundary_step: int) -> dict[str, Any]:
+        belief = self._state["belief"]
+        inputs = self._state["probabilistic_inputs"]
+        prediction = predict_gaussian_belief(
+            posterior_mean=belief["posterior_mean"],
+            posterior_covariance=belief["posterior_covariance"],
+            process_noise_covariance=inputs["resolved_process_noise_covariance"],
+        )
+        belief["predictive_mean"] = prediction["predictive_mean"]
+        belief["predictive_covariance"] = prediction["predictive_covariance"]
+        belief["last_prediction_step"] = int(boundary_step)
+        return prediction
+
+    def _select_forced_acquisition(
+        self,
+        *,
+        boundary_step: int,
+        schedule_index: int,
+    ) -> dict[str, Any]:
+        reset = self._state["reset"]
+        schedule = list(reset["schedule"])
+        if schedule_index < 0 or schedule_index >= len(schedule):
+            raise ProbabilisticControllerError(
+                "forced acquisition schedule index is out of range"
+            )
+        prediction = self._predict(boundary_step=boundary_step)
+        label = schedule[schedule_index]
+        feature = encode_global_action(self._state["feature_schema"], label)
+        action = {
+            "scope": "global",
+            "global_granularity": label,
+            "block_granularities": [label] * int(self._state["block_count"]),
+            "feature_vector": feature,
+            "sampled_predicted_reward": float(
+                feature @ prediction["predictive_mean"]
+            ),
+            "tie_resolution": "forced_acquisition_schedule",
+            "selection_source": "forced_acquisition",
+            "selection_round": int(self._state["belief"]["round_index"]),
+            "acquisition_schedule_index": int(schedule_index),
+        }
+        return action
+
+    def _initialize_reset_episode(
+        self,
+        *,
+        episode_index: int,
+        boundary_step: int,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        reset = self._state["reset"]
+        contract = reset["contract"]
+        schedule, episode_seed, schedule_hash = build_controller_reset_schedule(
+            self._state["ordered_granularities"],
+            acquisition_passes=int(contract["acquisition_passes"]),
+            root_seed=int(contract["schedule_seed"]),
+            episode_index=int(episode_index),
+        )
+        interval_steps = int(contract["interval_steps"])
+        reset.update(
+            controller_start_step=(
+                int(boundary_step)
+                if reset["controller_start_step"] is None
+                else int(reset["controller_start_step"])
+            ),
+            episode_index=int(episode_index),
+            episode_start_step=int(boundary_step),
+            episode_end_step=int(boundary_step) + interval_steps,
+            episode_offset_steps=0,
+            acquisition_completed_windows=0,
+            acquisition_total_windows=len(schedule),
+            acquisition_counts={
+                label: 0 for label in self._state["ordered_granularities"]
+            },
+            selection_source="forced_acquisition",
+            schedule_seed=int(episode_seed),
+            schedule=schedule,
+            schedule_hash=schedule_hash,
+        )
+        action = self._select_forced_acquisition(
+            boundary_step=boundary_step,
+            schedule_index=0,
+        )
+        event = {
+            "schema_version": CONTROLLER_SCHEMA_VERSION,
+            "event_type": "episode_initialized",
+            "boundary_step": int(boundary_step),
+            "window_index": int(self._state["window"]["window_index"]),
+            "episode_index": int(episode_index),
+            "episode_start_step": int(boundary_step),
+            "episode_end_step": int(boundary_step) + interval_steps,
+            "episode_offset_steps": 0,
+            "schedule_seed": int(episode_seed),
+            "schedule": list(schedule),
+            "schedule_hash": schedule_hash,
+            "acquisition_total_windows": len(schedule),
+            "acquisition_completed_windows": 0,
+            "acquisition_counts": copy.deepcopy(reset["acquisition_counts"]),
+            "selected_action": copy.deepcopy(action),
+            "selection_source": "forced_acquisition",
+        }
+        return action, event
 
     def initialize_boundary(
         self,
@@ -758,20 +886,28 @@ class ProbabilisticController:
             ordered_component_losses=ordered_component_losses,
             evaluation_target_tokens=evaluation_target_tokens,
         )
-        action = self._predict_and_select(boundary_step=boundary_step)
+        journal_events: list[dict[str, Any]] = []
+        if self._state["reset"]["enabled"]:
+            action, episode_event = self._initialize_reset_episode(
+                episode_index=0,
+                boundary_step=boundary_step,
+            )
+            journal_events.append(episode_event)
+        else:
+            action = self._predict_and_select(boundary_step=boundary_step)
         window.update(
             phase="active_window",
             window_index=0,
             boundary_step=int(boundary_step),
             current_action=action,
+            selection_source=action["selection_source"],
             completed_optimizer_steps=0,
             pre_window_objective=objective,
             ordered_pre_window_component_losses=losses,
             boundary_evaluation_status="not_started",
             terminal_status="continuing",
         )
-        self._state["journal"]["event_count"] += 1
-        return {
+        initial_event = {
             "schema_version": CONTROLLER_SCHEMA_VERSION,
             "event_type": "initial_boundary",
             "boundary_step": int(boundary_step),
@@ -784,7 +920,12 @@ class ProbabilisticController:
                 self._state["belief"]["predictive_covariance"]
             ),
             "selected_action": copy.deepcopy(action),
+            "selection_source": action["selection_source"],
         }
+        journal_events.append(copy.deepcopy(initial_event))
+        initial_event["_journal_events"] = journal_events
+        self._state["journal"]["event_count"] += len(journal_events)
+        return initial_event
 
     def record_successful_optimizer_step(self) -> None:
         window = self._state["window"]
@@ -799,6 +940,15 @@ class ProbabilisticController:
                 "controller window cannot exceed its decision interval"
             )
         window["completed_optimizer_steps"] = completed
+        reset = self._state["reset"]
+        if reset["enabled"]:
+            reset["episode_offset_steps"] = int(reset["episode_offset_steps"]) + 1
+            if reset["episode_offset_steps"] > int(
+                reset["contract"]["interval_steps"]
+            ):
+                raise ProbabilisticControllerError(
+                    "controller episode cannot exceed its reset interval"
+                )
         if completed == interval:
             window["phase"] = "boundary_evaluation_pending"
             window["boundary_evaluation_status"] = "pending"
@@ -868,6 +1018,7 @@ class ProbabilisticController:
             "boundary_step_end": int(boundary_step),
             "completed_optimizer_steps": int(window["completed_optimizer_steps"]),
             "action": action,
+            "selection_source": action.get("selection_source", "thompson"),
             "pre_window_objective": float(window["pre_window_objective"]),
             "post_window_objective": objective,
             "ordered_component_losses": losses,
@@ -893,22 +1044,188 @@ class ProbabilisticController:
             window_index=next_window_index,
             boundary_step=int(boundary_step),
             current_action=None,
+            selection_source=None,
             completed_optimizer_steps=0,
             pre_window_objective=objective,
             ordered_pre_window_component_losses=losses,
             boundary_evaluation_status="complete",
             terminal_status="complete_boundary",
         )
-        if training_will_continue:
-            next_action = self._predict_and_select(boundary_step=boundary_step)
+        journal_events: list[dict[str, Any]] = [copy.deepcopy(event)]
+        reset = self._state["reset"]
+        reset_boundary = False
+        if reset["enabled"]:
+            episode_index = int(reset["episode_index"])
+            selection_source = str(action.get("selection_source"))
+            if selection_source == "forced_acquisition":
+                label = str(action["global_granularity"])
+                reset["acquisition_completed_windows"] = int(
+                    reset["acquisition_completed_windows"]
+                ) + 1
+                reset["acquisition_counts"][label] = int(
+                    reset["acquisition_counts"].get(label, 0)
+                ) + 1
+                acquisition_event = {
+                    "schema_version": CONTROLLER_SCHEMA_VERSION,
+                    "event_type": (
+                        "acquisition_completed"
+                        if int(reset["acquisition_completed_windows"])
+                        == int(reset["acquisition_total_windows"])
+                        else "acquisition_progress"
+                    ),
+                    "boundary_step": int(boundary_step),
+                    "window_index": int(event["window_index"]),
+                    "episode_index": episode_index,
+                    "episode_offset_steps": int(reset["episode_offset_steps"]),
+                    "schedule_seed": int(reset["schedule_seed"]),
+                    "schedule_hash": reset["schedule_hash"],
+                    "acquisition_completed_windows": int(
+                        reset["acquisition_completed_windows"]
+                    ),
+                    "acquisition_total_windows": int(
+                        reset["acquisition_total_windows"]
+                    ),
+                    "acquisition_counts": copy.deepcopy(
+                        reset["acquisition_counts"]
+                    ),
+                    "action": copy.deepcopy(action),
+                    "selection_source": "forced_acquisition",
+                    "posterior_updated": True,
+                }
+                journal_events.append(acquisition_event)
+
+            event.update(
+                episode_index=episode_index,
+                episode_start_step=int(reset["episode_start_step"]),
+                episode_end_step=int(reset["episode_end_step"]),
+                episode_offset_steps=int(reset["episode_offset_steps"]),
+                acquisition_completed_windows=int(
+                    reset["acquisition_completed_windows"]
+                ),
+                acquisition_total_windows=int(reset["acquisition_total_windows"]),
+                acquisition_counts=copy.deepcopy(reset["acquisition_counts"]),
+            )
+            journal_events[0] = copy.deepcopy(event)
+            reset_boundary = int(reset["episode_offset_steps"]) == int(
+                reset["contract"]["interval_steps"]
+            )
+            if reset_boundary:
+                completed_windows = int(reset["episode_offset_steps"]) // interval
+                episode_archive = {
+                    "episode_index": episode_index,
+                    "episode_start_step": int(reset["episode_start_step"]),
+                    "episode_end_step": int(boundary_step),
+                    "episode_offset_steps": int(reset["episode_offset_steps"]),
+                    "completed_window_count": completed_windows,
+                    "forced_acquisition_window_count": int(
+                        reset["acquisition_completed_windows"]
+                    ),
+                    "thompson_window_count": completed_windows
+                    - int(reset["acquisition_completed_windows"]),
+                    "acquisition_counts": copy.deepcopy(
+                        reset["acquisition_counts"]
+                    ),
+                    "schedule_seed": int(reset["schedule_seed"]),
+                    "schedule": list(reset["schedule"]),
+                    "schedule_hash": reset["schedule_hash"],
+                    "pre_reset_posterior_mean": copy.deepcopy(
+                        belief["posterior_mean"]
+                    ),
+                    "pre_reset_posterior_covariance": copy.deepcopy(
+                        belief["posterior_covariance"]
+                    ),
+                }
+                reset["completed_episodes"].append(episode_archive)
+                reset["completed_episode_count"] = len(
+                    reset["completed_episodes"]
+                )
+                journal_events.append(
+                    {
+                        "schema_version": CONTROLLER_SCHEMA_VERSION,
+                        "event_type": "episode_completed",
+                        "boundary_step": int(boundary_step),
+                        "window_index": int(event["window_index"]),
+                        **copy.deepcopy(episode_archive),
+                        "training_will_continue": bool(training_will_continue),
+                    }
+                )
+
+                if training_will_continue:
+                    pre_reset_mean = copy.deepcopy(belief["posterior_mean"])
+                    pre_reset_covariance = copy.deepcopy(
+                        belief["posterior_covariance"]
+                    )
+                    prior_mean = _float64_cpu_tensor(
+                        self._state["probabilistic_inputs"]["resolved_prior_mean"],
+                        field_name="configured reset prior mean",
+                    )
+                    prior_covariance = _float64_cpu_tensor(
+                        self._state["probabilistic_inputs"]
+                        ["resolved_prior_covariance"],
+                        field_name="configured reset prior covariance",
+                    )
+                    belief.update(
+                        posterior_mean=prior_mean,
+                        posterior_covariance=prior_covariance,
+                        predictive_mean=None,
+                        predictive_covariance=None,
+                    )
+                    reset["reset_count"] = int(reset["reset_count"]) + 1
+                    reset["reset_steps"].append(int(boundary_step))
+                    journal_events.append(
+                        {
+                            "schema_version": CONTROLLER_SCHEMA_VERSION,
+                            "event_type": "posterior_reset",
+                            "boundary_step": int(boundary_step),
+                            "window_index": int(next_window_index),
+                            "episode_index": episode_index,
+                            "reset_count": int(reset["reset_count"]),
+                            "pre_reset_posterior_mean": pre_reset_mean,
+                            "pre_reset_posterior_covariance": pre_reset_covariance,
+                            "restored_prior_mean": copy.deepcopy(prior_mean),
+                            "restored_prior_covariance": copy.deepcopy(
+                                prior_covariance
+                            ),
+                            "policy": "full_prior",
+                        }
+                    )
+                    next_action, episode_event = self._initialize_reset_episode(
+                        episode_index=episode_index + 1,
+                        boundary_step=boundary_step,
+                    )
+                    journal_events.append(episode_event)
+                    window.update(
+                        phase="active_window",
+                        current_action=next_action,
+                        selection_source=next_action["selection_source"],
+                        boundary_evaluation_status="not_started",
+                        terminal_status="continuing",
+                    )
+                    event["next_action"] = copy.deepcopy(next_action)
+
+        if training_will_continue and not reset_boundary:
+            if reset["enabled"] and int(
+                reset["acquisition_completed_windows"]
+            ) < int(reset["acquisition_total_windows"]):
+                next_action = self._select_forced_acquisition(
+                    boundary_step=boundary_step,
+                    schedule_index=int(reset["acquisition_completed_windows"]),
+                )
+            else:
+                next_action = self._predict_and_select(boundary_step=boundary_step)
             window.update(
                 phase="active_window",
                 current_action=next_action,
+                selection_source=next_action["selection_source"],
                 boundary_evaluation_status="not_started",
                 terminal_status="continuing",
             )
             event["next_action"] = copy.deepcopy(next_action)
-        self._state["journal"]["event_count"] += 1
+            if reset["enabled"]:
+                reset["selection_source"] = next_action["selection_source"]
+        journal_events[0] = copy.deepcopy(event)
+        event["_journal_events"] = journal_events
+        self._state["journal"]["event_count"] += len(journal_events)
         return event
 
     def fail(
@@ -986,7 +1303,7 @@ class ProbabilisticController:
                 terminal_status="incomplete",
             )
             self._state["journal"]["event_count"] += 1
-            return {
+            event = {
                 "schema_version": CONTROLLER_SCHEMA_VERSION,
                 "event_type": "terminal_incomplete",
                 "window_index": int(window["window_index"]),
@@ -1000,7 +1317,27 @@ class ProbabilisticController:
                 "action": copy.deepcopy(window["current_action"]),
                 "pre_window_objective": float(window["pre_window_objective"]),
                 "observation_emitted": False,
+                "selection_source": window.get("selection_source"),
             }
+            reset = self._state["reset"]
+            if reset["enabled"]:
+                event.update(
+                    episode_index=reset.get("episode_index"),
+                    episode_start_step=reset.get("episode_start_step"),
+                    episode_end_step=reset.get("episode_end_step"),
+                    episode_offset_steps=reset.get("episode_offset_steps"),
+                    acquisition_completed_windows=reset.get(
+                        "acquisition_completed_windows"
+                    ),
+                    acquisition_total_windows=reset.get(
+                        "acquisition_total_windows"
+                    ),
+                    acquisition_counts=copy.deepcopy(
+                        reset.get("acquisition_counts", {})
+                    ),
+                    episode_complete=False,
+                )
+            return event
         if window["phase"] == "boundary_evaluation_pending":
             raise ProbabilisticControllerError(
                 "training cannot finish with a pending completed boundary"
@@ -1043,6 +1380,21 @@ def restore_probabilistic_controller(
     )
     expected = controller.state_dict()
     restored = copy.deepcopy(dict(saved_state))
+    if restored.get("schema_version") == LEGACY_CONTROLLER_SCHEMA_VERSION:
+        if expected["reset"]["enabled"]:
+            raise ProbabilisticControllerError(
+                "reset-enabled continuation requires complete reset state"
+            )
+        restored["schema_version"] = CONTROLLER_SCHEMA_VERSION
+        restored["reset"] = copy.deepcopy(expected["reset"])
+        legacy_window = restored.get("window")
+        if isinstance(legacy_window, dict):
+            legacy_action = legacy_window.get("current_action")
+            legacy_window["selection_source"] = (
+                legacy_action.get("selection_source", "thompson")
+                if isinstance(legacy_action, Mapping)
+                else None
+            )
     if restored.get("schema_version") != CONTROLLER_SCHEMA_VERSION:
         raise ProbabilisticControllerError("controller schema version mismatch")
     if restored.get("method_family") != expected["method_family"]:
@@ -1061,6 +1413,59 @@ def restore_probabilistic_controller(
         raise ProbabilisticControllerError(
             "controller probabilistic inputs mismatch"
         )
+    reset = restored.get("reset")
+    if not isinstance(reset, Mapping):
+        raise ProbabilisticControllerError("controller reset state is missing")
+    if reset.get("contract") != expected["reset"]["contract"]:
+        raise ProbabilisticControllerError("controller reset contract mismatch")
+    if bool(reset.get("enabled")) != bool(expected["reset"]["enabled"]):
+        raise ProbabilisticControllerError("controller reset enabled state mismatch")
+    if reset.get("enabled"):
+        required_reset_fields = {
+            "controller_start_step",
+            "episode_index",
+            "episode_start_step",
+            "episode_end_step",
+            "episode_offset_steps",
+            "reset_count",
+            "reset_steps",
+            "acquisition_completed_windows",
+            "acquisition_total_windows",
+            "acquisition_counts",
+            "selection_source",
+            "schedule_seed",
+            "schedule",
+            "schedule_hash",
+            "completed_episode_count",
+            "completed_episodes",
+        }
+        missing_reset_fields = required_reset_fields - set(reset)
+        if missing_reset_fields:
+            raise ProbabilisticControllerError(
+                "controller reset state is incomplete: "
+                f"{sorted(missing_reset_fields)}"
+            )
+        if reset.get("episode_index") is not None:
+            expected_schedule, expected_seed, expected_hash = (
+                build_controller_reset_schedule(
+                    expected["ordered_granularities"],
+                    acquisition_passes=int(
+                        expected["reset"]["contract"]["acquisition_passes"]
+                    ),
+                    root_seed=int(
+                        expected["reset"]["contract"]["schedule_seed"]
+                    ),
+                    episode_index=int(reset["episode_index"]),
+                )
+            )
+            if (
+                list(reset.get("schedule", [])) != expected_schedule
+                or reset.get("schedule_seed") != expected_seed
+                or reset.get("schedule_hash") != expected_hash
+            ):
+                raise ProbabilisticControllerError(
+                    "controller reset acquisition schedule mismatch"
+                )
     saved_manifests = restored.get("manifest_hashes")
     if not isinstance(saved_manifests, Mapping):
         raise ProbabilisticControllerError("controller manifest hashes are missing")
@@ -1134,6 +1539,10 @@ def restore_probabilistic_controller(
         "failed",
     }:
         raise ProbabilisticControllerError("controller window phase is invalid")
+    if "selection_source" not in window:
+        raise ProbabilisticControllerError(
+            "controller window selection source is missing"
+        )
     controller._state = restored
     resume = dict(controller._state.get("resume", {}))
     resume.update(

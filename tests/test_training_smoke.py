@@ -3103,3 +3103,103 @@ def test_probabilistic_adaptive_per_block_uses_fixed_profiles_and_shared_rewards
     )
     assert "enumerated_profile" not in serialized_artifacts
     assert "profile_table" not in serialized_artifacts
+
+
+def test_reset_training_reuses_one_panel_evaluation_per_boundary_and_batches_events(
+    tmp_path,
+    monkeypatch,
+):
+    import src.evaluation.validation as evaluation_validation
+    import src.training.run as training_run
+
+    output_dir = tmp_path / "probabilistic-adaptive-global-smoke-001"
+    config = resolve_run_config(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+        output_dir=output_dir,
+        overrides={
+            "training.eval_batches": 4,
+            "training.max_steps": 14,
+            "model.adaptive_controller.decision_interval_steps": 2,
+            "model.adaptive_controller.process_noise_covariance": 0.0,
+            "model.adaptive_controller.reset.enabled": True,
+            "model.adaptive_controller.reset.interval_steps": 12,
+        },
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "source_row_identity": list(range(660)),
+            "input_ids": [
+                [index + 1, index + 2, index + 3] for index in range(660)
+            ],
+            "attention_mask": [[1, 1, 1] for _ in range(660)],
+        }
+    )
+    controller_calls = []
+
+    def controlled_objective(*args, **kwargs):
+        granularities = kwargs.get("granularities") or args[2]
+        boundary_step = kwargs.get("boundary_step")
+        call_index = len(controller_calls)
+        center = 0.03 - 0.001 * call_index
+        losses = [center - 0.01, center, center + 0.01]
+        controller_calls.append(int(boundary_step))
+        return {
+            "boundary_step": boundary_step,
+            "ordered_granularities": list(granularities),
+            "ordered_component_losses": losses,
+            "uniform_objective": center,
+            "evaluation_example_count": 128,
+            "evaluation_target_tokens": 256,
+        }
+
+    for module in (evaluation_validation, training_run, training_steps):
+        monkeypatch.setattr(
+            module,
+            "evaluate_controller_objective",
+            controlled_objective,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            module,
+            "evaluate_controller_panel_objective",
+            controlled_objective,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            module,
+            "evaluate_fixed_panel_objective",
+            controlled_objective,
+            raising=False,
+        )
+
+    run_training(
+        config,
+        model=TinyNestedTrainingModel(),
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    assert controller_calls == [0, 2, 4, 6, 8, 10, 12, 14]
+    events = [
+        json.loads(line)
+        for line in (output_dir / "controller_metrics.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    event_types = [event["event_type"] for event in events]
+    reset_index = event_types.index("posterior_reset")
+    assert event_types[reset_index - 2 : reset_index + 2] == [
+        "completed_window",
+        "episode_completed",
+        "posterior_reset",
+        "episode_initialized",
+    ]
+    summary = json.loads(
+        (output_dir / "controller_summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["controller_evaluation_count"] == len(controller_calls)
+    assert summary["completed_observation_count"] == 7
+    assert summary["reset_enabled"] is True
+    assert summary["reset_count"] == 1
+    assert sum(summary["forced_acquisition_action_frequencies"].values()) == 4
+    assert sum(summary["thompson_action_frequencies"].values()) == 3

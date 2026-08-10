@@ -311,3 +311,24 @@ pytest -q \
   tests/test_training_smoke.py::test_balanced_global_warmup_resume_inside_window_matches_uninterrupted_run \
   tests/test_training_smoke.py::test_balanced_global_warmup_terminal_budget_exhaustion_never_starts_controller
 ```
+
+## 15. Run the opt-in episodic-reset comparison
+
+The matched seed-42 comparison manifest is
+`configs/probabilistic_global_reset_seed42.yaml`. It records the common base
+config and dotted overrides for Q=0 with no reset, then reset K=500, K=1000,
+and K=2000. All variants retain h=50, the 500-step balanced warmup, prior,
+observation variance, role manifests, optimizer, scheduler, and training
+budget. It is not part of the default pilot queue.
+
+Validate reset behavior and continuation without external data access:
+
+```bash
+pytest -q \
+  tests/test_config.py -k probabilistic_reset \
+  tests/test_reproducibility.py -k controller_reset \
+  tests/test_probabilistic_controller.py -k reset \
+  tests/test_probabilistic_controller_resume.py -k reset \
+  tests/test_artifacts.py -k 'same_boundary or separates_forced' \
+  tests/test_reporting.py -k explicit_provenance
+```
