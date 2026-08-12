@@ -48,7 +48,7 @@ def _resolved_per_block_config(tmp_path):
     )
 
 
-def _resolved_reset_config(tmp_path, *, interval_steps=12):
+def _resolved_reset_config(tmp_path, *, interval_steps=12, policy="full_prior"):
     return resolve_run_config(
         "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
         output_dir=tmp_path / "probabilistic-adaptive-global-smoke-001",
@@ -58,6 +58,7 @@ def _resolved_reset_config(tmp_path, *, interval_steps=12):
             "model.adaptive_controller.process_noise_covariance": 0.0,
             "model.adaptive_controller.reset.enabled": True,
             "model.adaptive_controller.reset.interval_steps": interval_steps,
+            "model.adaptive_controller.reset.policy": policy,
         },
     )
 
@@ -334,12 +335,14 @@ def test_fresh_and_resumed_controller_match_from_inside_window_and_exact_boundar
         pytest.param(6, "forced_acquisition", id="exact-reset-boundary"),
     ],
 )
+@pytest.mark.parametrize("policy", ["full_prior", "acquisition_only"])
 def test_reset_resume_matches_inside_acquisition_thompson_and_reset_boundaries(
     tmp_path,
     completed_windows,
     expected_source,
+    policy,
 ):
-    config = _resolved_reset_config(tmp_path)
+    config = _resolved_reset_config(tmp_path, policy=policy)
     uninterrupted = _build_controller(config)
     _initialize_controller(uninterrupted)
     for window_index in range(completed_windows):

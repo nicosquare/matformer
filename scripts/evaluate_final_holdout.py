@@ -36,6 +36,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="PyTorch device such as cpu or cuda; defaults to CUDA when available.",
     )
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help=(
+            "Return successfully without reevaluating when the run already has a "
+            "valid, hashed final_holdout_results.json artifact."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -44,9 +52,15 @@ def main(argv: list[str] | None = None) -> int:
     from src.evaluation.final_holdout import (
         FinalHoldoutError,
         evaluate_final_holdout,
+        resolve_existing_final_holdout_result,
     )
 
     try:
+        if args.skip_existing:
+            existing = resolve_existing_final_holdout_result(args.run_dir)
+            if existing is not None:
+                print(existing["result_path"])
+                return 0
         result = evaluate_final_holdout(
             args.run_dir,
             checkpoint_path=args.checkpoint,

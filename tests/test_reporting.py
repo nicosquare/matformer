@@ -348,6 +348,319 @@ def test_multi_panel_size_figure_is_not_written_without_numeric_panels(
     assert saved_paths == []
 
 
+def _bayesian_size_row(
+    *,
+    run_id: str,
+    seed: int,
+    parameters: int,
+    loss: float,
+    process_noise: float,
+    reset_enabled: bool = False,
+    reset_policy: str = "full_prior",
+    reset_interval: int | None = None,
+) -> dict:
+    return {
+        "run_id": run_id,
+        "run_seed": seed,
+        "sampling_mode": "nested-random",
+        "model_variant": "concat",
+        "resolved_sampling_mode": "adaptive_global",
+        "adaptive_sampler_strategy": "thompson",
+        "controller_method_family": "bayesian_gaussian_linear_thompson",
+        "controller_method_version": 1,
+        "controller_scope": "global",
+        "controller_decision_interval_steps": 50,
+        "controller_observation_noise_variance": 1e-7,
+        "controller_process_noise_covariance": process_noise,
+        "controller_prior_mean": [0.0] * 5,
+        "controller_prior_covariance": [1e-4] + [1e-6] * 4,
+        "controller_reset_enabled": reset_enabled,
+        "controller_reset_policy": reset_policy,
+        "controller_reset_interval_steps": reset_interval,
+        "controller_acquisition_policy": "balanced_global",
+        "controller_acquisition_passes": 1,
+        "pre_nested_warmup_enabled": True,
+        "pre_nested_warmup_policy": "balanced_global",
+        "pre_nested_warmup_duration": 500,
+        "pre_nested_warmup_action_interval_steps": 50,
+        "training_token_budget": 100_000_000,
+        "training_learning_rate": 0.001,
+        "training_scheduler_name": "cosine",
+        "non_embedding_parameters": parameters,
+        "loss": loss,
+    }
+
+
+def test_size_plot_unifies_global_bayesian_ts_aliases_without_changing_identity():
+    from src.evaluation.reporting_impl import (
+        panel_sampling_matches,
+        scaling_curve_sampling_label,
+    )
+
+    rows = [
+        _bayesian_size_row(
+            run_id="no-reset",
+            seed=42,
+            parameters=100,
+            loss=1.0,
+            process_noise=0.0,
+        ),
+        _bayesian_size_row(
+            run_id="full-prior",
+            seed=42,
+            parameters=100,
+            loss=1.1,
+            process_noise=0.0,
+            reset_enabled=True,
+            reset_interval=2000,
+        ),
+        _bayesian_size_row(
+            run_id="acquisition-only",
+            seed=42,
+            parameters=100,
+            loss=1.2,
+            process_noise=0.0,
+            reset_enabled=True,
+            reset_policy="acquisition_only",
+            reset_interval=2000,
+        ),
+    ]
+
+    identities = [scaling_curve_sampling_label(row) for row in rows]
+
+    assert identities == [
+        "probabilistic_global_thompson",
+        "probabilistic_global_thompson_reset",
+        "probabilistic_global_thompson_acquisition_only",
+    ]
+    assert all(
+        panel_sampling_matches(identity, "probabilistic_global_thompson")
+        for identity in identities
+    )
+
+
+def test_size_plot_keeps_distinct_contracts_and_aggregates_seeds_with_min_max_band():
+    import matplotlib.pyplot as plt
+
+    from src.evaluation.reporting_impl import plot_metric_vs_size_panel
+
+    rows = []
+    for seed, offset in ((42, 0.0), (43, 0.2)):
+        rows.extend(
+            [
+                _bayesian_size_row(
+                    run_id=f"q0-s{seed}",
+                    seed=seed,
+                    parameters=100,
+                    loss=1.0 + offset,
+                    process_noise=0.0,
+                ),
+                _bayesian_size_row(
+                    run_id=f"q0-s{seed}",
+                    seed=seed,
+                    parameters=200,
+                    loss=2.0 + offset,
+                    process_noise=0.0,
+                ),
+            ]
+        )
+    rows.extend(
+        [
+            _bayesian_size_row(
+                run_id="q1e-10-s42",
+                seed=42,
+                parameters=100,
+                loss=0.9,
+                process_noise=1e-10,
+            ),
+            _bayesian_size_row(
+                run_id="q1e-10-s42",
+                seed=42,
+                parameters=200,
+                loss=1.9,
+                process_noise=1e-10,
+            ),
+            _bayesian_size_row(
+                run_id="reset-s42",
+                seed=42,
+                parameters=100,
+                loss=1.2,
+                process_noise=0.0,
+                reset_enabled=True,
+                reset_interval=2000,
+            ),
+            _bayesian_size_row(
+                run_id="reset-s42",
+                seed=42,
+                parameters=200,
+                loss=2.2,
+                process_noise=0.0,
+                reset_enabled=True,
+                reset_interval=2000,
+            ),
+            _bayesian_size_row(
+                run_id="acquisition-s42",
+                seed=42,
+                parameters=100,
+                loss=1.3,
+                process_noise=0.0,
+                reset_enabled=True,
+                reset_policy="acquisition_only",
+                reset_interval=2000,
+            ),
+            _bayesian_size_row(
+                run_id="acquisition-s42",
+                seed=42,
+                parameters=200,
+                loss=2.3,
+                process_noise=0.0,
+                reset_enabled=True,
+                reset_policy="acquisition_only",
+                reset_interval=2000,
+            ),
+        ]
+    )
+
+    figure, axis = plt.subplots()
+    plot_metric_vs_size_panel(
+        axis,
+        rows,
+        metric_name="loss",
+        ylabel="Loss",
+        sampling_mode="nested-random",
+        variant_label="concat",
+        sampling_label="probabilistic_global_thompson",
+    )
+
+    assert axis.get_title() == "Nested-random · Concat · Bayesian global TS"
+    lines_by_label = {line.get_label(): line for line in axis.lines}
+    assert set(lines_by_label) == {
+        "No reset · Q=0 · n=2 seeds",
+        "No reset · Q=1e−10",
+        "Full-prior · K=2k",
+        "Acquisition-only · K=2k",
+    }
+    assert list(lines_by_label["No reset · Q=0 · n=2 seeds"].get_xdata()) == [
+        100.0,
+        200.0,
+    ]
+    assert list(lines_by_label["No reset · Q=0 · n=2 seeds"].get_ydata()) == (
+        pytest.approx([1.1, 2.1])
+    )
+    assert len(axis.collections) == 1
+    plt.close(figure)
+
+
+def test_size_plot_missing_contract_metadata_falls_back_to_run_identity():
+    from src.evaluation.reporting_impl import group_size_plot_rows
+
+    rows = [
+        {
+            "run_id": run_id,
+            "sampling_mode": "nested-random",
+            "model_variant": "concat",
+            "resolved_sampling_mode": "adaptive_global",
+            "adaptive_sampler_strategy": "thompson",
+            "controller_method_family": "bayesian_gaussian_linear_thompson",
+            "controller_method_version": 1,
+            "controller_scope": "global",
+            "non_embedding_parameters": 100,
+            "loss": loss,
+        }
+        for run_id, loss in (("historical-a", 1.0), ("historical-b", 2.0))
+    ]
+
+    grouped = group_size_plot_rows(rows)
+
+    assert len(grouped) == 2
+    assert {group[0]["run_id"] for group in grouped.values()} == {
+        "historical-a",
+        "historical-b",
+    }
+
+
+def test_size_plot_shared_limits_include_seed_band_without_spurious_zero():
+    import matplotlib.pyplot as plt
+
+    from src.evaluation.reporting_impl import axis_numeric_y_values
+
+    figure, axis = plt.subplots()
+    axis.fill_between([1, 2], [10, 20], [12, 22])
+
+    values = axis_numeric_y_values(axis)
+
+    assert min(values) == pytest.approx(10.0)
+    assert max(values) == pytest.approx(22.0)
+    plt.close(figure)
+
+
+def test_scaling_metadata_enrichment_records_seed_independent_ts_contract(tmp_path):
+    from src.evaluation.reporting_io import enrich_scaling_metadata_from_run_config
+
+    run_dir = tmp_path / "ts-run"
+    run_dir.mkdir()
+    config = {
+        "comparison_control_inputs": {
+            "root_seed": 43,
+            "dataset_name": "example/data",
+            "dataset_config_name": "sample",
+            "dataset_split": "train",
+            "context_length": 1024,
+            "batch_size_per_process": 4,
+            "precision": "bf16",
+            "tokenizer_name": "example/tokenizer",
+        },
+        "run": {"run_id": "ts-run", "seed": 43},
+        "model": {
+            "adaptive_controller": {
+                "method_family": "bayesian_gaussian_linear_thompson",
+                "method_version": 1,
+                "scope": "global",
+                "decision_interval_steps": 50,
+                "observation_noise_variance": 1e-7,
+                "process_noise_covariance_input": 1e-10,
+                "prior_mean_input": [0.0] * 5,
+                "prior_covariance_input": [1e-4] + [1e-6] * 4,
+                "reset": {
+                    "enabled": True,
+                    "policy": "acquisition_only",
+                    "interval_steps": 2000,
+                    "acquisition_policy": "balanced_global",
+                    "acquisition_passes": 1,
+                },
+            }
+        },
+        "training": {
+            "token_budget": 100_000_000,
+            "resolved_learning_rate": 0.001,
+            "max_steps": 24_415,
+            "optimizer": {"name": "adamw", "kwargs": {"weight_decay": 0.1}},
+            "scheduler": {"name": "cosine", "kwargs": {"warmup_steps": 2000}},
+            "pre_nested_warmup": {
+                "enabled": True,
+                "policy": "balanced_global",
+                "duration": 500,
+                "action_interval_steps": 50,
+            },
+        },
+    }
+    (run_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
+
+    [row] = enrich_scaling_metadata_from_run_config(
+        tmp_path,
+        [{"run_id": "ts-run", "_source_csv": str(run_dir / "scaling_results.csv")}],
+    )
+
+    assert row["run_seed"] == 43
+    assert row["controller_process_noise_covariance"] == 1e-10
+    assert row["controller_reset_policy"] == "acquisition_only"
+    assert row["controller_reset_interval_steps"] == 2000
+    assert row["pre_nested_warmup_duration"] == 500
+    assert row["training_token_budget"] == 100_000_000
+    assert row["training_scheduler_name"] == "cosine"
+    assert row["training_dataset_name"] == "example/data"
+
+
 @pytest.mark.parametrize(
     "row, expected_identity, expected_display_label",
     [
@@ -375,6 +688,20 @@ def test_multi_panel_size_figure_is_not_written_without_numeric_panels(
             },
             "probabilistic_global_thompson_reset",
             "probabilistic global thompson reset",
+        ),
+        (
+            {
+                "sampling_mode": "nested-random",
+                "resolved_sampling_mode": "adaptive_global",
+                "adaptive_sampler_strategy": "thompson",
+                "controller_method_family": "bayesian_gaussian_linear_thompson",
+                "controller_method_version": 1,
+                "controller_scope": "global",
+                "controller_reset_enabled": True,
+                "controller_reset_policy": "acquisition_only",
+            },
+            "probabilistic_global_thompson_acquisition_only",
+            "probabilistic global thompson acquisition-only",
         ),
         (
             {
@@ -449,6 +776,7 @@ def test_reporting_defines_distinct_styles_for_each_bayesian_scope():
 
     bayesian_identities = {
         "probabilistic_global_thompson",
+        "probabilistic_global_thompson_acquisition_only",
         "probabilistic_per_block_thompson",
     }
 
@@ -458,7 +786,10 @@ def test_reporting_defines_distinct_styles_for_each_bayesian_scope():
         SCALING_SAMPLING_MARKERS["probabilistic_per_block_thompson"]
     )
     panel_identities = {panel[2] for panel in SIZE_PLOT_PANELS_WITH_SAMPLING}
-    assert bayesian_identities <= panel_identities
+    assert "probabilistic_global_thompson" in panel_identities
+    assert "probabilistic_global_thompson_acquisition_only" not in panel_identities
+    assert "probabilistic_global_thompson_reset" not in panel_identities
+    assert "probabilistic_per_block_thompson" in panel_identities
     assert "adaptive_per_block_thompson" not in panel_identities
     assert "adaptive_per_block_thompson" not in SCALING_SAMPLING_MARKERS
     assert "adaptive_per_block_thompson" not in SCALING_SAMPLING_TONES

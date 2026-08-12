@@ -13,6 +13,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import BoundaryNorm, ListedColormap, to_rgb
+from matplotlib.collections import PolyCollection
 from matplotlib.patches import Rectangle
 
 from . import reporting_styles
@@ -102,6 +103,13 @@ def axis_numeric_y_values(axis) -> list[float]:
             if y is not None and math.isfinite(y):
                 values.append(y)
     for collection in axis.collections:
+        if isinstance(collection, PolyCollection):
+            for path in collection.get_paths():
+                for _, y_value in path.vertices:
+                    y = to_float_or_none(y_value)
+                    if y is not None and math.isfinite(y):
+                        values.append(y)
+            continue
         if not hasattr(collection, "get_offsets"):
             continue
         offsets = collection.get_offsets()
@@ -141,6 +149,12 @@ def panel_sampling_matches(
         return True
     if expected_sampling_label == "global":
         return actual_sampling_label in (None, "global")
+    if expected_sampling_label == "probabilistic_global_thompson":
+        return actual_sampling_label in {
+            "probabilistic_global_thompson",
+            "probabilistic_global_thompson_reset",
+            "probabilistic_global_thompson_acquisition_only",
+        }
     return actual_sampling_label == expected_sampling_label
 
 
@@ -224,6 +238,8 @@ def display_sampling_label_for_curve(sampling_label: str | None) -> str | None:
         return "probabilistic global thompson"
     if sampling_label == "probabilistic_global_thompson_reset":
         return "probabilistic global thompson reset"
+    if sampling_label == "probabilistic_global_thompson_acquisition_only":
+        return "probabilistic global thompson acquisition-only"
     if sampling_label == "probabilistic_per_block_thompson":
         return "probabilistic per-block thompson"
     return sampling_label
@@ -260,6 +276,11 @@ def scaling_curve_sampling_label(row: dict[str, Any]) -> str | None:
     if has_bayesian_provenance:
         reset_enabled = str(row.get("controller_reset_enabled", "")).strip().lower()
         if scope == "global" and reset_enabled in {"1", "true", "yes"}:
+            reset_policy = str(
+                row.get("controller_reset_policy", "full_prior")
+            ).strip().lower()
+            if reset_policy == "acquisition_only":
+                return "probabilistic_global_thompson_acquisition_only"
             return "probabilistic_global_thompson_reset"
         return (
             "probabilistic_global_thompson"

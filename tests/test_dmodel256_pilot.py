@@ -401,6 +401,70 @@ def test_dmodel256_pilot_runner_delegates_explicit_standalone_validation(
     assert _has_arg_pair(args, "--override", "run.granularity=micro")
 
 
+def test_dmodel256_pilot_runner_finalizes_manifested_run_after_training(tmp_path):
+    output_root = tmp_path / "pilot-output"
+    run_id = "dmodel256-auto-final-holdout-001"
+    resolved = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        overrides=[
+            f"run.output_root={output_root}",
+            f"run.run_id={run_id}",
+            "run.model_family=nested",
+            "run.sampling_mode=nested-random",
+        ],
+    )
+    run_dir = Path(resolved["run"]["output_dir"])
+    training_recorder = tmp_path / "training-recorder.sh"
+    evaluator_recorder = tmp_path / "evaluator-recorder.sh"
+    evaluator_argv = tmp_path / "evaluator-argv.txt"
+    training_recorder.write_text(
+        "#!/usr/bin/env bash\n"
+        "mkdir -p \"$FAKE_RUN_DIR\"\n"
+        "printf '{}\\n' > \"$FAKE_RUN_DIR/final_holdout_manifest.json\"\n",
+        encoding="utf-8",
+    )
+    evaluator_recorder.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$@\" > \"$EVALUATOR_ARGV\"\n",
+        encoding="utf-8",
+    )
+    training_recorder.chmod(0o755)
+    evaluator_recorder.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYTHON_BIN": str(training_recorder),
+            "PYTHON_CONFIG_BIN": sys.executable,
+            "FINAL_HOLDOUT_PYTHON_BIN": str(evaluator_recorder),
+            "FAKE_RUN_DIR": str(run_dir),
+            "EVALUATOR_ARGV": str(evaluator_argv),
+        }
+    )
+
+    subprocess.run(
+        [
+            "bash",
+            "scripts/run_dmodel256_pilot.sh",
+            "--mode",
+            "nested-random",
+            "--run-id",
+            run_id,
+            "--output-root",
+            str(output_root),
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    args = evaluator_argv.read_text(encoding="utf-8").splitlines()
+    assert args[0] == "scripts/evaluate_final_holdout.py"
+    assert _has_arg_pair(args, "--run-dir", str(run_dir))
+    assert "--skip-existing" in args
+
+
 def test_slurm_dmodel256_pilot_comparison_requests_single_node_multi_gpu_resources():
     script_text = _read_slurm_dmodel256_script()
 
@@ -719,6 +783,54 @@ def test_slurm_dmodel256_pilot_comparison_wrapper_rejects_direct_execution(tmp_p
     assert result.returncode == 2
     assert "intended for sbatch" in result.stderr
     assert not argv_path.exists()
+
+
+def test_slurm_dmodel256_pilot_final_holdout_only_handles_multiple_runs(tmp_path):
+    recorder = tmp_path / "python-recorder.sh"
+    argv_path = tmp_path / "argv.txt"
+    first_run = tmp_path / "completed-run-a"
+    second_run = tmp_path / "completed-run-b"
+    recorder.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '__CALL__\\n' >> \"$ARGV_FILE\"\n"
+        "printf '%s\\n' \"$@\" >> \"$ARGV_FILE\"\n",
+        encoding="utf-8",
+    )
+    recorder.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        {
+            "ALLOW_LOCAL_SLURM_WRAPPER": "1",
+            "GPUS_PER_NODE": "1",
+            "PYTHON_BIN": str(recorder),
+            "ARGV_FILE": str(argv_path),
+        }
+    )
+
+    subprocess.run(
+        [
+            "bash",
+            "scripts/slurm_dmodel256_pilot.sh",
+            "--final-holdout-only",
+            str(first_run),
+            "--final-holdout-only",
+            str(second_run),
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    calls = argv_path.read_text(encoding="utf-8").split("__CALL__\n")[1:]
+    assert len(calls) == 2
+    for call, run_dir in zip(calls, (first_run, second_run), strict=True):
+        args = call.splitlines()
+        assert args[0] == "scripts/evaluate_final_holdout.py"
+        assert _has_arg_pair(args, "--run-dir", str(run_dir))
+        assert _has_arg_pair(args, "--device", "cuda")
+        assert "--skip-existing" in args
 
 
 def test_queue_dmodel256_pilot_skips_completed_runs_and_forwards_overrides(tmp_path):

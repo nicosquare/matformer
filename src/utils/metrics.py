@@ -84,6 +84,7 @@ METRICS_COLUMNS = [
     "controller_metrics_path",
     "controller_summary_path",
     "controller_reset_enabled",
+    "controller_reset_policy",
     "controller_episode_index",
     "controller_episode_offset_steps",
     "controller_selection_source",
@@ -1499,6 +1500,7 @@ CONTROLLER_EVENT_TYPES = {
     "episode_initialized",
     "episode_completed",
     "posterior_reset",
+    "posterior_preserved",
     "acquisition_progress",
     "acquisition_completed",
 }
@@ -2017,6 +2019,9 @@ def build_compact_controller_metric_fields(
         "controller_reset_enabled": bool(
             controller_state.get("reset", {}).get("enabled", False)
         ),
+        "controller_reset_policy": controller_state.get("reset", {})
+        .get("contract", {})
+        .get("policy"),
         "controller_episode_index": controller_state.get("reset", {}).get(
             "episode_index"
         ),
@@ -2084,6 +2089,7 @@ def format_controller_lifecycle_log(event: Mapping[str, Any]) -> str:
         "episode_initialized",
         "episode_completed",
         "posterior_reset",
+        "posterior_preserved",
         "acquisition_progress",
         "acquisition_completed",
     }:
@@ -2135,6 +2141,19 @@ def _validate_controller_event(event: Mapping[str, Any]) -> None:
             raise ArtifactError(f"{event_type} event schedule_hash is required")
     if event_type == "posterior_reset" and event.get("policy") != "full_prior":
         raise ArtifactError("posterior reset event policy must be full_prior")
+    if event_type == "posterior_preserved":
+        if event.get("policy") != "acquisition_only":
+            raise ArtifactError(
+                "posterior preserved event policy must be acquisition_only"
+            )
+        if event.get("posterior_updated") is not False:
+            raise ArtifactError(
+                "posterior preserved event posterior_updated must be false"
+            )
+        if "posterior_mean" not in event or "posterior_covariance" not in event:
+            raise ArtifactError(
+                "posterior preserved event must contain posterior state"
+            )
 
 
 def _controller_json_value(value: Any) -> Any:
@@ -2399,6 +2418,7 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "controller_metrics_path": None,
         "controller_summary_path": None,
         "controller_reset_enabled": None,
+        "controller_reset_policy": None,
         "controller_episode_index": None,
         "controller_episode_offset_steps": None,
         "controller_selection_source": None,

@@ -606,6 +606,39 @@ def test_probabilistic_global_reset_resolves_complete_contract():
     assert reset["minimum_thompson_window_count"] == 3
 
 
+def test_probabilistic_global_acquisition_only_resolves_complete_contract():
+    resolved = _resolve_probabilistic_fixture(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+        overrides={
+            "model.adaptive_controller.process_noise_covariance": 0.0,
+            "model.adaptive_controller.reset.enabled": True,
+            "model.adaptive_controller.reset.interval_steps": 12,
+            "model.adaptive_controller.reset.policy": "acquisition_only",
+        },
+    )
+
+    assert resolved["model"]["adaptive_controller"]["reset"] == {
+        "enabled": True,
+        "interval_steps": 12,
+        "policy": "acquisition_only",
+        "acquisition_policy": "balanced_global",
+        "acquisition_passes": 1,
+        "schedule_seed_stream_name": "controller_reset_schedule",
+        "schedule_seed": derive_seed(42, "controller_reset_schedule"),
+        "episode_window_count": 6,
+        "acquisition_window_count": 3,
+        "minimum_thompson_window_count": 3,
+    }
+
+
+def test_probabilistic_reset_rejects_unknown_policy():
+    with pytest.raises(ConfigError, match="reset.policy.*acquisition_only"):
+        _resolve_probabilistic_fixture(
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            overrides={"model.adaptive_controller.reset.policy": "unknown"},
+        )
+
+
 @pytest.mark.parametrize(
     "fixture_path, overrides, expected_message",
     [

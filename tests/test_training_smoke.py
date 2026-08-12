@@ -3105,9 +3105,19 @@ def test_probabilistic_adaptive_per_block_uses_fixed_profiles_and_shared_rewards
     assert "profile_table" not in serialized_artifacts
 
 
+@pytest.mark.parametrize(
+    "policy, transition_event, expected_reset_count",
+    [
+        ("full_prior", "posterior_reset", 1),
+        ("acquisition_only", "posterior_preserved", 0),
+    ],
+)
 def test_reset_training_reuses_one_panel_evaluation_per_boundary_and_batches_events(
     tmp_path,
     monkeypatch,
+    policy,
+    transition_event,
+    expected_reset_count,
 ):
     import src.evaluation.validation as evaluation_validation
     import src.training.run as training_run
@@ -3123,6 +3133,7 @@ def test_reset_training_reuses_one_panel_evaluation_per_boundary_and_batches_eve
             "model.adaptive_controller.process_noise_covariance": 0.0,
             "model.adaptive_controller.reset.enabled": True,
             "model.adaptive_controller.reset.interval_steps": 12,
+            "model.adaptive_controller.reset.policy": policy,
         },
     )
     tokenized_dataset = Dataset.from_dict(
@@ -3187,11 +3198,11 @@ def test_reset_training_reuses_one_panel_evaluation_per_boundary_and_batches_eve
         .splitlines()
     ]
     event_types = [event["event_type"] for event in events]
-    reset_index = event_types.index("posterior_reset")
+    reset_index = event_types.index(transition_event)
     assert event_types[reset_index - 2 : reset_index + 2] == [
         "completed_window",
         "episode_completed",
-        "posterior_reset",
+        transition_event,
         "episode_initialized",
     ]
     summary = json.loads(
@@ -3200,6 +3211,7 @@ def test_reset_training_reuses_one_panel_evaluation_per_boundary_and_batches_eve
     assert summary["controller_evaluation_count"] == len(controller_calls)
     assert summary["completed_observation_count"] == 7
     assert summary["reset_enabled"] is True
-    assert summary["reset_count"] == 1
+    assert summary["reset_count"] == expected_reset_count
+    assert summary["reset"]["contract"]["policy"] == policy
     assert sum(summary["forced_acquisition_action_frequencies"].values()) == 4
     assert sum(summary["thompson_action_frequencies"].values()) == 3

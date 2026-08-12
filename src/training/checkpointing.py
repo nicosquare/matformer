@@ -449,6 +449,10 @@ def validate_probabilistic_controller_checkpoint_state(
             raise ConfigError(
                 f"Bayesian controller reset contract is invalid{location}"
             )
+        if contract.get("policy") not in {"full_prior", "acquisition_only"}:
+            raise ConfigError(
+                f"Bayesian controller reset policy is invalid{location}"
+            )
         if reset.get("episode_index") is None:
             if any(
                 reset.get(name) is not None
@@ -578,6 +582,13 @@ def validate_probabilistic_controller_checkpoint_state(
         ):
             raise ConfigError(
                 f"Bayesian controller reset episode provenance is invalid{location}"
+            )
+        if reset["contract"]["policy"] == "acquisition_only" and (
+            int(reset["reset_count"]) != 0 or reset["reset_steps"]
+        ):
+            raise ConfigError(
+                "Bayesian acquisition-only controller cannot contain posterior "
+                f"reset provenance{location}"
             )
         expected_episode_offset = (
             int(window["boundary_step"])

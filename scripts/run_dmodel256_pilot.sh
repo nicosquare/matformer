@@ -24,6 +24,7 @@ OUTPUT_ARGS=()
 FORWARDED_ARGS=()
 HAS_OUTPUT_ROOT_ARG=false
 OUTPUT_DIR_EXPLICIT=false
+OUTPUT_DIR_VALUE=""
 OUTPUT_ROOT_VALUE="${OUT:-${OUTPUT_ROOT:-outputs}}"
 
 usage() {
@@ -45,6 +46,9 @@ Options:
 The default comparison runs nested-random and nested-all. Standalone rows for
 the resolved model.granularities are emitted as omitted unless
 RUN_STANDALONE_BASELINES=1 is set.
+
+After a successful probabilistic run, a saved final-holdout manifest triggers
+the post-training evaluator automatically. Existing valid results are reused.
 USAGE
 }
 
@@ -100,6 +104,7 @@ while [[ $# -gt 0 ]]; do
       fi
       OUTPUT_ARGS+=(--output-dir "$2")
       OUTPUT_DIR_EXPLICIT=true
+      OUTPUT_DIR_VALUE="$2"
       shift 2
       ;;
     -h|--help)
@@ -275,6 +280,70 @@ mode_overrides() {
   esac
 }
 
+resolve_run_output_dir() {
+  local mode="$1"
+  local granularity="${2:-}"
+  local run_id="$3"
+  local resolver_bin="${PYTHON_CONFIG_BIN:-$PYTHON_BIN}"
+  local -a resolver_command
+  local -a resolver_overrides=()
+  local index
+  local mode_override_output
+
+  if [[ "$OUTPUT_DIR_EXPLICIT" == "true" ]]; then
+    printf '%s\n' "$OUTPUT_DIR_VALUE"
+    return 0
+  fi
+
+  for ((index = 0; index < ${#FORWARDED_ARGS[@]}; index++)); do
+    if [[ "${FORWARDED_ARGS[$index]}" == "--override" ]]; then
+      if [[ $((index + 1)) -ge ${#FORWARDED_ARGS[@]} ]]; then
+        echo "Missing value for --override" >&2
+        return 2
+      fi
+      resolver_overrides+=("${FORWARDED_ARGS[$((index + 1))]}")
+      index=$((index + 1))
+    fi
+  done
+  resolver_overrides+=("run.run_id=$run_id")
+  if ! mode_override_output="$(mode_overrides "$mode" "$granularity")"; then
+    return 2
+  fi
+  while IFS= read -r override; do
+    resolver_overrides+=("$override")
+  done <<< "$mode_override_output"
+  resolver_overrides+=("run.output_root=$OUTPUT_ROOT_VALUE")
+
+  read -r -a resolver_command <<< "$resolver_bin"
+  "${resolver_command[@]}" - "$CONFIG_PATH" "${resolver_overrides[@]}" <<'PY'
+import sys
+
+from src.utils.config import resolve_run_config
+
+
+resolved = resolve_run_config(sys.argv[1], overrides=sys.argv[2:])
+print(resolved["run"]["output_dir"])
+PY
+}
+
+maybe_evaluate_final_holdout() {
+  local run_dir="$1"
+  local manifest_path="$run_dir/final_holdout_manifest.json"
+  local evaluator_bin="${FINAL_HOLDOUT_PYTHON_BIN:-${PYTHON_CONFIG_BIN:-$PYTHON_BIN}}"
+  local -a evaluator_command
+
+  if [[ ! -f "$manifest_path" ]]; then
+    printf 'No final-holdout manifest for run_dir=%s; post-training evaluation not applicable.\n' "$run_dir"
+    return 0
+  fi
+
+  read -r -a evaluator_command <<< "$evaluator_bin"
+  printf 'Launching post-training final-holdout evaluation run_dir=%s\n' "$run_dir"
+  "${evaluator_command[@]}" scripts/evaluate_final_holdout.py \
+    --run-dir "$run_dir" \
+    --skip-existing
+}
+
 run_training_mode() {
   local mode="$1"
   local granularity="${2:-}"
@@ -282,6 +351,7 @@ run_training_mode() {
   local -a python_cmd
   local -a train_args
   local mode_override_output
+  local run_dir
   mapfile -t python_cmd < <(python_command)
 
   train_args=(
@@ -299,8 +369,13 @@ run_training_mode() {
     train_args+=(--override "$override")
   done <<< "$mode_override_output"
 
+  if ! run_dir="$(resolve_run_output_dir "$mode" "$granularity" "$run_id")"; then
+    echo "The run directory could not be resolved for post-training final-holdout evaluation" >&2
+    return 2
+  fi
   printf 'Launching %s run_id=%s\n' "$mode" "$run_id"
   "${python_cmd[@]}" "${train_args[@]}"
+  maybe_evaluate_final_holdout "$run_dir"
 }
 
 emit_omitted_standalone_row() {

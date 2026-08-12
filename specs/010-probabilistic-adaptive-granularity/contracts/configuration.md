@@ -225,14 +225,19 @@ model:
       acquisition_passes: 1
 ```
 
-When enabled, reset requires `adaptive_global`, exactly zero resolved process
-noise, a positive reset interval divisible by `decision_interval_steps`, and
-at least as many Thompson windows as forced-acquisition windows in every
-episode. `full_prior` and `balanced_global` are the only supported policies.
-Every acquisition pass is a seeded permutation of all resolved granularities.
-The resolver persists the complete contract and never rewrites incompatible
-Q, K, acquisition settings, or continuation state.
+When enabled, episodic acquisition requires `adaptive_global`, exactly zero
+resolved process noise, a positive interval divisible by
+`decision_interval_steps`, and at least as many Thompson windows as
+forced-acquisition windows in every episode. The reset policy is either
+`full_prior` or `acquisition_only`; `balanced_global` is the only acquisition
+policy. Every acquisition pass is a seeded permutation of all resolved
+granularities. `full_prior` restores the configured prior at a continuing
+episode boundary, while `acquisition_only` preserves the posterior conditioned
+on the boundary observation and only starts a new acquisition schedule. The
+resolver persists the complete contract and never rewrites incompatible Q, K,
+acquisition settings, or continuation state.
 
 Reset-enabled reporting identity is
-`probabilistic_global_thompson_reset`; reset-disabled global identity remains
-`probabilistic_global_thompson`.
+`probabilistic_global_thompson_reset` for `full_prior` and
+`probabilistic_global_thompson_acquisition_only` for `acquisition_only`;
+reset-disabled global identity remains `probabilistic_global_thompson`.

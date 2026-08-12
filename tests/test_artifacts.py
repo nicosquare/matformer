@@ -2477,6 +2477,34 @@ def test_same_boundary_controller_events_append_as_one_transaction(tmp_path):
     ]
 
 
+def test_acquisition_only_posterior_preservation_event_is_auditable(tmp_path):
+    from src.utils.metrics import append_controller_event
+
+    journal_path = tmp_path / "controller_metrics.jsonl"
+    event = {
+        "schema_version": 2,
+        "event_type": "posterior_preserved",
+        "boundary_step": 12,
+        "window_index": 6,
+        "episode_index": 0,
+        "policy": "acquisition_only",
+        "posterior_mean": [0.5, 0.25, 0.0],
+        "posterior_covariance": [
+            [0.5, -0.25, 0.0],
+            [-0.25, 0.875, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        "posterior_updated": False,
+    }
+
+    append_controller_event(journal_path, event)
+    assert json.loads(journal_path.read_text(encoding="utf-8")) == event
+
+    invalid = dict(event, policy="full_prior")
+    with pytest.raises(ArtifactError, match="preserved.*acquisition_only"):
+        append_controller_event(journal_path, invalid)
+
+
 def test_checkpoint_schema_one_is_migrated_only_for_reset_disabled_continuation(
     tmp_path,
 ):
@@ -2820,6 +2848,7 @@ def test_probabilistic_artifacts_preserve_end_to_end_controller_provenance(
             "controller_metrics_path": "controller_metrics.jsonl",
             "controller_summary_path": "controller_summary.json",
             "controller_reset_enabled": False,
+            "controller_reset_policy": "full_prior",
             "controller_episode_index": None,
             "controller_episode_offset_steps": 0,
             "controller_selection_source": "thompson",

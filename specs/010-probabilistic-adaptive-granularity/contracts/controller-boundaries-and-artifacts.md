@@ -217,17 +217,21 @@ episode boundaries are relative to that controller-start step. Each episode
 begins with independently episode-seeded balanced acquisition. Forced windows
 condition the posterior normally but do not consume the Thompson generator.
 
-At a completed reset boundary, the existing single panel evaluation is reused
-to condition the final observation. The controller then archives the episode
-and pre-reset posterior. If training continues, it restores the exact configured
-prior, initializes the next episode schedule, and selects its first forced
-action. The completed-window, episode-completed, posterior-reset, and
+At a completed episode boundary, the existing single panel evaluation is
+reused to condition the final observation. The controller then archives the
+episode and boundary posterior. If training continues, `full_prior` restores
+the exact configured prior and emits `posterior_reset`; `acquisition_only`
+preserves that conditioned posterior and emits `posterior_preserved`. Both
+policies then initialize the next episode schedule and select its first forced
+action. The completed-window, episode-completed, posterior-transition, and
 episode-initialized records are appended as one transactional JSONL batch. A
 run ending exactly on the boundary archives the episode without performing an
-unused reset.
+unused transition or initializing an unused schedule.
 
 Reset summaries expose total, forced-acquisition, and Thompson-only action
 frequencies and entropy. Only the Thompson subset is a learned-policy
-frequency. Episode initialization/completion, posterior reset, acquisition
-progress/completion, and terminal incomplete episode provenance remain in the
-boundary journal.
+frequency. Episode initialization/completion, posterior reset or preservation,
+acquisition progress/completion, and terminal incomplete episode provenance
+remain in the boundary journal. `reset_count` and `reset_steps` count actual
+full-prior restorations and therefore remain zero/empty for
+`acquisition_only`.

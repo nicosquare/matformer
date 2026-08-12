@@ -332,3 +332,38 @@ pytest -q \
   tests/test_artifacts.py -k 'same_boundary or separates_forced' \
   tests/test_reporting.py -k explicit_provenance
 ```
+
+To run the same episodic acquisition schedule without discarding the learned
+posterior, retain the reset-enabled interval contract and override only the
+policy:
+
+```bash
+python train.py \
+  --config tests/fixtures/probabilistic_adaptive_global_smoke.yaml \
+  --override model.adaptive_controller.process_noise_covariance=0.0 \
+  --override model.adaptive_controller.reset.enabled=true \
+  --override model.adaptive_controller.reset.interval_steps=12 \
+  --override model.adaptive_controller.reset.policy=acquisition_only \
+  --preflight
+```
+
+This variant is reported as
+`probabilistic_global_thompson_acquisition_only`; `reset_count` remains zero
+because no posterior restoration occurs.
+
+## 16. Compare Bayesian global TS variants in size plots
+
+The existing figure command keeps the persisted reporting identities above,
+but `loss_vs_size` and `ppl_vs_size` place all Bayesian global Thompson
+variants in one panel. The panel title carries the shared method context; each
+legend entry contains only the contract fields needed to distinguish its
+curve, such as `No reset · Q=1e−10`, `Full-prior · K=2k`, or
+`Acquisition-only · K=2k`.
+
+Rows with an identical seed-independent experiment contract are aggregated at
+each model size. The line is the seed mean, the translucent envelope is the
+seed minimum–maximum range, and `n=<count> seeds` is added to the legend when
+more than one seed contributes. A historical artifact that lacks the metadata
+needed to prove contract equivalence remains isolated by run identity instead
+of being silently merged. Empty panels are omitted, and all displayed panels
+retain a common y-axis range.

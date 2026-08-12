@@ -342,22 +342,23 @@ Validation rules:
 
 ## Episodic Reset Extension
 
-`EpisodicResetState` represents the optional global-only posterior reset and
+`EpisodicResetState` represents the optional global-only episode and
 acquisition contract:
 
-- **contract**: enabled flag, K, full-prior policy, balanced-global acquisition,
-  pass count, and root schedule seed
+- **contract**: enabled flag, K, `full_prior` or `acquisition_only` policy,
+  balanced-global acquisition, pass count, and root schedule seed
 - **controller start**: optimizer step after optional warmup; episode timing is
   relative to this step
 - **live episode**: index, start/end, offset, episode seed, schedule/hash,
   acquisition progress/counts, selection source, and current action
-- **reset history**: reset count/steps and completed episode archives containing
-  the pre-reset posterior
+- **reset history**: actual full-prior reset count/steps and completed episode
+  archives containing the conditioned boundary posterior and selected policy
 - **statistics**: total, forced-acquisition, and Thompson-only frequencies and
   entropy
 
 Forced observations use the ordinary Gaussian likelihood update but never draw
-from the posterior-sampling generator. A completed boundary that will be
-followed by more training restores the configured prior exactly; no model,
-optimizer, scheduler, scaler, dataloader, counter, panel, or Thompson generator
-is reset.
+from the posterior-sampling generator. At a completed boundary followed by
+more training, `full_prior` restores the configured prior exactly;
+`acquisition_only` leaves the conditioned posterior unchanged. Neither policy
+resets the model, optimizer, scheduler, scaler, dataloader, counters, panel, or
+Thompson generator.

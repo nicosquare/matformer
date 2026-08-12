@@ -53,7 +53,7 @@ VALID_COMPLETION_LABELS = {"debug", "run"}
 VALID_GRANULARITY_SAMPLING = {"all", "random"}
 VALID_PRE_NESTED_WARMUP_UNITS = {"epochs", "steps"}
 VALID_PRE_NESTED_WARMUP_POLICIES = {"full_only", "balanced_global"}
-VALID_CONTROLLER_RESET_POLICIES = {"full_prior"}
+VALID_CONTROLLER_RESET_POLICIES = {"full_prior", "acquisition_only"}
 VALID_CONTROLLER_RESET_ACQUISITION_POLICIES = {"balanced_global"}
 VALID_MIXED_PRECISION_MODES = {"none", "bf16", "fp16"}
 DEFAULT_MODEL_VARIANT = "slicing"
@@ -1852,7 +1852,8 @@ def _resolve_controller_reset_configuration(
     policy = reset.get("policy", "full_prior")
     if not isinstance(policy, str) or policy.strip() not in VALID_CONTROLLER_RESET_POLICIES:
         raise ConfigError(
-            "model.adaptive_controller.reset.policy must be 'full_prior'"
+            "model.adaptive_controller.reset.policy must be 'full_prior' or "
+            "'acquisition_only'"
         )
     reset["policy"] = policy.strip()
     acquisition_policy = reset.get("acquisition_policy", "balanced_global")

@@ -15,6 +15,8 @@ __all__ = [
     "adaptive_sampler_strategy_from_saved_config",
     "controller_method_family_from_saved_config",
     "controller_method_version_from_saved_config",
+    "controller_reset_enabled_from_saved_config",
+    "controller_reset_policy_from_saved_config",
     "controller_scope_from_saved_config",
     "ControllerGranularityTimeline",
     "ControllerSelectionWindow",
@@ -630,6 +632,136 @@ def controller_reset_enabled_from_saved_config(
     return bool(reset.get("enabled", False))
 
 
+def controller_reset_policy_from_saved_config(
+    config: dict[str, Any],
+) -> str | None:
+    controller = _adaptive_controller_from_saved_config(config)
+    if controller is None:
+        return None
+    reset = controller.get("reset")
+    if not isinstance(reset, dict) or reset.get("policy") in (None, ""):
+        return None
+    return str(reset["policy"]).strip().lower()
+
+
+def _mapping_value(mapping: Any, *keys: str) -> Any | None:
+    current = mapping
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return None if current in (None, "") else current
+
+
+def _first_config_value(config: dict[str, Any], *paths: tuple[str, ...]) -> Any | None:
+    for path in paths:
+        value = _mapping_value(config, *path)
+        if value is not None:
+            return value
+    return None
+
+
+def _controller_reset_value(config: dict[str, Any], key: str) -> Any | None:
+    controller = _adaptive_controller_from_saved_config(config)
+    if controller is None:
+        return None
+    reset = controller.get("reset")
+    if not isinstance(reset, dict):
+        return None
+    value = reset.get(key)
+    return None if value in (None, "") else value
+
+
+def controller_contract_provenance_from_saved_config(
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    """Return seed-independent fields needed to compare size-plot experiments."""
+
+    controller = _adaptive_controller_from_saved_config(config) or {}
+    warmup = _first_config_value(config, ("training", "pre_nested_warmup"))
+    warmup = warmup if isinstance(warmup, dict) else {}
+    comparison = config.get("comparison_control_inputs")
+    comparison = comparison if isinstance(comparison, dict) else {}
+    optimizer = _first_config_value(config, ("training", "optimizer"))
+    optimizer = optimizer if isinstance(optimizer, dict) else {}
+    scheduler = _first_config_value(config, ("training", "scheduler"))
+    scheduler = scheduler if isinstance(scheduler, dict) else {}
+
+    return {
+        "run_seed": _first_config_value(
+            config,
+            ("run", "seed"),
+            ("comparison_control_inputs", "root_seed"),
+            ("data", "seed"),
+        ),
+        "controller_decision_interval_steps": controller.get(
+            "decision_interval_steps"
+        ),
+        "controller_observation_noise_variance": controller.get(
+            "observation_noise_variance"
+        ),
+        "controller_process_noise_covariance": controller.get(
+            "process_noise_covariance_input",
+            controller.get("process_noise_covariance"),
+        ),
+        "controller_prior_mean": controller.get(
+            "prior_mean_input", controller.get("prior_mean")
+        ),
+        "controller_prior_covariance": controller.get(
+            "prior_covariance_input", controller.get("prior_covariance")
+        ),
+        "controller_context_model": controller.get("context_model"),
+        "controller_compute_weight": controller.get("compute_weight"),
+        "controller_feature_schema_hash": _mapping_value(
+            controller, "feature_schema", "schema_hash"
+        ),
+        "controller_reset_interval_steps": _controller_reset_value(
+            config, "interval_steps"
+        ),
+        "controller_acquisition_policy": _controller_reset_value(
+            config, "acquisition_policy"
+        ),
+        "controller_acquisition_passes": _controller_reset_value(
+            config, "acquisition_passes"
+        ),
+        "pre_nested_warmup_enabled": warmup.get("enabled"),
+        "pre_nested_warmup_policy": warmup.get("policy"),
+        "pre_nested_warmup_duration": warmup.get("duration"),
+        "pre_nested_warmup_action_interval_steps": warmup.get(
+            "action_interval_steps"
+        ),
+        "training_token_budget": _first_config_value(
+            config,
+            ("training", "token_budget"),
+            ("comparison_control_inputs", "token_budget"),
+        ),
+        "training_learning_rate": _first_config_value(
+            config,
+            ("training", "resolved_learning_rate"),
+            ("training", "learning_rate"),
+            ("comparison_control_inputs", "learning_rate"),
+        ),
+        "training_max_steps": _first_config_value(
+            config, ("training", "max_steps")
+        ),
+        "training_optimizer_name": optimizer.get("name")
+        or _first_config_value(config, ("training", "optimizer_name")),
+        "training_optimizer_kwargs": optimizer.get("kwargs")
+        or _first_config_value(config, ("training", "optimizer_kwargs")),
+        "training_scheduler_name": scheduler.get("name")
+        or _first_config_value(config, ("training", "scheduler_name")),
+        "training_scheduler_kwargs": scheduler.get("kwargs")
+        or _first_config_value(config, ("training", "scheduler_kwargs")),
+        "training_context_length": comparison.get("context_length"),
+        "training_batch_size_per_process": comparison.get("batch_size_per_process"),
+        "training_precision": comparison.get("precision"),
+        "training_dataset_name": comparison.get("dataset_name"),
+        "training_dataset_config_name": comparison.get("dataset_config_name"),
+        "training_dataset_split": comparison.get("dataset_split"),
+        "training_tokenizer_name": comparison.get("tokenizer_name"),
+    }
+
+
 def _enrich_controller_provenance(
     row: dict[str, Any],
     config: dict[str, Any],
@@ -643,8 +775,16 @@ def _enrich_controller_provenance(
         "controller_reset_enabled": controller_reset_enabled_from_saved_config(
             config
         ),
+        "controller_reset_policy": controller_reset_policy_from_saved_config(
+            config
+        ),
     }
     for field_name, value in provenance.items():
+        if value not in (None, ""):
+            row[field_name] = value
+    for field_name, value in controller_contract_provenance_from_saved_config(
+        config
+    ).items():
         if value not in (None, ""):
             row[field_name] = value
 

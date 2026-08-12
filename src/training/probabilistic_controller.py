@@ -572,6 +572,12 @@ class ProbabilisticController:
             raise ProbabilisticControllerError(
                 "episodic reset is supported only for the global controller"
             )
+        reset_policy = reset_contract.get("policy", "full_prior")
+        if reset_policy not in {"full_prior", "acquisition_only"}:
+            raise ProbabilisticControllerError(
+                "controller reset policy must be 'full_prior' or "
+                "'acquisition_only'"
+            )
 
         self._generator = torch.Generator(device="cpu").manual_seed(int(sampling_seed))
         self._state: dict[str, Any] = {
@@ -845,6 +851,7 @@ class ProbabilisticController:
             "acquisition_counts": copy.deepcopy(reset["acquisition_counts"]),
             "selected_action": copy.deepcopy(action),
             "selection_source": "forced_acquisition",
+            "policy": contract["policy"],
         }
         return action, event
 
@@ -1128,6 +1135,7 @@ class ProbabilisticController:
                     "schedule_seed": int(reset["schedule_seed"]),
                     "schedule": list(reset["schedule"]),
                     "schedule_hash": reset["schedule_hash"],
+                    "policy": reset["contract"]["policy"],
                     "pre_reset_posterior_mean": copy.deepcopy(
                         belief["posterior_mean"]
                     ),
@@ -1155,40 +1163,65 @@ class ProbabilisticController:
                     pre_reset_covariance = copy.deepcopy(
                         belief["posterior_covariance"]
                     )
-                    prior_mean = _float64_cpu_tensor(
-                        self._state["probabilistic_inputs"]["resolved_prior_mean"],
-                        field_name="configured reset prior mean",
-                    )
-                    prior_covariance = _float64_cpu_tensor(
-                        self._state["probabilistic_inputs"]
-                        ["resolved_prior_covariance"],
-                        field_name="configured reset prior covariance",
-                    )
-                    belief.update(
-                        posterior_mean=prior_mean,
-                        posterior_covariance=prior_covariance,
-                        predictive_mean=None,
-                        predictive_covariance=None,
-                    )
-                    reset["reset_count"] = int(reset["reset_count"]) + 1
-                    reset["reset_steps"].append(int(boundary_step))
-                    journal_events.append(
-                        {
-                            "schema_version": CONTROLLER_SCHEMA_VERSION,
-                            "event_type": "posterior_reset",
-                            "boundary_step": int(boundary_step),
-                            "window_index": int(next_window_index),
-                            "episode_index": episode_index,
-                            "reset_count": int(reset["reset_count"]),
-                            "pre_reset_posterior_mean": pre_reset_mean,
-                            "pre_reset_posterior_covariance": pre_reset_covariance,
-                            "restored_prior_mean": copy.deepcopy(prior_mean),
-                            "restored_prior_covariance": copy.deepcopy(
-                                prior_covariance
-                            ),
-                            "policy": "full_prior",
-                        }
-                    )
+                    reset_policy = reset["contract"]["policy"]
+                    if reset_policy == "full_prior":
+                        prior_mean = _float64_cpu_tensor(
+                            self._state["probabilistic_inputs"][
+                                "resolved_prior_mean"
+                            ],
+                            field_name="configured reset prior mean",
+                        )
+                        prior_covariance = _float64_cpu_tensor(
+                            self._state["probabilistic_inputs"]
+                            ["resolved_prior_covariance"],
+                            field_name="configured reset prior covariance",
+                        )
+                        belief.update(
+                            posterior_mean=prior_mean,
+                            posterior_covariance=prior_covariance,
+                            predictive_mean=None,
+                            predictive_covariance=None,
+                        )
+                        reset["reset_count"] = int(reset["reset_count"]) + 1
+                        reset["reset_steps"].append(int(boundary_step))
+                        journal_events.append(
+                            {
+                                "schema_version": CONTROLLER_SCHEMA_VERSION,
+                                "event_type": "posterior_reset",
+                                "boundary_step": int(boundary_step),
+                                "window_index": int(next_window_index),
+                                "episode_index": episode_index,
+                                "reset_count": int(reset["reset_count"]),
+                                "pre_reset_posterior_mean": pre_reset_mean,
+                                "pre_reset_posterior_covariance": (
+                                    pre_reset_covariance
+                                ),
+                                "restored_prior_mean": copy.deepcopy(prior_mean),
+                                "restored_prior_covariance": copy.deepcopy(
+                                    prior_covariance
+                                ),
+                                "policy": "full_prior",
+                            }
+                        )
+                    elif reset_policy == "acquisition_only":
+                        journal_events.append(
+                            {
+                                "schema_version": CONTROLLER_SCHEMA_VERSION,
+                                "event_type": "posterior_preserved",
+                                "boundary_step": int(boundary_step),
+                                "window_index": int(next_window_index),
+                                "episode_index": episode_index,
+                                "posterior_mean": pre_reset_mean,
+                                "posterior_covariance": pre_reset_covariance,
+                                "policy": "acquisition_only",
+                                "observation_conditioned": True,
+                                "posterior_updated": False,
+                            }
+                        )
+                    else:  # The resolved contract is validated at construction.
+                        raise ProbabilisticControllerError(
+                            f"unsupported controller reset policy: {reset_policy!r}"
+                        )
                     next_action, episode_event = self._initialize_reset_episode(
                         episode_index=episode_index + 1,
                         boundary_step=boundary_step,
@@ -1421,6 +1454,13 @@ def restore_probabilistic_controller(
     if bool(reset.get("enabled")) != bool(expected["reset"]["enabled"]):
         raise ProbabilisticControllerError("controller reset enabled state mismatch")
     if reset.get("enabled"):
+        if reset["contract"].get("policy") not in {
+            "full_prior",
+            "acquisition_only",
+        }:
+            raise ProbabilisticControllerError(
+                "controller reset policy is invalid"
+            )
         required_reset_fields = {
             "controller_start_step",
             "episode_index",
@@ -1444,6 +1484,13 @@ def restore_probabilistic_controller(
             raise ProbabilisticControllerError(
                 "controller reset state is incomplete: "
                 f"{sorted(missing_reset_fields)}"
+            )
+        if reset["contract"]["policy"] == "acquisition_only" and (
+            int(reset.get("reset_count", 0)) != 0 or reset.get("reset_steps")
+        ):
+            raise ProbabilisticControllerError(
+                "acquisition-only controller cannot contain posterior reset "
+                "provenance"
             )
         if reset.get("episode_index") is not None:
             expected_schedule, expected_seed, expected_hash = (

@@ -1307,6 +1307,7 @@ def _final_holdout_api():
             "final-holdout contract"
         )
     for function_name in (
+        "resolve_existing_final_holdout_result",
         "resolve_final_holdout_checkpoint",
         "validate_final_holdout_provenance",
         "evaluate_final_holdout",
@@ -1580,3 +1581,58 @@ def test_final_holdout_evaluates_all_granularities_deterministically_and_is_non_
         "controller-journal-hash",
     }
     assert {path: path.read_bytes() for path in protected_paths} == before
+
+
+def test_final_holdout_reuses_only_valid_existing_result(tmp_path):
+    final_holdout = _final_holdout_api()
+    fixture = _write_final_holdout_test_run(tmp_path)
+
+    assert final_holdout.resolve_existing_final_holdout_result(
+        fixture["run_dir"]
+    ) is None
+    result = final_holdout.evaluate_final_holdout(
+        fixture["run_dir"],
+        model=fixture["model"],
+        tokenized_dataset=fixture["tokenized_dataset"],
+        device="cpu",
+    )
+    existing = final_holdout.resolve_existing_final_holdout_result(
+        fixture["run_dir"]
+    )
+    assert existing == result
+
+    result_path = fixture["run_dir"] / "final_holdout_results.json"
+    corrupted = json.loads(result_path.read_text(encoding="utf-8"))
+    corrupted["uniform_average_loss"] = 999.0
+    result_path.write_text(
+        json.dumps(corrupted, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(final_holdout.FinalHoldoutError, match="hash mismatch"):
+        final_holdout.resolve_existing_final_holdout_result(fixture["run_dir"])
+
+
+def test_final_holdout_resolves_hashed_artifacts_after_run_directory_move(tmp_path):
+    final_holdout = _final_holdout_api()
+    fixture = _write_final_holdout_test_run(tmp_path)
+    moved_parent = tmp_path / "archived"
+    moved_parent.mkdir()
+    moved_run_dir = moved_parent / fixture["run_dir"].name
+    fixture["run_dir"].rename(moved_run_dir)
+    moved_checkpoint = moved_run_dir / "checkpoints" / fixture[
+        "checkpoint_path"
+    ].name
+
+    assert final_holdout.resolve_final_holdout_checkpoint(
+        moved_run_dir
+    ) == moved_checkpoint
+    result = final_holdout.evaluate_final_holdout(
+        moved_run_dir,
+        model=fixture["model"],
+        tokenized_dataset=fixture["tokenized_dataset"],
+        device="cpu",
+    )
+    assert result["checkpoint_path"] == str(moved_checkpoint)
+    assert result["checkpoint_selection_provenance"]["source"] == (
+        "ordinary_validation"
+    )

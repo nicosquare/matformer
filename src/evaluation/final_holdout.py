@@ -29,6 +29,37 @@ class FinalHoldoutError(RuntimeError):
     """Raised when a final comparison would violate saved run provenance."""
 
 
+def resolve_existing_final_holdout_result(
+    run_dir: str | Path,
+) -> dict[str, Any] | None:
+    """Return an existing complete result, rejecting malformed artifacts."""
+
+    run_directory = _require_run_directory(run_dir)
+    result_path = run_directory / "final_holdout_results.json"
+    if not result_path.exists():
+        return None
+
+    result = _read_json(result_path)
+    summary = _read_json(run_directory / "run_summary.json")
+    configured_result_path = result.get("result_path")
+    if (
+        result.get("schema_version") != FINAL_HOLDOUT_RESULT_VERSION
+        or summary.get("status") != "completed"
+        or result.get("run_id") != summary.get("run_id")
+        or configured_result_path in (None, "")
+        or not _paths_equal(result_path, Path(str(configured_result_path)))
+    ):
+        raise FinalHoldoutError(
+            "Existing final holdout result is incompatible or incomplete"
+        )
+
+    result_without_hash = dict(result)
+    result_hash = result_without_hash.pop("result_hash", None)
+    if result_hash != stable_hash(result_without_hash):
+        raise FinalHoldoutError("Existing final holdout result hash mismatch")
+    return result
+
+
 def resolve_final_holdout_checkpoint(
     run_dir: str | Path,
     checkpoint_path: str | Path | None = None,
@@ -552,8 +583,11 @@ def _resolve_existing_checkpoint(run_dir: Path, checkpoint_path: str | Path) -> 
 
 def _resolve_checkpoint_candidate(run_dir: Path, checkpoint_path: str | Path) -> Path:
     path = Path(checkpoint_path).expanduser()
-    if not path.is_absolute() and not path.exists():
-        path = run_dir / path
+    if not path.exists():
+        if path.is_absolute():
+            path = run_dir / "checkpoints" / path.name
+        else:
+            path = run_dir / path
     return path.resolve()
 
 
@@ -561,8 +595,8 @@ def _resolve_artifact_candidate(run_dir: Path, artifact_path: Any) -> Path:
     if not isinstance(artifact_path, (str, Path)) or not str(artifact_path):
         return (run_dir / "controller_metrics.jsonl").resolve()
     path = Path(artifact_path).expanduser()
-    if not path.is_absolute() and not path.exists():
-        path = run_dir / path
+    if not path.exists():
+        path = run_dir / path.name if path.is_absolute() else run_dir / path
     return path.resolve()
 
 
@@ -573,6 +607,7 @@ def _paths_equal(first: Path, second: Path) -> bool:
 __all__ = [
     "FinalHoldoutError",
     "evaluate_final_holdout",
+    "resolve_existing_final_holdout_result",
     "resolve_final_holdout_checkpoint",
     "validate_final_holdout_provenance",
 ]

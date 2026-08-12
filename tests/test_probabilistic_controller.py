@@ -511,7 +511,7 @@ def test_additive_complete_profile_conditions_once_on_one_scalar_window_reward(
     )
 
 
-def _build_reset_controller(tmp_path):
+def _build_reset_controller(tmp_path, *, policy="full_prior"):
     config = resolve_run_config(
         "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
         output_dir=tmp_path / "probabilistic-adaptive-global-smoke-001",
@@ -519,6 +519,7 @@ def _build_reset_controller(tmp_path):
             "model.adaptive_controller.process_noise_covariance": 0.0,
             "model.adaptive_controller.reset.enabled": True,
             "model.adaptive_controller.reset.interval_steps": 12,
+            "model.adaptive_controller.reset.policy": policy,
         },
     )
     controller = build_probabilistic_controller(
@@ -646,8 +647,74 @@ def test_reset_boundary_conditions_then_archives_restores_prior_and_forces_next_
     )
 
 
-def test_exact_terminal_episode_boundary_archives_without_unused_reset(tmp_path):
-    _config, controller = _build_reset_controller(tmp_path)
+def test_acquisition_only_boundary_preserves_conditioned_posterior_and_forces_next_episode(
+    tmp_path,
+):
+    _config, controller = _build_reset_controller(
+        tmp_path,
+        policy="acquisition_only",
+    )
+    controller.initialize_boundary(
+        boundary_step=500,
+        controller_objective=10.0,
+        ordered_component_losses=[9.0, 10.0, 11.0],
+        evaluation_target_tokens=384,
+    )
+    for window_index in range(5):
+        _finish_reset_window(
+            controller,
+            boundary_step=502 + 2 * window_index,
+            objective=9.0 - 0.1 * window_index,
+        )
+
+    before_boundary = controller.state_dict()
+    event = _finish_reset_window(
+        controller,
+        boundary_step=512,
+        objective=8.5,
+    )
+    state = controller.state_dict()
+
+    assert [item["event_type"] for item in event["_journal_events"]] == [
+        "completed_window",
+        "episode_completed",
+        "posterior_preserved",
+        "episode_initialized",
+    ]
+    preserved = event["_journal_events"][2]
+    assert preserved["policy"] == "acquisition_only"
+    assert preserved["posterior_updated"] is False
+    torch.testing.assert_close(
+        state["belief"]["posterior_mean"],
+        event["posterior_mean"],
+        rtol=0.0,
+        atol=0.0,
+    )
+    torch.testing.assert_close(
+        state["belief"]["posterior_covariance"],
+        event["posterior_covariance"],
+        rtol=0.0,
+        atol=0.0,
+    )
+    assert state["reset"]["reset_count"] == 0
+    assert state["reset"]["reset_steps"] == []
+    assert state["reset"]["completed_episode_count"] == 1
+    assert state["window"]["selection_source"] == "forced_acquisition"
+    assert state["sampling"]["sample_count"] == before_boundary["sampling"][
+        "sample_count"
+    ]
+    assert torch.equal(
+        state["sampling"]["generator_state"],
+        before_boundary["sampling"]["generator_state"],
+    )
+
+
+@pytest.mark.parametrize("policy", ["full_prior", "acquisition_only"])
+def test_exact_terminal_episode_boundary_archives_without_unused_reset(
+    tmp_path,
+    policy,
+):
+    _config, controller = _build_reset_controller(tmp_path, policy=policy)
     controller.initialize_boundary(
         boundary_step=0,
         controller_objective=10.0,
@@ -672,4 +739,5 @@ def test_exact_terminal_episode_boundary_archives_without_unused_reset(tmp_path)
     assert state["reset"]["completed_episode_count"] == 1
     assert state["reset"]["reset_count"] == 0
     assert state["reset"]["reset_steps"] == []
+    assert state["reset"]["completed_episodes"][0]["policy"] == policy
     assert state["window"]["phase"] == "ready_for_action"

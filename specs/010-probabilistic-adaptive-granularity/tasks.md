@@ -174,6 +174,33 @@ acquisition at the start of every episode and exact continuation semantics.
 
 ---
 
+## Phase 10: Acquisition-Only Episodic Exploration
+
+**Purpose**: Reuse the deterministic episodic acquisition schedule without
+discarding the learned posterior, so the effect of periodic balanced
+observations can be separated from the effect of a full-prior reset.
+
+- [X] T066 Add configuration, controller-boundary, resume, artifact, reporting, and training integration tests for the acquisition_only policy in tests/test_config.py, tests/test_probabilistic_controller.py, tests/test_probabilistic_controller_resume.py, tests/test_artifacts.py, tests/test_reporting.py, and tests/test_training_smoke.py
+- [X] T067 Implement acquisition_only validation and posterior-preserving episode transitions in src/utils/config.py and src/training/probabilistic_controller.py
+- [X] T068 Persist and validate acquisition-only provenance, journal posterior-preservation events, and add a distinct reporting identity in src/training/checkpointing.py, src/utils/metrics.py, src/evaluation/reporting.py, src/evaluation/reporting_io.py, src/evaluation/reporting_impl.py, and src/evaluation/reporting_styles.py
+- [X] T069 Reconcile the acquisition-only configuration, state, boundary, artifact, and verification contracts and run focused compatibility verification
+
+---
+
+## Phase 11: Comparable Size-Plot Reporting for Bayesian Global TS Variants
+
+**Purpose**: Compare no-reset, full-prior-reset, acquisition-only, and process-noise
+variants in one compact Bayesian global TS panel without conflating distinct
+experimental contracts or repeating seeds as separate curves.
+
+- [X] T070 Add reporting regression tests for unified Bayesian global TS panels, compact titles and legends, contract-safe grouping, seed mean/min-max aggregation, and conservative historical fallback in tests/test_reporting.py
+- [X] T071 Enrich scaling rows with controller, reset, warmup, seed, and training-contract provenance from saved run configurations in src/evaluation/reporting_io.py
+- [X] T072 Implement size-plot experiment contracts, unified Bayesian global TS matching, seed aggregation, compact differentiating labels, deterministic curve styles, and min-max bands in src/evaluation/reporting_impl.py
+- [X] T073 Consolidate only the size-plot Bayesian global panel definitions while preserving reporting aliases and artifact identities in src/evaluation/reporting_styles.py and src/evaluation/reporting.py
+- [X] T074 Document the size-plot comparison semantics and run focused tests plus real-result visual verification
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies
