@@ -14,6 +14,7 @@ import torch
 
 from src.evaluation.validation import evaluate_validation_per_granularity
 from src.training.data import build_language_model_dataloader, load_and_tokenize_dataset
+from src.training.packed_corpus import PackedMMapDataset
 from src.training.modeling import build_model, load_tokenizer
 from src.utils.metrics import write_json_artifact
 from src.utils.reproducibility import stable_hash
@@ -97,7 +98,12 @@ def validate_final_holdout_provenance(
     config = _read_json(run_directory / "config.json")
     summary = _read_json(run_directory / "run_summary.json")
     manifest = _read_json(run_directory / "final_holdout_manifest.json")
-    controller_summary = _read_json(run_directory / "controller_summary.json")
+    controller_summary_path = run_directory / "controller_summary.json"
+    controller_summary = (
+        _read_json(controller_summary_path)
+        if controller_summary_path.is_file()
+        else {}
+    )
     resolved_checkpoint = _resolve_existing_checkpoint(
         run_directory,
         checkpoint_path,
@@ -174,10 +180,12 @@ def validate_final_holdout_provenance(
         "method_version",
         checkpoint.get("method_version"),
     )
-    if config_family != BAYESIAN_METHOD_FAMILY or checkpoint_family != config_family:
-        raise FinalHoldoutError("Final holdout checkpoint method family mismatch")
-    if checkpoint_version != config_version:
-        raise FinalHoldoutError("Final holdout checkpoint method version mismatch")
+    has_controller = bool(config_family or checkpoint_family)
+    if has_controller:
+        if config_family != BAYESIAN_METHOD_FAMILY or checkpoint_family != config_family:
+            raise FinalHoldoutError("Final holdout checkpoint method family mismatch")
+        if checkpoint_version != config_version:
+            raise FinalHoldoutError("Final holdout checkpoint method version mismatch")
 
     selected_checkpoint = summary.get("best_checkpoint_path")
     is_validation_selected = (
@@ -256,14 +264,21 @@ def evaluate_final_holdout(
     model.load_state_dict(dict(checkpoint["model_state_dict"]))
     model = model.to(resolved_device)
 
-    if tokenized_dataset is None:
+    if tokenized_dataset is None and config.get("dataset", {}).get("mode") == "packed_mmap":
+        final_dataset = PackedMMapDataset(
+            config["dataset"]["prepared_corpus_dir"],
+            "final_holdout",
+        )
+    elif tokenized_dataset is None:
         tokenizer = load_tokenizer(config)
         tokenized_dataset = load_and_tokenize_dataset(
             config,
             tokenizer,
             num_proc=int(config.get("training", {}).get("preprocess_num_proc", 1)),
         )
-    final_dataset = _select_manifest_dataset(tokenized_dataset, manifest)
+        final_dataset = _select_manifest_dataset(tokenized_dataset, manifest)
+    else:
+        final_dataset = _select_manifest_dataset(tokenized_dataset, manifest)
     batch_size = int(
         config.get("evaluation", {})
         .get("validation", {})

@@ -16,7 +16,6 @@ load_dotenv()
 
 import copy
 import json
-import os
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -59,7 +58,6 @@ from src.utils.metrics import (
     summarize_runtime_granularity_pattern_from_config,
     write_controller_summary,
     write_config_artifact,
-    write_metrics_csv,
     write_run_summary,
     write_scaling_results_csv,
     write_json_artifact,
@@ -84,7 +82,6 @@ def run_from_config_path(
     overrides: list[str] | None = None,
     output_dir: str | Path | None = None,
 ) -> dict[str, Any]:
-    ensure_single_process_runtime()
     config = resolve_run_config(
         config_path,
         run_id=run_id,
@@ -95,16 +92,23 @@ def run_from_config_path(
 
 
 def ensure_single_process_runtime() -> None:
-    raw_world_size = os.environ.get("WORLD_SIZE", "1")
-    try:
-        world_size = int(raw_world_size)
-    except (TypeError, ValueError):
-        world_size = 1
+    """Compatibility no-op; single-node distributed execution is supported."""
 
-    if world_size > 1:
-        raise ConfigError(
-            "single-process only: distributed or multi-process execution is not supported"
-        )
+    return None
+
+
+def _uses_packed_mmap_corpus(config: Mapping[str, Any]) -> bool:
+    return config.get("dataset", {}).get("mode") == "packed_mmap"
+
+
+def _packed_role_partition(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    roles = copy.deepcopy(dict(manifest["roles"]))
+    parent = copy.deepcopy(dict(manifest))
+    parent["parent_manifest_hash"] = str(manifest["corpus_hash"])
+    return {
+        "role_manifests": roles,
+        "parent_manifest": parent,
+    }
 
 
 def uses_probabilistic_controller(config: Mapping[str, Any]) -> bool:
@@ -290,24 +294,37 @@ def _attach_probabilistic_role_provenance(
 
     evaluation = config["evaluation"]
     evaluation["validation"]["manifest_hash"] = manifest_hashes["ordinary_validation"]
-    evaluation["adaptive_controller"]["manifest_hash"] = manifest_hashes["controller"]
-    evaluation["final_holdout"]["manifest_hash"] = manifest_hashes["final_holdout"]
-    controller = config["model"]["adaptive_controller"]
-    controller["controller_panel_contract"]["manifest_hash"] = manifest_hashes[
-        "controller"
-    ]
-    controller["final_holdout_contract"]["manifest_hash"] = manifest_hashes[
+    if isinstance(evaluation.get("adaptive_controller"), dict):
+        evaluation["adaptive_controller"]["manifest_hash"] = manifest_hashes[
+            "controller"
+        ]
+    evaluation.setdefault("final_holdout", {})["manifest_hash"] = manifest_hashes[
         "final_holdout"
     ]
-    controller["data_roles_manifest_hash"] = config["data_roles_manifest_hash"]
-    controller["optimizer_training_manifest_hash"] = manifest_hashes[
-        "optimizer_training"
-    ]
-    controller["controller_manifest_hash"] = manifest_hashes["controller"]
-    controller["ordinary_validation_manifest_hash"] = manifest_hashes[
-        "ordinary_validation"
-    ]
-    controller["final_holdout_manifest_hash"] = manifest_hashes["final_holdout"]
+    controller = config["model"].get("adaptive_controller")
+    if isinstance(controller, dict):
+        controller["controller_panel_contract"]["manifest_hash"] = manifest_hashes[
+            "controller"
+        ]
+        controller["final_holdout_contract"]["manifest_hash"] = manifest_hashes[
+            "final_holdout"
+        ]
+        controller["data_roles_manifest_hash"] = config["data_roles_manifest_hash"]
+        controller["optimizer_training_manifest_hash"] = manifest_hashes[
+            "optimizer_training"
+        ]
+        controller["controller_manifest_hash"] = manifest_hashes["controller"]
+        controller["ordinary_validation_manifest_hash"] = manifest_hashes[
+            "ordinary_validation"
+        ]
+        controller["final_holdout_manifest_hash"] = manifest_hashes["final_holdout"]
+
+    if _uses_packed_mmap_corpus(config):
+        config["corpus_hash"] = parent_manifest["corpus_hash"]
+        config["corpus_permutation_version"] = parent_manifest[
+            "permutation_version"
+        ]
+        config["dataset"]["corpus_hash"] = parent_manifest["corpus_hash"]
 
     signature, inputs = build_comparison_control_signature(config)
     config["comparison_control_signature"] = signature
@@ -649,6 +666,62 @@ def _commit_controller_event(
     return enriched
 
 
+def _synchronize_controller_commit(
+    controller,
+    *,
+    event: Mapping[str, Any] | None,
+    status: str,
+    error_message: str | None,
+    distributed_context,
+    run_state: dict[str, Any],
+) -> dict[str, Any]:
+    """Install rank zero's versioned, committed controller state on every rank."""
+
+    payload = None
+    if training_distributed.should_write_shared_artifact(distributed_context):
+        state = controller.state_dict()
+        payload = {
+            "payload_version": 1,
+            "status": status,
+            "error_message": error_message,
+            "controller_state": state,
+            "controller_state_hash": training_checkpointing._controller_state_hash(
+                state
+            ),
+            "action": copy.deepcopy(state["window"].get("current_action")),
+            "boundary_event": copy.deepcopy(dict(event)) if event is not None else None,
+        }
+    payload = training_distributed.broadcast_object(
+        payload,
+        context=distributed_context,
+        src=0,
+    )
+    if not isinstance(payload, Mapping) or payload.get("payload_version") != 1:
+        raise ConfigError("Bayesian controller synchronization payload is invalid")
+    state = payload.get("controller_state")
+    if not isinstance(state, Mapping):
+        raise ConfigError("Bayesian controller synchronization state is missing")
+    if training_checkpointing._controller_state_hash(state) != payload.get(
+        "controller_state_hash"
+    ):
+        raise ConfigError("Bayesian controller synchronization hash mismatch")
+    if not training_distributed.should_write_shared_artifact(distributed_context):
+        controller.restore_transaction_snapshot(state)
+    run_state["probabilistic_controller_state"] = controller.state_dict()
+    hashes = training_distributed.gather_objects(
+        training_checkpointing._controller_state_hash(controller.state_dict()),
+        context=distributed_context,
+    )
+    if len(set(hashes)) != 1:
+        raise ConfigError("Bayesian controller states differ across ranks")
+    if payload.get("status") != "success":
+        raise ConfigError(
+            "Synchronized Bayesian controller failure: "
+            f"{payload.get('error_message') or 'unknown failure'}"
+        )
+    return dict(payload)
+
+
 def _evaluate_probabilistic_boundary(
     config: Mapping[str, Any],
     model,
@@ -726,7 +799,6 @@ def run_training(
     tokenized_dataset=None,
     device: torch.device | str | None = None,
 ) -> dict[str, Any]:
-    ensure_single_process_runtime()
     validate_run_config(config)
     deterministic_settings = configure_strict_determinism(config)
     seed_model_initialization(config)
@@ -812,7 +884,7 @@ def run_training(
                 distributed_context,
             )
 
-        if tokenized_dataset is None:
+        if tokenized_dataset is None and not _uses_packed_mmap_corpus(config):
             if tokenizer is None:
                 with training_monitoring.heartbeat_stage(
                     heartbeat_writer,
@@ -833,7 +905,34 @@ def run_training(
             heartbeat_writer,
             "dataloader_creation",
         ):
-            if uses_probabilistic_controller(config):
+            if _uses_packed_mmap_corpus(config):
+                (
+                    train_dataloader,
+                    eval_dataloader,
+                    _controller_dataloader,
+                    corpus_manifest,
+                ) = training_data.build_packed_mmap_dataloaders(
+                    config,
+                    device,
+                    distributed_context=distributed_context,
+                )
+                role_partition = _packed_role_partition(corpus_manifest)
+                _attach_probabilistic_role_provenance(config, role_partition)
+                write_probabilistic_data_role_artifacts(
+                    config,
+                    role_partition,
+                    distributed_context=distributed_context,
+                )
+                if training_distributed.should_write_shared_artifact(
+                    distributed_context
+                ):
+                    print(
+                        "[packed-corpus] corpus_hash="
+                        f"{config['corpus_hash']} data_seed="
+                        f"{config['dataset']['data_seed']}",
+                        flush=True,
+                    )
+            elif uses_probabilistic_controller(config):
                 (
                     train_dataloader,
                     eval_dataloader,
@@ -897,6 +996,11 @@ def run_training(
                 distributed_context=distributed_context,
             )
             continuation_load_succeeded = True
+        if _uses_packed_mmap_corpus(config):
+            training_data.restore_packed_sampler_state(
+                train_dataloader,
+                run_state.get("sampler_state"),
+            )
         if uses_probabilistic_controller(config):
             probabilistic_controller = _build_or_restore_probabilistic_controller(
                 config,
@@ -928,6 +1032,9 @@ def run_training(
             artifact_io_config=config,
             heartbeat_writer=heartbeat_writer,
             artifact_state=run_state,
+            write_enabled=training_distributed.should_write_shared_artifact(
+                distributed_context
+            ),
         )
         metrics_rows = []
         def commit_warmup_event(event: Mapping[str, Any]) -> None:
@@ -935,13 +1042,23 @@ def run_training(
                 raise ConfigError(
                     "Balanced warmup events require the probabilistic controller"
                 )
-            _commit_controller_event(
-                config,
+            committed_event = None
+            if training_distributed.should_write_shared_artifact(distributed_context):
+                committed_event = _commit_controller_event(
+                    config,
+                    probabilistic_controller,
+                    event,
+                    controller_events,
+                    distributed_context=distributed_context,
+                    heartbeat_writer=heartbeat_writer,
+                    run_state=run_state,
+                )
+            _synchronize_controller_commit(
                 probabilistic_controller,
-                event,
-                controller_events,
+                event=committed_event,
+                status="success",
+                error_message=None,
                 distributed_context=distributed_context,
-                heartbeat_writer=heartbeat_writer,
                 run_state=run_state,
             )
 
@@ -1003,6 +1120,8 @@ def run_training(
                 return
             snapshot = probabilistic_controller.transaction_snapshot()
             failing_stage = "controller_evaluation"
+            objective = None
+            boundary_error: Exception | None = None
             try:
                 objective = _evaluate_probabilistic_boundary(
                     config,
@@ -1012,66 +1131,93 @@ def run_training(
                     distributed_context,
                     boundary_step=step,
                 )
-                training_will_continue = int(step) < int(training["max_steps"]) and int(
-                    tokens_seen
-                ) < int(training["token_budget"])
-                failing_stage = "posterior_update_and_action_selection"
-                event = probabilistic_controller.complete_boundary(
-                    boundary_step=step,
-                    controller_objective=objective["uniform_objective"],
-                    ordered_component_losses=objective["ordered_component_losses"],
-                    evaluation_target_tokens=int(objective["evaluation_target_tokens"]),
-                    training_will_continue=training_will_continue,
-                )
-                failing_stage = "controller_journal_commit"
-                _commit_controller_event(
-                    config,
-                    probabilistic_controller,
-                    event,
-                    controller_events,
-                    distributed_context=distributed_context,
-                    heartbeat_writer=heartbeat_writer,
-                    run_state=run_state,
-                )
             except Exception as error:
-                probabilistic_controller.restore_transaction_snapshot(snapshot)
+                boundary_error = error
+
+            committed_event = None
+            if training_distributed.should_write_shared_artifact(distributed_context):
                 try:
-                    _record_controller_failure(
+                    if boundary_error is not None:
+                        raise boundary_error
+                    training_will_continue = int(step) < int(
+                        training["max_steps"]
+                    ) and int(tokens_seen) < int(training["token_budget"])
+                    failing_stage = "posterior_update_and_action_selection"
+                    event = probabilistic_controller.complete_boundary(
+                        boundary_step=step,
+                        controller_objective=objective["uniform_objective"],
+                        ordered_component_losses=objective[
+                            "ordered_component_losses"
+                        ],
+                        evaluation_target_tokens=int(
+                            objective["evaluation_target_tokens"]
+                        ),
+                        training_will_continue=training_will_continue,
+                    )
+                    failing_stage = "controller_journal_commit"
+                    committed_event = _commit_controller_event(
                         config,
                         probabilistic_controller,
+                        event,
                         controller_events,
-                        error,
-                        boundary_step=step,
-                        failing_stage=failing_stage,
                         distributed_context=distributed_context,
                         heartbeat_writer=heartbeat_writer,
                         run_state=run_state,
                     )
-                except Exception as failure_record_error:
-                    print(
-                        "Failed to persist controller failure record: "
-                        f"{failure_record_error}",
-                        flush=True,
-                    )
-                raise
+                except Exception as error:
+                    boundary_error = error
+                    probabilistic_controller.restore_transaction_snapshot(snapshot)
+                    try:
+                        _record_controller_failure(
+                            config,
+                            probabilistic_controller,
+                            controller_events,
+                            error,
+                            boundary_step=step,
+                            failing_stage=failing_stage,
+                            distributed_context=distributed_context,
+                            heartbeat_writer=heartbeat_writer,
+                            run_state=run_state,
+                        )
+                    except Exception as failure_record_error:
+                        boundary_error = RuntimeError(
+                            "Failed to persist controller failure record: "
+                            f"{failure_record_error}; original={error}"
+                        )
+            _synchronize_controller_commit(
+                probabilistic_controller,
+                event=committed_event,
+                status="failure" if boundary_error is not None else "success",
+                error_message=(
+                    str(boundary_error) if boundary_error is not None else None
+                ),
+                distributed_context=distributed_context,
+                run_state=run_state,
+            )
 
         def finish_probabilistic_training(*, step: int, tokens_seen: int) -> None:
             del tokens_seen
             if probabilistic_controller is None:
                 return
-            event = probabilistic_controller.finish_training()
-            if event is None:
-                run_state["probabilistic_controller_state"] = (
-                    probabilistic_controller.state_dict()
-                )
-                return
-            _commit_controller_event(
-                config,
+            committed_event = None
+            if training_distributed.should_write_shared_artifact(distributed_context):
+                event = probabilistic_controller.finish_training()
+                if event is not None:
+                    committed_event = _commit_controller_event(
+                        config,
+                        probabilistic_controller,
+                        event,
+                        controller_events,
+                        distributed_context=distributed_context,
+                        heartbeat_writer=heartbeat_writer,
+                        run_state=run_state,
+                    )
+            _synchronize_controller_commit(
                 probabilistic_controller,
-                event,
-                controller_events,
+                event=committed_event,
+                status="success",
+                error_message=None,
                 distributed_context=distributed_context,
-                heartbeat_writer=heartbeat_writer,
                 run_state=run_state,
             )
 
@@ -1085,6 +1231,8 @@ def run_training(
                 )
                 snapshot = probabilistic_controller.transaction_snapshot()
                 failing_stage = "initial_controller_evaluation"
+                objective = None
+                initial_error: Exception | None = None
                 try:
                     objective = _evaluate_probabilistic_boundary(
                         config,
@@ -1094,46 +1242,67 @@ def run_training(
                         distributed_context,
                         boundary_step=boundary_step,
                     )
-                    failing_stage = "initial_action_selection"
-                    event = probabilistic_controller.initialize_boundary(
-                        boundary_step=boundary_step,
-                        controller_objective=objective["uniform_objective"],
-                        ordered_component_losses=objective["ordered_component_losses"],
-                        evaluation_target_tokens=int(
-                            objective["evaluation_target_tokens"]
-                        ),
-                    )
-                    failing_stage = "controller_journal_commit"
-                    _commit_controller_event(
-                        config,
-                        probabilistic_controller,
-                        event,
-                        controller_events,
-                        distributed_context=distributed_context,
-                        heartbeat_writer=heartbeat_writer,
-                        run_state=run_state,
-                    )
                 except Exception as error:
-                    probabilistic_controller.restore_transaction_snapshot(snapshot)
+                    initial_error = error
+
+                committed_event = None
+                if training_distributed.should_write_shared_artifact(
+                    distributed_context
+                ):
                     try:
-                        _record_controller_failure(
+                        if initial_error is not None:
+                            raise initial_error
+                        failing_stage = "initial_action_selection"
+                        event = probabilistic_controller.initialize_boundary(
+                            boundary_step=boundary_step,
+                            controller_objective=objective["uniform_objective"],
+                            ordered_component_losses=objective[
+                                "ordered_component_losses"
+                            ],
+                            evaluation_target_tokens=int(
+                                objective["evaluation_target_tokens"]
+                            ),
+                        )
+                        failing_stage = "controller_journal_commit"
+                        committed_event = _commit_controller_event(
                             config,
                             probabilistic_controller,
+                            event,
                             controller_events,
-                            error,
-                            boundary_step=boundary_step,
-                            failing_stage=failing_stage,
                             distributed_context=distributed_context,
                             heartbeat_writer=heartbeat_writer,
                             run_state=run_state,
                         )
-                    except Exception as failure_record_error:
-                        print(
-                            "Failed to persist controller failure record: "
-                            f"{failure_record_error}",
-                            flush=True,
-                        )
-                    raise
+                    except Exception as error:
+                        initial_error = error
+                        probabilistic_controller.restore_transaction_snapshot(snapshot)
+                        try:
+                            _record_controller_failure(
+                                config,
+                                probabilistic_controller,
+                                controller_events,
+                                error,
+                                boundary_step=boundary_step,
+                                failing_stage=failing_stage,
+                                distributed_context=distributed_context,
+                                heartbeat_writer=heartbeat_writer,
+                                run_state=run_state,
+                            )
+                        except Exception as failure_record_error:
+                            initial_error = RuntimeError(
+                                "Failed to persist controller failure record: "
+                                f"{failure_record_error}; original={error}"
+                            )
+                _synchronize_controller_commit(
+                    probabilistic_controller,
+                    event=committed_event,
+                    status="failure" if initial_error is not None else "success",
+                    error_message=(
+                        str(initial_error) if initial_error is not None else None
+                    ),
+                    distributed_context=distributed_context,
+                    run_state=run_state,
+                )
             elif controller_state["window"]["phase"] == "boundary_evaluation_pending":
                 process_probabilistic_boundary(
                     step=boundary_step,
@@ -1162,7 +1331,7 @@ def run_training(
                     probabilistic_completion_callback=finish_probabilistic_training,
                 )
             )
-        metrics_rows = metrics_journal.read_all()
+        metrics_rows = metrics_journal.summary_rows()
         extraction_metadata_path = None
         metrics_path = None
         scaling_path = None
@@ -1206,18 +1375,11 @@ def run_training(
                         distributed_context=distributed_context,
                     )
                 )
-                metrics_path = write_metrics_csv(
-                    output_dir,
-                    metrics_rows,
-                    distributed_context=distributed_context,
-                    artifact_io=config,
-                    heartbeat_writer=heartbeat_writer,
-                    artifact_state=run_state,
-                )
+                metrics_path = metrics_journal.path
                 write_config_artifact(config, distributed_context=distributed_context)
                 scaling_rows = build_scaling_result_rows(
                     config,
-                    metrics_rows,
+                    metrics_journal.iter_rows(split="validation"),
                     parameter_counts_by_granularity,
                 )
                 if scaling_rows:
@@ -1243,9 +1405,15 @@ def run_training(
                         artifact_state=run_state,
                     )
 
-        training_outcome = training_steps.summarize_training_outcome(
-            config, metrics_rows
-        )
+        streamed_outcome = metrics_journal.training_outcome()
+        training_outcome = {
+            **streamed_outcome,
+            "stop_reason": training_steps.stop_reason_for_training(
+                config,
+                tokens_seen=streamed_outcome["tokens_seen"],
+                steps_completed=streamed_outcome["steps_completed"],
+            ),
+        }
         tokens_seen = training_outcome["tokens_seen"]
         target_model = getattr(model, "module", model)
         runtime_pattern = getattr(target_model, "current_granularity_pattern", None)
@@ -1306,6 +1474,15 @@ def run_training(
             "validation_loss_aggregation": config.get("validation_loss_aggregation"),
             "comparison_control_signature": config.get("comparison_control_signature"),
             "data_roles_manifest_hash": config.get("data_roles_manifest_hash"),
+            "corpus_hash": config.get("corpus_hash"),
+            "corpus_permutation_version": config.get(
+                "corpus_permutation_version"
+            ),
+            "data_seed": config.get("dataset", {}).get("data_seed"),
+            "sampler_state": copy.deepcopy(run_state.get("sampler_state")),
+            "metrics_accumulator_state": copy.deepcopy(
+                run_state.get("metrics_accumulator_state")
+            ),
             "optimizer_training_manifest_hash": config.get(
                 "optimizer_training_manifest_hash"
             ),
@@ -1461,6 +1638,12 @@ def run_training(
                         artifact_state=run_state,
                     )
                 failure_extra_fields = {
+                    "corpus_hash": config.get("corpus_hash"),
+                    "data_seed": config.get("dataset", {}).get("data_seed"),
+                    "sampler_state": copy.deepcopy(run_state.get("sampler_state")),
+                    "metrics_accumulator_state": copy.deepcopy(
+                        run_state.get("metrics_accumulator_state")
+                    ),
                     "data_roles_manifest_hash": config.get(
                         "data_roles_manifest_hash"
                     ),

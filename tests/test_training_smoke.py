@@ -1941,7 +1941,7 @@ def test_budgeted_training_stops_at_token_budget_before_manual_step_cap(
     assert {row["content_tokens_seen"] for row in train_rows} == {"4"}
 
 
-def test_config_driven_training_rejects_multi_process_execution_before_setup(
+def test_config_driven_training_enters_supported_multi_process_setup(
     tmp_path,
     monkeypatch,
 ):
@@ -1972,13 +1972,22 @@ def test_config_driven_training_rejects_multi_process_execution_before_setup(
         }
     )
 
-    import src.training.run as training_run
+    calls = []
 
     def fake_prepare_distributed_context(*args, **kwargs):
-        raise AssertionError("prepare_distributed_context should not be called")
+        calls.append("prepare")
+        return training_distributed.DistributedContext(
+            enabled=True,
+            rank=0,
+            local_rank=0,
+            world_size=2,
+            strategy="fsdp",
+            device="cpu",
+        )
 
     def fake_wrap_model_for_distributed(*args, **kwargs):
-        raise AssertionError("wrap_model_for_distributed should not be called")
+        calls.append("wrap")
+        raise RuntimeError("distributed wrapping reached")
 
     monkeypatch.setattr(
         training_distributed,
@@ -1991,16 +2000,14 @@ def test_config_driven_training_rejects_multi_process_execution_before_setup(
         fake_wrap_model_for_distributed,
     )
 
-    with pytest.raises(
-        ConfigError,
-        match="single-process only: distributed or multi-process execution is not supported",
-    ):
+    with pytest.raises(RuntimeError, match="distributed wrapping reached"):
         run_training(
             config,
             model=TinyNestedTrainingModel(),
             tokenized_dataset=tokenized_dataset,
             device="cpu",
         )
+    assert calls == ["prepare", "wrap"]
 
 
 def test_run_training_rejects_invalid_adaptive_pairing_before_setup(

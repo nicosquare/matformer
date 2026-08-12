@@ -1,0 +1,153 @@
+# Production Bayesian TS + GMC contract over the shared prepared 10B corpus.
+run:
+  run_id: slicing-10b-bayesian-global
+  phase_id: slicing_10b_unique_tokens
+  model_family: nested
+  sampling_mode: nested-random
+  model_shape_label: dmodel256
+  family_size_slug: 148m
+  seed: 42
+  reproducibility:
+    mode: strict
+    seed_stream_version: 1
+    data_split_version: 1
+  output_root: outputs
+  continuation:
+    enabled: true
+    latest_checkpoint_save_interval_steps: 0
+    latest_checkpoint_save_on_validation: true
+    latest_checkpoint_save_on_completion: true
+
+model:
+  base_model_name: dmodel256-matformer-llama-swiglu
+  tokenizer_name: hf-internal-testing/llama-tokenizer
+  tokenizer_revision: __PINNED_TOKENIZER_REVISION__
+  variant: slicing
+  correction_mode: gmc
+  membership_correction: true
+  granularity_mode: explicit
+  granularity_sampling_mode: adaptive_global
+  adaptive_sampler_strategy: thompson
+  d_model: 256
+  num_layers: 16
+  num_attention_heads: 16
+  context_length: 1024
+  vocab_size_assumption: 256000
+  granularities: [g125, g250, g375, g500, g625, g750, g875, g1000]
+  granularity_prefixes:
+    g125: 0.125
+    g250: 0.25
+    g375: 0.375
+    g500: 0.5
+    g625: 0.625
+    g750: 0.75
+    g875: 0.875
+    g1000: 1.0
+  adaptive_controller:
+    decision_interval_steps: 50
+    prior_mean: 0.0
+    prior_covariance:
+      intercept: 1.0e-4
+      effects: 1.0e-6
+    observation_noise_variance: 1.0e-7
+    process_noise_covariance: 0.0
+    reset:
+      enabled: false
+
+training:
+  token_budget: 10000000000
+  max_steps_cap: null
+  batch_size_per_process: 4
+  learning_rate: 0.001
+  learning_rate_scale_rule: none
+  warmup_ratio: 0.01635
+  pre_nested_warmup:
+    enabled: true
+    duration: 800
+    unit: steps
+    policy: balanced_global
+    action_interval_steps: 50
+  gradient_clip_norm: 1.0
+  mixed_precision: bf16
+  activation_checkpointing: true
+  dataloader_num_workers: 0
+  optimizer:
+    name: adamw
+    kwargs:
+      betas: [0.9, 0.95]
+      eps: 1.0e-8
+      weight_decay: 0.1
+  scheduler:
+    name: cosine
+  distributed:
+    strategy: fsdp
+    expected_world_size: 4
+    fsdp:
+      sharding_strategy: full_shard
+      auto_wrap_policy: transformer_based_wrap
+      transformer_layer_cls_to_wrap: [LlamaDecoderLayer]
+      backward_prefetch: backward_pre
+      use_orig_params: true
+      sync_module_states: true
+      forward_prefetch: false
+
+dataset:
+  mode: packed_mmap
+  prepared_corpus_dir: __PREPARED_CORPUS_DIR__
+  data_seed: 42
+  dataset_name: HuggingFaceFW/fineweb
+  dataset_config_name: sample-10BT
+  dataset_split: train
+  dataset_phase: production
+  sample_limit: null
+  tokenization_keep_in_memory: false
+  preprocessing_notes: immutable_contiguous_eos_uint32_v1
+
+outputs:
+  save_config: true
+  save_metrics_csv: true
+  save_run_summary_json: true
+  save_checkpoints: true
+  make_plots: false
+  metrics_flush_interval_steps: 100
+  best_eval_retention_count: 1
+  artifact_io:
+    checkpoint_staging: auto
+
+monitoring:
+  enabled: false
+  backend: wandb
+  project: slicing_10b_unique_tokens
+  job_type: train
+  tags: [production, slicing, unique-tokens, bayesian-ts]
+  notes: one-at-a-time 10B-token Bayesian slicing experiment
+  log_loss_by_granularity: true
+  log_validation_loss: true
+  log_stage_events: true
+
+evaluation:
+  validation:
+    enabled: true
+    interval_steps: 5000
+    run_at_completion: true
+    holdout:
+      source: configured_dataset_split
+      examples: 512
+    trailing_summary_evaluations: 5
+  adaptive_controller:
+    enabled: true
+    source: configured_dataset_split
+    examples: 128
+    objective_weights: uniform
+    fixed_manifest: true
+  final_holdout:
+    enabled: true
+    source: configured_dataset_split
+    examples: 512
+    fixed_manifest: true
+    evaluate_during_training: false
+  test:
+    enabled: false
+  downstream_suite: []
+  consistency: false
+  speculative: false

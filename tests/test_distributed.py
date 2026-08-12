@@ -1,3 +1,7 @@
+import json
+import os
+from pathlib import Path
+
 import torch
 import pytest
 from contextlib import nullcontext
@@ -11,6 +15,91 @@ from src.training.distributed import (
     sum_int,
 )
 from src.utils.config import ConfigError
+
+
+def _real_gloo_controller_worker(rank, world_size, init_path, result_dir):
+    os.environ["GLOO_SOCKET_IFNAME"] = "lo"
+    torch.distributed.init_process_group(
+        "gloo",
+        init_method=f"file://{init_path}",
+        rank=rank,
+        world_size=world_size,
+    )
+    try:
+        from src.training.probabilistic_controller import build_probabilistic_controller
+        from src.training.run import _synchronize_controller_commit
+
+        context = DistributedContext(
+            enabled=True,
+            rank=rank,
+            local_rank=rank,
+            world_size=world_size,
+            strategy="fsdp",
+            device="cpu",
+        )
+        controller = build_probabilistic_controller(
+            controller_config={
+                "method_family": "bayesian_gaussian_linear_thompson",
+                "method_version": 1,
+                "strategy": "thompson",
+                "scope": "global",
+                "feature_model": "arms",
+                "context_model": "intercept_only",
+                "transition_model": "identity",
+                "compute_weight": 0.0,
+                "switch_weight": 0.0,
+                "ordered_granularities": ["small", "full"],
+                "block_count": 2,
+                "decision_interval_steps": 2,
+                "resolved_prior_mean": [0.0, 0.0],
+                "resolved_prior_covariance": [[1.0, 0.0], [0.0, 1.0]],
+                "observation_noise_variance": 0.01,
+                "resolved_process_noise_covariance": [[0.0, 0.0], [0.0, 0.0]],
+                "reset": {"enabled": False, "policy": "full_prior"},
+            },
+            sampling_seed=123,
+            manifest_hashes={
+                "data_roles_manifest_hash": "roles",
+                "optimizer_training_manifest_hash": "training",
+                "controller_manifest_hash": "controller",
+                "ordinary_validation_manifest_hash": "validation",
+                "final_holdout_manifest_hash": "final",
+            },
+        )
+        event = None
+        if rank == 0:
+            event = controller.initialize_boundary(
+                boundary_step=0,
+                controller_objective=2.0,
+                ordered_component_losses=[2.5, 1.5],
+                evaluation_target_tokens=64,
+            )
+        run_state = {}
+        payload = _synchronize_controller_commit(
+            controller,
+            event=event,
+            status="success",
+            error_message=None,
+            distributed_context=context,
+            run_state=run_state,
+        )
+        Path(result_dir, f"rank-{rank}.json").write_text(
+            json.dumps(
+                {
+                    "state_hash": payload["controller_state_hash"],
+                    "global_granularity": payload["action"][
+                        "global_granularity"
+                    ],
+                    "sample_count": controller.state_dict()["sampling"][
+                        "sample_count"
+                    ],
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+    finally:
+        torch.distributed.destroy_process_group()
 
 
 def test_cpu_resolves_requested_bf16_and_checkpointing_to_none():
@@ -552,3 +641,24 @@ def test_probabilistic_controller_rank_zero_broadcast_requires_complete_state():
             action={"global_granularity": "micro"},
             context=context,
         )
+
+
+def test_real_two_process_gloo_rank_zero_controller_commit(tmp_path):
+    init_path = tmp_path / "gloo-init"
+    result_dir = tmp_path / "results"
+    result_dir.mkdir()
+
+    torch.multiprocessing.spawn(
+        _real_gloo_controller_worker,
+        args=(2, str(init_path), str(result_dir)),
+        nprocs=2,
+        join=True,
+    )
+
+    records = [
+        json.loads((result_dir / f"rank-{rank}.json").read_text(encoding="utf-8"))
+        for rank in range(2)
+    ]
+    assert records[0] == records[1]
+    assert records[0]["sample_count"] == 1
+    assert records[0]["global_granularity"] in ("small", "full")

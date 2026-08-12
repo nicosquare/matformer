@@ -69,6 +69,31 @@ def main(argv: list[str] | None = None) -> None:
                         "tokenization_keep_in_memory",
                         False,
                     ),
+                    "dataset_mode": resolved["dataset"].get("mode", "raw_tokenized"),
+                    "prepared_corpus_dir": resolved["dataset"].get(
+                        "prepared_corpus_dir"
+                    ),
+                    "data_seed": resolved["dataset"].get("data_seed"),
+                    "corpus_hash": resolved["dataset"].get("corpus_hash"),
+                    "expected_world_size": resolved["training"]
+                    .get("distributed", {})
+                    .get("expected_world_size"),
+                    "effective_world_size": resolved["training"][
+                        "effective_world_size"
+                    ],
+                    "expected_tokens_per_step": resolved["training"][
+                        "expected_tokens_per_step"
+                    ],
+                    "derived_max_steps": resolved["training"][
+                        "derived_max_steps"
+                    ],
+                    "resolved_warmup_steps": resolved["training"][
+                        "resolved_warmup_steps"
+                    ],
+                    "ordered_granularities": resolved["model"]["granularities"],
+                    "granularity_prefixes": resolved["model"].get(
+                        "granularity_prefixes"
+                    ),
                     "validation": resolved["evaluation"]["validation"],
                     "comparison_control_inputs": control_inputs,
                 },

@@ -299,7 +299,7 @@ Resolve the complete five-granularity reference without loading data:
 
 ```bash
 python train.py \
-  --config configs/probabilistic_balanced_warmup_500.yaml \
+  --config configs/opt-in_exps/probabilistic_balanced_warmup_500.yaml \
   --preflight
 ```
 
@@ -322,7 +322,7 @@ pytest -q \
 ## 15. Run the opt-in episodic-reset comparison
 
 The matched seed-42 comparison manifest is
-`configs/probabilistic_global_reset_seed42.yaml`. It records the common base
+`configs/opt-in_exps/probabilistic_global_reset_seed42.yaml`. It records the common base
 config and dotted overrides for Q=0 with no reset, then reset K=500, K=1000,
 and K=2000. All variants retain h=50, the 500-step balanced warmup, prior,
 observation variance, role manifests, optimizer, scheduler, and training

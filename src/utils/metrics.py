@@ -323,6 +323,118 @@ class ArtifactError(ValueError):
     """Raised when an artifact would miss required analysis fields."""
 
 
+class StreamingMetricsAccumulator:
+    """Checkpointable bounded summary of an arbitrarily large metrics stream."""
+
+    def __init__(self, state: Mapping[str, Any] | None = None, *, trailing_count: int = 5):
+        state = dict(state or {})
+        self.trailing_count = max(1, int(state.get("trailing_count", trailing_count)))
+        self.last_training_step = int(state.get("last_training_step", 0))
+        self.tokens_seen = int(state.get("tokens_seen", 0))
+        self.content_tokens_seen = int(state.get("content_tokens_seen", 0))
+        self.training_row_count = int(state.get("training_row_count", 0))
+        self.validation_row_count = int(state.get("validation_row_count", 0))
+        self.best_validation = copy_json_mapping(state.get("best_validation"))
+        self.best_validation_by_granularity = {
+            str(key): dict(value)
+            for key, value in dict(
+                state.get("best_validation_by_granularity", {})
+            ).items()
+        }
+        self.trailing_validation_by_granularity = {
+            str(key): [dict(row) for row in rows][-self.trailing_count :]
+            for key, rows in dict(
+                state.get("trailing_validation_by_granularity", {})
+            ).items()
+        }
+        self.selection_counts = {
+            str(key): int(value)
+            for key, value in dict(state.get("selection_counts", {})).items()
+        }
+        self.checkpoint_selection = copy_json_mapping(
+            state.get("checkpoint_selection")
+        )
+
+    def update(self, rows: Iterable[Mapping[str, Any]]) -> None:
+        for raw_row in rows:
+            row = dict(raw_row)
+            split = str(row.get("split") or "")
+            if split == "train":
+                self.training_row_count += 1
+                step = _int_value(row.get("step"))
+                if step >= self.last_training_step:
+                    self.last_training_step = step
+                    self.tokens_seen = max(
+                        self.tokens_seen, _int_value(row.get("tokens_seen"))
+                    )
+                    self.content_tokens_seen = max(
+                        self.content_tokens_seen,
+                        _int_value(
+                            row.get("content_tokens_seen", row.get("tokens_seen"))
+                        ),
+                    )
+                action = row.get("controller_action") or row.get("granularity")
+                if action not in (None, ""):
+                    key = str(action)
+                    self.selection_counts[key] = self.selection_counts.get(key, 0) + 1
+                continue
+            if split != "validation" or row.get("loss") in (None, ""):
+                continue
+            self.validation_row_count += 1
+            loss = float(row["loss"])
+            if not math.isfinite(loss):
+                continue
+            compact = dict(row)
+            if self.best_validation is None or loss < float(
+                self.best_validation["loss"]
+            ):
+                self.best_validation = compact
+            granularity = str(row.get("granularity") or "")
+            current = self.best_validation_by_granularity.get(granularity)
+            if current is None or loss < float(current["loss"]):
+                self.best_validation_by_granularity[granularity] = compact
+            trailing = self.trailing_validation_by_granularity.setdefault(
+                granularity, []
+            )
+            trailing.append(compact)
+            if len(trailing) > self.trailing_count:
+                del trailing[: len(trailing) - self.trailing_count]
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "trailing_count": self.trailing_count,
+            "last_training_step": self.last_training_step,
+            "tokens_seen": self.tokens_seen,
+            "content_tokens_seen": self.content_tokens_seen,
+            "training_row_count": self.training_row_count,
+            "validation_row_count": self.validation_row_count,
+            "best_validation": self.best_validation,
+            "best_validation_by_granularity": self.best_validation_by_granularity,
+            "trailing_validation_by_granularity": (
+                self.trailing_validation_by_granularity
+            ),
+            "selection_counts": self.selection_counts,
+            "checkpoint_selection": self.checkpoint_selection,
+        }
+
+    def validation_summary_rows(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for trailing in self.trailing_validation_by_granularity.values():
+            rows.extend(dict(row) for row in trailing)
+        for row in self.best_validation_by_granularity.values():
+            rows.append(dict(row))
+        unique: dict[tuple[Any, Any, Any], dict[str, Any]] = {}
+        for row in rows:
+            key = (row.get("step"), row.get("granularity"), row.get("split"))
+            unique[key] = row
+        return sorted(unique.values(), key=lambda row: _int_value(row.get("step")))
+
+
+def copy_json_mapping(value: Any) -> dict[str, Any] | None:
+    return dict(value) if isinstance(value, Mapping) else None
+
+
 class MetricsJournal:
     """Bounded metrics buffer with durable incremental flushes and resume repair."""
 
@@ -335,6 +447,7 @@ class MetricsJournal:
         artifact_io_config: Mapping[str, Any] | None = None,
         heartbeat_writer=None,
         artifact_state: dict[str, Any] | None = None,
+        write_enabled: bool = True,
     ) -> None:
         self.output_dir = Path(output_dir)
         self.path = self.output_dir / "metrics.csv"
@@ -345,21 +458,32 @@ class MetricsJournal:
         self.artifact_io = resolved_artifact_io(artifact_io_config)
         self.heartbeat_writer = heartbeat_writer
         self.artifact_state = artifact_state
+        self.write_enabled = bool(write_enabled)
         self.pending_row_limit = int(self.artifact_io["metrics_pending_row_limit"])
         self.spool_path = self._build_spool_path()
-        recovered = recover_metrics_rows(self.path, checkpoint_step=checkpoint_step)
-        self._validation_steps.update(
-            int(row["step"])
-            for row in recovered
-            if row.get("split") == "validation"
+        saved_accumulator = (
+            artifact_state.get("metrics_accumulator_state")
+            if isinstance(artifact_state, Mapping)
+            else None
         )
-        write_metrics_csv(
-            self.output_dir,
-            recovered,
-            artifact_io=self.artifact_io,
-            heartbeat_writer=self.heartbeat_writer,
-            artifact_state=self.artifact_state,
-        )
+        self.accumulator = StreamingMetricsAccumulator(saved_accumulator)
+        self._retained_row_limit = 100_000
+        self._retained_rows: list[dict[str, Any]] = []
+        self._retention_overflow = False
+        if self.write_enabled:
+            self._repair_existing_metrics(
+                checkpoint_step=int(checkpoint_step),
+                rebuild_accumulator=saved_accumulator is None,
+            )
+        if self.write_enabled and not self.path.exists():
+            write_metrics_csv(
+                self.output_dir,
+                [],
+                artifact_io=self.artifact_io,
+                heartbeat_writer=self.heartbeat_writer,
+                artifact_state=self.artifact_state,
+            )
+        self._checkpoint_accumulator()
 
     def append(
         self,
@@ -371,6 +495,11 @@ class MetricsJournal:
         if not normalized:
             if force:
                 self.flush()
+            return
+        self.accumulator.update(normalized)
+        self._retain_rows(normalized)
+        self._checkpoint_accumulator()
+        if not self.write_enabled:
             return
         self._buffer.extend(normalized)
         if len(self._buffer) >= self.pending_row_limit:
@@ -390,6 +519,8 @@ class MetricsJournal:
         return int(step) in self._validation_steps
 
     def flush(self, *, strict: bool = False) -> None:
+        if not self.write_enabled:
+            return
         if not self._buffer:
             return
         try:
@@ -443,6 +574,34 @@ class MetricsJournal:
         self.flush(strict=True)
         return read_metrics_csv(self.path)
 
+    def summary_rows(self) -> list[dict[str, Any]]:
+        """Return exact small-run rows or a bounded validation summary."""
+
+        self.flush(strict=True)
+        if not self._retention_overflow:
+            return [dict(row) for row in self._retained_rows]
+        return self.accumulator.validation_summary_rows()
+
+    def iter_rows(self, *, split: str | None = None):
+        self.flush(strict=True)
+        if not self.path.exists():
+            return
+        with self.path.open("r", encoding="utf-8", newline="") as metrics_file:
+            for row in csv.DictReader(metrics_file):
+                if split is None or row.get("split") == split:
+                    yield dict(row)
+
+    def training_outcome(self) -> dict[str, int]:
+        return {
+            "steps_completed": self.accumulator.last_training_step,
+            "tokens_seen": self.accumulator.tokens_seen,
+            "content_tokens_seen": self.accumulator.content_tokens_seen,
+        }
+
+    def record_checkpoint_selection(self, selection: Mapping[str, Any]) -> None:
+        self.accumulator.checkpoint_selection = dict(selection)
+        self._checkpoint_accumulator()
+
     def artifact_summary_fields(self) -> dict[str, Any]:
         return {
             "deferred_metric_rows": len(self._buffer),
@@ -462,6 +621,74 @@ class MetricsJournal:
             / "matformer-artifact-spool"
             / f"{run_id}-{identity}.metrics.pending.csv"
         )
+
+    def _checkpoint_accumulator(self) -> None:
+        if self.artifact_state is not None:
+            self.artifact_state["metrics_accumulator_state"] = (
+                self.accumulator.state_dict()
+            )
+
+    def _retain_rows(self, rows: Iterable[Mapping[str, Any]]) -> None:
+        if self._retention_overflow:
+            return
+        for row in rows:
+            if len(self._retained_rows) >= self._retained_row_limit:
+                self._retained_rows.clear()
+                self._retention_overflow = True
+                return
+            self._retained_rows.append(dict(row))
+
+    def _repair_existing_metrics(
+        self,
+        *,
+        checkpoint_step: int,
+        rebuild_accumulator: bool,
+    ) -> None:
+        if not self.path.exists() or self.path.stat().st_size == 0:
+            return
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                newline="",
+                dir=self.output_dir,
+                prefix=".metrics.repair-",
+                suffix=".csv",
+                delete=False,
+            ) as target:
+                temporary_path = Path(target.name)
+                writer = csv.DictWriter(target, fieldnames=METRICS_COLUMNS)
+                writer.writeheader()
+                with self.path.open(
+                    "r", encoding="utf-8", newline=""
+                ) as source:
+                    reader = csv.DictReader(source)
+                    if reader.fieldnames != METRICS_COLUMNS:
+                        return
+                    for row in reader:
+                        if None in row or any(value is None for value in row.values()):
+                            break
+                        try:
+                            row_step = int(row.get("step") or 0)
+                        except (TypeError, ValueError):
+                            break
+                        if row_step > checkpoint_step:
+                            continue
+                        writer.writerow(row)
+                        if row.get("split") == "validation":
+                            self._validation_steps.add(row_step)
+                        if rebuild_accumulator:
+                            self.accumulator.update([row])
+                        self._retain_rows([row])
+                target.flush()
+                os.fsync(target.fileno())
+            os.replace(temporary_path, self.path)
+            temporary_path = None
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
     def _write_spool(self) -> None:
         self.spool_path.parent.mkdir(parents=True, exist_ok=True)

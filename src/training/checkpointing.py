@@ -11,6 +11,8 @@ except ImportError:  # pragma: no cover - optional dependency
 load_dotenv()
 
 import copy
+import hashlib
+import json
 import math
 import os
 import shutil
@@ -31,7 +33,9 @@ from src.models.adaptive_sampler import (
 )
 from src.models.granularity import resolved_granularity_artifact_fields
 from src.training.distributed import (
+    barrier,
     broadcast_object,
+    gather_objects,
     should_write_shared_artifact,
 )
 from src.training.probabilistic_controller import (
@@ -1135,12 +1139,13 @@ def maybe_write_best_eval_checkpoint(
     checkpoint_state.update(checkpoint_fields)
     run_state.update(checkpoint_fields)
     run_state["pending_best_checkpoint"] = None
-    _prune_best_eval_checkpoints(
-        checkpoint_path.parent,
-        retain_count=int(
-            config.get("outputs", {}).get("best_eval_retention_count", 1)
-        ),
-    )
+    if should_write_shared_artifact(distributed_context):
+        _prune_best_eval_checkpoints(
+            checkpoint_path.parent,
+            retain_count=int(
+                config.get("outputs", {}).get("best_eval_retention_count", 1)
+            ),
+        )
 def build_best_eval_checkpoint_payload(
     config: dict[str, Any],
     validation_results: list[dict[str, Any]],
@@ -1179,7 +1184,7 @@ def build_best_eval_checkpoint_payload(
     return {"should_save": True, "checkpoint_fields": checkpoint_fields}
 
 
-def save_model_checkpoint(
+def _save_model_checkpoint_rank_zero(
     config: dict[str, Any],
     model,
     optimizer,
@@ -1189,15 +1194,19 @@ def save_model_checkpoint(
     run_state: dict[str, Any],
     distributed_context=None,
     heartbeat_writer=None,
+    collected_model_state_dict: dict[str, Any] | None = None,
+    collected_optimizer_state_dict: dict[str, Any] | None = None,
+    rng_states_by_rank: list[dict[str, Any]] | None = None,
 ) -> None:
-    if not should_write_shared_artifact(distributed_context):
-        return
-
-    model_state_dict, optimizer_state_dict = checkpoint_state_dicts(
-        model,
-        optimizer,
-        distributed_context,
-    )
+    model_state_dict = collected_model_state_dict
+    optimizer_state_dict = collected_optimizer_state_dict
+    if model_state_dict is None:
+        model_state_dict, optimizer_state_dict = checkpoint_state_dicts(
+            model,
+            optimizer,
+            distributed_context,
+        )
+    rng_states_by_rank = list(rng_states_by_rank or [capture_rng_state()])
 
     probabilistic_controller_state = run_state.get(
         "probabilistic_controller_state"
@@ -1237,7 +1246,8 @@ def save_model_checkpoint(
                 "rank_topology": list(
                     range(int(getattr(distributed_context, "world_size", 1)))
                 ),
-                "rng_state": capture_rng_state(),
+                "rng_state": rng_states_by_rank[0],
+                "rng_states_by_rank": rng_states_by_rank,
                 "deterministic_runtime_settings": deterministic_runtime_settings(),
                 "adaptive_sampler_seed_provenance": "adaptive_sampling",
             },
@@ -1255,6 +1265,22 @@ def save_model_checkpoint(
             "batch_index": run_state.get("batch_index", 0),
             "tokens_seen": run_state.get("tokens_seen", 0),
             "content_tokens_seen": run_state.get("content_tokens_seen", 0),
+            "sampler_state": copy.deepcopy(run_state.get("sampler_state")),
+            "metrics_accumulator_state": copy.deepcopy(
+                run_state.get("metrics_accumulator_state")
+            ),
+            "corpus_hash": config.get("corpus_hash"),
+            "data_roles_manifest_hash": config.get("data_roles_manifest_hash"),
+            "optimizer_training_manifest_hash": config.get(
+                "optimizer_training_manifest_hash"
+            ),
+            "controller_manifest_hash": config.get("controller_manifest_hash"),
+            "ordinary_validation_manifest_hash": config.get(
+                "validation_manifest_hash"
+            ),
+            "final_holdout_manifest_hash": config.get(
+                "final_holdout_manifest_hash"
+            ),
             "resume_count": run_state.get("resume_count", 0),
             "warmup_completed": run_state.get("warmup_completed", False),
             "warmup_completion_step": run_state.get("warmup_completion_step"),
@@ -1419,6 +1445,93 @@ def save_model_checkpoint(
         operation_name="checkpoint_install",
         target_path=output_path,
     )
+
+
+def save_model_checkpoint(
+    config: dict[str, Any],
+    model,
+    optimizer,
+    scheduler,
+    output_path: Path,
+    checkpoint_fields: dict[str, Any],
+    run_state: dict[str, Any],
+    distributed_context=None,
+    heartbeat_writer=None,
+) -> None:
+    """Collect FSDP state on every rank and install it only from rank zero."""
+
+    model_state_dict, optimizer_state_dict = checkpoint_state_dicts(
+        model,
+        optimizer,
+        distributed_context,
+    )
+    rng_states = gather_objects(
+        capture_rng_state(),
+        context=distributed_context,
+    )
+    if uses_probabilistic_controller(config):
+        local_hash = _controller_state_hash(
+            run_state.get("probabilistic_controller_state")
+        )
+        controller_hashes = gather_objects(local_hash, context=distributed_context)
+        if len(set(controller_hashes)) != 1:
+            raise ConfigError(
+                "Bayesian controller state hashes differ across ranks at checkpoint"
+            )
+
+    status: dict[str, Any] | None = None
+    local_error: Exception | None = None
+    if should_write_shared_artifact(distributed_context):
+        try:
+            _save_model_checkpoint_rank_zero(
+                config,
+                model,
+                optimizer,
+                scheduler,
+                output_path,
+                checkpoint_fields,
+                run_state,
+                distributed_context=distributed_context,
+                heartbeat_writer=heartbeat_writer,
+                collected_model_state_dict=model_state_dict,
+                collected_optimizer_state_dict=optimizer_state_dict,
+                rng_states_by_rank=rng_states,
+            )
+            status = {"ok": True, "path": str(output_path)}
+        except Exception as error:  # broadcast before preserving the original failure
+            local_error = error
+            status = {
+                "ok": False,
+                "error_type": type(error).__name__,
+                "error": str(error),
+            }
+    status = broadcast_object(status, context=distributed_context, src=0)
+    if not isinstance(status, Mapping) or not status.get("ok", False):
+        if local_error is not None and not bool(
+            getattr(distributed_context, "enabled", False)
+        ):
+            raise local_error
+        detail = status.get("error") if isinstance(status, Mapping) else "missing status"
+        raise RuntimeError(f"Collective checkpoint installation failed: {detail}")
+    barrier(distributed_context)
+
+
+def _controller_state_hash(value: Any) -> str:
+    def normalize(item: Any) -> Any:
+        if torch.is_tensor(item):
+            return item.detach().cpu().tolist()
+        if isinstance(item, Mapping):
+            return {str(key): normalize(component) for key, component in item.items()}
+        if isinstance(item, (list, tuple)):
+            return [normalize(component) for component in item]
+        return item
+
+    material = json.dumps(
+        normalize(value),
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(material).hexdigest()
 
 
 def _stage_checkpoint_payload(
@@ -1588,7 +1701,11 @@ def load_model_and_optimizer_state(
             optimizer if optimizer is not None else [],
             model_state_dict=model_state_dict,
             optim_state_dict=optimizer_state_dict or {},
-            options=StateDictOptions(full_state_dict=True, cpu_offload=True),
+            options=StateDictOptions(
+                full_state_dict=True,
+                cpu_offload=True,
+                broadcast_from_rank0=True,
+            ),
         )
         return
 
@@ -1656,6 +1773,8 @@ def build_initial_continuation_state(config: dict[str, Any]) -> dict[str, Any]:
         "resume_count": 0,
         "tokens_seen": 0,
         "content_tokens_seen": 0,
+        "sampler_state": None,
+        "metrics_accumulator_state": None,
         "step": 0,
         "epoch": 0,
         "batch_index": 0,
@@ -2093,6 +2212,8 @@ def load_checkpoint_state(
             "resume_count": 0,
             "tokens_seen": 0,
             "content_tokens_seen": 0,
+            "sampler_state": None,
+            "metrics_accumulator_state": None,
             "step": 0,
             "epoch": 0,
             "batch_index": 0,
@@ -2114,7 +2235,53 @@ def load_checkpoint_state(
             _populate_adaptive_sampler_state_metadata(state, config)
         return state
 
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    collective_fsdp = bool(
+        distributed_context is not None
+        and distributed_context.enabled
+        and distributed_context.strategy == "fsdp"
+    )
+    if collective_fsdp:
+        checkpoint = None
+        load_status: dict[str, Any] | None = None
+        if should_write_shared_artifact(distributed_context):
+            try:
+                checkpoint = torch.load(
+                    checkpoint_path,
+                    map_location="cpu",
+                    weights_only=False,
+                )
+                metadata = dict(checkpoint)
+                metadata.pop("model_state_dict", None)
+                metadata.pop("optimizer_state_dict", None)
+                load_status = {"ok": True, "metadata": metadata}
+            except Exception as error:
+                load_status = {
+                    "ok": False,
+                    "error_type": type(error).__name__,
+                    "error": str(error),
+                }
+        load_status = broadcast_object(
+            load_status,
+            context=distributed_context,
+            src=0,
+        )
+        if not isinstance(load_status, Mapping) or not load_status.get("ok", False):
+            detail = (
+                load_status.get("error")
+                if isinstance(load_status, Mapping)
+                else "missing status"
+            )
+            raise ConfigError(f"Collective checkpoint load failed: {detail}")
+        if checkpoint is None:
+            checkpoint = dict(load_status["metadata"])
+            checkpoint["model_state_dict"] = {}
+            checkpoint["optimizer_state_dict"] = {}
+    else:
+        checkpoint = torch.load(
+            checkpoint_path,
+            map_location="cpu",
+            weights_only=False,
+        )
     reproducibility_payload = _validate_reproducibility_payload(
         checkpoint,
         config=config,
@@ -2132,6 +2299,31 @@ def load_checkpoint_state(
                 checkpoint_path=checkpoint_path,
             )
         )
+    if config is not None and config.get("dataset", {}).get("mode") == "packed_mmap":
+        expected_data_hashes = {
+            "corpus_hash": config.get("corpus_hash"),
+            "data_roles_manifest_hash": config.get("data_roles_manifest_hash"),
+            "optimizer_training_manifest_hash": config.get(
+                "optimizer_training_manifest_hash"
+            ),
+            "controller_manifest_hash": config.get("controller_manifest_hash"),
+            "ordinary_validation_manifest_hash": config.get(
+                "validation_manifest_hash"
+            ),
+            "final_holdout_manifest_hash": config.get(
+                "final_holdout_manifest_hash"
+            ),
+        }
+        mismatches = {
+            field: (checkpoint.get(field), expected)
+            for field, expected in expected_data_hashes.items()
+            if checkpoint.get(field) != expected
+        }
+        if mismatches:
+            raise ConfigError(
+                "Checkpoint prepared-corpus provenance mismatch: "
+                f"{mismatches}"
+            )
     model_state_dict = checkpoint.get("model_state_dict")
     if model_state_dict is None:
         raise ConfigError(f"Checkpoint missing model_state_dict: {checkpoint_path}")
@@ -2148,7 +2340,14 @@ def load_checkpoint_state(
     if scheduler is not None and scheduler_state_dict is not None:
         scheduler.load_state_dict(scheduler_state_dict)
     if reproducibility_payload is not None:
-        restore_rng_state(reproducibility_payload["rng_state"])
+        rng_states = reproducibility_payload.get("rng_states_by_rank")
+        rank = int(getattr(distributed_context, "rank", 0))
+        if isinstance(rng_states, list):
+            if len(rng_states) != int(getattr(distributed_context, "world_size", 1)):
+                raise ConfigError("Checkpoint per-rank RNG state topology mismatch")
+            restore_rng_state(rng_states[rank])
+        else:
+            restore_rng_state(reproducibility_payload["rng_state"])
 
     last_completed_step = int(
         checkpoint.get("step", checkpoint.get("last_completed_step", 0))
@@ -2172,6 +2371,10 @@ def load_checkpoint_state(
         "resume_count": resume_count,
         "tokens_seen": tokens_seen,
         "content_tokens_seen": content_tokens_seen,
+        "sampler_state": copy.deepcopy(checkpoint.get("sampler_state")),
+        "metrics_accumulator_state": copy.deepcopy(
+            checkpoint.get("metrics_accumulator_state")
+        ),
         "step": last_completed_step,
         "epoch": int(checkpoint.get("epoch", 0)),
         "batch_index": int(checkpoint.get("batch_index", 0)),

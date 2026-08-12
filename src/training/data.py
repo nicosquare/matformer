@@ -13,6 +13,12 @@ import torch
 from datasets import load_dataset
 from torch.utils.data import DataLoader, Sampler
 
+from src.training.packed_corpus import (
+    NoPaddingDistributedBatchSampler,
+    PackedCorpusError,
+    PackedMMapDataset,
+    load_corpus_manifest,
+)
 from src.utils.reproducibility import (
     build_comparison_control_signature,
     seed_for,
@@ -647,6 +653,107 @@ def build_dataloaders(
     return train_dataloader, eval_dataloader
 
 
+def build_packed_mmap_dataloaders(
+    config: dict[str, Any],
+    device: torch.device,
+    distributed_context=None,
+) -> tuple[DataLoader, DataLoader, DataLoader, dict[str, Any]]:
+    """Open immutable prepared roles and create a one-pass training loader."""
+
+    dataset_config = config["dataset"]
+    prepared_dir = dataset_config.get("prepared_corpus_dir")
+    manifest = load_corpus_manifest(prepared_dir, verify_shards=False)
+    context_length = int(config["model"]["context_length"])
+    if int(manifest["context_length"]) != context_length:
+        raise DataError(
+            "Prepared corpus context length does not match model.context_length"
+        )
+    if int(manifest["data_seed"]) != int(dataset_config.get("data_seed", -1)):
+        raise DataError("Prepared corpus data seed does not match dataset.data_seed")
+    tokenizer_name = str(config["model"].get("tokenizer_name"))
+    tokenizer_revision = str(config["model"].get("tokenizer_revision"))
+    tokenizer = manifest["tokenizer"]
+    if tokenizer.get("name") != tokenizer_name or tokenizer.get("revision") != tokenizer_revision:
+        raise DataError("Prepared corpus tokenizer identity does not match the run")
+
+    role_datasets = {
+        role: PackedMMapDataset(prepared_dir, role)
+        for role in (
+            "optimizer_training",
+            "ordinary_validation",
+            "controller",
+        )
+    }
+    rank = int(getattr(distributed_context, "rank", 0))
+    world_size = int(getattr(distributed_context, "world_size", 1))
+    batch_size = int(config["training"]["batch_size_per_process"])
+    train_batch_sampler = NoPaddingDistributedBatchSampler(
+        len(role_datasets["optimizer_training"]),
+        batch_size,
+        rank,
+        world_size,
+        data_seed=int(dataset_config["data_seed"]),
+    )
+    pin_memory = device.type == "cuda"
+    num_workers = int(config["training"].get("dataloader_num_workers", 0))
+    if num_workers != 0:
+        raise DataError(
+            "dataset.mode=packed_mmap requires training.dataloader_num_workers=0 "
+            "so the checkpointed sampler cursor cannot advance through prefetch"
+        )
+    train_loader = DataLoader(
+        role_datasets["optimizer_training"],
+        batch_sampler=train_batch_sampler,
+        collate_fn=collate_language_model_batch,
+        num_workers=0,
+        pin_memory=pin_memory,
+    )
+    validation_sampler = DistributedValidationSampler(
+        role_datasets["ordinary_validation"], rank, world_size
+    ) if world_size > 1 else None
+    controller_sampler = DistributedValidationSampler(
+        role_datasets["controller"], rank, world_size
+    ) if world_size > 1 else None
+    validation_loader = build_language_model_dataloader(
+        role_datasets["ordinary_validation"],
+        batch_size=batch_size,
+        sampler=validation_sampler,
+        num_workers=0,
+        pin_memory=pin_memory,
+    )
+    controller_loader = build_language_model_dataloader(
+        role_datasets["controller"],
+        batch_size=batch_size,
+        sampler=controller_sampler,
+        num_workers=0,
+        pin_memory=pin_memory,
+    )
+    return train_loader, validation_loader, controller_loader, manifest
+
+
+def packed_sampler_state(dataloader) -> dict[str, Any] | None:
+    sampler = getattr(dataloader, "batch_sampler", None)
+    if isinstance(sampler, NoPaddingDistributedBatchSampler):
+        return sampler.state_dict()
+    return None
+
+
+def restore_packed_sampler_state(dataloader, state: Mapping[str, Any] | None) -> None:
+    sampler = getattr(dataloader, "batch_sampler", None)
+    if not isinstance(sampler, NoPaddingDistributedBatchSampler):
+        if state is not None:
+            raise DataError("Checkpoint contains a packed sampler for a raw dataset")
+        return
+    if not isinstance(state, Mapping):
+        if sampler.cursor != 0:
+            raise DataError("Packed sampler resume state is missing")
+        return
+    try:
+        sampler.load_state_dict(state)
+    except PackedCorpusError as error:
+        raise DataError(str(error)) from error
+
+
 def build_distributed_sampler(
     dataset,
     distributed_context,
@@ -680,11 +787,16 @@ def collate_language_model_batch(batch: list[dict[str, Any]]) -> dict[str, torch
 
     labels = input_ids.clone()
     labels[attention_mask == 0] = -100
-    return {
+    collated = {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "labels": labels,
     }
+    if "packed_sequence_index" in batch[0]:
+        collated["packed_sequence_index"] = _stack_feature(
+            batch, "packed_sequence_index"
+        ).reshape(-1)
+    return collated
 
 
 def build_language_model_dataloader(

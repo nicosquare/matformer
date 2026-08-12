@@ -70,6 +70,18 @@ def prepare_distributed_context(
     distributed_config = _distributed_config(config)
     training_config = _training_config(config)
     env_world_size = env_int("WORLD_SIZE", 1)
+    expected_world_size = int(
+        distributed_config.get("expected_world_size", env_world_size)
+    )
+    if expected_world_size not in {1, 2, 3, 4}:
+        raise ConfigError(
+            "training.distributed.expected_world_size must be between 1 and 4"
+        )
+    if env_world_size != expected_world_size:
+        raise ConfigError(
+            "Distributed runtime world size does not match preflight: "
+            f"expected={expected_world_size}, runtime={env_world_size}"
+        )
     requested = env_world_size > 1
     strategy = distributed_config.get("strategy") or ("fsdp" if requested else "none")
     fsdp_config = _fsdp_config(distributed_config)
@@ -460,6 +472,33 @@ def sum_int(
     tensor = torch.tensor(int(value), dtype=torch.long, device=device)
     torch.distributed.all_reduce(tensor, op=torch.distributed.ReduceOp.SUM)
     return int(tensor.item())
+
+
+def sum_float(
+    value: float,
+    device: torch.device | str,
+    context: DistributedContext | None = None,
+) -> float:
+    if context is not None and not context.enabled:
+        return float(value)
+    if not distributed_is_initialized():
+        return float(value)
+    tensor = torch.tensor(float(value), dtype=torch.float64, device=device)
+    torch.distributed.all_reduce(tensor, op=torch.distributed.ReduceOp.SUM)
+    return float(tensor.item())
+
+
+def gather_objects(
+    value: T,
+    context: DistributedContext | None = None,
+) -> list[T]:
+    if context is not None and not context.enabled:
+        return [value]
+    if not distributed_is_initialized():
+        return [value]
+    gathered: list[T | None] = [None] * get_world_size(default=1)
+    torch.distributed.all_gather_object(gathered, value)
+    return [item for item in gathered if item is not None]
 
 
 def destroy_distributed_process_group(

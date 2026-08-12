@@ -405,6 +405,28 @@ def test_metrics_journal_repairs_malformed_and_ahead_of_checkpoint_tail(tmp_path
         assert [int(row["step"]) for row in csv.DictReader(metrics_file)] == [1, 2]
 
 
+def test_metrics_journal_completion_summary_stays_bounded_and_checkpointable(tmp_path):
+    output_dir = tmp_path / "bounded-metrics"
+    run_state = {}
+    journal = metrics.MetricsJournal(
+        output_dir,
+        flush_interval_steps=10,
+        checkpoint_step=0,
+        artifact_state=run_state,
+    )
+    journal._retained_row_limit = 20
+    for step in range(1, 101):
+        journal.append([_metric_row(step)], force=step % 10 == 0)
+    journal.append([_metric_row(100, split="validation")], force=True)
+
+    summary_rows = journal.summary_rows()
+    assert len(summary_rows) <= 6
+    assert journal.training_outcome()["steps_completed"] == 100
+    assert run_state["metrics_accumulator_state"]["training_row_count"] == 100
+    assert run_state["metrics_accumulator_state"]["validation_row_count"] == 1
+    assert sum(1 for _ in journal.iter_rows()) == 101
+
+
 def test_scaling_rows_never_treat_per_block_pattern_as_uniform_granularity(tmp_path):
     config = resolve_run_config(
         "configs/debug_matrix.yaml",

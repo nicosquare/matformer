@@ -362,5 +362,9 @@ if [[ -n "$GRANULARITY_ARG" ]]; then
   RUNNER_ARGS+=(--granularity "$GRANULARITY_ARG")
 fi
 RUNNER_ARGS+=("${FORWARDED_ARGS[@]}")
+RUNNER_ARGS+=(
+  --override
+  "training.distributed.expected_world_size=$GPUS_PER_NODE"
+)
 
 exec bash scripts/run_dmodel256_pilot.sh "${RUNNER_ARGS[@]}"

@@ -690,7 +690,7 @@ def test_probabilistic_reset_rejects_incompatible_contracts(
 
 def test_seed42_reset_experiment_manifest_is_opt_in_and_matched():
     with open(
-        "configs/probabilistic_global_reset_seed42.yaml",
+        "configs/opt-in_exps/probabilistic_global_reset_seed42.yaml",
         encoding="utf-8",
     ) as config_file:
         manifest = yaml.safe_load(config_file)
@@ -1149,7 +1149,9 @@ def test_balanced_global_pre_nested_warmup_resolves_schedule_and_defaults(tmp_pa
 
 
 def test_five_granularity_500_step_balanced_warmup_reference_is_exactly_balanced():
-    resolved = resolve_run_config("configs/probabilistic_balanced_warmup_500.yaml")
+    resolved = resolve_run_config(
+        "configs/opt-in_exps/probabilistic_balanced_warmup_500.yaml"
+    )
     warmup = resolved["training"]["pre_nested_warmup"]
 
     assert warmup["duration"] == 500
@@ -2031,3 +2033,115 @@ def test_single_run_resolves_explicit_schedule_and_optimizer_overrides(tmp_path)
             "weight_decay": 0.0,
         },
     }
+# Production packed-mmap contract -------------------------------------------------
+
+
+def _production_manifest():
+    return {
+        "context_length": 1024,
+        "data_seed": 42,
+        "corpus_hash": "corpus-hash",
+        "tokenizer": {
+            "name": "hf-internal-testing/llama-tokenizer",
+            "revision": "deadbeef",
+        },
+        "role_manifest_hashes": {
+            "optimizer_training": "training-hash",
+            "ordinary_validation": "validation-hash",
+            "controller": "controller-hash",
+            "final_holdout": "final-hash",
+        },
+        "roles": {
+            "optimizer_training": {"token_count": 10_000_000_000},
+        },
+    }
+
+
+def test_10b_production_preflight_resolves_exact_four_gpu_schedule(tmp_path, monkeypatch):
+    import src.training.packed_corpus as packed_corpus
+
+    monkeypatch.delenv("WORLD_SIZE", raising=False)
+    monkeypatch.setattr(
+        packed_corpus,
+        "load_corpus_manifest",
+        lambda *args, **kwargs: _production_manifest(),
+    )
+    resolved = resolve_run_config(
+        "configs/opt-in_exps/slicing_10b_base.yaml",
+        output_dir=tmp_path / "slicing-10b-base",
+        overrides=[
+            "dataset.prepared_corpus_dir=/prepared/fineweb",
+            "model.tokenizer_revision=deadbeef",
+        ],
+    )
+    training = resolved["training"]
+    assert training["expected_tokens_per_step"] == 16_384
+    assert training["derived_max_steps"] == 610_352
+    assert training["max_steps"] == 610_352
+    assert training["resolved_warmup_steps"] == 9_980
+    assert resolved["model"]["granularities"] == [
+        "g125", "g250", "g375", "g500", "g625", "g750", "g875", "g1000"
+    ]
+    assert resolved["dataset"]["corpus_hash"] == "corpus-hash"
+
+
+def test_10b_bayesian_dimensions_and_balanced_warmup(tmp_path, monkeypatch):
+    import src.training.packed_corpus as packed_corpus
+
+    monkeypatch.delenv("WORLD_SIZE", raising=False)
+    monkeypatch.setattr(
+        packed_corpus,
+        "load_corpus_manifest",
+        lambda *args, **kwargs: _production_manifest(),
+    )
+    common = [
+        "dataset.prepared_corpus_dir=/prepared/fineweb",
+        "model.tokenizer_revision=deadbeef",
+    ]
+    global_config = resolve_run_config(
+        "configs/opt-in_exps/slicing_10b_bayesian.yaml",
+        output_dir=tmp_path / "slicing-10b-bayesian-global",
+        overrides=common,
+    )
+    assert global_config["model"]["adaptive_controller"]["coefficient_dimension"] == 8
+    assert global_config["training"]["pre_nested_warmup"]["duration"] == 800
+    assert global_config["training"]["pre_nested_warmup"]["passes"] == 2
+    per_block = resolve_run_config(
+        "configs/opt-in_exps/slicing_10b_bayesian.yaml",
+        output_dir=tmp_path / "slicing-10b-bayesian-global",
+        overrides=[*common, "model.granularity_sampling_mode=adaptive_per_block"],
+    )
+    assert per_block["model"]["adaptive_controller"]["coefficient_dimension"] == 113
+
+
+def test_packed_mmap_rejects_per_run_sampling_and_distributed_ucb(tmp_path, monkeypatch):
+    import src.training.packed_corpus as packed_corpus
+
+    monkeypatch.delenv("WORLD_SIZE", raising=False)
+    monkeypatch.setattr(
+        packed_corpus,
+        "load_corpus_manifest",
+        lambda *args, **kwargs: _production_manifest(),
+    )
+    with pytest.raises(ConfigError, match="sample_limit is forbidden"):
+        resolve_run_config(
+            "configs/opt-in_exps/slicing_10b_base.yaml",
+            output_dir=tmp_path / "slicing-10b-base",
+            overrides=[
+                "dataset.prepared_corpus_dir=/prepared/fineweb",
+                "model.tokenizer_revision=deadbeef",
+                "dataset.sample_limit=1",
+            ],
+        )
+
+    with pytest.raises(ConfigError, match="ucb is unsupported"):
+        resolve_run_config(
+            "configs/debug_matrix.yaml",
+            run_id="debug-nested-001",
+            output_dir=tmp_path / "debug-nested-001",
+            overrides=[
+                "training.distributed.expected_world_size=2",
+                "model.granularity_sampling_mode=adaptive_per_block",
+                "model.adaptive_sampler_strategy=ucb",
+            ],
+        )

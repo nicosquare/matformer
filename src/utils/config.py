@@ -65,6 +65,20 @@ CANONICAL_GRANULARITY_PREFIX_FRACTIONS = {
     "l": (1, 2),
     "xl": (1, 1),
 }
+PRODUCTION_GRANULARITY_ORDER = (
+    "g125",
+    "g250",
+    "g375",
+    "g500",
+    "g625",
+    "g750",
+    "g875",
+    "g1000",
+)
+PRODUCTION_GRANULARITY_PREFIXES = {
+    label: (index + 1) / 8.0
+    for index, label in enumerate(PRODUCTION_GRANULARITY_ORDER)
+}
 DEFAULT_FFN_MULTIPLIER = 4
 CONFIG_ROOT = Path(__file__).resolve().parent.parent.parent
 PRESET_REGISTRY_ROOT = CONFIG_ROOT / "configs" / "presets"
@@ -232,6 +246,7 @@ def resolve_run_config(
         explicit_override_keys=explicit_override_keys,
     )
     _resolve_adaptive_sampler_defaults(resolved)
+    _resolve_distributed_contract_defaults(resolved)
     _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
     _resolve_parameter_reporting_defaults(resolved)
     _resolve_long_run_defaults(resolved)
@@ -271,6 +286,7 @@ def resolve_all_run_configs(
             explicit_override_keys=explicit_override_keys,
         )
         _resolve_adaptive_sampler_defaults(resolved)
+        _resolve_distributed_contract_defaults(resolved)
         _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
         _resolve_parameter_reporting_defaults(resolved)
         _resolve_long_run_defaults(resolved)
@@ -299,6 +315,7 @@ def resolve_all_run_configs(
             requested_run_sampling_mode=requested_run_sampling_mode,
         )
         _resolve_adaptive_sampler_defaults(resolved)
+        _resolve_distributed_contract_defaults(resolved)
         _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
         _resolve_parameter_reporting_defaults(resolved)
         _resolve_long_run_defaults(resolved)
@@ -1095,6 +1112,99 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
     _validate_dmodel256_pilot_fields(run, model, training)
 
     _validate_derived_training_length(training, model)
+    _validate_distributed_and_prepared_corpus_contract(config)
+
+
+def _validate_distributed_and_prepared_corpus_contract(
+    config: Mapping[str, Any],
+) -> None:
+    training = config["training"]
+    model = config["model"]
+    dataset = config["dataset"]
+    distributed = training.get("distributed", {})
+    if not isinstance(distributed, Mapping):
+        raise ConfigError("training.distributed must be a mapping")
+    expected_world_size = _positive_int(
+        distributed.get("expected_world_size", training["effective_world_size"]),
+        "training.distributed.expected_world_size",
+    )
+    if expected_world_size not in {1, 2, 3, 4}:
+        raise ConfigError(
+            "training.distributed.expected_world_size must be between 1 and 4"
+        )
+    if int(training["effective_world_size"]) != expected_world_size:
+        raise ConfigError(
+            "training.effective_world_size must match "
+            "training.distributed.expected_world_size"
+        )
+    if (
+        expected_world_size > 1
+        and model.get("granularity_sampling_mode") == "adaptive_per_block"
+        and model.get("adaptive_sampler_strategy") == "ucb"
+    ):
+        raise ConfigError(
+            "adaptive_per_block + ucb is unsupported when world size exceeds one"
+        )
+
+    mode = dataset.get("mode", "raw_tokenized")
+    if mode != "packed_mmap":
+        return
+    if dataset.get("sample_limit") is not None:
+        raise ConfigError(
+            "dataset.sample_limit is forbidden when dataset.mode=packed_mmap"
+        )
+    if bool(dataset.get("tokenization_keep_in_memory", False)):
+        raise ConfigError(
+            "in-memory tokenization is forbidden when dataset.mode=packed_mmap"
+        )
+    if int(dataset.get("data_seed", -1)) != 42:
+        raise ConfigError("dataset.mode=packed_mmap requires dataset.data_seed=42")
+    prepared_dir = dataset.get("prepared_corpus_dir")
+    if not isinstance(prepared_dir, str) or not prepared_dir.strip():
+        raise ConfigError(
+            "dataset.mode=packed_mmap requires dataset.prepared_corpus_dir"
+        )
+    if config["run"]["model_family"] == "nested":
+        if tuple(model.get("granularities", ())) != PRODUCTION_GRANULARITY_ORDER:
+            raise ConfigError(
+                "10B packed-mmap nested runs require ordered granularities "
+                f"{list(PRODUCTION_GRANULARITY_ORDER)}"
+            )
+        prefixes = model.get("granularity_prefixes", {})
+        if any(
+            not math.isclose(
+                float(prefixes.get(label, -1.0)),
+                expected,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+            for label, expected in PRODUCTION_GRANULARITY_PREFIXES.items()
+        ):
+            raise ConfigError(
+                "10B packed-mmap runs require 0.125-width granularity prefixes"
+            )
+    try:
+        from src.training.packed_corpus import load_corpus_manifest
+
+        manifest = load_corpus_manifest(prepared_dir, verify_shards=False)
+    except Exception as error:
+        raise ConfigError(f"Prepared corpus validation failed: {error}") from error
+    if int(manifest["context_length"]) != int(model["context_length"]):
+        raise ConfigError("Prepared corpus context length does not match the model")
+    if int(manifest["data_seed"]) != int(dataset["data_seed"]):
+        raise ConfigError("Prepared corpus data seed does not match the run")
+    if int(manifest["roles"]["optimizer_training"]["token_count"]) != int(
+        training["token_budget"]
+    ):
+        raise ConfigError("Prepared corpus token count does not match training.token_budget")
+    tokenizer = manifest["tokenizer"]
+    if tokenizer.get("name") != model.get("tokenizer_name") or tokenizer.get(
+        "revision"
+    ) != model.get("tokenizer_revision"):
+        raise ConfigError("Prepared corpus tokenizer identity does not match the model")
+    if isinstance(dataset, dict):
+        dataset["corpus_hash"] = manifest["corpus_hash"]
+        dataset["role_manifest_hashes"] = dict(manifest["role_manifest_hashes"])
 
 
 def _compose_single_run(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -2049,6 +2159,21 @@ def _resolve_bayesian_covariance(
     dimension: int,
     field_name: str,
 ) -> list[list[float]]:
+    if isinstance(value, Mapping):
+        if set(value) != {"intercept", "effects"}:
+            raise ConfigError(
+                f"{field_name} structured diagonal requires exactly "
+                "intercept and effects"
+            )
+        intercept = _finite_float(value["intercept"], f"{field_name}.intercept")
+        effects = _finite_float(value["effects"], f"{field_name}.effects")
+        if intercept < 0.0 or effects < 0.0:
+            raise ConfigError(f"{field_name} must be positive semidefinite")
+        diagonal = [intercept, *([effects] * (dimension - 1))]
+        return [
+            [diagonal[row] if row == column else 0.0 for column in range(dimension)]
+            for row in range(dimension)
+        ]
     if not isinstance(value, list):
         scalar = _finite_float(value, field_name)
         if scalar < 0.0:
@@ -2533,6 +2658,30 @@ def _resolve_training_length(
     )
 
 
+def _resolve_distributed_contract_defaults(config: dict[str, Any]) -> None:
+    training = config.setdefault("training", {})
+    distributed = training.setdefault("distributed", {})
+    if not isinstance(distributed, dict):
+        raise ConfigError("training.distributed must be a mapping")
+    env_world_size = _resolve_effective_world_size()
+    expected = distributed.get("expected_world_size", env_world_size)
+    expected = _positive_int(
+        expected,
+        "training.distributed.expected_world_size",
+    )
+    if expected not in {1, 2, 3, 4}:
+        raise ConfigError(
+            "training.distributed.expected_world_size must be between 1 and 4"
+        )
+    raw_world_size = os.environ.get("WORLD_SIZE")
+    if raw_world_size not in (None, "") and env_world_size != expected:
+        raise ConfigError(
+            "training.distributed.expected_world_size does not match WORLD_SIZE: "
+            f"expected={expected}, runtime={env_world_size}"
+        )
+    distributed["expected_world_size"] = expected
+
+
 def _resolve_parameter_reporting_defaults(config: dict[str, Any]) -> None:
     reporting = config.setdefault("parameter_reporting", {})
     if not isinstance(reporting, dict):
@@ -2590,12 +2739,23 @@ def resolve_training_length_for_world_size(
     )
     context_length = _positive_int(model.get("context_length"), "model.context_length")
     if effective_world_size is None:
-        effective_world_size = _resolve_effective_world_size()
+        distributed = training.get("distributed", {})
+        configured_world_size = (
+            distributed.get("expected_world_size")
+            if isinstance(distributed, Mapping)
+            else None
+        )
+        effective_world_size = (
+            int(configured_world_size)
+            if configured_world_size is not None
+            else _resolve_effective_world_size()
+        )
         if world_size_source is None:
-            has_world_size = os.environ.get("WORLD_SIZE") not in (None, "")
             world_size_source = (
-                "WORLD_SIZE"
-                if has_world_size
+                "training.distributed.expected_world_size"
+                if configured_world_size is not None
+                else "WORLD_SIZE"
+                if os.environ.get("WORLD_SIZE") not in (None, "")
                 else "single_process"
             )
     else:

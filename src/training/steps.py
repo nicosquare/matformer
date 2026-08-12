@@ -19,6 +19,7 @@ from torch.nn.utils import clip_grad_norm_
 from transformers import get_scheduler
 
 import src.training.checkpointing as training_checkpointing
+import src.training.data as training_data
 from src.evaluation.validation import (
     configure_model_granularity,
     evaluate_validation_per_granularity,
@@ -255,7 +256,14 @@ def train_for_steps(
     )
     resume_epoch = epoch
     resume_batch_index = max(0, resume_batch_index)
-    if len(train_dataloader) > 0:
+    packed_batch_sampler = getattr(train_dataloader, "batch_sampler", None)
+    if hasattr(packed_batch_sampler, "permutation_hash"):
+        # The immutable sampler cursor already identifies the exact next global
+        # batch; epoch/batch skipping would advance it a second time.
+        resume_epoch = 0
+        epoch = 0
+        resume_batch_index = 0
+    elif len(train_dataloader) > 0:
         while resume_batch_index >= len(train_dataloader):
             resume_batch_index -= len(train_dataloader)
             resume_epoch += 1
@@ -304,10 +312,16 @@ def train_for_steps(
                 made_progress = True
                 step += 1
                 batch = move_batch_to_device(batch, device)
-                if count_valid_prediction_targets(batch) <= 0:
+                local_valid_targets = count_valid_prediction_targets(batch)
+                if local_valid_targets <= 0:
                     raise ValueError(
                         "Training batch contains zero valid causal prediction targets"
                     )
+                global_valid_targets = sum_int(
+                    local_valid_targets,
+                    device=device,
+                    context=distributed_context,
+                )
                 content_tokens_seen += global_content_tokens_for_batch(
                     batch,
                     device=device,
@@ -386,7 +400,12 @@ def train_for_steps(
                                 step_correction_context,
                             )
                         )
-                        (outputs.loss / total_losses).backward()
+                        weighted_loss_for_distributed_batch(
+                            outputs.loss / total_losses,
+                            local_valid_targets=local_valid_targets,
+                            global_valid_targets=global_valid_targets,
+                            distributed_context=distributed_context,
+                        ).backward()
                     combined_loss_value = sum(detached_losses) / total_losses
                 elif model_sampling_mode == "adaptive_global" and probabilistic_controller is not None:
                     selected_layer_granularities = (
@@ -574,7 +593,12 @@ def train_for_steps(
                     )
 
                 if forced_global_action is not None or run_sampling_mode != "nested-all":
-                    combined_loss.backward()
+                    weighted_loss_for_distributed_batch(
+                        combined_loss,
+                        local_valid_targets=local_valid_targets,
+                        global_valid_targets=global_valid_targets,
+                        distributed_context=distributed_context,
+                    ).backward()
 
                 gradient_clip_norm = training.get("gradient_clip_norm")
                 if gradient_clip_norm is not None:
@@ -599,6 +623,9 @@ def train_for_steps(
                         "content_tokens_seen": content_tokens_seen,
                     }
                 )
+                sampler_state = training_data.packed_sampler_state(train_dataloader)
+                if sampler_state is not None:
+                    run_state["sampler_state"] = sampler_state
                 if successful_step_callback is not None:
                     successful_step_callback(step=step, tokens_seen=tokens_seen)
                 if probabilistic_boundary_callback is not None:
@@ -776,6 +803,21 @@ def train_for_steps(
                         run_state,
                         distributed_context=distributed_context,
                     )
+                    if metrics_journal is not None and run_state.get(
+                        "checkpoint_selection_step"
+                    ) is not None:
+                        metrics_journal.record_checkpoint_selection(
+                            {
+                                "path": run_state.get("best_checkpoint_path"),
+                                "metric": run_state.get("checkpoint_metric"),
+                                "metric_value": run_state.get(
+                                    "checkpoint_metric_value"
+                                ),
+                                "step": run_state.get(
+                                    "checkpoint_selection_step"
+                                ),
+                            }
+                        )
                     training_checkpointing.maybe_write_latest_checkpoint(
                         config,
                         model,
@@ -1360,6 +1402,25 @@ def count_valid_prediction_targets(batch: dict[str, torch.Tensor]) -> int:
     if labels.ndim < 2 or labels.shape[1] <= 1:
         return 0
     return int((labels[:, 1:] != -100).sum().item())
+
+
+def weighted_loss_for_distributed_batch(
+    local_mean_loss: torch.Tensor,
+    *,
+    local_valid_targets: int,
+    global_valid_targets: int,
+    distributed_context=None,
+) -> torch.Tensor:
+    """Scale a local mean so FSDP's averaged gradient is globally token weighted."""
+
+    local_count = int(local_valid_targets)
+    global_count = int(global_valid_targets)
+    if local_count <= 0 or global_count <= 0 or local_count > global_count:
+        raise ValueError("Distributed loss weighting requires valid target counts")
+    world_size = int(getattr(distributed_context, "world_size", 1))
+    if world_size <= 1:
+        return local_mean_loss
+    return local_mean_loss * (world_size * local_count / global_count)
 
 
 def count_batch_tokens(batch: dict[str, torch.Tensor]) -> int:
