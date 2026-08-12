@@ -26,6 +26,7 @@ __all__ = [
     "enrich_scaling_metadata_from_run_config",
     "granularity_sampling_mode_from_saved_config",
     "iter_controller_granularity_timelines",
+    "iter_csv_artifact_rows",
     "membership_correction_from_saved_config",
     "model_variant_from_saved_config",
     "read_csv_artifacts",
@@ -33,6 +34,7 @@ __all__ = [
     "recompute_parameter_counts",
     "refresh_scaling_parameter_counts",
     "resolved_sampling_mode_from_saved_config",
+    "seed_independent_validation_contract",
     "validation_split_filter",
     "with_default_model_variant",
 ]
@@ -65,12 +67,25 @@ class ControllerGranularityTimeline:
     row_labels: tuple[str, ...]
     token_budget: int
     windows: tuple[ControllerSelectionWindow, ...]
+    model_variant: str | None
+    correction_mode: str | None
+    membership_correction: bool | None
     config_path: Path
     journal_path: Path
 
 
 def read_csv_artifacts(input_root: Path, filename: str) -> list[dict[str, str]]:
     return read_csv_artifacts_filtered(input_root, filename, row_filter=None)
+
+
+def iter_csv_artifact_rows(path: str | Path) -> Iterator[dict[str, str]]:
+    """Yield one CSV row at a time without retaining the artifact in memory."""
+
+    path = Path(path)
+    with path.open("r", encoding="utf-8", newline="") as csv_file:
+        for row in csv.DictReader(csv_file):
+            row["_source_csv"] = str(path)
+            yield row
 
 
 def read_csv_artifacts_filtered(
@@ -80,12 +95,10 @@ def read_csv_artifacts_filtered(
 ) -> list[dict[str, str]]:
     rows = []
     for path in sorted(input_root.rglob(filename)):
-        with path.open("r", encoding="utf-8", newline="") as csv_file:
-            for row in csv.DictReader(csv_file):
-                if row_filter is not None and not row_filter(row):
-                    continue
-                row["_source_csv"] = str(path)
-                rows.append(row)
+        for row in iter_csv_artifact_rows(path):
+            if row_filter is not None and not row_filter(row):
+                continue
+            rows.append(row)
     return rows
 
 
@@ -117,7 +130,13 @@ def iter_controller_granularity_timelines(
                 config_path=config_path,
                 journal_path=journal_path,
             )
-        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+            KeyError,
+            json.JSONDecodeError,
+        ) as error:
             warnings.warn(
                 f"Skipping controller timeline {journal_path}: {error}",
                 RuntimeWarning,
@@ -237,6 +256,9 @@ def _read_controller_granularity_timeline(
         row_labels=row_labels,
         token_budget=token_budget,
         windows=tuple(windows),
+        model_variant=model_variant_from_saved_config(dict(config)),
+        correction_mode=correction_mode_from_saved_config(dict(config)),
+        membership_correction=membership_correction_from_saved_config(dict(config)),
         config_path=config_path,
         journal_path=journal_path,
     )
@@ -450,6 +472,7 @@ def enrich_metrics_metadata_from_run_config(
     rows: list[dict[str, str]],
 ) -> list[dict[str, str]]:
     config_cache: dict[Path, dict[str, Any]] = {}
+    completion_cache: dict[Path, dict[str, Any] | None] = {}
     enriched_rows = []
 
     for row in rows:
@@ -491,9 +514,155 @@ def enrich_metrics_metadata_from_run_config(
                 enriched_row,
                 config_cache[config_path],
             )
+            contract, historical_fallback = seed_independent_validation_contract(
+                config_cache[config_path],
+                run_id=str(enriched_row.get("run_id") or config_path.parent.name),
+            )
+            enriched_row["_validation_contract"] = contract
+            enriched_row["_validation_contract_fallback"] = historical_fallback
+            ordered_granularities = _mapping_value(
+                config_cache[config_path], "model", "granularities"
+            )
+            if isinstance(ordered_granularities, list):
+                enriched_row["_ordered_granularities"] = list(ordered_granularities)
+        _enrich_run_completion(enriched_row, completion_cache)
         enriched_rows.append(enriched_row)
 
     return enriched_rows
+
+
+_VALIDATION_CONTRACT_IGNORED_KEYS = {
+    "artifact_retry_count",
+    "completion_label",
+    "continuation",
+    "derived_seeds",
+    "extraction_metadata_path",
+    "metrics_path",
+    "output_dir",
+    "output_group",
+    "output_root",
+    "parameter_counts",
+    "parameter_counts_by_granularity",
+    "phase_id",
+    "reproducibility",
+    "resolved_seeds",
+    "run_id",
+    "scaling_results_path",
+    "schedule",
+    "schedule_hash",
+    "schedule_seed",
+    "seed",
+    "seed_streams",
+    "status",
+    "tokens_seen",
+    "content_tokens_seen",
+}
+
+
+def _seed_independent_contract_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        normalized = {}
+        for raw_key, nested_value in sorted(
+            value.items(), key=lambda item: str(item[0])
+        ):
+            key = str(raw_key)
+            normalized_key = key.strip().lower()
+            if normalized_key in _VALIDATION_CONTRACT_IGNORED_KEYS:
+                continue
+            if "seed" in normalized_key or normalized_key.endswith("_hash"):
+                continue
+            if normalized_key.endswith("_path") or normalized_key.endswith("_paths"):
+                continue
+            normalized[key] = _seed_independent_contract_value(nested_value)
+        return normalized
+    if isinstance(value, (list, tuple)):
+        return [_seed_independent_contract_value(item) for item in value]
+    if isinstance(value, float) and value == 0.0:
+        return 0.0
+    return value
+
+
+def seed_independent_validation_contract(
+    config: Mapping[str, Any],
+    *,
+    run_id: str,
+) -> tuple[str, bool]:
+    """Return a conservative complete contract and historical-fallback flag.
+
+    A saved config is considered provably comparable only when it contains the
+    core model, optimizer-budget, and dataset identities. Older artifacts that
+    lack any of those sections are isolated by run identity.
+    """
+
+    model = config.get("model")
+    training = config.get("training")
+    dataset = config.get("dataset")
+    run = config.get("run")
+    required_values = (
+        _mapping_value(model, "variant"),
+        _mapping_value(model, "granularities"),
+        _mapping_value(training, "token_budget"),
+        _first_config_value(
+            dict(config),
+            ("training", "resolved_learning_rate"),
+            ("training", "learning_rate"),
+            ("training", "base_learning_rate"),
+        ),
+        _first_config_value(
+            dict(config),
+            ("training", "optimizer", "name"),
+            ("training", "optimizer_name"),
+        ),
+        _mapping_value(dataset, "dataset_name"),
+        _mapping_value(dataset, "dataset_split"),
+        _mapping_value(run, "model_family"),
+    )
+    historical_fallback = any(value in (None, "", []) for value in required_values)
+    payload: dict[str, Any] = {"config": _seed_independent_contract_value(dict(config))}
+    if historical_fallback:
+        payload["historical_run_fallback"] = run_id
+    return (
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str),
+        historical_fallback,
+    )
+
+
+def _enrich_run_completion(
+    row: dict[str, Any],
+    cache: dict[Path, dict[str, Any] | None],
+) -> None:
+    source_csv = row.get("_source_csv")
+    summary_path = (
+        Path(str(source_csv)).parent / "run_summary.json" if source_csv else None
+    )
+    summary: dict[str, Any] | None = None
+    if summary_path is not None:
+        if summary_path not in cache:
+            loaded_summary = None
+            if summary_path.is_file():
+                try:
+                    with summary_path.open("r", encoding="utf-8") as summary_file:
+                        loaded = json.load(summary_file)
+                    if isinstance(loaded, dict):
+                        loaded_summary = loaded
+                except (OSError, json.JSONDecodeError):
+                    loaded_summary = None
+            cache[summary_path] = loaded_summary
+        summary = cache[summary_path]
+
+    row["_run_summary_present"] = summary is not None
+    row["_run_status"] = (
+        str(summary.get("status") or "missing") if summary else "missing"
+    )
+    progress_tokens = None
+    token_budget = None
+    if summary is not None:
+        progress_tokens = summary.get("tokens_seen")
+        token_budget = summary.get("token_budget")
+    if progress_tokens in (None, ""):
+        progress_tokens = row.get("tokens_seen")
+    row["_run_progress_tokens"] = progress_tokens
+    row["_run_token_budget"] = token_budget
 
 
 def config_path_for_scaling_row(
@@ -694,9 +863,7 @@ def controller_contract_provenance_from_saved_config(
             ("comparison_control_inputs", "root_seed"),
             ("data", "seed"),
         ),
-        "controller_decision_interval_steps": controller.get(
-            "decision_interval_steps"
-        ),
+        "controller_decision_interval_steps": controller.get("decision_interval_steps"),
         "controller_observation_noise_variance": controller.get(
             "observation_noise_variance"
         ),
@@ -727,9 +894,7 @@ def controller_contract_provenance_from_saved_config(
         "pre_nested_warmup_enabled": warmup.get("enabled"),
         "pre_nested_warmup_policy": warmup.get("policy"),
         "pre_nested_warmup_duration": warmup.get("duration"),
-        "pre_nested_warmup_action_interval_steps": warmup.get(
-            "action_interval_steps"
-        ),
+        "pre_nested_warmup_action_interval_steps": warmup.get("action_interval_steps"),
         "training_token_budget": _first_config_value(
             config,
             ("training", "token_budget"),
@@ -741,9 +906,7 @@ def controller_contract_provenance_from_saved_config(
             ("training", "learning_rate"),
             ("comparison_control_inputs", "learning_rate"),
         ),
-        "training_max_steps": _first_config_value(
-            config, ("training", "max_steps")
-        ),
+        "training_max_steps": _first_config_value(config, ("training", "max_steps")),
         "training_optimizer_name": optimizer.get("name")
         or _first_config_value(config, ("training", "optimizer_name")),
         "training_optimizer_kwargs": optimizer.get("kwargs")
@@ -772,12 +935,8 @@ def _enrich_controller_provenance(
             config
         ),
         "controller_scope": controller_scope_from_saved_config(config),
-        "controller_reset_enabled": controller_reset_enabled_from_saved_config(
-            config
-        ),
-        "controller_reset_policy": controller_reset_policy_from_saved_config(
-            config
-        ),
+        "controller_reset_enabled": controller_reset_enabled_from_saved_config(config),
+        "controller_reset_policy": controller_reset_policy_from_saved_config(config),
     }
     for field_name, value in provenance.items():
         if value not in (None, ""):

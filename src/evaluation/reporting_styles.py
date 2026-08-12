@@ -15,6 +15,12 @@ PARAMETER_COUNT_FIELDS = [
 
 LOSS_MOVING_AVERAGE_FRACTION = 0.1
 
+# Standalone references are marker-only observations in the size plots. Reserve
+# near-black for them so the expanding trained-curve palette can never reuse
+# their color, and use a light edge to keep overlapping points recognizable.
+STANDALONE_REFERENCE_COLOR = "#111111"
+STANDALONE_REFERENCE_EDGE_COLOR = "#ffffff"
+
 SIZE_PLOT_PANELS_DEFAULT = [
     ("nested-random", "slicing", None),
     ("nested-random", "concat", None),
@@ -54,7 +60,7 @@ SCALING_GROUP_COLORS = {
     "nested-random / concat / adaptive_per_block_ucb": "tab:pink",
     "nested-all / slicing": "tab:purple",
     "nested-all / concat": "tab:green",
-    "standalone": "tab:brown",
+    "standalone": STANDALONE_REFERENCE_COLOR,
 }
 
 SCALING_CORRECTION_STYLES = {
@@ -112,7 +118,7 @@ PLOT_STYLE_PRESETS = {
         "series_colors": {
             "nested-all / slicing": "tab:blue",
             "nested-all / concat": "tab:orange",
-            "standalone": "tab:brown",
+            "standalone": STANDALONE_REFERENCE_COLOR,
         },
     },
     "nested_random_no_corrections": {
@@ -132,7 +138,7 @@ PLOT_STYLE_PRESETS = {
             "nested-random / concat / per_block": "tab:red",
             "nested-random / slicing / adaptive_per_block_ucb": "tab:olive",
             "nested-random / concat / adaptive_per_block_ucb": "tab:pink",
-            "standalone": "tab:brown",
+            "standalone": STANDALONE_REFERENCE_COLOR,
         },
     },
     "nested_split_no_corrections": {
@@ -156,7 +162,7 @@ PLOT_STYLE_PRESETS = {
             "nested-all / concat / gmc": "Concat/GMC",
         },
         "series_colors": {
-            "standalone": "tab:brown",
+            "standalone": STANDALONE_REFERENCE_COLOR,
             "nested-random / slicing / none / global": "tab:red",
             "nested-random / concat / none / global": "tab:blue",
             "nested-random / concat / lmc": "tab:purple",

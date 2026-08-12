@@ -201,6 +201,37 @@ experimental contracts or repeating seeds as separate curves.
 
 ---
 
+## Phase 12: Contract-Safe Validation Traces and Saturation Diagnostics
+
+**Purpose**: Prevent unrelated or incomplete runs from being merged in
+validation figures and report direct selected-exposure evidence for global
+granularity saturation without changing controller behavior.
+
+- [X] T075 Add validation-trace regression fixtures for complete experiment-contract separation, aligned seed aggregation/min-max bands, completion filtering, historical fallback, panel ordering, shared limits, and raw loss preservation in tests/test_reporting.py
+- [X] T076 Add selected-exposure regression coverage for warmup attribution, resumed-step deduplication, non-monotonic rejection, shared-support interpolation, signed five-point OLS marginal utility, and generated ranking artifacts in tests/test_reporting.py
+- [X] T077 Record the actually evaluated subnetwork in every new ordinary-validation row and cover the row-level metadata contract in src/evaluation/validation.py and tests/test_data_validation.py
+- [X] T078 Enrich metrics rows with run-summary completion, full seed-independent config contracts, ordered granularities, seed identity, and conservative historical fallback in src/evaluation/reporting_io.py
+- [X] T079 Render contract-safe completed-seed traces and dashed opt-in incomplete traces in both per-experiment and cross-method validation figures with micro-to-full panels, common limits, explicit total-token axes, and preserved filenames in src/evaluation/reporting_impl.py
+- [X] T080 Stream completed global/adaptive-global training rows, reconstruct direct selected exposure, interpolate loss only over shared exposure, compute signed rolling OLS marginal utility, and write per-method figures plus a Markdown ranking in src/evaluation/reporting_impl.py
+- [X] T081 Extend scripts/make_figures.py and both generate_figures compatibility paths with --include-incomplete-validation-traces while preserving the reserved standalone reference style
+- [X] T082 Document diagnostic interpretation and run focused reporting, artifact, and training compatibility verification
+
+---
+
+## Phase 13: Figure Filters and Per-Granularity Policy Views
+
+**Purpose**: Let reporting runs isolate selected model/correction families and
+make realized controller choices readable without removing the existing
+block-level heatmap.
+
+- [X] T083 Add repeatable `--variant` and `--correction` CLI filters and apply them consistently across modular and compatibility reporting outputs
+- [X] T084 Preserve controller plot filtering metadata when streaming saved controller journals
+- [X] T085 Generate one exact selected-block-fraction panel per granularity alongside every existing controller heatmap
+- [X] T086 Add filtering, fractional per-block, binary global, output-integration, and compatibility regression coverage in tests/test_reporting.py
+- [X] T087 Document the uncorrected-slicing command and the realized-selection-share interpretation in specs/010-probabilistic-adaptive-granularity/quickstart.md
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies

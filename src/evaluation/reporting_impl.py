@@ -8,9 +8,11 @@ import hashlib
 import json
 import math
 import re
+import warnings
 from pathlib import Path
 from typing import Any
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import matplotlib
 
@@ -18,7 +20,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import to_rgb
 from matplotlib.collections import PolyCollection
-from matplotlib.lines import Line2D
 
 from src.evaluation import reporting_styles
 
@@ -35,6 +36,8 @@ PARAMETER_COUNT_FIELDS = [
 ]
 
 LOSS_MOVING_AVERAGE_FRACTION = 0.1
+STANDALONE_REFERENCE_COLOR = reporting_styles.STANDALONE_REFERENCE_COLOR
+STANDALONE_REFERENCE_EDGE_COLOR = reporting_styles.STANDALONE_REFERENCE_EDGE_COLOR
 SIZE_PLOT_PANELS_DEFAULT = [
     ("nested-random", "slicing", None),
     ("nested-random", "concat", None),
@@ -72,7 +75,7 @@ SCALING_GROUP_COLORS = {
     "nested-random / concat / adaptive_per_block_ucb": "tab:pink",
     "nested-all / slicing": "tab:purple",
     "nested-all / concat": "tab:green",
-    "standalone": "tab:brown",
+    "standalone": STANDALONE_REFERENCE_COLOR,
 }
 SCALING_CORRECTION_STYLES = {
     "none": {"linestyle": "-", "marker": "o", "shade": 0.0},
@@ -128,7 +131,7 @@ PLOT_STYLE_PRESETS = {
         "series_colors": {
             "nested-all / slicing": "tab:blue",
             "nested-all / concat": "tab:orange",
-            "standalone": "tab:brown",
+            "standalone": STANDALONE_REFERENCE_COLOR,
         },
     },
     "nested_random_no_corrections": {
@@ -148,7 +151,7 @@ PLOT_STYLE_PRESETS = {
             "nested-random / concat / per_block": "tab:red",
             "nested-random / slicing / adaptive_per_block_ucb": "tab:olive",
             "nested-random / concat / adaptive_per_block_ucb": "tab:pink",
-            "standalone": "tab:brown",
+            "standalone": STANDALONE_REFERENCE_COLOR,
         },
     },
     "nested_split_no_corrections": {
@@ -172,7 +175,7 @@ PLOT_STYLE_PRESETS = {
             "nested-all / concat / gmc": "Concat/GMC",
         },
         "series_colors": {
-            "standalone": "tab:brown",
+            "standalone": STANDALONE_REFERENCE_COLOR,
             "nested-random / slicing / none / global": "tab:red",
             "nested-random / concat / none / global": "tab:blue",
             "nested-random / concat / lmc": "tab:purple",
@@ -251,6 +254,11 @@ def main(argv: list[str] | None = None) -> None:
         refresh_counts=not args.no_refresh_counts,
         dpi=args.dpi,
         validation_loss_log_y=args.validation_loss_log_y,
+        include_incomplete_validation_traces=(
+            args.include_incomplete_validation_traces
+        ),
+        variants=args.variants,
+        corrections=args.corrections,
     )
     for path in figure_paths:
         print(path)
@@ -283,6 +291,25 @@ def parse_args(argv: list[str] | None = None):
         action="store_true",
         help="Render validation loss figures with a logarithmic y axis.",
     )
+    parser.add_argument(
+        "--include-incomplete-validation-traces",
+        action="store_true",
+        help="Include incomplete runs as separate dashed validation traces.",
+    )
+    parser.add_argument(
+        "--variant",
+        dest="variants",
+        action="append",
+        choices=("slicing", "concat"),
+        help="Only include this model variant; repeat to include multiple variants.",
+    )
+    parser.add_argument(
+        "--correction",
+        dest="corrections",
+        action="append",
+        choices=("none", "gmc", "lmc"),
+        help="Only include this correction mode; use 'none' for uncorrected runs.",
+    )
     return parser.parse_args(argv)
 
 
@@ -292,6 +319,9 @@ def generate_figures(
     refresh_counts: bool = True,
     dpi: int = 300,
     validation_loss_log_y: bool = False,
+    include_incomplete_validation_traces: bool = False,
+    variants: list[str] | tuple[str, ...] | None = None,
+    corrections: list[str] | tuple[str, ...] | None = None,
 ) -> list[Path]:
     input_root = Path(input_root)
     output_dir = Path(output_dir)
@@ -300,7 +330,11 @@ def generate_figures(
     figure_paths = []
     scaling_rows = read_csv_artifacts(input_root, "scaling_results.csv")
     scaling_rows = enrich_scaling_metadata_from_run_config(input_root, scaling_rows)
-    scaling_rows = filter_plot_rows(scaling_rows)
+    scaling_rows = filter_plot_rows(
+        scaling_rows,
+        variants=variants,
+        corrections=corrections,
+    )
     if refresh_counts:
         scaling_rows = refresh_scaling_parameter_counts(input_root, scaling_rows)
     task_result_rows = read_csv_artifacts(input_root, "task_results.csv")
@@ -309,7 +343,11 @@ def generate_figures(
         input_root,
         consistency_rows,
     )
-    consistency_rows = filter_plot_rows(consistency_rows)
+    consistency_rows = filter_plot_rows(
+        consistency_rows,
+        variants=variants,
+        corrections=corrections,
+    )
 
     if scaling_rows and task_result_rows:
         from src.evaluation.validation import aggregate_scaling_summary
@@ -350,14 +388,10 @@ def generate_figures(
             ylabel="Perplexity",
             output_path=output_dir
             / reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["output_name"],
-            figure_title=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC[
-                "figure_title"
-            ],
+            figure_title=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["figure_title"],
             style=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["style"],
             left_panel_spec=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["left"],
-            right_panel_spec=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC[
-                "right"
-            ],
+            right_panel_spec=reporting_styles.PPL_VS_SIZE_SPLIT_FIGURE_SPEC["right"],
             dpi=dpi,
         )
         if split_comparison_path is not None:
@@ -386,13 +420,18 @@ def generate_figures(
             row_filter=validation_split_filter,
         )
         metrics_rows = enrich_metrics_metadata_from_run_config(input_root, metrics_rows)
-        metrics_rows = filter_plot_rows(metrics_rows)
+        metrics_rows = filter_plot_rows(
+            metrics_rows,
+            variants=variants,
+            corrections=corrections,
+        )
         figure_paths.extend(
             plot_validation_loss_over_tokens_by_experiment(
                 metrics_rows,
                 output_dir,
                 dpi=dpi,
                 validation_loss_log_y=validation_loss_log_y,
+                include_incomplete_validation_traces=include_incomplete_validation_traces,
             )
         )
         figure_paths.extend(
@@ -401,12 +440,17 @@ def generate_figures(
                 output_dir,
                 dpi=dpi,
                 validation_loss_log_y=validation_loss_log_y,
+                include_incomplete_validation_traces=include_incomplete_validation_traces,
             )
         )
     else:
         metrics_rows = read_csv_artifacts(input_root, "metrics.csv")
         metrics_rows = enrich_metrics_metadata_from_run_config(input_root, metrics_rows)
-        metrics_rows = filter_plot_rows(metrics_rows)
+        metrics_rows = filter_plot_rows(
+            metrics_rows,
+            variants=variants,
+            corrections=corrections,
+        )
         validation_metrics_rows = [
             row for row in metrics_rows if validation_split_filter(row)
         ]
@@ -417,6 +461,7 @@ def generate_figures(
                     output_dir,
                     dpi=dpi,
                     validation_loss_log_y=validation_loss_log_y,
+                    include_incomplete_validation_traces=include_incomplete_validation_traces,
                 )
             )
             figure_paths.extend(
@@ -425,6 +470,7 @@ def generate_figures(
                     output_dir,
                     dpi=dpi,
                     validation_loss_log_y=validation_loss_log_y,
+                    include_incomplete_validation_traces=include_incomplete_validation_traces,
                 )
             )
         figure_paths.append(
@@ -446,17 +492,49 @@ def generate_figures(
             )
         )
 
+    figure_paths.extend(
+        generate_saturation_diagnostics(
+            input_root,
+            output_dir,
+            dpi=dpi,
+            variants=variants,
+            corrections=corrections,
+        )
+    )
+
     from src.evaluation.reporting import (
+        controller_selection_share_filename,
         controller_timeline_filename,
         plot_selected_granularity_over_tokens,
+        plot_selected_granularity_share_over_tokens,
     )
     from src.evaluation.reporting_io import iter_controller_granularity_timelines
 
     for timeline in iter_controller_granularity_timelines(input_root):
+        timeline_rows = filter_plot_rows(
+            [
+                {
+                    "model_variant": timeline.model_variant,
+                    "correction_mode": timeline.correction_mode,
+                    "membership_correction": timeline.membership_correction,
+                }
+            ],
+            variants=variants,
+            corrections=corrections,
+        )
+        if not timeline_rows:
+            continue
         figure_paths.append(
             plot_selected_granularity_over_tokens(
                 timeline,
                 output_dir / controller_timeline_filename(timeline.run_id),
+                dpi=dpi,
+            )
+        )
+        figure_paths.append(
+            plot_selected_granularity_share_over_tokens(
+                timeline,
+                output_dir / controller_selection_share_filename(timeline.run_id),
                 dpi=dpi,
             )
         )
@@ -771,12 +849,8 @@ def _enrich_controller_provenance(
             config
         ),
         "controller_scope": controller_scope_from_saved_config(config),
-        "controller_reset_enabled": controller_reset_enabled_from_saved_config(
-            config
-        ),
-        "controller_reset_policy": controller_reset_policy_from_saved_config(
-            config
-        ),
+        "controller_reset_enabled": controller_reset_enabled_from_saved_config(config),
+        "controller_reset_policy": controller_reset_policy_from_saved_config(config),
     }
     for field_name, value in provenance.items():
         if value not in (None, ""):
@@ -1163,13 +1237,12 @@ def plot_metric_vs_size_split_panel(
                 xs,
                 ys,
                 marker="^",
-                s=42,
-                color=style_config["series_colors"].get(
-                    series_key,
-                    reporting_styles.SCALING_GROUP_COLORS["standalone"],
-                ),
+                s=58,
+                color=STANDALONE_REFERENCE_COLOR,
+                edgecolors=STANDALONE_REFERENCE_EDGE_COLOR,
+                linewidths=0.8,
                 label=resolve_series_alias(series_key, style_config),
-                zorder=3,
+                zorder=5,
             )
             continue
 
@@ -1273,7 +1346,11 @@ GLOBAL_TS_IDENTITIES = {
 
 def _size_plot_sampling_family(row: dict[str, Any]) -> str:
     identity = scaling_curve_sampling_label(row) or "global"
-    return "probabilistic_global_thompson" if identity in GLOBAL_TS_IDENTITIES else identity
+    return (
+        "probabilistic_global_thompson"
+        if identity in GLOBAL_TS_IDENTITIES
+        else identity
+    )
 
 
 def _size_plot_sampling_display(row: dict[str, Any]) -> str:
@@ -1376,13 +1453,13 @@ def _minimal_peer_differentiators(
         )
         initial_partitions.setdefault(interval_key, []).append((contract, rows))
 
-    pending = [partition for partition in initial_partitions.values() if len(partition) > 1]
+    pending = [
+        partition for partition in initial_partitions.values() if len(partition) > 1
+    ]
     while pending:
         partition = pending.pop(0)
         already_selected = {
-            field_name
-            for contract, _ in partition
-            for field_name in selected[contract]
+            field_name for contract, _ in partition for field_name in selected[contract]
         }
         best_field = None
         best_partition_count = 1
@@ -1390,10 +1467,7 @@ def _minimal_peer_differentiators(
             if field_name in already_selected:
                 continue
             partition_count = len(
-                {
-                    _field_contract_value(rows[0], field_name)
-                    for _, rows in partition
-                }
+                {_field_contract_value(rows[0], field_name) for _, rows in partition}
             )
             if partition_count > best_partition_count:
                 best_field = field_name
@@ -1403,9 +1477,9 @@ def _minimal_peer_differentiators(
         split: dict[str, list[tuple[str, list[dict[str, Any]]]]] = {}
         for contract, rows in partition:
             selected[contract].append(best_field)
-            split.setdefault(
-                _field_contract_value(rows[0], best_field), []
-            ).append((contract, rows))
+            split.setdefault(_field_contract_value(rows[0], best_field), []).append(
+                (contract, rows)
+            )
         pending.extend(group for group in split.values() if len(group) > 1)
     return selected
 
@@ -1425,9 +1499,7 @@ def compact_size_curve_labels(
         for group in all_groups
     )
     show_sampling_method = panel_sampling_label is None
-    groups_by_comparison_family: dict[
-        tuple[str, str], list[list[dict[str, Any]]]
-    ] = {}
+    groups_by_comparison_family: dict[tuple[str, str], list[list[dict[str, Any]]]] = {}
     for group in all_groups:
         comparison_family = (
             _size_plot_sampling_family(group[0]),
@@ -1516,7 +1588,9 @@ def compact_size_curve_labels(
             and not global_ts_only
         ):
             correction = scaling_curve_correction_label(row) or "none"
-            parts.append(correction.upper() if correction != "none" else "No correction")
+            parts.append(
+                correction.upper() if correction != "none" else "No correction"
+            )
         if not parts:
             parts.append("Trained model")
 
@@ -1629,15 +1703,11 @@ def plot_metric_vs_size_panel(
         if any(aggregate["band_mask"]):
             lower = [
                 value if include else math.nan
-                for value, include in zip(
-                    aggregate["minimums"], aggregate["band_mask"]
-                )
+                for value, include in zip(aggregate["minimums"], aggregate["band_mask"])
             ]
             upper = [
                 value if include else math.nan
-                for value, include in zip(
-                    aggregate["maximums"], aggregate["band_mask"]
-                )
+                for value, include in zip(aggregate["maximums"], aggregate["band_mask"])
             ]
             axis.fill_between(
                 aggregate["xs"],
@@ -1658,13 +1728,12 @@ def plot_metric_vs_size_panel(
             standalone_aggregate["xs"],
             standalone_aggregate["means"],
             marker="^",
-            s=42,
-            color=style_config["series_colors"].get(
-                "standalone",
-                reporting_styles.SCALING_GROUP_COLORS["standalone"],
-            ),
+            s=58,
+            color=STANDALONE_REFERENCE_COLOR,
+            edgecolors=STANDALONE_REFERENCE_EDGE_COLOR,
+            linewidths=0.8,
             label=style_config["standalone_label"],
-            zorder=3,
+            zorder=5,
         )
         if any(standalone_aggregate["band_mask"]):
             lower = [
@@ -1685,10 +1754,7 @@ def plot_metric_vs_size_panel(
                 standalone_aggregate["xs"],
                 lower,
                 upper,
-                color=style_config["series_colors"].get(
-                    "standalone",
-                    reporting_styles.SCALING_GROUP_COLORS["standalone"],
-                ),
+                color=STANDALONE_REFERENCE_COLOR,
                 alpha=0.12,
                 linewidth=0,
                 zorder=1,
@@ -1762,10 +1828,7 @@ def comparison_series_style(
         return {
             "linewidth": 1.6,
             "linestyle": "None",
-            "color": style_config["series_colors"].get(
-                series_key,
-                reporting_styles.SCALING_GROUP_COLORS["standalone"],
-            ),
+            "color": STANDALONE_REFERENCE_COLOR,
         }
 
     parts = series_key.split(" / ")
@@ -1834,13 +1897,922 @@ def plot_metric_over_steps(
     return output_path
 
 
+def validation_run_is_completed(row: dict[str, Any]) -> bool:
+    """Use run_summary-derived status when enrichment made it available."""
+
+    status = row.get("_run_status")
+    if status in (None, ""):
+        # Low-level plotting helpers also accept already-vetted synthetic rows.
+        return True
+    return str(status).strip().lower() == "completed"
+
+
+def filter_validation_rows_by_completion(
+    rows: list[dict[str, Any]],
+    *,
+    include_incomplete: bool = False,
+) -> list[dict[str, Any]]:
+    if include_incomplete:
+        return list(rows)
+    return [row for row in rows if validation_run_is_completed(row)]
+
+
+def validation_experiment_contract(row: dict[str, Any]) -> str:
+    """Return the seed-independent contract, isolating unproven history."""
+
+    enriched_contract = row.get("_validation_contract")
+    if enriched_contract not in (None, ""):
+        return str(enriched_contract)
+    payload = {
+        "family": scaling_curve_family_label(row),
+        "variant": scaling_curve_variant_label(row),
+        "sampling": scaling_curve_sampling_label(row),
+        "correction": scaling_curve_correction_label(row),
+        "model_shape": row.get("model_shape_label") or row.get("model_size_label"),
+        "historical_run_fallback": experiment_label(row),
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def validation_granularity_order(rows: list[dict[str, Any]]) -> list[str]:
+    present = {
+        str(row["granularity"])
+        for row in rows
+        if row.get("granularity") not in (None, "")
+    }
+    ordered: list[str] = []
+    for row in rows:
+        configured = row.get("_ordered_granularities")
+        if isinstance(configured, str):
+            try:
+                configured = json.loads(configured)
+            except json.JSONDecodeError:
+                configured = None
+        if isinstance(configured, list):
+            for label in configured:
+                label = str(label)
+                if label in present and label not in ordered:
+                    ordered.append(label)
+    ordered.extend(sorted(present - set(ordered), key=granularity_sort_key))
+    return ordered
+
+
+def _validation_replicate_id(row: dict[str, Any]) -> str:
+    seed = row.get("run_seed")
+    if seed not in (None, ""):
+        return f"seed:{seed}"
+    return f"run:{experiment_label(row)}"
+
+
+def aggregate_validation_curve(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate matching completed seeds at exact total-token checkpoints."""
+
+    by_x_and_replicate: dict[float, dict[str, list[float]]] = {}
+    replicate_ids: set[str] = set()
+    known_seeds: set[str] = set()
+    for row in rows:
+        x_value = to_float_or_none(row.get("tokens_seen"))
+        y_value = to_float_or_none(row.get("loss"))
+        if x_value is None or y_value is None:
+            continue
+        replicate_id = _validation_replicate_id(row)
+        replicate_ids.add(replicate_id)
+        if replicate_id.startswith("seed:"):
+            known_seeds.add(replicate_id.removeprefix("seed:"))
+        by_x_and_replicate.setdefault(x_value, {}).setdefault(replicate_id, []).append(
+            y_value
+        )
+
+    xs: list[float] = []
+    means: list[float] = []
+    minimums: list[float] = []
+    maximums: list[float] = []
+    band_mask: list[bool] = []
+    for x_value in sorted(by_x_and_replicate):
+        replicate_values = []
+        for values in by_x_and_replicate[x_value].values():
+            if len(set(values)) > 1:
+                warnings.warn(
+                    "Conflicting duplicate validation rows at total-token "
+                    f"checkpoint {x_value}; using the latest persisted value",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            replicate_values.append(values[-1])
+        xs.append(x_value)
+        means.append(sum(replicate_values) / len(replicate_values))
+        minimums.append(min(replicate_values))
+        maximums.append(max(replicate_values))
+        band_mask.append(len(replicate_values) > 1)
+    return {
+        "xs": xs,
+        "means": means,
+        "minimums": minimums,
+        "maximums": maximums,
+        "band_mask": band_mask,
+        "seed_count": len(known_seeds),
+        "replicate_count": len(replicate_ids),
+    }
+
+
+def group_completed_validation_contracts(
+    rows: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if validation_run_is_completed(row):
+            grouped.setdefault(validation_experiment_contract(row), []).append(row)
+    return grouped
+
+
+def group_incomplete_validation_runs(
+    rows: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if not validation_run_is_completed(row):
+            grouped.setdefault(experiment_label(row), []).append(row)
+    return grouped
+
+
+def _validation_contract_base_label(rows: list[dict[str, Any]]) -> str:
+    row = rows[0]
+    parts: list[str] = []
+    correction = scaling_curve_correction_label(row)
+    parts.append(correction.upper() if correction else "No correction")
+    shape = row.get("model_shape_label") or row.get("model_size_label")
+    if shape not in (None, ""):
+        parts.append(str(shape))
+    if row.get("_validation_contract_fallback"):
+        parts.append(experiment_label(row))
+    return " · ".join(parts)
+
+
+def compact_validation_contract_labels(
+    grouped: dict[str, list[dict[str, Any]]],
+    *,
+    include_method: bool = False,
+) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    size_labels = compact_size_curve_labels(grouped)
+    base_counts: dict[str, int] = {}
+    bases = {
+        contract: _validation_contract_base_label(group_rows)
+        for contract, group_rows in grouped.items()
+    }
+    for base in bases.values():
+        base_counts[base] = base_counts.get(base, 0) + 1
+    for contract, group_rows in grouped.items():
+        row = group_rows[0]
+        parts: list[str] = []
+        if include_method:
+            method_key = validation_comparison_method_key(row)
+            if method_key is not None:
+                parts.append(validation_comparison_display_label(method_key))
+        base = bases[contract]
+        parts.append(base)
+        size_label = size_labels.get(contract)
+        if size_label not in (None, "", "Trained model"):
+            parts.append(size_label)
+        if base_counts[base] > 1:
+            peer_labels = {
+                size_labels.get(peer_contract)
+                for peer_contract, peer_base in bases.items()
+                if peer_base == base
+            }
+            if len(peer_labels) <= 1:
+                parts.append(
+                    f"contract {hashlib.sha256(contract.encode()).hexdigest()[:8]}"
+                )
+        seed_count = len(
+            {
+                str(row.get("run_seed"))
+                for row in group_rows
+                if row.get("run_seed") not in (None, "")
+            }
+        )
+        if seed_count > 1 and not any("n=" in part for part in parts):
+            parts.append(f"n={seed_count} seeds")
+        labels[contract] = " · ".join(part for part in parts if part)
+    return labels
+
+
+def incomplete_validation_label(run_id: str, rows: list[dict[str, Any]]) -> str:
+    progress = max(
+        (
+            to_float_or_none(row.get("_run_progress_tokens"))
+            or to_float_or_none(row.get("tokens_seen"))
+            or 0.0
+        )
+        for row in rows
+    )
+    budgets = [to_float_or_none(row.get("_run_token_budget")) for row in rows]
+    budget = next((value for value in budgets if value is not None), None)
+    progress_text = (
+        f"{progress:.0f}/{budget:.0f} tokens"
+        if budget not in (None, 0.0)
+        else f"{progress:.0f} tokens"
+    )
+    status = str(rows[0].get("_run_status") or "incomplete")
+    return f"{run_id} ({status}: {progress_text})"
+
+
+def _apply_common_validation_y_limits(axes: list[Any]) -> None:
+    values: list[float] = []
+    for axis in axes:
+        if axis.get_visible():
+            values.extend(axis_numeric_y_values(axis))
+    if not values:
+        return
+    limits = padded_limits(min(values), max(values))
+    for axis in axes:
+        if axis.get_visible():
+            axis.set_ylim(limits)
+
+
+@dataclass(frozen=True)
+class SelectedExposureObservation:
+    total_tokens: float
+    selected_exposure_tokens: float
+    loss: float
+
+
+@dataclass(frozen=True)
+class SelectedExposureRun:
+    run_id: str
+    run_seed: str
+    method: str
+    contract: str
+    contract_row: dict[str, Any]
+    ordered_granularities: tuple[str, ...]
+    observations: dict[str, tuple[SelectedExposureObservation, ...]]
+
+
+class _DirectExposureAccumulator:
+    def __init__(self, ordered_granularities: list[str] | tuple[str, ...]):
+        granularities = tuple(str(label) for label in ordered_granularities)
+        self.exposure = {label: 0.0 for label in granularities}
+        self.history: list[tuple[float, dict[str, float]]] = []
+        self.seen_steps: dict[int, tuple[float, str]] = {}
+        self.previous_step = 0
+        self.previous_tokens = 0.0
+
+    def consume(self, row: dict[str, Any]) -> None:
+        if str(row.get("split") or "") != "train":
+            return
+        try:
+            step = int(row.get("step"))
+        except (TypeError, ValueError) as error:
+            raise ValueError("training row has a non-integer step") from error
+        tokens = to_float_or_none(row.get("tokens_seen"))
+        action = str(row.get("granularity") or "")
+        if tokens is None or not math.isfinite(tokens):
+            raise ValueError(f"training step {step} has invalid planned tokens")
+        signature = (tokens, action)
+        if step in self.seen_steps:
+            if self.seen_steps[step] != signature:
+                raise ValueError(
+                    f"resumed training step {step} conflicts with its earlier row"
+                )
+            return
+        if step <= self.previous_step:
+            raise ValueError(f"training steps are non-monotonic at unseen step {step}")
+        if tokens <= self.previous_tokens:
+            raise ValueError(
+                f"planned training tokens are non-monotonic at step {step}"
+            )
+        if action not in self.exposure:
+            raise ValueError(
+                f"training step {step} selected unknown global granularity {action!r}"
+            )
+        self.exposure[action] += tokens - self.previous_tokens
+        self.history.append((tokens, dict(self.exposure)))
+        self.seen_steps[step] = signature
+        self.previous_step = step
+        self.previous_tokens = tokens
+
+
+def reconstruct_direct_selected_exposure(
+    training_rows: Any,
+    ordered_granularities: list[str] | tuple[str, ...],
+) -> list[tuple[float, dict[str, float]]]:
+    """Reconstruct cumulative selected-action exposure from planned tokens."""
+
+    accumulator = _DirectExposureAccumulator(ordered_granularities)
+    for row in training_rows:
+        accumulator.consume(row)
+    return accumulator.history
+
+
+def _exposure_at_total_tokens(
+    history: list[tuple[float, dict[str, float]]],
+    granularity: str,
+    total_tokens: float,
+) -> float:
+    selected_exposure = 0.0
+    for checkpoint_tokens, exposures in history:
+        if checkpoint_tokens > total_tokens:
+            break
+        selected_exposure = exposures[granularity]
+    return selected_exposure
+
+
+def _completed_global_run_config(
+    run_dir: Path,
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    config_path = run_dir / "config.json"
+    summary_path = run_dir / "run_summary.json"
+    if not config_path.is_file() or not summary_path.is_file():
+        return None
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(config, dict) or not isinstance(summary, dict):
+        return None
+    if summary.get("status") != "completed":
+        return None
+    run = config.get("run", {})
+    model = config.get("model", {})
+    if not isinstance(run, dict) or not isinstance(model, dict):
+        return None
+    run_mode = (
+        str(run.get("resolved_run_mode") or run.get("sampling_mode") or "")
+        .strip()
+        .lower()
+    )
+    sampling_mode = (
+        str(
+            model.get("resolved_sampling_mode")
+            or model.get("granularity_sampling_mode")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+    controller = model.get("adaptive_controller")
+    controller_scope = (
+        str(controller.get("scope") or "").strip().lower()
+        if isinstance(controller, dict)
+        else ""
+    )
+    is_global = sampling_mode == "global" or (
+        sampling_mode == "adaptive_global" and controller_scope == "global"
+    )
+    if run_mode != "nested-random" or not is_global:
+        return None
+    return config, summary
+
+
+def iter_selected_exposure_runs(input_root: str | Path):
+    """Stream completed global-run metrics into compact exposure observations."""
+
+    from src.evaluation import reporting_io
+
+    input_root = Path(input_root)
+    for metrics_path in sorted(input_root.rglob("metrics.csv")):
+        run_dir = metrics_path.parent
+        loaded = _completed_global_run_config(run_dir)
+        if loaded is None:
+            continue
+        config, _summary = loaded
+        model = config["model"]
+        ordered_granularities = tuple(
+            str(label) for label in model.get("granularities", [])
+        )
+        if not ordered_granularities:
+            warnings.warn(
+                f"Skipping saturation diagnostics for {run_dir}: no granularities",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            continue
+
+        exposure_accumulator = _DirectExposureAccumulator(ordered_granularities)
+        validation_rows: list[dict[str, str]] = []
+        try:
+            for row in reporting_io.iter_csv_artifact_rows(metrics_path):
+                split = str(row.get("split") or "")
+                if split == "train":
+                    exposure_accumulator.consume(row)
+                elif reporting_io.validation_split_filter(row):
+                    validation_rows.append(row)
+        except ValueError as error:
+            warnings.warn(
+                f"Skipping saturation diagnostics for {run_dir}: {error}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            continue
+        exposure_history = exposure_accumulator.history
+        if not exposure_history or not validation_rows:
+            continue
+
+        enriched_validation = reporting_io.enrich_metrics_metadata_from_run_config(
+            input_root,
+            validation_rows,
+        )
+        if not enriched_validation:
+            continue
+        contract_row = enriched_validation[0]
+        contract = validation_experiment_contract(contract_row)
+        method = loss_figure_label(contract_row)
+        run_id = experiment_label(contract_row)
+        run_seed = str(contract_row.get("run_seed") or run_id)
+        observations: dict[str, list[SelectedExposureObservation]] = {
+            label: [] for label in ordered_granularities
+        }
+        seen_validation: dict[tuple[str, float], float] = {}
+        invalid_validation = False
+        for row in enriched_validation:
+            granularity = str(row.get("granularity") or "")
+            total_tokens = to_float_or_none(row.get("tokens_seen"))
+            loss = to_float_or_none(row.get("loss"))
+            if (
+                granularity not in observations
+                or total_tokens is None
+                or loss is None
+                or not math.isfinite(total_tokens)
+                or not math.isfinite(loss)
+            ):
+                continue
+            key = (granularity, total_tokens)
+            if key in seen_validation:
+                if seen_validation[key] != loss:
+                    warnings.warn(
+                        f"Skipping saturation diagnostics for {run_dir}: "
+                        f"conflicting resumed validation checkpoint {key}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    invalid_validation = True
+                    break
+                continue
+            seen_validation[key] = loss
+            observations[granularity].append(
+                SelectedExposureObservation(
+                    total_tokens=total_tokens,
+                    selected_exposure_tokens=_exposure_at_total_tokens(
+                        exposure_history,
+                        granularity,
+                        total_tokens,
+                    ),
+                    loss=loss,
+                )
+            )
+        if invalid_validation:
+            continue
+        normalized_observations = {
+            granularity: tuple(
+                sorted(values, key=lambda observation: observation.total_tokens)
+            )
+            for granularity, values in observations.items()
+            if values
+        }
+        if not normalized_observations:
+            continue
+        yield SelectedExposureRun(
+            run_id=run_id,
+            run_seed=run_seed,
+            method=method,
+            contract=contract,
+            contract_row=contract_row,
+            ordered_granularities=ordered_granularities,
+            observations=normalized_observations,
+        )
+
+
+def _latest_loss_by_distinct_exposure(
+    observations: tuple[SelectedExposureObservation, ...]
+    | list[SelectedExposureObservation],
+) -> list[SelectedExposureObservation]:
+    distinct: list[SelectedExposureObservation] = []
+    for observation in observations:
+        if (
+            distinct
+            and observation.selected_exposure_tokens
+            == distinct[-1].selected_exposure_tokens
+        ):
+            distinct[-1] = observation
+        else:
+            distinct.append(observation)
+    return distinct
+
+
+def interpolate_loss_over_shared_exposure(
+    seed_observations: dict[str, Any],
+    *,
+    grid_points: int = 100,
+) -> dict[str, Any]:
+    """Interpolate seeds only on their common direct-exposure support."""
+
+    curves: dict[str, list[SelectedExposureObservation]] = {}
+    for seed, observations in seed_observations.items():
+        distinct = _latest_loss_by_distinct_exposure(observations)
+        if distinct:
+            curves[seed] = distinct
+    if not curves:
+        return {"xs": [], "means": [], "minimums": [], "maximums": []}
+    shared_min = max(curve[0].selected_exposure_tokens for curve in curves.values())
+    shared_max = min(curve[-1].selected_exposure_tokens for curve in curves.values())
+    if shared_min > shared_max:
+        return {"xs": [], "means": [], "minimums": [], "maximums": []}
+    if shared_min == shared_max or grid_points <= 1:
+        grid = [shared_min]
+    else:
+        grid = [
+            shared_min + (shared_max - shared_min) * index / (grid_points - 1)
+            for index in range(grid_points)
+        ]
+
+    def interpolate(curve: list[SelectedExposureObservation], x_value: float) -> float:
+        if (
+            x_value < curve[0].selected_exposure_tokens
+            or x_value > curve[-1].selected_exposure_tokens
+        ):
+            raise ValueError("interpolation attempted outside seed exposure support")
+        for left, right in zip(curve, curve[1:]):
+            if (
+                left.selected_exposure_tokens
+                <= x_value
+                <= right.selected_exposure_tokens
+            ):
+                width = right.selected_exposure_tokens - left.selected_exposure_tokens
+                if width == 0:
+                    return right.loss
+                fraction = (x_value - left.selected_exposure_tokens) / width
+                return left.loss + fraction * (right.loss - left.loss)
+        return curve[-1].loss
+
+    per_seed = {
+        seed: [interpolate(curve, x_value) for x_value in grid]
+        for seed, curve in curves.items()
+    }
+    values_by_x = [
+        [values[index] for values in per_seed.values()] for index in range(len(grid))
+    ]
+    return {
+        "xs": grid,
+        "means": [sum(values) / len(values) for values in values_by_x],
+        "minimums": [min(values) for values in values_by_x],
+        "maximums": [max(values) for values in values_by_x],
+        "seed_count": len(curves),
+        "shared_min": shared_min,
+        "shared_max": shared_max,
+    }
+
+
+def marginal_utility_observations(
+    observations: tuple[SelectedExposureObservation, ...]
+    | list[SelectedExposureObservation],
+    *,
+    window_size: int = 5,
+    minimum_observations: int = 3,
+) -> list[tuple[float, float]]:
+    """Return negative five-point OLS loss slopes per million selected tokens."""
+
+    distinct: list[SelectedExposureObservation] = []
+    scores: list[tuple[float, float]] = []
+    for observation in observations:
+        if (
+            distinct
+            and observation.selected_exposure_tokens
+            == distinct[-1].selected_exposure_tokens
+        ):
+            distinct[-1] = observation
+        else:
+            distinct.append(observation)
+        window = distinct[-window_size:]
+        if len(window) < minimum_observations:
+            continue
+        xs = [item.selected_exposure_tokens / 1_000_000.0 for item in window]
+        ys = [item.loss for item in window]
+        mean_x = sum(xs) / len(xs)
+        mean_y = sum(ys) / len(ys)
+        denominator = sum((x_value - mean_x) ** 2 for x_value in xs)
+        if denominator <= 0:
+            continue
+        slope = (
+            sum(
+                (x_value - mean_x) * (y_value - mean_y)
+                for x_value, y_value in zip(xs, ys)
+            )
+            / denominator
+        )
+        scores.append((observation.total_tokens, -slope))
+    return scores
+
+
+def _aggregate_aligned_score_curves(
+    seed_curves: dict[str, list[tuple[float, float]]],
+) -> dict[str, Any]:
+    if not seed_curves:
+        return {
+            "xs": [],
+            "means": [],
+            "minimums": [],
+            "maximums": [],
+            "band_mask": [],
+        }
+    curve_maps = {seed: dict(curve) for seed, curve in seed_curves.items()}
+    common_checkpoints = set.intersection(
+        *(set(curve) for curve in curve_maps.values())
+    )
+    xs = sorted(common_checkpoints)
+    by_x = {
+        x_value: [curve[x_value] for curve in curve_maps.values()] for x_value in xs
+    }
+    return {
+        "xs": xs,
+        "means": [sum(by_x[x]) / len(by_x[x]) for x in xs],
+        "minimums": [min(by_x[x]) for x in xs],
+        "maximums": [max(by_x[x]) for x in xs],
+        "band_mask": [len(by_x[x]) > 1 for x in xs],
+    }
+
+
+def _diagnostic_contract_labels(runs: list[SelectedExposureRun]) -> dict[str, str]:
+    grouped = {
+        contract: [run.contract_row for run in runs if run.contract == contract]
+        for contract in {run.contract for run in runs}
+    }
+    return compact_validation_contract_labels(grouped)
+
+
+def _plot_selected_exposure_loss(
+    runs: list[SelectedExposureRun],
+    output_path: Path,
+    *,
+    dpi: int,
+) -> Path:
+    granularities = validation_granularity_order(
+        [
+            {
+                "granularity": granularity,
+                "_ordered_granularities": list(run.ordered_granularities),
+            }
+            for run in runs
+            for granularity in run.observations
+        ]
+    )
+    figure, axes = plt.subplots(
+        len(granularities), 1, figsize=(14, max(3.0, 2.5 * len(granularities)))
+    )
+    axes = [axes] if len(granularities) == 1 else list(axes)
+    labels = _diagnostic_contract_labels(runs)
+    colors = list(plt.rcParams["axes.prop_cycle"].by_key().get("color", ["tab:blue"]))
+    contracts = sorted(labels, key=lambda contract: labels[contract])
+    for axis, granularity in zip(axes, granularities):
+        for index, contract in enumerate(contracts):
+            seed_observations = {
+                run.run_seed: run.observations[granularity]
+                for run in runs
+                if run.contract == contract and granularity in run.observations
+            }
+            aggregate = interpolate_loss_over_shared_exposure(seed_observations)
+            if not aggregate["xs"]:
+                continue
+            xs_millions = [value / 1_000_000.0 for value in aggregate["xs"]]
+            color = colors[index % len(colors)]
+            axis.plot(
+                xs_millions, aggregate["means"], color=color, label=labels[contract]
+            )
+            if aggregate.get("seed_count", 0) > 1:
+                axis.fill_between(
+                    xs_millions,
+                    aggregate["minimums"],
+                    aggregate["maximums"],
+                    color=color,
+                    alpha=0.14,
+                    linewidth=0,
+                )
+        axis.set_title(granularity, fontsize=11)
+        axis.set_ylabel("Validation loss")
+        axis.grid(True, alpha=0.3)
+    axes[-1].set_xlabel("Directly selected training exposure (million tokens)")
+    _apply_common_validation_y_limits(axes)
+    handles_by_label: dict[str, Any] = {}
+    for axis in axes:
+        for handle, label in zip(*axis.get_legend_handles_labels()):
+            handles_by_label.setdefault(label, handle)
+    if handles_by_label:
+        figure.legend(
+            list(handles_by_label.values()),
+            list(handles_by_label),
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.01),
+            ncol=min(4, len(handles_by_label)),
+            frameon=False,
+        )
+    figure.suptitle(
+        f"Validation loss over directly selected exposure — {runs[0].method}"
+    )
+    figure.subplots_adjust(left=0.09, right=0.98, top=0.88, bottom=0.17, hspace=0.35)
+    figure.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    plt.close(figure)
+    return output_path
+
+
+def _plot_marginal_utility(
+    runs: list[SelectedExposureRun],
+    output_path: Path,
+    *,
+    dpi: int,
+) -> tuple[Path, list[dict[str, Any]]]:
+    granularities = validation_granularity_order(
+        [
+            {
+                "granularity": granularity,
+                "_ordered_granularities": list(run.ordered_granularities),
+            }
+            for run in runs
+            for granularity in run.observations
+        ]
+    )
+    figure, axes = plt.subplots(
+        len(granularities), 1, figsize=(14, max(3.0, 2.5 * len(granularities)))
+    )
+    axes = [axes] if len(granularities) == 1 else list(axes)
+    labels = _diagnostic_contract_labels(runs)
+    contracts = sorted(labels, key=lambda contract: labels[contract])
+    colors = list(plt.rcParams["axes.prop_cycle"].by_key().get("color", ["tab:blue"]))
+    ranking_rows: list[dict[str, Any]] = []
+    for axis, granularity in zip(axes, granularities):
+        for index, contract in enumerate(contracts):
+            seed_curves = {
+                run.run_seed: marginal_utility_observations(
+                    run.observations[granularity]
+                )
+                for run in runs
+                if run.contract == contract and granularity in run.observations
+            }
+            seed_curves = {seed: curve for seed, curve in seed_curves.items() if curve}
+            aggregate = _aggregate_aligned_score_curves(seed_curves)
+            if not aggregate["xs"]:
+                continue
+            color = colors[index % len(colors)]
+            axis.plot(
+                aggregate["xs"], aggregate["means"], color=color, label=labels[contract]
+            )
+            if any(aggregate["band_mask"]):
+                axis.fill_between(
+                    aggregate["xs"],
+                    aggregate["minimums"],
+                    aggregate["maximums"],
+                    color=color,
+                    alpha=0.14,
+                    linewidth=0,
+                )
+            common_checkpoints = set.intersection(
+                *(set(x for x, _ in curve) for curve in seed_curves.values())
+            )
+            if common_checkpoints:
+                final_checkpoint = max(common_checkpoints)
+                final_scores = [
+                    dict(curve)[final_checkpoint] for curve in seed_curves.values()
+                ]
+                ranking_rows.append(
+                    {
+                        "method": runs[0].method,
+                        "contract": labels[contract],
+                        "granularity": granularity,
+                        "score": sum(final_scores) / len(final_scores),
+                        "minimum": min(final_scores),
+                        "maximum": max(final_scores),
+                        "seed_count": len(final_scores),
+                        "total_tokens": final_checkpoint,
+                    }
+                )
+        axis.axhline(0.0, color="0.35", linewidth=0.8, linestyle=":")
+        axis.set_title(granularity, fontsize=11)
+        axis.set_ylabel("Marginal utility\nper 1M selected tokens")
+        axis.grid(True, alpha=0.3)
+    axes[-1].set_xlabel("Total training tokens")
+    _apply_common_validation_y_limits(axes)
+    handles_by_label: dict[str, Any] = {}
+    for axis in axes:
+        for handle, label in zip(*axis.get_legend_handles_labels()):
+            handles_by_label.setdefault(label, handle)
+    if handles_by_label:
+        figure.legend(
+            list(handles_by_label.values()),
+            list(handles_by_label),
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.01),
+            ncol=min(4, len(handles_by_label)),
+            frameon=False,
+        )
+    figure.suptitle(
+        f"Validation marginal utility over total training tokens — {runs[0].method}"
+    )
+    figure.subplots_adjust(left=0.11, right=0.98, top=0.88, bottom=0.17, hspace=0.45)
+    figure.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    plt.close(figure)
+    return output_path, ranking_rows
+
+
+def write_marginal_utility_ranking(
+    ranking_rows: list[dict[str, Any]],
+    output_path: Path,
+) -> Path:
+    lines = [
+        "# Validation Marginal-Utility Ranking",
+        "",
+        "Scores are evidence about saturation, not a binary saturation decision or a controller action. Higher is better; negative values show degradation.",
+        "",
+        "Direct exposure measures the selected global action. MatFormer parameter sharing can improve a granularity even while another action is selected.",
+        "",
+        "| Rank | Method | Contract | Granularity | Final score | Seed range | Seeds | Total training tokens |",
+        "|---:|---|---|---|---:|---:|---:|---:|",
+    ]
+    ordered = sorted(
+        ranking_rows,
+        key=lambda row: (
+            str(row["method"]),
+            str(row["contract"]),
+            -float(row["score"]),
+            granularity_sort_key(str(row["granularity"])),
+        ),
+    )
+    rank_by_group: dict[tuple[str, str], int] = {}
+    for row in ordered:
+        group = (str(row["method"]), str(row["contract"]))
+        rank_by_group[group] = rank_by_group.get(group, 0) + 1
+        lines.append(
+            "| {rank} | {method} | {contract} | {granularity} | {score:.6g} | "
+            "[{minimum:.6g}, {maximum:.6g}] | {seed_count} | {total_tokens:.0f} |".format(
+                rank=rank_by_group[group],
+                **row,
+            )
+        )
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return output_path
+
+
+def generate_saturation_diagnostics(
+    input_root: str | Path,
+    output_dir: str | Path,
+    *,
+    dpi: int = 300,
+    variants: list[str] | tuple[str, ...] | None = None,
+    corrections: list[str] | tuple[str, ...] | None = None,
+) -> list[Path]:
+    runs = [
+        run
+        for run in iter_selected_exposure_runs(input_root)
+        if row_matches_plot_filters(
+            run.contract_row,
+            variants=variants,
+            corrections=corrections,
+        )
+    ]
+    if not runs:
+        return []
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    ranking_rows: list[dict[str, Any]] = []
+    methods = sorted({run.method for run in runs})
+    for method in methods:
+        method_runs = [run for run in runs if run.method == method]
+        method_slug = safe_filename_fragment(method)
+        paths.append(
+            _plot_selected_exposure_loss(
+                method_runs,
+                output_dir
+                / f"validation_loss_over_selected_exposure_{method_slug}.png",
+                dpi=dpi,
+            )
+        )
+        marginal_path, method_rankings = _plot_marginal_utility(
+            method_runs,
+            output_dir / f"validation_marginal_utility_over_tokens_{method_slug}.png",
+            dpi=dpi,
+        )
+        paths.append(marginal_path)
+        ranking_rows.extend(method_rankings)
+    paths.append(
+        write_marginal_utility_ranking(
+            ranking_rows,
+            output_dir / "validation_marginal_utility_ranking.md",
+        )
+    )
+    return paths
+
+
 def plot_validation_loss_over_tokens_by_experiment(
     rows: list[dict[str, str]],
     output_dir: Path,
     dpi: int = 300,
     validation_loss_log_y: bool = False,
+    include_incomplete_validation_traces: bool = False,
 ) -> list[Path]:
     output_paths = []
+    rows = filter_validation_rows_by_completion(
+        rows,
+        include_incomplete=include_incomplete_validation_traces,
+    )
     grouped = group_loss_rows_by_figure(
         [row for row in rows if str(row.get("split") or "") == "validation"]
     )
@@ -1864,7 +2836,12 @@ def plot_validation_loss_over_tokens_by_granularity_comparison(
     output_dir: Path,
     dpi: int = 300,
     validation_loss_log_y: bool = False,
+    include_incomplete_validation_traces: bool = False,
 ) -> list[Path]:
+    rows = filter_validation_rows_by_completion(
+        rows,
+        include_incomplete=include_incomplete_validation_traces,
+    )
     comparison_rows = [
         row
         for row in rows
@@ -1892,11 +2869,7 @@ def plot_validation_loss_over_tokens_by_granularity_comparison_figure(
     validation_loss_log_y: bool = False,
 ) -> Path:
     granularity_rows = [row for row in rows if row.get("granularity") not in (None, "")]
-
-    granularity_labels = sorted(
-        {str(row["granularity"]) for row in granularity_rows},
-        key=granularity_sort_key,
-    )
+    granularity_labels = validation_granularity_order(granularity_rows)
 
     if not granularity_labels:
         figure, axis = plt.subplots(figsize=(12, 8))
@@ -1925,35 +2898,104 @@ def plot_validation_loss_over_tokens_by_granularity_comparison_figure(
     if len(granularity_labels) == 1:
         axes = [axes]
 
-    method_keys = validation_comparison_method_order(rows)
-    method_styles = validation_comparison_styles(method_keys)
-    method_labels = {
-        method_key: validation_comparison_display_label(method_key)
-        for method_key in method_keys
-    }
-    legend_handles = [
-        Line2D(
-            [0],
-            [0],
-            color=method_styles[method_key]["color"],
-            marker=method_styles[method_key]["marker"],
-            linestyle=method_styles[method_key]["linestyle"],
-            linewidth=method_styles[method_key]["linewidth"],
-            markersize=method_styles[method_key]["markersize"],
-            label=method_labels[method_key],
+    completed_contracts = group_completed_validation_contracts(granularity_rows)
+    contract_labels = compact_validation_contract_labels(
+        completed_contracts,
+        include_method=True,
+    )
+    prop_cycle = plt.rcParams.get("axes.prop_cycle")
+    colors = list(prop_cycle.by_key().get("color", [])) if prop_cycle else []
+    if not colors:
+        colors = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
+    contract_order = sorted(completed_contracts, key=lambda key: contract_labels[key])
+    contract_styles: dict[str, dict[str, Any]] = {}
+    for index, contract in enumerate(contract_order):
+        method_key = validation_comparison_method_key(completed_contracts[contract][0])
+        base_style = validation_comparison_styles([method_key]).get(
+            method_key,
+            {
+                "marker": "o",
+                "linestyle": "-",
+                "linewidth": 1.4,
+                "markersize": 3.5,
+            },
         )
-        for method_key in method_keys
-    ]
+        contract_styles[contract] = {
+            **base_style,
+            "color": (
+                STANDALONE_REFERENCE_COLOR
+                if method_key == "standalone"
+                else colors[index % len(colors)]
+            ),
+        }
+    incomplete_runs = group_incomplete_validation_runs(granularity_rows)
 
     for axis, granularity in zip(axes, granularity_labels):
-        sub_rows = [
-            row
-            for row in granularity_rows
-            if str(row.get("granularity") or "") == granularity
-        ]
-        method_groups = group_validation_rows_by_method(sub_rows)
+        plotted = False
+        for contract in contract_order:
+            contract_rows = [
+                row
+                for row in completed_contracts[contract]
+                if str(row.get("granularity") or "") == granularity
+            ]
+            aggregate = aggregate_validation_curve(contract_rows)
+            if not aggregate["xs"]:
+                continue
+            plotted = True
+            style = contract_styles[contract]
+            axis.plot(
+                aggregate["xs"],
+                aggregate["means"],
+                label=contract_labels[contract],
+                **style,
+            )
+            if any(aggregate["band_mask"]):
+                axis.fill_between(
+                    aggregate["xs"],
+                    aggregate["minimums"],
+                    aggregate["maximums"],
+                    color=style["color"],
+                    alpha=0.14,
+                    linewidth=0,
+                )
 
-        if not method_groups:
+        for index, (run_id, run_rows) in enumerate(sorted(incomplete_runs.items())):
+            curve_rows = [
+                row
+                for row in run_rows
+                if str(row.get("granularity") or "") == granularity
+            ]
+            points = sorted(
+                (
+                    (to_float(row["tokens_seen"]), to_float(row["loss"]))
+                    for row in curve_rows
+                    if row.get("tokens_seen") not in (None, "")
+                    and row.get("loss") not in (None, "")
+                ),
+                key=lambda point: point[0],
+            )
+            if not points:
+                continue
+            plotted = True
+            method_key = validation_comparison_method_key(curve_rows[0])
+            method_label = (
+                validation_comparison_display_label(method_key)
+                if method_key is not None
+                else "unknown method"
+            )
+            xs, ys = zip(*points)
+            axis.plot(
+                xs,
+                ys,
+                color=colors[(len(contract_order) + index) % len(colors)],
+                marker="o",
+                markersize=3.0,
+                linestyle="--",
+                linewidth=1.1,
+                label=f"{method_label} · {incomplete_validation_label(run_id, run_rows)}",
+            )
+
+        if not plotted:
             axis.text(
                 0.5,
                 0.5,
@@ -1965,33 +3007,6 @@ def plot_validation_loss_over_tokens_by_granularity_comparison_figure(
             axis.set_axis_off()
             continue
 
-        for method_key in method_keys:
-            method_rows = method_groups.get(method_key)
-            if not method_rows:
-                continue
-
-            points = [
-                (
-                    to_float(row["tokens_seen"]),
-                    to_float(row["loss"]),
-                )
-                for row in method_rows
-                if row.get("tokens_seen") not in (None, "")
-                and row.get("loss") not in (None, "")
-            ]
-
-            if not points:
-                continue
-
-            points.sort(key=lambda point: point[0])
-            xs, ys = zip(*points)
-            axis.plot(
-                xs,
-                ys,
-                label=method_labels[method_key],
-                **method_styles[method_key],
-            )
-
         axis.set_title(granularity, fontsize=11, pad=6)
         if validation_loss_log_y:
             axis.set_yscale("log", nonpositive="clip")
@@ -2001,16 +3016,22 @@ def plot_validation_loss_over_tokens_by_granularity_comparison_figure(
         axis.grid(True, which="minor", alpha=0.15, linewidth=0.3)
         axis.set_axisbelow(True)
 
-    axes[-1].set_xlabel("Tokens seen")
+    axes[-1].set_xlabel("Total training tokens")
+    _apply_common_validation_y_limits(list(axes))
     figure.suptitle(
         "Validation loss: standalone vs uncorrected nested-random methods",
         fontsize=16,
         y=0.98,
     )
 
-    if legend_handles:
+    handles_by_label: dict[str, Any] = {}
+    for axis in axes:
+        for handle, label in zip(*axis.get_legend_handles_labels()):
+            handles_by_label.setdefault(label, handle)
+    if handles_by_label:
         figure.legend(
-            handles=legend_handles,
+            handles=list(handles_by_label.values()),
+            labels=list(handles_by_label),
             loc="lower center",
             bbox_to_anchor=(0.5, 0.01),
             ncol=3,
@@ -2092,7 +3113,7 @@ def validation_comparison_display_label(method_key: str) -> str:
 
 def validation_comparison_styles(method_keys: list[str]) -> dict[str, dict[str, Any]]:
     variant_colors = {
-        "standalone": "tab:brown",
+        "standalone": STANDALONE_REFERENCE_COLOR,
         "slicing": "tab:blue",
         "concat": "tab:orange",
     }
@@ -2141,11 +3162,7 @@ def plot_loss_over_tokens_for_experiment(
     validation_loss_log_y: bool = False,
 ) -> Path:
     granularity_rows = [row for row in rows if row.get("granularity") not in (None, "")]
-
-    granularity_labels = sorted(
-        {str(row["granularity"]) for row in granularity_rows},
-        key=granularity_sort_key,
-    )
+    granularity_labels = validation_granularity_order(granularity_rows)
 
     if not granularity_labels:
         figure, axis = plt.subplots(figsize=(12, 8))
@@ -2181,34 +3198,86 @@ def plot_loss_over_tokens_for_experiment(
     if len(granularity_labels) == 1:
         axes = [axes]
 
-    variant_display_labels = validation_variant_display_labels(rows)
-    variant_keys = validation_variant_order(rows)
-    variant_styles = validation_variant_styles(variant_keys)
-
-    legend_handles = [
-        Line2D(
-            [0],
-            [0],
-            color=variant_styles[variant_key]["color"],
-            marker=variant_styles[variant_key]["marker"],
-            linestyle=variant_styles[variant_key]["linestyle"],
-            linewidth=variant_styles[variant_key]["linewidth"],
-            markersize=variant_styles[variant_key]["markersize"],
-            label=variant_display_labels[variant_key],
-        )
-        for variant_key in variant_keys
-    ]
+    completed_contracts = group_completed_validation_contracts(granularity_rows)
+    contract_labels = compact_validation_contract_labels(completed_contracts)
+    contract_order = sorted(completed_contracts, key=lambda key: contract_labels[key])
+    prop_cycle = plt.rcParams.get("axes.prop_cycle")
+    colors = list(prop_cycle.by_key().get("color", [])) if prop_cycle else []
+    if not colors:
+        colors = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
+    markers = ["o", "s", "^", "D", "v", "P", "X", "*"]
+    contract_styles = {
+        contract: {
+            "color": colors[index % len(colors)],
+            "marker": markers[index % len(markers)],
+            "linestyle": "-",
+            "linewidth": 1.4,
+            "markersize": 3.5,
+        }
+        for index, contract in enumerate(contract_order)
+    }
+    incomplete_runs = group_incomplete_validation_runs(granularity_rows)
 
     for axis, granularity in zip(axes, granularity_labels):
-        sub_rows = [
-            row
-            for row in granularity_rows
-            if str(row.get("granularity") or "") == granularity
-        ]
+        plotted = False
+        for contract in contract_order:
+            contract_rows = [
+                row
+                for row in completed_contracts[contract]
+                if str(row.get("granularity") or "") == granularity
+            ]
+            aggregate = aggregate_validation_curve(contract_rows)
+            if not aggregate["xs"]:
+                continue
+            plotted = True
+            style = contract_styles[contract]
+            axis.plot(
+                aggregate["xs"],
+                aggregate["means"],
+                label=contract_labels[contract],
+                **style,
+            )
+            if any(aggregate["band_mask"]):
+                axis.fill_between(
+                    aggregate["xs"],
+                    aggregate["minimums"],
+                    aggregate["maximums"],
+                    color=style["color"],
+                    alpha=0.14,
+                    linewidth=0,
+                )
 
-        variant_groups = group_validation_rows_by_variant(sub_rows)
+        for index, (run_id, run_rows) in enumerate(sorted(incomplete_runs.items())):
+            curve_rows = [
+                row
+                for row in run_rows
+                if str(row.get("granularity") or "") == granularity
+            ]
+            points = sorted(
+                (
+                    (to_float(row["tokens_seen"]), to_float(row["loss"]))
+                    for row in curve_rows
+                    if row.get("tokens_seen") not in (None, "")
+                    and row.get("loss") not in (None, "")
+                ),
+                key=lambda point: point[0],
+            )
+            if not points:
+                continue
+            plotted = True
+            xs, ys = zip(*points)
+            axis.plot(
+                xs,
+                ys,
+                color=colors[(len(contract_order) + index) % len(colors)],
+                marker="o",
+                markersize=3.0,
+                linestyle="--",
+                linewidth=1.1,
+                label=incomplete_validation_label(run_id, run_rows),
+            )
 
-        if not variant_groups:
+        if not plotted:
             axis.text(
                 0.5,
                 0.5,
@@ -2219,36 +3288,6 @@ def plot_loss_over_tokens_for_experiment(
             )
             axis.set_axis_off()
             continue
-
-        for variant_key in variant_keys:
-            variant_rows = variant_groups.get(variant_key)
-
-            if not variant_rows:
-                continue
-
-            points = [
-                (
-                    to_float(row["tokens_seen"]),
-                    to_float(row["loss"]),
-                )
-                for row in variant_rows
-                if row.get("tokens_seen") not in (None, "")
-                and row.get("loss") not in (None, "")
-            ]
-
-            if not points:
-                continue
-
-            points.sort(key=lambda point: point[0])
-
-            xs, ys = zip(*points)
-
-            axis.plot(
-                xs,
-                ys,
-                label=variant_display_labels[variant_key],
-                **variant_styles[variant_key],
-            )
 
         axis.set_title(
             granularity,
@@ -2278,7 +3317,8 @@ def plot_loss_over_tokens_for_experiment(
 
         axis.set_axisbelow(True)
 
-    axes[-1].set_xlabel("Tokens seen")
+    axes[-1].set_xlabel("Total training tokens")
+    _apply_common_validation_y_limits(list(axes))
 
     figure.suptitle(
         figure_label,
@@ -2286,12 +3326,17 @@ def plot_loss_over_tokens_for_experiment(
         y=0.98,
     )
 
-    if legend_handles:
+    handles_by_label: dict[str, Any] = {}
+    for axis in axes:
+        for handle, label in zip(*axis.get_legend_handles_labels()):
+            handles_by_label.setdefault(label, handle)
+    if handles_by_label:
         figure.legend(
-            handles=legend_handles,
+            handles=list(handles_by_label.values()),
+            labels=list(handles_by_label),
             loc="lower center",
             bbox_to_anchor=(0.5, 0.01),
-            ncol=min(len(legend_handles), 5),
+            ncol=min(len(handles_by_label), 5),
             frameon=False,
         )
 
@@ -2587,7 +3632,17 @@ def format_list(values: list[str], limit: int = 8) -> str:
 
 
 def granularity_sort_key(value: str) -> tuple[int, str]:
-    order = {"s": 0, "m": 1, "l": 2, "xl": 3}
+    order = {
+        "micro": 0,
+        "s": 0,
+        "small": 1,
+        "m": 1,
+        "medium": 2,
+        "l": 2,
+        "large": 3,
+        "xl": 3,
+        "full": 4,
+    }
     return (order.get(value, len(order)), value)
 
 
@@ -2663,7 +3718,9 @@ def _canonical_contract_value(value: Any) -> Any:
     if isinstance(value, dict):
         return {
             str(key): _canonical_contract_value(nested_value)
-            for key, nested_value in sorted(value.items(), key=lambda item: str(item[0]))
+            for key, nested_value in sorted(
+                value.items(), key=lambda item: str(item[0])
+            )
         }
     if isinstance(value, (list, tuple)):
         return [_canonical_contract_value(item) for item in value]
@@ -2755,9 +3812,9 @@ def aggregate_size_curve(
         else:
             replicate_id = f"run:{experiment_label(row)}"
         replicate_ids.add(replicate_id)
-        by_x_and_replicate.setdefault(x_value, {}).setdefault(
-            replicate_id, []
-        ).append(y_value)
+        by_x_and_replicate.setdefault(x_value, {}).setdefault(replicate_id, []).append(
+            y_value
+        )
 
     xs: list[float] = []
     means: list[float] = []
@@ -2766,8 +3823,7 @@ def aggregate_size_curve(
     band_mask: list[bool] = []
     for x_value in sorted(by_x_and_replicate):
         replicate_values = [
-            sum(values) / len(values)
-            for values in by_x_and_replicate[x_value].values()
+            sum(values) / len(values) for values in by_x_and_replicate[x_value].values()
         ]
         xs.append(x_value)
         means.append(sum(replicate_values) / len(replicate_values))
@@ -3056,9 +4112,9 @@ def _probabilistic_sampling_label(row: dict[str, str]) -> str | None:
     if scope == "global":
         reset_enabled = str(row.get("controller_reset_enabled", "")).strip().lower()
         if reset_enabled in {"1", "true", "yes"}:
-            reset_policy = str(
-                row.get("controller_reset_policy", "full_prior")
-            ).strip().lower()
+            reset_policy = (
+                str(row.get("controller_reset_policy", "full_prior")).strip().lower()
+            )
             if reset_policy == "acquisition_only":
                 return "probabilistic_global_thompson_acquisition_only"
             return "probabilistic_global_thompson_reset"
@@ -3080,10 +4136,44 @@ def is_legacy_heuristic_thompson_row(row: dict[str, Any]) -> bool:
     return _probabilistic_sampling_label(row) is None
 
 
-def filter_plot_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Exclude historical heuristic-Thompson artifacts from figures."""
+def row_matches_plot_filters(
+    row: dict[str, Any],
+    *,
+    variants: list[str] | tuple[str, ...] | None = None,
+    corrections: list[str] | tuple[str, ...] | None = None,
+) -> bool:
+    """Match one artifact row against explicit experiment-facing filters."""
 
-    return [row for row in rows if not is_legacy_heuristic_thompson_row(row)]
+    if variants:
+        allowed_variants = {str(value).strip().lower() for value in variants}
+        if scaling_curve_variant_label(row) not in allowed_variants:
+            return False
+    if corrections:
+        allowed_corrections = {str(value).strip().lower() for value in corrections}
+        correction = scaling_curve_correction_label(row) or "none"
+        if correction not in allowed_corrections:
+            return False
+    return True
+
+
+def filter_plot_rows(
+    rows: list[dict[str, Any]],
+    *,
+    variants: list[str] | tuple[str, ...] | None = None,
+    corrections: list[str] | tuple[str, ...] | None = None,
+) -> list[dict[str, Any]]:
+    """Exclude unsafe history and apply optional variant/correction filters."""
+
+    return [
+        row
+        for row in rows
+        if not is_legacy_heuristic_thompson_row(row)
+        and row_matches_plot_filters(
+            row,
+            variants=variants,
+            corrections=corrections,
+        )
+    ]
 
 
 def adaptive_sampler_strategy_for_row(row: dict[str, str]) -> str | None:

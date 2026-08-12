@@ -18,6 +18,7 @@ from src.evaluation.reporting_impl import (
     resolve_series_alias,
 )
 from src.evaluation.reporting import generate_figures
+from src.evaluation.reporting_styles import STANDALONE_REFERENCE_COLOR
 from src.models.correction import (
     correction_context_from_config,
     summarize_correction_context,
@@ -1292,7 +1293,10 @@ def test_scaling_curve_style_groups_family_colors_markers_and_shades():
         "tab:green",
         0.0,
     )
-    assert standalone_style["color"] == blend_color_toward_white("tab:brown", 0.0)
+    assert standalone_style["color"] == blend_color_toward_white(
+        STANDALONE_REFERENCE_COLOR,
+        0.0,
+    )
 
     assert standalone_style["color"] not in {
         nested_all_concat_none_style["color"],

@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import json
 
 import pytest
 import torch
@@ -188,6 +189,12 @@ def test_validation_loss_perplexity_and_metric_rows():
     assert rows[0]["content_tokens_seen"] == 3
     assert rows[1]["granularity"] == "xl"
     assert rows[0]["peak_memory_bytes"] == 2048
+    assert json.loads(rows[0]["granularity_pattern_summary"])[
+        "selected_granularities"
+    ] == ["s"]
+    assert json.loads(rows[1]["granularity_pattern_summary"])[
+        "selected_granularities"
+    ] == ["xl"]
 
 
 PROBABILISTIC_ROLE_NAMES = (
@@ -280,9 +287,7 @@ def test_probabilistic_four_role_manifests_and_hashes_are_stable():
     for role in PROBABILISTIC_ROLE_NAMES:
         manifest = first["role_manifests"][role]
         assert manifest["role"] == role
-        assert manifest["example_count"] == len(
-            manifest["ordered_example_identities"]
-        )
+        assert manifest["example_count"] == len(manifest["ordered_example_identities"])
         assert len(manifest["example_identity_hash"]) == 64
         assert len(manifest["manifest_hash"]) == 64
     assert len(first["parent_manifest"]["source_pool_hash"]) == 64

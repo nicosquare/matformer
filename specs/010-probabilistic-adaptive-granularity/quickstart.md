@@ -264,8 +264,8 @@ available.
 
 ## 13. Generate controller granularity timelines
 
-The existing figure command now discovers Bayesian controller journals
-automatically; its CLI is unchanged:
+The existing figure command discovers Bayesian controller journals
+automatically:
 
 ```bash
 python scripts/make_figures.py --input outputs --output outputs/figures
@@ -276,15 +276,22 @@ adds:
 
 ```text
 selected_granularity_over_tokens_<run-id>.png
+selected_granularity_share_over_tokens_<run-id>.png
 ```
 
-The horizontal axis is planned budget tokens seen, clipped to the configured
-token budget. Global controllers use one `all blocks` row; per-block
-controllers use 1-based transformer-block rows. Colors follow the saved
-`ordered_granularities`. Completed windows and explicit terminal partial
-windows are shown, while warmup and uncommitted active-window regions remain
-blank. A malformed run emits a warning and does not prevent figures for other
-runs.
+The original heatmap retains one row for a global controller's `all blocks`
+action or 1-based transformer-block rows for a per-block controller. The new
+figure instead gives every saved granularity its own panel. Its vertical axis
+is the fraction of transformer blocks directly assigned to that granularity
+in each confirmed controller window, so global actions are binary 0/1 traces
+and per-block actions can lie anywhere from 0 to 1. These are realized
+selection shares, not posterior probabilities.
+
+Both views use planned tokens clipped to the configured token budget and
+follow the saved `ordered_granularities`. Completed windows and explicit
+terminal partial windows are shown, while warmup and uncommitted active-window
+regions remain blank. A malformed run emits a warning and does not prevent
+figures for other runs.
 
 ## 14. Run the balanced 500-step pre-adaptive reference
 
@@ -367,3 +374,75 @@ more than one seed contributes. A historical artifact that lacks the metadata
 needed to prove contract equivalence remains isolated by run identity instead
 of being silently merged. Empty panels are omitted, and all displayed panels
 retain a common y-axis range.
+
+## 17. Inspect contract-safe validation and saturation diagnostics
+
+Generate the default completed-run-only validation figures and global-action
+diagnostics with the existing command:
+
+```bash
+python scripts/make_figures.py --input outputs --output outputs/figures
+```
+
+`run_summary.json` must report `status: completed` for a run to enter a
+scientific validation aggregate. Matching seeds are averaged only within the
+same seed-independent saved-config contract at identical total-training-token
+checkpoints; the translucent envelope is the per-checkpoint seed minimum and
+maximum. Historical artifacts without enough saved configuration to prove
+equivalence remain isolated by run identity. The per-granularity panels follow
+the configured micro-to-full order, share y limits, and label the horizontal
+axis `Total training tokens`.
+
+To inspect unfinished artifacts for debugging, opt in explicitly:
+
+```bash
+python scripts/make_figures.py \
+  --input outputs \
+  --output outputs/figures-with-incomplete \
+  --include-incomplete-validation-traces
+```
+
+Each unfinished or summary-missing run is then a separate dashed curve labeled
+with run ID, status, and token progress. It never enters a completed seed
+aggregate.
+
+For each completed `global` or Bayesian `adaptive_global` method, figure
+generation also writes:
+
+```text
+validation_loss_over_selected_exposure_<method>.png
+validation_marginal_utility_over_tokens_<method>.png
+validation_marginal_utility_ranking.md
+```
+
+Direct selected exposure is reconstructed from successive planned-token
+increments in streamed training rows, including balanced warmup actions.
+Repeated resume rows are deduplicated; a conflicting or non-monotonic history
+is skipped with a warning. Loss-versus-exposure seed curves are interpolated
+on a deterministic 100-point grid only over common exposure support.
+
+Marginal utility is the negative OLS slope of ordinary-validation loss against
+direct selected exposure in millions of tokens, using the latest five distinct
+exposure observations and requiring at least three. Negative values remain in
+the figures and ranking as degradation. Treat the ranking as evidence about
+saturation, not as a binary saturation decision or controller action. Direct
+exposure records the selected global action; MatFormer parameter sharing can
+still improve one granularity while another action is selected.
+
+## 18. Filter generated figures by model variant and correction
+
+To produce a directory containing only uncorrected slicing results, use:
+
+```bash
+python scripts/make_figures.py \
+  --input outputs \
+  --output outputs/figures-slicing-uncorrected \
+  --variant slicing \
+  --correction none
+```
+
+`--variant` accepts `slicing` or `concat`, and `--correction` accepts `none`,
+`gmc`, or `lmc`. Each option is repeatable to form an inclusive set; omitting
+an option leaves that dimension unfiltered. The filters apply consistently to
+size, validation, saturation, consistency, and both controller-policy views.
+Figures with no matching rows are omitted.
