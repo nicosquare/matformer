@@ -36,7 +36,7 @@ def _write_single_run_config(tmp_path):
               num_layers: 2
               num_attention_heads: 4
               context_length: 64
-              vocab_size_assumption: 32000
+              vocab_size: 32000
               granularities: [s, m, l, xl]
 
             training:
@@ -1611,7 +1611,7 @@ def test_dmodel256_pilot_config_preserves_clarified_terms_and_shape_fields():
     assert model["num_layers"] == 16
     assert model["num_attention_heads"] == 16
     assert model["context_length"] == 1024
-    assert model["vocab_size_assumption"] == 256000
+    assert model["vocab_size"] == 256000
     assert model["granularity_prefixes"] == {
         "s": 0.125,
         "m": 0.25,

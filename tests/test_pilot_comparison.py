@@ -44,7 +44,7 @@ def _pilot_summary(
         "num_layers": 16,
         "num_attention_heads": 16,
         "context_length": 1024,
-        "vocab_size_assumption": 256000,
+        "vocab_size": 256000,
         "token_budget": 100_000_000,
         "effective_world_size": effective_world_size,
         "checkpoint_status": checkpoint_status,

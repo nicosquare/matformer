@@ -140,7 +140,7 @@ def test_dmodel256_pilot_resolves_current_reference_config(tmp_path):
     assert config["model"]["num_layers"] == 16
     assert config["model"]["num_attention_heads"] == 16
     assert config["model"]["context_length"] == 1024
-    assert config["model"]["vocab_size_assumption"] == 256000
+    assert config["model"]["vocab_size"] == 256000
     assert config["model"]["granularity_prefixes"] == {
         "s": 0.125,
         "m": 0.25,

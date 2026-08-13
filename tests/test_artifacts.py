@@ -1873,7 +1873,7 @@ def test_scaling_result_schema_exposes_phase5_reporting_fields(tmp_path):
         "num_layers",
         "num_attention_heads",
         "context_length",
-        "vocab_size_assumption",
+        "vocab_size",
         "token_budget",
         "effective_world_size",
         "total_parameters",

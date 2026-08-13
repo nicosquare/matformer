@@ -90,7 +90,7 @@ def build_model(config: dict[str, Any]):
 def build_llama_config(config: dict[str, Any]) -> LlamaConfig:
     model = config["model"]
     llama_config = LlamaConfig(
-        vocab_size=model["vocab_size_assumption"],
+        vocab_size=model["vocab_size"],
         hidden_size=model.get("d_model", model.get("hidden_size")),
         intermediate_size=model["intermediate_size"],
         num_hidden_layers=model["num_layers"],
@@ -145,7 +145,7 @@ def load_tokenizer(config: dict[str, Any]):
             tokenizer_dir,
             local_files_only=True,
         )
-        if int(tokenizer.vocab_size) != int(model["vocab_size_assumption"]):
+        if int(tokenizer.vocab_size) != int(model["vocab_size"]):
             raise ConfigError("Loaded tokenizer vocabulary does not match the model")
         return tokenizer
     tokenizer_name = dataset.get("tokenizer_name") or model.get("tokenizer_name")

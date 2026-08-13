@@ -1568,7 +1568,7 @@ def test_real_model_training_preserves_repeated_per_block_patterns(
             "model.num_layers": 4,
             "model.num_attention_heads": 4,
             "model.context_length": 8,
-            "model.vocab_size_assumption": 32,
+            "model.vocab_size": 32,
             "model.granularities": labels,
             "model.granularity_prefixes": {
                 "micro": 0.25,

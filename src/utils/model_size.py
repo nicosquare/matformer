@@ -162,10 +162,7 @@ def estimate_llama_total_parameters(model: Mapping[str, Any]) -> int:
         "model.intermediate_size",
     )
     num_layers = _positive_int(model.get("num_layers"), "model.num_layers")
-    vocab_size = _positive_int(
-        model.get("vocab_size_assumption", model.get("vocab_size")),
-        "model.vocab_size_assumption",
-    )
+    vocab_size = _positive_int(model.get("vocab_size"), "model.vocab_size")
     tie_word_embeddings = bool(model.get("tie_word_embeddings", False))
 
     embedding_parameters = vocab_size * hidden_size

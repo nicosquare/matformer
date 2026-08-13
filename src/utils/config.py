@@ -587,7 +587,7 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "num_attention_heads",
             "intermediate_size",
             "context_length",
-            "vocab_size_assumption",
+            "vocab_size",
             "granularities",
         ],
     )
@@ -1231,7 +1231,7 @@ def _validate_distributed_and_prepared_corpus_contract(
         raise ConfigError(
             "Prepared corpus tokenizer model checksum does not match the model"
         )
-    if int(tokenizer.get("vocab_size", -1)) != int(model["vocab_size_assumption"]):
+    if int(tokenizer.get("vocab_size", -1)) != int(model["vocab_size"]):
         raise ConfigError("Prepared corpus tokenizer vocabulary does not match the model")
     if isinstance(dataset, dict):
         dataset["corpus_hash"] = manifest["corpus_hash"]
@@ -1433,12 +1433,12 @@ def _resolve_model_tokenizer_defaults(config: dict[str, Any]) -> None:
         manifest = load_tokenizer_manifest(tokenizer_dir, verify_files=True)
     except Exception as error:
         raise ConfigError(f"Local tokenizer validation failed: {error}") from error
-    assumed_vocab = _positive_int(
-        model.get("vocab_size_assumption"), "model.vocab_size_assumption"
+    configured_vocab_size = _positive_int(
+        model.get("vocab_size"), "model.vocab_size"
     )
-    if int(manifest["vocab_size"]) != assumed_vocab:
+    if int(manifest["vocab_size"]) != configured_vocab_size:
         raise ConfigError(
-            "Local tokenizer vocabulary must equal model.vocab_size_assumption"
+            "Local tokenizer vocabulary must equal model.vocab_size"
         )
     model["tokenizer_dir"] = str(Path(tokenizer_dir).expanduser().resolve())
     model["tokenizer_name"] = manifest["tokenizer_name"]
@@ -2464,7 +2464,7 @@ def _validate_dmodel256_pilot_fields(
                 "num_layers",
                 "num_attention_heads",
                 "context_length",
-                "vocab_size_assumption",
+                "vocab_size",
                 "granularity_prefixes",
             ],
         )

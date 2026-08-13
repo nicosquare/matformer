@@ -24,7 +24,7 @@ model:
   hidden_size: 128
   intermediate_size: 512
   context_length: 64
-  vocab_size_assumption: 32000
+  vocab_size: 32000
   granularities: [s, m, l, xl]
 
 training:

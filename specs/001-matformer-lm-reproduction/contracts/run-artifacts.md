@@ -59,7 +59,7 @@ run_id,suite_id,task,model_family,model_size_label,model_shape_label,sampling_mo
 Required columns:
 
 ```text
-comparison_id,run_id,model_family,model_size_label,model_shape_label,sampling_mode,model_family_slug,model_size_slug,token_budget_slug,output_group,completion_label,granularity,d_model,num_layers,num_attention_heads,context_length,vocab_size_assumption,token_budget,effective_world_size,total_parameters,embedding_parameters,lm_head_parameters,non_embedding_parameters,ffn_parameters,attention_parameters,other_non_embedding_parameters,lm_head_counting,checkpoint_path,loss,perplexity,average_downstream_accuracy
+comparison_id,run_id,model_family,model_size_label,model_shape_label,sampling_mode,model_family_slug,model_size_slug,token_budget_slug,output_group,completion_label,granularity,d_model,num_layers,num_attention_heads,context_length,vocab_size,token_budget,effective_world_size,total_parameters,embedding_parameters,lm_head_parameters,non_embedding_parameters,ffn_parameters,attention_parameters,other_non_embedding_parameters,lm_head_counting,checkpoint_path,loss,perplexity,average_downstream_accuracy
 ```
 
 ## `consistency_results.csv`
@@ -91,7 +91,7 @@ Required fields:
   "num_layers": 4,
   "num_attention_heads": 4,
   "context_length": 256,
-  "vocab_size_assumption": 32000,
+  "vocab_size": 32000,
   "dataset_name": "tiny-stories",
   "dataset_split": "train",
   "token_budget": 1000000,

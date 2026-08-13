@@ -144,7 +144,7 @@ SCALING_RESULTS_COLUMNS = [
     "num_layers",
     "num_attention_heads",
     "context_length",
-    "vocab_size_assumption",
+    "vocab_size",
     "token_budget",
     "effective_world_size",
     "total_parameters",
@@ -278,7 +278,7 @@ RUN_SUMMARY_FIELDS = [
     "num_layers",
     "num_attention_heads",
     "context_length",
-    "vocab_size_assumption",
+    "vocab_size",
     "parameter_counts",
     "parameter_counts_by_granularity",
     "preset_selections",
@@ -933,10 +933,7 @@ def build_run_summary(
         "num_layers": model.get("num_layers"),
         "num_attention_heads": model.get("num_attention_heads"),
         "context_length": model.get("context_length"),
-        "vocab_size_assumption": model.get(
-            "vocab_size_assumption",
-            model.get("vocab_size"),
-        ),
+        "vocab_size": model.get("vocab_size"),
         "parameter_counts": config.get("parameter_counts"),
         "parameter_counts_by_granularity": config.get(
             "parameter_counts_by_granularity"
@@ -1400,10 +1397,7 @@ def build_scaling_result_rows(
                 "num_layers": model.get("num_layers"),
                 "num_attention_heads": model.get("num_attention_heads"),
                 "context_length": model.get("context_length"),
-                "vocab_size_assumption": model.get(
-                    "vocab_size_assumption",
-                    model.get("vocab_size"),
-                ),
+                "vocab_size": model.get("vocab_size"),
                 "token_budget": training.get("token_budget"),
                 "effective_world_size": training.get("effective_world_size"),
                 "total_parameters": parameter_counts["total_parameters"],
@@ -1504,9 +1498,7 @@ def build_pilot_comparison_rows(
                             "num_attention_heads"
                         ),
                         "context_length": summary.get("context_length"),
-                        "vocab_size_assumption": summary.get(
-                            "vocab_size_assumption"
-                        ),
+                        "vocab_size": summary.get("vocab_size"),
                         "token_budget": summary.get("token_budget"),
                         "effective_world_size": summary.get(
                             "effective_world_size"
@@ -1583,9 +1575,7 @@ def build_pilot_comparison_rows(
                         "num_attention_heads"
                     ),
                     "context_length": omitted_row.get("context_length"),
-                    "vocab_size_assumption": omitted_row.get(
-                        "vocab_size_assumption"
-                    ),
+                    "vocab_size": omitted_row.get("vocab_size"),
                     "token_budget": omitted_row.get("token_budget"),
                     "effective_world_size": omitted_row.get(
                         "effective_world_size"
@@ -2678,7 +2668,7 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "num_layers": None,
         "num_attention_heads": None,
         "context_length": None,
-        "vocab_size_assumption": None,
+        "vocab_size": None,
         "token_budget": None,
         "effective_world_size": None,
         "content_tokens_seen": normalized_row.get("tokens_seen"),

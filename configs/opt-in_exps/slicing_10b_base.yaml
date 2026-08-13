@@ -30,7 +30,7 @@ model:
   num_layers: 16
   num_attention_heads: 16
   context_length: 1024
-  vocab_size_assumption: 256000
+  vocab_size: 256000
   granularities: [g125, g250, g375, g500, g625, g750, g875, g1000]
   granularity_prefixes:
     g125: 0.125

@@ -680,7 +680,7 @@ def build_packed_mmap_dataloaders(
     ):
         raise DataError("Prepared corpus tokenizer manifest does not match the run")
     if int(tokenizer.get("vocab_size", -1)) != int(
-        config["model"]["vocab_size_assumption"]
+        config["model"]["vocab_size"]
     ):
         raise DataError("Prepared corpus tokenizer vocabulary does not match the run")
 
