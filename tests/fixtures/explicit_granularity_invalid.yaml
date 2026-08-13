@@ -16,13 +16,12 @@ model:
   granularity_mode: explicit
   variant: concat
   correction_mode: gmc
-  membership_correction: true
   tokenizer_name: hf-internal-testing/llama-tokenizer
   d_model: 128
   num_layers: 2
   num_attention_heads: 4
   context_length: 64
-  vocab_size_assumption: 32000
+  vocab_size: 32000
   granularities: [micro, small, medium, large, full]
   granularity_prefixes:
     micro: 0.2

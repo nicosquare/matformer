@@ -62,12 +62,46 @@ def main(argv: list[str] | None = None) -> None:
                     "batch_size_per_process": resolved["training"][
                         "batch_size_per_process"
                     ],
+                    "gradient_accumulation_steps": resolved["training"][
+                        "gradient_accumulation_steps"
+                    ],
                     "dataset_sample_limit": resolved["dataset"].get(
                         "sample_limit"
                     ),
                     "tokenization_keep_in_memory": resolved["dataset"].get(
                         "tokenization_keep_in_memory",
                         False,
+                    ),
+                    "dataset_mode": resolved["dataset"].get("mode", "raw_tokenized"),
+                    "prepared_corpus_dir": resolved["dataset"].get(
+                        "prepared_corpus_dir"
+                    ),
+                    "data_seed": resolved["dataset"].get("data_seed"),
+                    "corpus_hash": resolved["dataset"].get("corpus_hash"),
+                    "expected_world_size": resolved["training"]
+                    .get("distributed", {})
+                    .get("expected_world_size"),
+                    "effective_world_size": resolved["training"][
+                        "effective_world_size"
+                    ],
+                    "expected_tokens_per_microstep": resolved["training"][
+                        "expected_tokens_per_microstep"
+                    ],
+                    "expected_tokens_per_step": resolved["training"][
+                        "expected_tokens_per_step"
+                    ],
+                    "derived_max_steps": resolved["training"][
+                        "derived_max_steps"
+                    ],
+                    "resolved_warmup_steps": resolved["training"][
+                        "resolved_warmup_steps"
+                    ],
+                    "tokenizer_manifest_hash": resolved["model"].get(
+                        "tokenizer_manifest_hash"
+                    ),
+                    "ordered_granularities": resolved["model"]["granularities"],
+                    "granularity_prefixes": resolved["model"].get(
+                        "granularity_prefixes"
                     ),
                     "validation": resolved["evaluation"]["validation"],
                     "comparison_control_inputs": control_inputs,

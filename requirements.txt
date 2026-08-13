@@ -1,5 +1,7 @@
 torch
 transformers
+sentencepiece==0.2.1
+protobuf
 datasets
 pyyaml
 pandas

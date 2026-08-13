@@ -1,4 +1,5 @@
 import copy
+import random
 from types import SimpleNamespace
 
 import pytest
@@ -17,7 +18,14 @@ from src.training.checkpointing import _validate_reproducibility_payload
 from src.training.run import run_training
 from src.utils.config import ConfigError, resolve_run_config
 from src.utils.metrics import build_scaling_result_rows
-from src.utils.reproducibility import derive_seed, seed_model_initialization
+from src.utils.reproducibility import (
+    build_balanced_warmup_schedule,
+    build_controller_reset_schedule,
+    build_comparison_control_signature,
+    derive_seed,
+    seed_for,
+    seed_model_initialization,
+)
 
 
 def test_named_seed_derivation_is_stable_and_independent():
@@ -30,6 +38,149 @@ def test_named_seed_derivation_is_stable_and_independent():
     assert derive_seed(42, "training_sampler") != derive_seed(
         43, "training_sampler"
     )
+
+
+PROBABILISTIC_SEED_STREAMS = (
+    "controller_panel",
+    "final_holdout",
+    "posterior_sampling",
+    "pre_nested_warmup_schedule",
+    "controller_reset_schedule",
+)
+
+
+def test_balanced_warmup_schedule_is_exact_deterministic_and_hash_stable():
+    labels = ["micro", "small", "medium", "large", "full"]
+    seed = derive_seed(42, "pre_nested_warmup_schedule")
+    schedule, schedule_hash = build_balanced_warmup_schedule(
+        labels,
+        passes=2,
+        seed=seed,
+        action_interval_steps=50,
+        duration_steps=500,
+    )
+    repeated, repeated_hash = build_balanced_warmup_schedule(
+        labels,
+        passes=2,
+        seed=seed,
+        action_interval_steps=50,
+        duration_steps=500,
+    )
+    other, other_hash = build_balanced_warmup_schedule(
+        labels,
+        passes=2,
+        seed=derive_seed(43, "pre_nested_warmup_schedule"),
+        action_interval_steps=50,
+        duration_steps=500,
+    )
+
+    assert schedule == repeated
+    assert schedule_hash == repeated_hash
+    assert schedule != other
+    assert schedule_hash != other_hash
+    assert len(schedule) == 10
+    assert all(schedule.count(label) == 2 for label in labels)
+    assert set(schedule[:5]) == set(labels)
+    assert set(schedule[5:]) == set(labels)
+
+
+def test_probabilistic_seed_streams_are_stable_distinct_and_root_seeded():
+    first = {
+        stream_name: derive_seed(42, stream_name)
+        for stream_name in PROBABILISTIC_SEED_STREAMS
+    }
+    second = {
+        stream_name: derive_seed(42, stream_name)
+        for stream_name in PROBABILISTIC_SEED_STREAMS
+    }
+
+    assert first == second
+    assert len(set(first.values())) == len(PROBABILISTIC_SEED_STREAMS)
+    assert all(
+        first[stream_name] != derive_seed(43, stream_name)
+        for stream_name in PROBABILISTIC_SEED_STREAMS
+    )
+
+
+def test_controller_reset_episode_schedules_are_indexed_and_rng_independent():
+    labels = ["micro", "medium", "full"]
+    root_seed = derive_seed(42, "controller_reset_schedule")
+    first, first_seed, first_hash = build_controller_reset_schedule(
+        labels,
+        acquisition_passes=2,
+        root_seed=root_seed,
+        episode_index=0,
+    )
+    repeated, repeated_seed, repeated_hash = build_controller_reset_schedule(
+        labels,
+        acquisition_passes=2,
+        root_seed=root_seed,
+        episode_index=0,
+    )
+    second, second_seed, second_hash = build_controller_reset_schedule(
+        labels,
+        acquisition_passes=2,
+        root_seed=root_seed,
+        episode_index=1,
+    )
+
+    assert (first, first_seed, first_hash) == (
+        repeated,
+        repeated_seed,
+        repeated_hash,
+    )
+    assert first_seed != second_seed
+    assert first_hash != second_hash
+    assert len(first) == len(second) == 6
+    assert set(first[:3]) == set(first[3:]) == set(labels)
+    assert set(second[:3]) == set(second[3:]) == set(labels)
+
+
+def test_probabilistic_split_and_sampling_streams_reproduce_independently():
+    controller_seed = derive_seed(42, "controller_panel")
+    final_seed = derive_seed(42, "final_holdout")
+    posterior_seed = derive_seed(42, "posterior_sampling")
+
+    expected_controller = random.Random(controller_seed).sample(range(2048), 128)
+    expected_final = random.Random(final_seed).sample(range(2048), 512)
+    expected_posterior_generator = torch.Generator().manual_seed(posterior_seed)
+    expected_posterior = torch.randn(16, generator=expected_posterior_generator)
+
+    controller_generator = random.Random(controller_seed)
+    assert controller_generator.sample(range(2048), 128) == expected_controller
+    for _ in range(100):
+        controller_generator.random()
+
+    assert random.Random(final_seed).sample(range(2048), 512) == expected_final
+    posterior_generator = torch.Generator().manual_seed(posterior_seed)
+    assert torch.equal(
+        torch.randn(16, generator=posterior_generator),
+        expected_posterior,
+    )
+
+
+def test_probabilistic_seed_provenance_is_in_comparison_signature():
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+    )
+    config["model"]["granularity_sampling_mode"] = "adaptive_global"
+    config["model"]["adaptive_sampler_strategy"] = "thompson"
+
+    signature, inputs = build_comparison_control_signature(config)
+
+    expected_provenance = {
+        stream_name: {
+            "stream_name": stream_name,
+            "seed_stream_version": config["run"]["reproducibility"][
+                "seed_stream_version"
+            ],
+            "resolved_seed": seed_for(config, stream_name),
+        }
+        for stream_name in PROBABILISTIC_SEED_STREAMS
+    }
+    assert inputs["probabilistic_seed_streams"] == expected_provenance
+    assert len(signature) == 64
 
 
 def test_config_migrates_legacy_validation_and_emits_only_canonical_fields():

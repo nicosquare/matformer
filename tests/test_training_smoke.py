@@ -20,7 +20,7 @@ from src.utils.monitoring import group_loss_rows_by_series
 
 
 class TinyNestedTrainingModel(torch.nn.Module):
-    def __init__(self, loss_scale_by_granularity=None):
+    def __init__(self, loss_scale_by_granularity=None, granularities=None):
         super().__init__()
         self.weight = torch.nn.Parameter(torch.tensor(0.5))
         self.current_granularity = None
@@ -29,6 +29,7 @@ class TinyNestedTrainingModel(torch.nn.Module):
         self.train_forward_granularities = []
         self.train_forward_layer_granularities = []
         self.loss_scale_by_granularity = loss_scale_by_granularity
+        self.granularities = granularities
 
     def configure_subnetwork(self, granularity):
         self.current_granularity = granularity
@@ -43,6 +44,7 @@ class TinyNestedTrainingModel(torch.nn.Module):
             selected_granularities=tuple(self.current_layer_granularities),
             layer_count=len(self.current_layer_granularities),
             repeatable_source=("tiny-nested-training-model", "per_block"),
+            available_granularities=self.granularities,
         )
 
     def forward(self, input_ids, attention_mask=None, labels=None):
@@ -290,8 +292,7 @@ def _run_concat_lmc_case(tmp_path, monkeypatch, correction_mode):
             "training.scheduler.kwargs.warmup_steps=0",
             "training.gradient_clip_norm=1000",
             "evaluation.validation=false",
-        ]
-        + (["model.membership_correction=false"] if correction_mode == "none" else []),
+        ],
     )
     tokenized_dataset = Dataset.from_dict(
         {
@@ -773,6 +774,7 @@ def test_pre_nested_warmup_disabled_path_keeps_the_run_in_the_standard_flow(
         "enabled": False,
         "duration": 0,
         "unit": "epochs",
+        "policy": "full_only",
         "completed": False,
         "completion_step": None,
         "transition_reason": None,
@@ -1557,11 +1559,16 @@ def test_real_model_training_preserves_repeated_per_block_patterns(
             "run.continuation.enabled": False,
             "model.variant": variant,
             "model.granularity_sampling_mode": sampling_mode,
+            **(
+                {"model.adaptive_sampler_strategy": "ucb"}
+                if sampling_mode == "adaptive_per_block"
+                else {}
+            ),
             "model.d_model": 16,
             "model.num_layers": 4,
             "model.num_attention_heads": 4,
             "model.context_length": 8,
-            "model.vocab_size_assumption": 32,
+            "model.vocab_size": 32,
             "model.granularities": labels,
             "model.granularity_prefixes": {
                 "micro": 0.25,
@@ -1933,7 +1940,7 @@ def test_budgeted_training_stops_at_token_budget_before_manual_step_cap(
     assert {row["content_tokens_seen"] for row in train_rows} == {"4"}
 
 
-def test_config_driven_training_rejects_multi_process_execution_before_setup(
+def test_config_driven_training_enters_supported_multi_process_setup(
     tmp_path,
     monkeypatch,
 ):
@@ -1964,13 +1971,22 @@ def test_config_driven_training_rejects_multi_process_execution_before_setup(
         }
     )
 
-    import src.training.run as training_run
+    calls = []
 
     def fake_prepare_distributed_context(*args, **kwargs):
-        raise AssertionError("prepare_distributed_context should not be called")
+        calls.append("prepare")
+        return training_distributed.DistributedContext(
+            enabled=True,
+            rank=0,
+            local_rank=0,
+            world_size=2,
+            strategy="fsdp",
+            device="cpu",
+        )
 
     def fake_wrap_model_for_distributed(*args, **kwargs):
-        raise AssertionError("wrap_model_for_distributed should not be called")
+        calls.append("wrap")
+        raise RuntimeError("distributed wrapping reached")
 
     monkeypatch.setattr(
         training_distributed,
@@ -1983,16 +1999,14 @@ def test_config_driven_training_rejects_multi_process_execution_before_setup(
         fake_wrap_model_for_distributed,
     )
 
-    with pytest.raises(
-        ConfigError,
-        match="single-process only: distributed or multi-process execution is not supported",
-    ):
+    with pytest.raises(RuntimeError, match="distributed wrapping reached"):
         run_training(
             config,
             model=TinyNestedTrainingModel(),
             tokenized_dataset=tokenized_dataset,
             device="cpu",
         )
+    assert calls == ["prepare", "wrap"]
 
 
 def test_run_training_rejects_invalid_adaptive_pairing_before_setup(
@@ -2055,16 +2069,10 @@ def test_run_training_rejects_invalid_adaptive_pairing_before_setup(
         )
 
 
-@pytest.mark.xfail(
-    reason="Adaptive per-block runtime wiring lands in T013/T014",
-    strict=False,
-)
-def test_adaptive_per_block_smoke_shifts_patterns_and_resumes_from_checkpoint(
+def test_ucb_adaptive_per_block_smoke_preserves_state_and_resumes_from_checkpoint(
     tmp_path,
     monkeypatch,
 ):
-    import src.training.run as training_run
-
     output_dir = tmp_path / "debug-nested-001"
     tokenized_dataset = Dataset.from_dict(
         {
@@ -2073,29 +2081,28 @@ def test_adaptive_per_block_smoke_shifts_patterns_and_resumes_from_checkpoint(
         }
     )
 
-    fresh_pattern_calls = {"count": 0}
-
-    def fake_select_training_layer_granularities(config, granularities, device):
-        resume_count = int(config["run"].get("continuation", {}).get("resume_count", 0))
-        if resume_count > 0:
-            return ["m", "l"]
-
-        fresh_pattern_calls["count"] += 1
-        if fresh_pattern_calls["count"] == 1:
+    def fake_select_adaptive_sampler_layer_granularities(
+        state,
+        *,
+        block_count,
+        step,
+        phase,
+        granularities,
+        adaptive_seed,
+    ):
+        assert state.strategy_name == "ucb"
+        assert block_count == 2
+        assert phase == "training"
+        assert list(granularities) == ["s", "m", "l", "xl"]
+        assert adaptive_seed is not None
+        if step == 1:
             return ["s", "m"]
         return ["m", "l"]
 
     monkeypatch.setattr(
-        training_run,
-        "select_training_layer_granularities",
-        fake_select_training_layer_granularities,
-    )
-    monkeypatch.setattr(
-        training_run,
-        "select_training_granularities",
-        lambda *args, **kwargs: pytest.fail(
-            "adaptive_per_block should use per-block selection"
-        ),
+        training_steps,
+        "select_adaptive_sampler_layer_granularities",
+        fake_select_adaptive_sampler_layer_granularities,
     )
 
     first_config = resolve_run_config(
@@ -2105,13 +2112,14 @@ def test_adaptive_per_block_smoke_shifts_patterns_and_resumes_from_checkpoint(
         overrides=[
             "run.sampling_mode=nested-random",
             "model.granularity_sampling_mode=adaptive_per_block",
+            "model.adaptive_sampler_strategy=ucb",
             "run.continuation.enabled=true",
             "training.max_steps=2",
             "training.eval_interval=0",
             "training.batch_size_per_process=1",
             "training.learning_rate=0.01",
             "training.scheduler.kwargs.warmup_steps=0",
-            "training.token_budget=16",
+            "training.token_budget=32768",
             "outputs.save_checkpoints=true",
             "evaluation.validation=false",
         ],
@@ -2127,7 +2135,9 @@ def test_adaptive_per_block_smoke_shifts_patterns_and_resumes_from_checkpoint(
 
     first_summary = json.loads(first_result["summary_path"].read_text(encoding="utf-8"))
     assert first_summary["resolved_sampling_mode"] == "adaptive_per_block"
-    assert first_summary["continuation_state"]["status"] == "fresh"
+    assert first_summary["adaptive_sampler_strategy"] == "ucb"
+    assert first_summary["continuation_state"]["status"] == "completed"
+    assert first_summary["continuation_state"]["resume_count"] == 0
     assert first_model.train_forward_layer_granularities == [
         ["s", "m"],
         ["m", "l"],
@@ -2146,6 +2156,18 @@ def test_adaptive_per_block_smoke_shifts_patterns_and_resumes_from_checkpoint(
         for row in first_train_rows
     ] == [["s", "m"], ["m", "l"]]
 
+    first_checkpoint = torch.load(
+        output_dir / "checkpoints" / "latest.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    first_sampler_state = first_checkpoint["adaptive_sampler_state"]
+    assert first_checkpoint["adaptive_sampler_strategy"] == "ucb"
+    assert first_checkpoint["probabilistic_controller_state"] is None
+    assert first_sampler_state["strategy_name"] == "ucb"
+    assert first_sampler_state["step"] == 2
+    assert first_checkpoint["adaptive_sampler_previous_pattern"] == ["m", "l"]
+
     resumed_config = resolve_run_config(
         "configs/debug_matrix.yaml",
         run_id="debug-nested-001",
@@ -2153,13 +2175,14 @@ def test_adaptive_per_block_smoke_shifts_patterns_and_resumes_from_checkpoint(
         overrides=[
             "run.sampling_mode=nested-random",
             "model.granularity_sampling_mode=adaptive_per_block",
+            "model.adaptive_sampler_strategy=ucb",
             "run.continuation.enabled=true",
             "training.max_steps=3",
             "training.eval_interval=0",
             "training.batch_size_per_process=1",
             "training.learning_rate=0.01",
             "training.scheduler.kwargs.warmup_steps=0",
-            "training.token_budget=16",
+            "training.token_budget=32768",
             "outputs.save_checkpoints=true",
             "evaluation.validation=false",
         ],
@@ -2176,9 +2199,21 @@ def test_adaptive_per_block_smoke_shifts_patterns_and_resumes_from_checkpoint(
     resumed_summary = json.loads(
         resumed_result["summary_path"].read_text(encoding="utf-8")
     )
-    assert resumed_summary["continuation_state"]["status"] == "resumed"
+    assert resumed_summary["continuation_state"]["status"] == "completed"
     assert resumed_summary["continuation_state"]["resume_count"] == 1
+    assert resumed_summary["adaptive_sampler_strategy"] == "ucb"
     assert resumed_model.train_forward_layer_granularities[0] == ["m", "l"]
+
+    resumed_checkpoint = torch.load(
+        output_dir / "checkpoints" / "latest.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    resumed_sampler_state = resumed_checkpoint["adaptive_sampler_state"]
+    assert resumed_sampler_state["strategy_name"] == "ucb"
+    assert resumed_sampler_state["step"] == 3
+    assert resumed_checkpoint["resume_count"] == 1
+    assert resumed_checkpoint["probabilistic_controller_state"] is None
 
 
 def test_monitoring_smoke_groups_nested_and_standalone_runs_by_series(
@@ -2308,3 +2343,881 @@ def test_wandb_session_uses_explicit_project_and_entity_settings(
     assert fake_wandb.init_kwargs["id"] == "debug-nested-001"
     session.close()
     assert fake_wandb.finish_calls == 1
+
+
+def test_probabilistic_adaptive_global_boundary_reward_action_and_logs(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    import src.evaluation.validation as evaluation_validation
+    import src.training.run as training_run
+
+    output_dir = tmp_path / "probabilistic-adaptive-global-smoke-001"
+    config = resolve_run_config(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+        output_dir=output_dir,
+        overrides={
+            "training.eval_batches": 4,
+            "training.max_steps": 4,
+            "model.adaptive_controller.decision_interval_steps": 2,
+        },
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "source_row_identity": list(range(660)),
+            "input_ids": [
+                [index + 1, index + 2, index + 3] for index in range(660)
+            ],
+            "attention_mask": [[1, 1, 1] for _ in range(660)],
+        }
+    )
+    controlled_components = [
+        [0.02, 0.03, 0.04],
+        [0.01, 0.02, 0.03],
+        [0.008, 0.018, 0.028],
+    ]
+    controller_calls = []
+
+    def controlled_controller_objective(*args, **kwargs):
+        dataloader = kwargs.get("dataloader")
+        if dataloader is None and len(args) >= 2:
+            dataloader = args[1]
+        granularities = kwargs.get("granularities")
+        if granularities is None and len(args) >= 3:
+            granularities = args[2]
+        boundary_step = kwargs.get("boundary_step")
+        call_index = len(controller_calls)
+        component_losses = controlled_components[call_index]
+        objective = sum(component_losses) / len(component_losses)
+        controller_calls.append(
+            {
+                "boundary_step": boundary_step,
+                "granularities": list(granularities),
+                "component_losses": list(component_losses),
+                "objective": objective,
+                "dataloader_id": id(dataloader),
+            }
+        )
+        return {
+            "boundary_step": boundary_step,
+            "split": "controller",
+            "ordered_granularities": list(granularities),
+            "ordered_component_losses": list(component_losses),
+            "objective": objective,
+            "uniform_objective": objective,
+            "evaluation_example_count": 128,
+            "evaluation_target_tokens": 256,
+            "aggregation_method": "target_token_weighted_causal_shift_float64",
+            "objective_weighting": "uniform",
+            "controller_manifest_hash": kwargs.get("controller_manifest_hash"),
+            "evaluation_status": "complete",
+            "component_results": [
+                {
+                    "granularity": granularity,
+                    "loss": loss,
+                    "evaluation_examples": 128,
+                    "evaluation_target_tokens": 256,
+                }
+                for granularity, loss in zip(granularities, component_losses)
+            ],
+        }
+
+    for module in (evaluation_validation, training_run, training_steps):
+        monkeypatch.setattr(
+            module,
+            "evaluate_controller_objective",
+            controlled_controller_objective,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            module,
+            "evaluate_controller_panel_objective",
+            controlled_controller_objective,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            module,
+            "evaluate_fixed_panel_objective",
+            controlled_controller_objective,
+            raising=False,
+        )
+
+    model = TinyNestedTrainingModel()
+    with torch.no_grad():
+        model.weight.fill_(5.0)
+    result = run_training(
+        config,
+        model=model,
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    assert [call["boundary_step"] for call in controller_calls] == [0, 2, 4]
+    assert all(
+        call["granularities"] == ["micro", "medium", "full"]
+        for call in controller_calls
+    )
+    assert len({call["dataloader_id"] for call in controller_calls}) == 1
+    for call in controller_calls:
+        assert call["objective"] == pytest.approx(
+            sum(call["component_losses"]) / len(call["component_losses"])
+        )
+
+    controller_metrics_path = output_dir / "controller_metrics.jsonl"
+    controller_events = [
+        json.loads(line)
+        for line in controller_metrics_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [event["event_type"] for event in controller_events] == [
+        "initial_boundary",
+        "completed_window",
+        "completed_window",
+    ]
+    initial_event, first_window, second_window = controller_events
+    assert "reward" not in initial_event
+    assert initial_event["boundary_step"] == 0
+    assert initial_event["ordered_component_losses"] == controlled_components[0]
+    assert initial_event["controller_objective"] == pytest.approx(0.03)
+
+    completed_events = [first_window, second_window]
+    expected_rewards = [
+        (0.03 - 0.02) / 2,
+        (0.02 - 0.018) / 2,
+    ]
+    assert [event["reward"] for event in completed_events] == pytest.approx(
+        expected_rewards
+    )
+    assert [event["pre_window_objective"] for event in completed_events] == (
+        pytest.approx([0.03, 0.02])
+    )
+    assert [event["post_window_objective"] for event in completed_events] == (
+        pytest.approx([0.02, 0.018])
+    )
+    assert [event["completed_optimizer_steps"] for event in completed_events] == [
+        2,
+        2,
+    ]
+    assert all(event["prediction_error"] is not None for event in completed_events)
+    assert all(event["uncertainty_summary"] for event in completed_events)
+
+    training_actions = model.train_forward_granularities
+    assert len(training_actions) == 4
+    assert training_actions[0] == training_actions[1]
+    assert training_actions[2] == training_actions[3]
+    assert training_actions[0] == initial_event["selected_action"][
+        "global_granularity"
+    ]
+    assert training_actions[:2] == [
+        first_window["action"]["global_granularity"]
+    ] * 2
+    assert training_actions[2:] == [
+        second_window["action"]["global_granularity"]
+    ] * 2
+
+    train_losses = [
+        float(row["loss"])
+        for row in result["metrics_rows"]
+        if row["split"] == "train"
+    ]
+    assert train_losses
+    assert min(train_losses) > max(abs(reward) for reward in expected_rewards)
+    assert [event["reward"] for event in completed_events] == pytest.approx(
+        expected_rewards
+    )
+
+    validation_rows = [
+        row for row in result["metrics_rows"] if row["split"] == "validation"
+    ]
+    assert validation_rows
+    assert not [row for row in result["metrics_rows"] if row["split"] == "controller"]
+    run_summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    assert run_summary["checkpoint_metric"] == "validation_loss"
+    assert run_summary["checkpoint_metric_value"] == pytest.approx(
+        min(float(row["loss"]) for row in validation_rows)
+    )
+    assert all(
+        run_summary["checkpoint_metric_value"]
+        != pytest.approx(call["objective"])
+        for call in controller_calls
+    )
+
+    output_lines = capsys.readouterr().out.splitlines()
+    initial_logs = [line for line in output_lines if "event=initial_boundary" in line]
+    completed_logs = [line for line in output_lines if "event=completed_window" in line]
+    assert len(initial_logs) == 1
+    assert len(completed_logs) == 2
+    initial_log = initial_logs[0]
+    assert "bayesian_gaussian_linear_thompson" in initial_log
+    assert "scope=global" in initial_log
+    assert "boundary_step=0" in initial_log
+    assert "window_index=0" in initial_log
+    assert "action=" in initial_log
+    assert "objective=" in initial_log
+    assert "uncertainty=" in initial_log
+    assert "reward=" not in initial_log
+    for window_index, line in enumerate(completed_logs):
+        assert "bayesian_gaussian_linear_thompson" in line
+        assert "scope=global" in line
+        assert f"boundary_step={(window_index + 1) * 2}" in line
+        assert f"window_index={window_index}" in line
+        assert "action=" in line
+        assert "pre_objective=" in line
+        assert "post_objective=" in line
+        assert "reward=" in line
+        assert "prediction_error=" in line
+        assert "uncertainty=" in line
+        assert "posterior_mean" not in line
+        assert "posterior_covariance" not in line
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+        "tests/fixtures/probabilistic_adaptive_per_block_smoke.yaml",
+    ],
+)
+def test_balanced_global_warmup_precedes_controller_for_both_adaptive_scopes(
+    tmp_path,
+    monkeypatch,
+    fixture,
+):
+    import src.training.run as training_run
+
+    run_id = (
+        "probabilistic-adaptive-global-smoke-001"
+        if "global" in fixture
+        else "probabilistic-adaptive-per-block-smoke-001"
+    )
+    output_dir = tmp_path / run_id
+    config = resolve_run_config(
+        fixture,
+        output_dir=output_dir,
+        overrides={
+            "training.max_steps": 8,
+            "training.eval_interval": 0,
+            "training.pre_nested_warmup.enabled": True,
+            "training.pre_nested_warmup.duration": 6,
+            "training.pre_nested_warmup.unit": "steps",
+            "training.pre_nested_warmup.policy": "balanced_global",
+            "training.pre_nested_warmup.action_interval_steps": 1,
+            "model.adaptive_controller.decision_interval_steps": 2,
+            "evaluation.validation": False,
+        },
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "source_row_identity": list(range(660)),
+            "input_ids": [[index + 1, index + 2, index + 3] for index in range(660)],
+            "attention_mask": [[1, 1, 1] for _ in range(660)],
+        }
+    )
+    controller_steps = []
+
+    def controlled_controller_objective(*args, **kwargs):
+        granularities = list(kwargs["granularities"])
+        boundary_step = int(kwargs["boundary_step"])
+        controller_steps.append(boundary_step)
+        losses = [0.1 + index * 0.01 for index in range(len(granularities))]
+        objective = sum(losses) / len(losses)
+        return {
+            "boundary_step": boundary_step,
+            "ordered_granularities": granularities,
+            "ordered_component_losses": losses,
+            "uniform_objective": objective,
+            "evaluation_target_tokens": 256,
+        }
+
+    monkeypatch.setattr(
+        training_run,
+        "evaluate_controller_objective",
+        controlled_controller_objective,
+    )
+    model = TinyNestedTrainingModel(granularities=config["model"]["granularities"])
+    result = run_training(
+        config,
+        model=model,
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    warmup = result["config"]["training"]["pre_nested_warmup"]
+    assert controller_steps == [6, 8]
+    assert model.train_forward_granularities[:6] == warmup["schedule"]
+    assert all(warmup["schedule"].count(label) == 2 for label in config["model"]["granularities"])
+
+    events = [
+        json.loads(line)
+        for line in (output_dir / "controller_metrics.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    warmup_events = [event for event in events if event.get("phase") == "warmup"]
+    assert [event["event_type"] for event in warmup_events] == [
+        "warmup_schedule_initialized",
+        *(["warmup_window_completed"] * 6),
+        "warmup_completed",
+    ]
+    assert all(event["posterior_updated"] is False for event in warmup_events)
+    assert all(
+        len(set(event["action"]["block_granularities"])) == 1
+        for event in warmup_events
+    )
+    initial = next(event for event in events if event["event_type"] == "initial_boundary")
+    assert initial["boundary_step"] == 6
+    assert initial["warmup_completion_step"] == 6
+    assert initial["warmup_schedule_hash"] == warmup["schedule_hash"]
+    assert initial["prior_untouched"] is True
+
+    summary = json.loads(
+        (output_dir / "controller_summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["completed_observation_count"] == 1
+    assert summary["controller_evaluation_count"] == 2
+    assert summary["requested_warmup_steps"] == 6
+    assert summary["completed_warmup_steps"] == 6
+    assert summary["warmup_action_counts"] == {
+        label: 2 for label in config["model"]["granularities"]
+    }
+    assert summary["controller_start_step"] == 6
+    assert summary["baseline_step"] == 6
+    assert summary["first_adaptive_action"] == initial["selected_action"]
+    assert summary["posterior_updated_during_warmup"] is False
+    run_summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    assert run_summary["requested_warmup_steps"] == 6
+    assert run_summary["completed_warmup_steps"] == 6
+    assert run_summary["warmup_schedule_hash"] == warmup["schedule_hash"]
+    assert run_summary["warmup_action_counts"] == summary["warmup_action_counts"]
+    assert run_summary["baseline_step"] == 6
+    assert run_summary["first_adaptive_action"] == initial["selected_action"]
+    assert run_summary["posterior_updated_during_warmup"] is False
+
+
+def test_balanced_global_warmup_terminal_budget_exhaustion_never_starts_controller(
+    tmp_path,
+    monkeypatch,
+):
+    import src.training.run as training_run
+
+    output_dir = tmp_path / "probabilistic-adaptive-global-smoke-001"
+    config = resolve_run_config(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+        output_dir=output_dir,
+        overrides={
+            "training.max_steps": 5,
+            "training.eval_interval": 0,
+            "training.pre_nested_warmup.enabled": True,
+            "training.pre_nested_warmup.duration": 6,
+            "training.pre_nested_warmup.unit": "steps",
+            "training.pre_nested_warmup.policy": "balanced_global",
+            "training.pre_nested_warmup.action_interval_steps": 1,
+            "evaluation.validation": False,
+        },
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "source_row_identity": list(range(660)),
+            "input_ids": [[index + 1, index + 2, index + 3] for index in range(660)],
+            "attention_mask": [[1, 1, 1] for _ in range(660)],
+        }
+    )
+
+    def unexpected_controller_evaluation(*args, **kwargs):
+        raise AssertionError("controller panel must remain unused during warmup")
+
+    monkeypatch.setattr(
+        training_run,
+        "evaluate_controller_objective",
+        unexpected_controller_evaluation,
+    )
+    run_training(
+        config,
+        model=TinyNestedTrainingModel(
+            granularities=config["model"]["granularities"]
+        ),
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    events = [
+        json.loads(line)
+        for line in (output_dir / "controller_metrics.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert events[-1]["event_type"] == "warmup_terminal_incomplete"
+    assert events[-1]["posterior_updated"] is False
+    assert not any(event["event_type"] == "initial_boundary" for event in events)
+    controller_summary = json.loads(
+        (output_dir / "controller_summary.json").read_text(encoding="utf-8")
+    )
+    assert controller_summary["completed_observation_count"] == 0
+    assert controller_summary["controller_evaluation_count"] == 0
+    assert controller_summary["controller_start_step"] == 6
+    assert controller_summary["baseline_step"] is None
+    assert controller_summary["first_adaptive_action"] is None
+
+
+def test_balanced_global_warmup_resume_inside_window_matches_uninterrupted_run(
+    tmp_path,
+    monkeypatch,
+):
+    import src.training.run as training_run
+
+    run_id = "probabilistic-adaptive-global-smoke-001"
+
+    def make_config(parent):
+        return resolve_run_config(
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            output_dir=parent / run_id,
+            overrides={
+                "training.max_steps": 14,
+                "training.eval_interval": 0,
+                "training.pre_nested_warmup.enabled": True,
+                "training.pre_nested_warmup.duration": 12,
+                "training.pre_nested_warmup.unit": "steps",
+                "training.pre_nested_warmup.policy": "balanced_global",
+                "training.pre_nested_warmup.action_interval_steps": 2,
+                "model.adaptive_controller.decision_interval_steps": 2,
+                "evaluation.validation": False,
+            },
+        )
+
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "source_row_identity": list(range(660)),
+            "input_ids": [[index + 1, index + 2, index + 3] for index in range(660)],
+            "attention_mask": [[1, 1, 1] for _ in range(660)],
+        }
+    )
+
+    def controlled_controller_objective(*args, **kwargs):
+        granularities = list(kwargs["granularities"])
+        losses = [0.1 + index * 0.01 for index in range(len(granularities))]
+        return {
+            "boundary_step": int(kwargs["boundary_step"]),
+            "ordered_granularities": granularities,
+            "ordered_component_losses": losses,
+            "uniform_objective": sum(losses) / len(losses),
+            "evaluation_target_tokens": 256,
+        }
+
+    monkeypatch.setattr(
+        training_run,
+        "evaluate_controller_objective",
+        controlled_controller_objective,
+    )
+
+    fresh_config = make_config(tmp_path / "fresh")
+    fresh_model = TinyNestedTrainingModel(
+        granularities=fresh_config["model"]["granularities"]
+    )
+    fresh_result = run_training(
+        fresh_config,
+        model=fresh_model,
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    resumed_config = make_config(tmp_path / "resumed")
+    interrupted_model = TinyNestedTrainingModel(
+        granularities=resumed_config["model"]["granularities"]
+    )
+    original_forward = interrupted_model.forward
+    training_forward_count = 0
+
+    def interrupt_inside_second_window(*args, **kwargs):
+        nonlocal training_forward_count
+        if interrupted_model.training:
+            training_forward_count += 1
+            if training_forward_count == 4:
+                raise RuntimeError("controlled warmup interruption")
+        return original_forward(*args, **kwargs)
+
+    interrupted_model.forward = interrupt_inside_second_window
+    with pytest.raises(RuntimeError, match="controlled warmup interruption"):
+        run_training(
+            resumed_config,
+            model=interrupted_model,
+            tokenized_dataset=tokenized_dataset,
+            device="cpu",
+        )
+
+    checkpoint = torch.load(
+        resumed_config["run"]["output_dir"] + "/checkpoints/latest.pt",
+        map_location="cpu",
+    )
+    interrupted_warmup = checkpoint["pre_nested_warmup_state"]
+    assert interrupted_warmup["completed_steps"] == 3
+    assert interrupted_warmup["current_window_index"] == 1
+    assert interrupted_warmup["current_window_offset"] == 1
+
+    resumed_config = make_config(tmp_path / "resumed")
+    resumed_model = TinyNestedTrainingModel(
+        granularities=resumed_config["model"]["granularities"]
+    )
+    resumed_result = run_training(
+        resumed_config,
+        model=resumed_model,
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    assert fresh_result["config"]["training"]["pre_nested_warmup"]["schedule"] == (
+        resumed_result["config"]["training"]["pre_nested_warmup"]["schedule"]
+    )
+    assert fresh_result["config"]["training"]["pre_nested_warmup"]["schedule_hash"] == (
+        resumed_result["config"]["training"]["pre_nested_warmup"]["schedule_hash"]
+    )
+    assert interrupted_model.train_forward_granularities[:3] + resumed_model.train_forward_granularities[:9] == (
+        fresh_model.train_forward_granularities[:12]
+    )
+    torch.testing.assert_close(resumed_model.weight, fresh_model.weight, rtol=0.0, atol=0.0)
+
+    fresh_events = [
+        json.loads(line)
+        for line in (
+            Path(fresh_config["run"]["output_dir"]) / "controller_metrics.jsonl"
+        ).read_text(encoding="utf-8").splitlines()
+    ]
+    resumed_events = [
+        json.loads(line)
+        for line in (
+            Path(resumed_config["run"]["output_dir"]) / "controller_metrics.jsonl"
+        ).read_text(encoding="utf-8").splitlines()
+    ]
+    fresh_initial = next(event for event in fresh_events if event["event_type"] == "initial_boundary")
+    resumed_initial = next(event for event in resumed_events if event["event_type"] == "initial_boundary")
+    assert resumed_initial["selected_action"] == fresh_initial["selected_action"]
+    assert resumed_initial["boundary_step"] == fresh_initial["boundary_step"] == 12
+
+    fresh_summary = json.loads(
+        (Path(fresh_config["run"]["output_dir"]) / "controller_summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    resumed_summary = json.loads(
+        (Path(resumed_config["run"]["output_dir"]) / "controller_summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert resumed_summary["warmup_action_counts"] == fresh_summary["warmup_action_counts"]
+    assert resumed_summary["first_adaptive_action"] == fresh_summary["first_adaptive_action"]
+    final_checkpoint = torch.load(
+        Path(resumed_config["run"]["output_dir"]) / "checkpoints" / "latest.pt",
+        map_location="cpu",
+    )
+    from src.training.warmup import validate_pre_nested_warmup_resume_state
+
+    assert validate_pre_nested_warmup_resume_state(
+        resumed_config,
+        final_checkpoint["pre_nested_warmup_state"],
+        last_completed_step=14,
+    )["completed"] is True
+
+
+def test_probabilistic_adaptive_per_block_uses_fixed_profiles_and_shared_rewards(
+    tmp_path,
+    monkeypatch,
+):
+    import src.evaluation.validation as evaluation_validation
+    import src.training.run as training_run
+
+    output_dir = tmp_path / "probabilistic-adaptive-per-block-smoke-001"
+    config = resolve_run_config(
+        "tests/fixtures/probabilistic_adaptive_per_block_smoke.yaml",
+        output_dir=output_dir,
+        overrides={
+            "training.eval_batches": 4,
+            "training.max_steps": 4,
+            "model.adaptive_controller.decision_interval_steps": 2,
+        },
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "source_row_identity": list(range(660)),
+            "input_ids": [
+                [index + 1, index + 2, index + 3] for index in range(660)
+            ],
+            "attention_mask": [[1, 1, 1] for _ in range(660)],
+        }
+    )
+    controlled_components = [
+        [0.02, 0.03, 0.04],
+        [0.01, 0.02, 0.03],
+        [0.008, 0.018, 0.028],
+    ]
+    controller_calls = []
+
+    def controlled_controller_objective(*args, **kwargs):
+        dataloader = kwargs.get("dataloader")
+        if dataloader is None and len(args) >= 2:
+            dataloader = args[1]
+        granularities = kwargs.get("granularities")
+        if granularities is None and len(args) >= 3:
+            granularities = args[2]
+        boundary_step = kwargs.get("boundary_step")
+        component_losses = controlled_components[len(controller_calls)]
+        objective = sum(component_losses) / len(component_losses)
+        controller_calls.append(
+            {
+                "boundary_step": boundary_step,
+                "granularities": list(granularities),
+                "objective": objective,
+                "dataloader_id": id(dataloader),
+            }
+        )
+        return {
+            "boundary_step": boundary_step,
+            "split": "controller",
+            "ordered_granularities": list(granularities),
+            "ordered_component_losses": list(component_losses),
+            "objective": objective,
+            "uniform_objective": objective,
+            "evaluation_example_count": 128,
+            "evaluation_target_tokens": 256,
+            "aggregation_method": "target_token_weighted_causal_shift_float64",
+            "objective_weighting": "uniform",
+            "controller_manifest_hash": kwargs.get("controller_manifest_hash"),
+            "evaluation_status": "complete",
+            "component_results": [
+                {
+                    "granularity": granularity,
+                    "loss": loss,
+                    "evaluation_examples": 128,
+                    "evaluation_target_tokens": 256,
+                }
+                for granularity, loss in zip(granularities, component_losses)
+            ],
+        }
+
+    for module in (evaluation_validation, training_run, training_steps):
+        monkeypatch.setattr(
+            module,
+            "evaluate_controller_objective",
+            controlled_controller_objective,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            module,
+            "evaluate_controller_panel_objective",
+            controlled_controller_objective,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            module,
+            "evaluate_fixed_panel_objective",
+            controlled_controller_objective,
+            raising=False,
+        )
+
+    model = TinyNestedTrainingModel(
+        granularities=config["model"]["granularities"],
+    )
+    run_training(
+        config,
+        model=model,
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    assert [call["boundary_step"] for call in controller_calls] == [0, 2, 4]
+    assert len({call["dataloader_id"] for call in controller_calls}) == 1
+    controller_events = [
+        json.loads(line)
+        for line in (output_dir / "controller_metrics.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [event["event_type"] for event in controller_events] == [
+        "initial_boundary",
+        "completed_window",
+        "completed_window",
+    ]
+    initial_event, first_window, second_window = controller_events
+    expected_rewards = [(0.03 - 0.02) / 2, (0.02 - 0.018) / 2]
+    assert [first_window["reward"], second_window["reward"]] == pytest.approx(
+        expected_rewards
+    )
+    assert "reward" not in initial_event
+    assert all("block_rewards" not in event for event in controller_events)
+
+    first_profile = first_window["action"]["block_granularities"]
+    second_profile = second_window["action"]["block_granularities"]
+    assert len(first_profile) == len(second_profile) == config["model"]["num_layers"]
+    assert model.train_forward_granularities == []
+    assert model.train_forward_layer_granularities[:2] == [first_profile] * 2
+    assert model.train_forward_layer_granularities[2:] == [second_profile] * 2
+    assert initial_event["selected_action"]["block_granularities"] == first_profile
+
+    controller_summary = json.loads(
+        (output_dir / "controller_summary.json").read_text(encoding="utf-8")
+    )
+    feature_schema = controller_summary["feature_schema"]
+    assert controller_summary["scope"] == "per_block"
+    assert feature_schema["scope"] == "per_block"
+    assert feature_schema["encoding"] == (
+        "intercept_plus_per_block_sum_to_zero_contrasts"
+    )
+    assert feature_schema["dimension"] == 1 + config["model"]["num_layers"] * (
+        len(config["model"]["granularities"]) - 1
+    )
+    assert all(
+        len(event.get("action", event.get("selected_action"))["feature_vector"])
+        == feature_schema["dimension"]
+        for event in controller_events
+    )
+    expected_frequencies = {
+        f"block_{block_index}": {
+            label: sum(
+                event["action"]["block_granularities"][block_index] == label
+                for event in (first_window, second_window)
+            )
+            for label in config["model"]["granularities"]
+        }
+        for block_index in range(config["model"]["num_layers"])
+    }
+    assert controller_summary["per_block_granularity_frequencies"] == (
+        expected_frequencies
+    )
+    assert controller_summary["action_frequencies"] == expected_frequencies
+    effect_uncertainty = controller_summary["effect_uncertainty"]
+    assert set(effect_uncertainty["coefficient_stddev"]) == set(
+        feature_schema["coefficient_names"]
+    )
+    assert set(effect_uncertainty["per_block_granularity_effect_stddev"]) == set(
+        expected_frequencies
+    )
+    assert all(
+        set(block_effects) == set(config["model"]["granularities"])
+        and all(value >= 0.0 for value in block_effects.values())
+        for block_effects in effect_uncertainty[
+            "per_block_granularity_effect_stddev"
+        ].values()
+    )
+
+    persisted_config = json.loads(
+        (output_dir / "config.json").read_text(encoding="utf-8")
+    )
+    assert persisted_config["model"]["adaptive_controller"]["feature_model"] == (
+        "additive"
+    )
+    serialized_artifacts = json.dumps(
+        {"events": controller_events, "summary": controller_summary},
+        sort_keys=True,
+    )
+    assert "enumerated_profile" not in serialized_artifacts
+    assert "profile_table" not in serialized_artifacts
+
+
+@pytest.mark.parametrize(
+    "policy, transition_event, expected_reset_count",
+    [
+        ("full_prior", "posterior_reset", 1),
+        ("acquisition_only", "posterior_preserved", 0),
+    ],
+)
+def test_reset_training_reuses_one_panel_evaluation_per_boundary_and_batches_events(
+    tmp_path,
+    monkeypatch,
+    policy,
+    transition_event,
+    expected_reset_count,
+):
+    import src.evaluation.validation as evaluation_validation
+    import src.training.run as training_run
+
+    output_dir = tmp_path / "probabilistic-adaptive-global-smoke-001"
+    config = resolve_run_config(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+        output_dir=output_dir,
+        overrides={
+            "training.eval_batches": 4,
+            "training.max_steps": 14,
+            "model.adaptive_controller.decision_interval_steps": 2,
+            "model.adaptive_controller.process_noise_covariance": 0.0,
+            "model.adaptive_controller.reset.enabled": True,
+            "model.adaptive_controller.reset.interval_steps": 12,
+            "model.adaptive_controller.reset.policy": policy,
+        },
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "source_row_identity": list(range(660)),
+            "input_ids": [
+                [index + 1, index + 2, index + 3] for index in range(660)
+            ],
+            "attention_mask": [[1, 1, 1] for _ in range(660)],
+        }
+    )
+    controller_calls = []
+
+    def controlled_objective(*args, **kwargs):
+        granularities = kwargs.get("granularities") or args[2]
+        boundary_step = kwargs.get("boundary_step")
+        call_index = len(controller_calls)
+        center = 0.03 - 0.001 * call_index
+        losses = [center - 0.01, center, center + 0.01]
+        controller_calls.append(int(boundary_step))
+        return {
+            "boundary_step": boundary_step,
+            "ordered_granularities": list(granularities),
+            "ordered_component_losses": losses,
+            "uniform_objective": center,
+            "evaluation_example_count": 128,
+            "evaluation_target_tokens": 256,
+        }
+
+    for module in (evaluation_validation, training_run, training_steps):
+        monkeypatch.setattr(
+            module,
+            "evaluate_controller_objective",
+            controlled_objective,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            module,
+            "evaluate_controller_panel_objective",
+            controlled_objective,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            module,
+            "evaluate_fixed_panel_objective",
+            controlled_objective,
+            raising=False,
+        )
+
+    run_training(
+        config,
+        model=TinyNestedTrainingModel(),
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    assert controller_calls == [0, 2, 4, 6, 8, 10, 12, 14]
+    events = [
+        json.loads(line)
+        for line in (output_dir / "controller_metrics.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    event_types = [event["event_type"] for event in events]
+    reset_index = event_types.index(transition_event)
+    assert event_types[reset_index - 2 : reset_index + 2] == [
+        "completed_window",
+        "episode_completed",
+        transition_event,
+        "episode_initialized",
+    ]
+    summary = json.loads(
+        (output_dir / "controller_summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["controller_evaluation_count"] == len(controller_calls)
+    assert summary["completed_observation_count"] == 7
+    assert summary["reset_enabled"] is True
+    assert summary["reset_count"] == expected_reset_count
+    assert summary["reset"]["contract"]["policy"] == policy
+    assert sum(summary["forced_acquisition_action_frequencies"].values()) == 4
+    assert sum(summary["thompson_action_frequencies"].values()) == 3

@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
-import os
+import copy
 import hashlib
+import os
 import random
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 import torch
 from datasets import load_dataset
 from torch.utils.data import DataLoader, Sampler
 
+from src.training.packed_corpus import (
+    NoPaddingDistributedBatchSampler,
+    PackedCorpusError,
+    PackedMMapDataset,
+    load_corpus_manifest,
+)
 from src.utils.reproducibility import (
     build_comparison_control_signature,
     seed_for,
@@ -21,6 +28,24 @@ from src.utils.reproducibility import (
 
 class DataError(ValueError):
     """Raised when a dataset cannot support the planned training flow."""
+
+
+PROBABILISTIC_DATA_ROLE_NAMES = (
+    "optimizer_training",
+    "controller",
+    "ordinary_validation",
+    "final_holdout",
+)
+PROBABILISTIC_DATA_ROLE_SELECTION_ORDER = (
+    "ordinary_validation",
+    "controller",
+    "final_holdout",
+    "optimizer_training",
+)
+PROBABILISTIC_CONTROLLER_EXAMPLES = 128
+PROBABILISTIC_FINAL_HOLDOUT_EXAMPLES = 512
+PROBABILISTIC_DATA_SPLIT_VERSION = "probabilistic_four_role_v1"
+USABLE_TARGET_POLICY = "at_least_one_unmasked_causal_shift_target_v1"
 
 
 def _log_dataset_cache_context(dataset_name: str, dataset_split: str) -> None:
@@ -37,6 +62,15 @@ def _log_dataset_cache_context(dataset_name: str, dataset_split: str) -> None:
     )
 
 
+def _uses_probabilistic_data_roles(config: Mapping[str, Any]) -> bool:
+    model = config.get("model", {})
+    return (
+        model.get("granularity_sampling_mode")
+        in {"adaptive_global", "adaptive_per_block"}
+        and model.get("adaptive_sampler_strategy") == "thompson"
+    )
+
+
 def load_text_dataset(
     dataset_name: str,
     dataset_split: str,
@@ -46,6 +80,7 @@ def load_text_dataset(
     text_column: str = "text",
     shuffle: bool = True,
     metadata_target: dict[str, Any] | None = None,
+    preserve_source_identity: bool = False,
 ):
     _log_dataset_cache_context(dataset_name, dataset_split)
     if dataset_config_name:
@@ -68,6 +103,7 @@ def load_text_dataset(
         seed=seed,
         text_column=text_column,
         shuffle=shuffle,
+        preserve_source_identity=preserve_source_identity,
     )
 
 
@@ -77,9 +113,13 @@ def prepare_text_dataset(
     seed: int | None = None,
     text_column: str = "text",
     shuffle: bool = True,
+    preserve_source_identity: bool = False,
 ):
     if text_column not in dataset.column_names:
         raise DataError(f"Dataset does not contain text column: {text_column}")
+
+    if preserve_source_identity and "source_row_identity" not in dataset.column_names:
+        dataset = dataset.add_column("source_row_identity", list(range(len(dataset))))
 
     if shuffle:
         dataset = dataset.shuffle(seed=seed)
@@ -98,6 +138,7 @@ def tokenize_text_dataset(
     num_proc: int = 1,
     remove_source_columns: bool = True,
     keep_in_memory: bool = False,
+    preserve_source_identity: bool = False,
 ):
     if text_column not in dataset.column_names:
         raise DataError(f"Dataset does not contain text column: {text_column}")
@@ -124,7 +165,13 @@ def tokenize_text_dataset(
     if num_proc and num_proc > 1:
         map_kwargs["num_proc"] = num_proc
     if remove_source_columns:
-        map_kwargs["remove_columns"] = dataset.column_names
+        map_kwargs["remove_columns"] = [
+            column_name
+            for column_name in dataset.column_names
+            if not (
+                preserve_source_identity and column_name == "source_row_identity"
+            )
+        ]
 
     tokenized_dataset = dataset.map(tokenize_batch, **map_kwargs)
     print(
@@ -144,6 +191,18 @@ def load_and_tokenize_dataset(
 ):
     dataset_config = config["dataset"]
     model_config = config["model"]
+    preserve_source_identity = _uses_probabilistic_data_roles(config)
+    if preserve_source_identity:
+        tokenization_identity = {
+            "preprocessing_version": 1,
+            "tokenizer_name": model_config.get("tokenizer_name"),
+            "context_length": model_config["context_length"],
+            "truncation": True,
+            "padding": "max_length",
+            "attention_mask": True,
+        }
+        tokenization_identity["identity_hash"] = stable_hash(tokenization_identity)
+        dataset_config["tokenization_identity"] = tokenization_identity
 
     dataset = load_text_dataset(
         dataset_config["dataset_name"],
@@ -154,6 +213,7 @@ def load_and_tokenize_dataset(
         text_column=text_column,
         shuffle=shuffle,
         metadata_target=dataset_config,
+        preserve_source_identity=preserve_source_identity,
     )
     return tokenize_text_dataset(
         dataset,
@@ -162,6 +222,7 @@ def load_and_tokenize_dataset(
         text_column=text_column,
         num_proc=num_proc,
         keep_in_memory=dataset_config.get("tokenization_keep_in_memory", False),
+        preserve_source_identity=preserve_source_identity,
     )
 
 
@@ -184,6 +245,263 @@ def split_train_eval_dataset(
     eval_dataset = dataset.select(eval_indices)
     train_dataset = dataset.select(train_indices)
     return train_dataset, eval_dataset
+
+
+def partition_probabilistic_data_roles(
+    dataset,
+    *,
+    ordinary_validation_example_count: int,
+    ordinary_validation_seed: int,
+    controller_seed: int,
+    final_holdout_seed: int,
+    source_provenance: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Partition usable examples into four deterministic, disjoint data roles."""
+
+    ordinary_validation_example_count = int(ordinary_validation_example_count)
+    if ordinary_validation_example_count < 0:
+        raise DataError("ordinary validation example count must be nonnegative")
+
+    usable_indices: list[int] = []
+    identities_by_index: dict[int, dict[str, Any]] = {}
+    for dataset_index in range(len(dataset)):
+        example = dataset[dataset_index]
+        valid_target_count = _valid_causal_target_count(example)
+        if valid_target_count < 1:
+            continue
+        usable_indices.append(dataset_index)
+        identities_by_index[dataset_index] = _stable_example_identity(
+            example,
+            dataset_index=dataset_index,
+            valid_target_count=valid_target_count,
+            source_provenance=source_provenance,
+        )
+
+    required_usable_examples = (
+        ordinary_validation_example_count
+        + PROBABILISTIC_CONTROLLER_EXAMPLES
+        + PROBABILISTIC_FINAL_HOLDOUT_EXAMPLES
+        + 1
+    )
+    if len(usable_indices) < required_usable_examples:
+        raise DataError(
+            "Probabilistic data roles require at least "
+            f"{required_usable_examples} usable examples; found {len(usable_indices)}"
+        )
+
+    ordinary_validation_indices = _sample_sorted_indices(
+        usable_indices,
+        ordinary_validation_example_count,
+        ordinary_validation_seed,
+    )
+    remaining_indices = _ordered_remainder(
+        usable_indices,
+        ordinary_validation_indices,
+    )
+    controller_indices = _sample_sorted_indices(
+        remaining_indices,
+        PROBABILISTIC_CONTROLLER_EXAMPLES,
+        controller_seed,
+    )
+    remaining_indices = _ordered_remainder(remaining_indices, controller_indices)
+    final_holdout_indices = _sample_sorted_indices(
+        remaining_indices,
+        PROBABILISTIC_FINAL_HOLDOUT_EXAMPLES,
+        final_holdout_seed,
+    )
+    optimizer_training_indices = _ordered_remainder(
+        remaining_indices,
+        final_holdout_indices,
+    )
+
+    indices_by_role = {
+        "optimizer_training": optimizer_training_indices,
+        "controller": controller_indices,
+        "ordinary_validation": ordinary_validation_indices,
+        "final_holdout": final_holdout_indices,
+    }
+    seeds_by_role = {
+        "optimizer_training": None,
+        "controller": int(controller_seed),
+        "ordinary_validation": int(ordinary_validation_seed),
+        "final_holdout": int(final_holdout_seed),
+    }
+    role_manifests = {
+        role: _build_data_role_manifest(
+            role,
+            indices_by_role[role],
+            identities_by_index=identities_by_index,
+            source_provenance=source_provenance,
+            selection_seed=seeds_by_role[role],
+        )
+        for role in PROBABILISTIC_DATA_ROLE_NAMES
+    }
+    pairwise_intersection_counts = validate_data_role_disjointness(role_manifests)
+
+    parent_manifest = {
+        "split_version": PROBABILISTIC_DATA_SPLIT_VERSION,
+        "source_provenance": copy.deepcopy(dict(source_provenance)),
+        "source_usable_example_count": len(usable_indices),
+        "source_pool_hash": stable_hash(
+            [identities_by_index[index] for index in usable_indices]
+        ),
+        "selection_order": list(PROBABILISTIC_DATA_ROLE_SELECTION_ORDER),
+        "usable_target_policy": USABLE_TARGET_POLICY,
+        "role_manifest_hashes": {
+            role: role_manifests[role]["manifest_hash"]
+            for role in PROBABILISTIC_DATA_ROLE_NAMES
+        },
+        "optimizer_training_manifest_hash": role_manifests["optimizer_training"][
+            "manifest_hash"
+        ],
+        "controller_manifest_hash": role_manifests["controller"]["manifest_hash"],
+        "ordinary_validation_manifest_hash": role_manifests[
+            "ordinary_validation"
+        ]["manifest_hash"],
+        "final_holdout_manifest_hash": role_manifests["final_holdout"][
+            "manifest_hash"
+        ],
+        "pairwise_intersection_counts": pairwise_intersection_counts,
+    }
+    parent_manifest["parent_manifest_hash"] = stable_hash(parent_manifest)
+
+    return {
+        "datasets": {
+            role: dataset.select(indices_by_role[role])
+            for role in PROBABILISTIC_DATA_ROLE_NAMES
+        },
+        "role_manifests": role_manifests,
+        "parent_manifest": parent_manifest,
+    }
+
+
+def validate_data_role_disjointness(
+    role_manifests: Mapping[str, Mapping[str, Any]],
+) -> dict[str, int]:
+    """Validate all six probabilistic role pairs and return their overlap counts."""
+
+    missing_roles = [
+        role for role in PROBABILISTIC_DATA_ROLE_NAMES if role not in role_manifests
+    ]
+    if missing_roles:
+        raise DataError(f"Probabilistic data role manifests are missing: {missing_roles}")
+
+    identity_sets: dict[str, set[str]] = {}
+    for role in PROBABILISTIC_DATA_ROLE_NAMES:
+        identities = role_manifests[role].get("ordered_example_identities", [])
+        hashed_identities = [
+            stable_hash(_example_identity_key(identity)) for identity in identities
+        ]
+        if len(hashed_identities) != len(set(hashed_identities)):
+            raise DataError(f"Probabilistic data role {role} contains duplicate identities")
+        identity_sets[role] = set(hashed_identities)
+
+    intersection_counts: dict[str, int] = {}
+    for left_index, left_role in enumerate(PROBABILISTIC_DATA_ROLE_NAMES):
+        for right_role in PROBABILISTIC_DATA_ROLE_NAMES[left_index + 1 :]:
+            overlap_count = len(identity_sets[left_role] & identity_sets[right_role])
+            pair_name = f"{left_role}__{right_role}"
+            intersection_counts[pair_name] = overlap_count
+            if overlap_count:
+                raise DataError(
+                    "Probabilistic data role overlap detected between "
+                    f"{left_role} and {right_role}: {overlap_count} identities"
+                )
+    return intersection_counts
+
+
+def _example_identity_key(identity: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "source_dataset_fingerprint": identity.get("source_dataset_fingerprint"),
+        "source_row_identity": identity.get("source_row_identity"),
+        "tokenization_identity": identity.get("tokenization_identity"),
+    }
+
+
+def _valid_causal_target_count(example: Mapping[str, Any]) -> int:
+    if "attention_mask" in example:
+        attention_mask = example["attention_mask"]
+        if isinstance(attention_mask, torch.Tensor):
+            attention_mask = attention_mask.detach().cpu().tolist()
+        elif isinstance(attention_mask, np.ndarray):
+            attention_mask = attention_mask.tolist()
+        return sum(int(mask_value) != 0 for mask_value in attention_mask[1:])
+
+    input_ids = example.get("input_ids")
+    if input_ids is None:
+        raise DataError(
+            "Probabilistic data role selection requires attention_mask or input_ids"
+        )
+    return max(0, len(input_ids) - 1)
+
+
+def _stable_example_identity(
+    example: Mapping[str, Any],
+    *,
+    dataset_index: int,
+    valid_target_count: int,
+    source_provenance: Mapping[str, Any],
+) -> dict[str, Any]:
+    source_row_identity = example.get("source_row_identity", dataset_index)
+    if isinstance(source_row_identity, torch.Tensor):
+        source_row_identity = source_row_identity.detach().cpu().tolist()
+    elif isinstance(source_row_identity, np.generic):
+        source_row_identity = source_row_identity.item()
+    return {
+        "dataset_name": source_provenance.get("dataset_name"),
+        "dataset_config_name": source_provenance.get("dataset_config_name"),
+        "source_split": source_provenance.get("source_split"),
+        "source_dataset_fingerprint": source_provenance.get(
+            "source_dataset_fingerprint"
+        ),
+        "source_row_identity": source_row_identity,
+        "tokenization_identity": copy.deepcopy(
+            source_provenance.get("tokenization_identity")
+        ),
+        "valid_target_count": int(valid_target_count),
+    }
+
+
+def _sample_sorted_indices(
+    population: list[int],
+    example_count: int,
+    seed: int,
+) -> list[int]:
+    return sorted(random.Random(int(seed)).sample(population, int(example_count)))
+
+
+def _ordered_remainder(population: list[int], selected: list[int]) -> list[int]:
+    selected_set = set(selected)
+    return [index for index in population if index not in selected_set]
+
+
+def _build_data_role_manifest(
+    role: str,
+    selected_indices: list[int],
+    *,
+    identities_by_index: Mapping[int, Mapping[str, Any]],
+    source_provenance: Mapping[str, Any],
+    selection_seed: int | None,
+) -> dict[str, Any]:
+    identities = [
+        copy.deepcopy(dict(identities_by_index[index])) for index in selected_indices
+    ]
+    manifest = {
+        "role": role,
+        "source_provenance": copy.deepcopy(dict(source_provenance)),
+        "selection_seed": selection_seed,
+        "selection_algorithm": (
+            "ordered_usable_remainder_v1"
+            if selection_seed is None
+            else "sha256_seeded_random_sample_sorted_v1"
+        ),
+        "ordered_example_identities": identities,
+        "example_count": len(identities),
+        "example_identity_hash": stable_hash(identities),
+        "usable_target_policy": USABLE_TARGET_POLICY,
+    }
+    manifest["manifest_hash"] = stable_hash(manifest)
+    return manifest
 
 
 class EpochRandomSampler(Sampler[int]):
@@ -335,6 +653,115 @@ def build_dataloaders(
     return train_dataloader, eval_dataloader
 
 
+def build_packed_mmap_dataloaders(
+    config: dict[str, Any],
+    device: torch.device,
+    distributed_context=None,
+) -> tuple[DataLoader, DataLoader, DataLoader, dict[str, Any]]:
+    """Open immutable prepared roles and create a one-pass training loader."""
+
+    dataset_config = config["dataset"]
+    prepared_dir = dataset_config.get("prepared_corpus_dir")
+    manifest = load_corpus_manifest(prepared_dir, verify_shards=False)
+    context_length = int(config["model"]["context_length"])
+    if int(manifest["context_length"]) != context_length:
+        raise DataError(
+            "Prepared corpus context length does not match model.context_length"
+        )
+    if int(manifest["data_seed"]) != int(dataset_config.get("data_seed", -1)):
+        raise DataError("Prepared corpus data seed does not match dataset.data_seed")
+    tokenizer_name = str(config["model"].get("tokenizer_name"))
+    tokenizer_revision = str(config["model"].get("tokenizer_revision"))
+    tokenizer = manifest["tokenizer"]
+    if tokenizer.get("name") != tokenizer_name or tokenizer.get("revision") != tokenizer_revision:
+        raise DataError("Prepared corpus tokenizer identity does not match the run")
+    if tokenizer.get("manifest_hash") != config["model"].get(
+        "tokenizer_manifest_hash"
+    ):
+        raise DataError("Prepared corpus tokenizer manifest does not match the run")
+    if int(tokenizer.get("vocab_size", -1)) != int(
+        config["model"]["vocab_size"]
+    ):
+        raise DataError("Prepared corpus tokenizer vocabulary does not match the run")
+
+    role_datasets = {
+        role: PackedMMapDataset(prepared_dir, role)
+        for role in (
+            "optimizer_training",
+            "ordinary_validation",
+            "controller",
+        )
+    }
+    rank = int(getattr(distributed_context, "rank", 0))
+    world_size = int(getattr(distributed_context, "world_size", 1))
+    batch_size = int(config["training"]["batch_size_per_process"])
+    train_batch_sampler = NoPaddingDistributedBatchSampler(
+        len(role_datasets["optimizer_training"]),
+        batch_size,
+        rank,
+        world_size,
+        data_seed=int(dataset_config["data_seed"]),
+    )
+    pin_memory = device.type == "cuda"
+    num_workers = int(config["training"].get("dataloader_num_workers", 0))
+    if num_workers != 0:
+        raise DataError(
+            "dataset.mode=packed_mmap requires training.dataloader_num_workers=0 "
+            "so the checkpointed sampler cursor cannot advance through prefetch"
+        )
+    train_loader = DataLoader(
+        role_datasets["optimizer_training"],
+        batch_sampler=train_batch_sampler,
+        collate_fn=collate_language_model_batch,
+        num_workers=0,
+        pin_memory=pin_memory,
+    )
+    validation_sampler = DistributedValidationSampler(
+        role_datasets["ordinary_validation"], rank, world_size
+    ) if world_size > 1 else None
+    controller_sampler = DistributedValidationSampler(
+        role_datasets["controller"], rank, world_size
+    ) if world_size > 1 else None
+    validation_loader = build_language_model_dataloader(
+        role_datasets["ordinary_validation"],
+        batch_size=batch_size,
+        sampler=validation_sampler,
+        num_workers=0,
+        pin_memory=pin_memory,
+    )
+    controller_loader = build_language_model_dataloader(
+        role_datasets["controller"],
+        batch_size=batch_size,
+        sampler=controller_sampler,
+        num_workers=0,
+        pin_memory=pin_memory,
+    )
+    return train_loader, validation_loader, controller_loader, manifest
+
+
+def packed_sampler_state(dataloader) -> dict[str, Any] | None:
+    sampler = getattr(dataloader, "batch_sampler", None)
+    if isinstance(sampler, NoPaddingDistributedBatchSampler):
+        return sampler.state_dict()
+    return None
+
+
+def restore_packed_sampler_state(dataloader, state: Mapping[str, Any] | None) -> None:
+    sampler = getattr(dataloader, "batch_sampler", None)
+    if not isinstance(sampler, NoPaddingDistributedBatchSampler):
+        if state is not None:
+            raise DataError("Checkpoint contains a packed sampler for a raw dataset")
+        return
+    if not isinstance(state, Mapping):
+        if sampler.cursor != 0:
+            raise DataError("Packed sampler resume state is missing")
+        return
+    try:
+        sampler.load_state_dict(state)
+    except PackedCorpusError as error:
+        raise DataError(str(error)) from error
+
+
 def build_distributed_sampler(
     dataset,
     distributed_context,
@@ -368,11 +795,16 @@ def collate_language_model_batch(batch: list[dict[str, Any]]) -> dict[str, torch
 
     labels = input_ids.clone()
     labels[attention_mask == 0] = -100
-    return {
+    collated = {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "labels": labels,
     }
+    if "packed_sequence_index" in batch[0]:
+        collated["packed_sequence_index"] = _stack_feature(
+            batch, "packed_sequence_index"
+        ).reshape(-1)
+    return collated
 
 
 def build_language_model_dataloader(

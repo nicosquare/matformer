@@ -1,22 +1,22 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-
 import pytest
 
 from src.models.adaptive_sampler import (
+    VALID_ADAPTIVE_SAMPLER_STRATEGIES,
     AdaptiveSamplerBlockStat,
     AdaptiveSamplerState,
     build_adaptive_sampler_state,
+    coerce_adaptive_sampler_state,
     summarize_adaptive_sampler_state,
 )
 
 
-def test_adaptive_sampler_state_defaults_and_summary_round_trip():
+def test_ucb_adaptive_sampler_state_defaults_and_summary_round_trip():
     state = build_adaptive_sampler_state()
 
     assert state == AdaptiveSamplerState(
-        strategy_name="thompson",
+        strategy_name="ucb",
         phase="fresh",
         step=0,
         epoch=0,
@@ -25,7 +25,7 @@ def test_adaptive_sampler_state_defaults_and_summary_round_trip():
         stats={},
     )
     assert summarize_adaptive_sampler_state(state) == {
-        "strategy_name": "thompson",
+        "strategy_name": "ucb",
         "phase": "fresh",
         "step": 0,
         "epoch": 0,
@@ -33,6 +33,24 @@ def test_adaptive_sampler_state_defaults_and_summary_round_trip():
         "decay_rate": 0.0,
         "stats": {},
     }
+
+
+def test_legacy_heuristic_thompson_is_not_selectable():
+    assert VALID_ADAPTIVE_SAMPLER_STRATEGIES == ("ucb",)
+
+    with pytest.raises(ValueError, match="strategy_name.*ucb"):
+        build_adaptive_sampler_state(strategy_name="thompson")
+
+    with pytest.raises(ValueError, match="strategy_name.*ucb"):
+        coerce_adaptive_sampler_state(
+            {
+                "strategy_name": "thompson",
+                "phase": "mid_train",
+                "step": 12,
+                "epoch": 3,
+                "stats": {},
+            }
+        )
 
 
 def _build_sample_state(strategy_name: str, exploration_scale: float, decay_rate: float):
@@ -69,22 +87,6 @@ def _build_sample_state(strategy_name: str, exploration_scale: float, decay_rate
         }
     }
     return state
-
-
-def test_thompson_scoring_prefers_the_historical_mean_when_exploration_is_zero():
-    import src.models.adaptive_sampler as adaptive_sampler
-
-    score_fn = getattr(adaptive_sampler, "score_adaptive_sampler_actions")
-    state = _build_sample_state(
-        strategy_name="thompson",
-        exploration_scale=0.0,
-        decay_rate=0.25,
-    )
-
-    scores = score_fn(state=state, block_index=0, step=13, phase="mid_train")
-
-    assert isinstance(scores, Mapping)
-    assert scores["s"] > scores["m"] > scores["l"] > scores["xl"]
 
 
 def test_ucb_scoring_and_reward_updates_follow_the_bandit_plan():
@@ -130,3 +132,9 @@ def test_ucb_scoring_and_reward_updates_follow_the_bandit_plan():
     assert updated_state.stats[0]["m"].mean_reward == pytest.approx(
         (1 - 0.25) * 0.3 + 0.25 * 0.7
     )
+
+    restored_state = coerce_adaptive_sampler_state(
+        summarize_adaptive_sampler_state(updated_state)
+    )
+    assert restored_state == updated_state
+    assert restored_state.strategy_name == "ucb"

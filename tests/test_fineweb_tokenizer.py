@@ -1,0 +1,192 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from src.training.fineweb_tokenizer import (
+    DEFAULT_MAX_CHUNK_BYTES,
+    DEFAULT_TOKENIZER_DOCUMENT_COUNT,
+    DEFAULT_VOCAB_SIZE,
+    FineWebTokenizerError,
+    SPECIAL_TOKEN_IDS,
+    SPECIAL_TOKEN_PIECES,
+    TOKENIZER_MANIFEST_SCHEMA_VERSION,
+    TOKENIZER_TRAINING_VERSION,
+    load_existing_tokenizer_if_matching,
+    load_tokenizer_manifest,
+    select_tokenizer_training_documents,
+    sentencepiece_trainer_options,
+    utf8_safe_chunks,
+)
+from src.training.packed_corpus import sha256_file
+from src.utils.reproducibility import stable_hash
+
+
+def write_matching_tokenizer_artifact(tmp_path):
+    tokenizer_dir = tmp_path / "tokenizer"
+    tokenizer_dir.mkdir()
+    model = tokenizer_dir / "tokenizer.model"
+    config = tokenizer_dir / "tokenizer_config.json"
+    model.write_bytes(b"model")
+    config.write_text("{}\n", encoding="utf-8")
+    files = {path.name: sha256_file(path) for path in (model, config)}
+    manifest = {
+        "schema_version": TOKENIZER_MANIFEST_SCHEMA_VERSION,
+        "training_version": TOKENIZER_TRAINING_VERSION,
+        "tokenizer_name": "fineweb_sentencepiece_bpe_256k",
+        "sentencepiece_version": "0.2.1",
+        "sentencepiece_options": sentencepiece_trainer_options(DEFAULT_VOCAB_SIZE),
+        "dataset": {
+            "name": "HuggingFaceFW/fineweb",
+            "config_name": "sample-10BT",
+            "split": "train",
+            "fingerprint": "fixture-fingerprint",
+            "text_column": "text",
+        },
+        "shuffle": {"seed": 42, "buffer_size": 100_000},
+        "reserved_document_count": 1_152,
+        "training_document_count": DEFAULT_TOKENIZER_DOCUMENT_COUNT,
+        "training_chunk_count": 123,
+        "max_chunk_bytes": DEFAULT_MAX_CHUNK_BYTES,
+        "source_identity_stream_hash": "source-hash",
+        "raw_input_hash": "raw-hash",
+        "normalized_input_hash": "normalized-hash",
+        "vocab_size": DEFAULT_VOCAB_SIZE,
+        "special_token_ids": SPECIAL_TOKEN_IDS,
+        "special_token_pieces": SPECIAL_TOKEN_PIECES,
+        "subword_sampling": False,
+        "sentencepiece_model_file": model.name,
+        "sentencepiece_model_sha256": files[model.name],
+        "files": files,
+    }
+    manifest["manifest_hash"] = stable_hash(manifest)
+    (tokenizer_dir / "tokenizer_manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    return tokenizer_dir, manifest
+
+
+def test_tokenizer_selection_excludes_all_reserved_roles_and_takes_exact_count():
+    documents = ({"id": f"doc-{index}", "text": str(index)} for index in range(12))
+    selected = list(
+        select_tokenizer_training_documents(
+            documents,
+            reserved_document_count=4,
+            document_count=5,
+        )
+    )
+    assert [index for index, _ in selected] == [4, 5, 6, 7, 8]
+    assert [document["id"] for _, document in selected] == [
+        "doc-4", "doc-5", "doc-6", "doc-7", "doc-8"
+    ]
+
+
+def test_utf8_chunks_are_nonempty_lossless_and_never_split_code_points():
+    text = "ab🙂café漢字"
+    chunks = list(utf8_safe_chunks(text, max_bytes=5))
+    assert "".join(chunks) == text
+    assert all(chunk and len(chunk.encode("utf-8")) <= 5 for chunk in chunks)
+    assert chunks == list(utf8_safe_chunks(text, max_bytes=5))
+
+
+def test_tokenizer_manifest_hash_and_file_checksums_are_authoritative(tmp_path):
+    tokenizer_dir = tmp_path / "tokenizer"
+    tokenizer_dir.mkdir()
+    model = tokenizer_dir / "tokenizer.model"
+    config = tokenizer_dir / "tokenizer_config.json"
+    model.write_bytes(b"model")
+    config.write_text("{}\n", encoding="utf-8")
+    files = {path.name: sha256_file(path) for path in (model, config)}
+    manifest = {
+        "schema_version": 1,
+        "vocab_size": 256_000,
+        "special_token_ids": SPECIAL_TOKEN_IDS,
+        "sentencepiece_model_file": model.name,
+        "sentencepiece_model_sha256": files[model.name],
+        "files": files,
+    }
+    manifest["manifest_hash"] = stable_hash(manifest)
+    (tokenizer_dir / "tokenizer_manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    assert load_tokenizer_manifest(tokenizer_dir)["manifest_hash"] == manifest[
+        "manifest_hash"
+    ]
+
+    model.chmod(0o644)
+    model.write_bytes(b"changed")
+    with pytest.raises(FineWebTokenizerError, match="checksum mismatch"):
+        load_tokenizer_manifest(tokenizer_dir)
+
+
+def test_matching_existing_tokenizer_is_reused_and_mismatch_is_rejected(tmp_path):
+    tokenizer_dir, expected = write_matching_tokenizer_artifact(tmp_path)
+
+    loaded = load_existing_tokenizer_if_matching(tokenizer_dir)
+    assert loaded == expected
+    assert load_existing_tokenizer_if_matching(tmp_path / "missing") is None
+
+    with pytest.raises(FineWebTokenizerError, match="does not match.*document_count"):
+        load_existing_tokenizer_if_matching(
+            tokenizer_dir,
+            document_count=DEFAULT_TOKENIZER_DOCUMENT_COUNT - 1,
+        )
+
+
+def test_existing_tokenizer_cli_exits_before_loading_fineweb(tmp_path, monkeypatch, capsys):
+    from scripts import train_fineweb_tokenizer as command
+
+    tokenizer_dir, expected = write_matching_tokenizer_artifact(tmp_path)
+
+    def fail_load(*args, **kwargs):
+        raise AssertionError("FineWeb must not be loaded for a matching tokenizer")
+
+    monkeypatch.setattr(command, "load_dataset", fail_load)
+    command.main(["--output-dir", str(tokenizer_dir)])
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["status"] == "already_prepared"
+    assert summary["tokenizer_revision"] == expected["manifest_hash"]
+
+
+def test_local_sentencepiece_directory_loads_through_auto_tokenizer(tmp_path):
+    import sentencepiece as spm
+    from transformers import AutoTokenizer
+
+    from src.training.fineweb_tokenizer import _auto_tokenizer_from_sentencepiece
+
+    input_path = tmp_path / "input.txt"
+    input_path.write_text(
+        "hello fineweb tokenizer\nbytes and unicode 🙂 café\n" * 100,
+        encoding="utf-8",
+    )
+    prefix = tmp_path / "sp"
+    spm.SentencePieceTrainer.train(
+        input=str(input_path),
+        model_prefix=str(prefix),
+        model_type="bpe",
+        vocab_size=320,
+        byte_fallback=True,
+        hard_vocab_limit=True,
+        unk_id=0,
+        bos_id=1,
+        eos_id=2,
+        pad_id=3,
+        normalization_rule_name="nmt_nfkc",
+        character_coverage=0.9995,
+        shuffle_input_sentence=False,
+    )
+    tokenizer_dir = tmp_path / "tokenizer"
+    processor = spm.SentencePieceProcessor(
+        model_file=str(prefix.with_suffix(".model"))
+    )
+
+    tokenizer = _auto_tokenizer_from_sentencepiece(
+        prefix.with_suffix(".model"), processor
+    )
+    tokenizer.save_pretrained(tokenizer_dir)
+    loaded = AutoTokenizer.from_pretrained(tokenizer_dir, local_files_only=True)
+    assert loaded.vocab_size == 320
+    assert [loaded.unk_token_id, loaded.bos_token_id, loaded.eos_token_id, loaded.pad_token_id] == [
+        0, 1, 2, 3
+    ]

@@ -6,12 +6,18 @@ All commands select the `adam` optimizer preset. The preset resolves to AdamW,
 so do not also set `training.optimizer.name`; preset and direct-name selection
 are mutually exclusive.
 
+Bayesian Thompson commands select the `bayesian_thompson` adaptive-controller
+preset. It supplies the Gaussian controller defaults and fixed controller/final
+holdout data roles; controller hyperparameters can still be overridden after
+the preset while the fixed data-role contract remains validated.
+
 The pilot config deterministically selects 100,000 FineWeb examples before
-tokenization. This covers the 100M-token training budget and 512-example
-validation holdout without trying to create a tokenized Arrow cache for all
-14.9M rows in `sample-10BT`. The bounded tokenized subset stays in memory to
-avoid generated Arrow writes on Lustre; the original FineWeb shards are still
-read from the shared Hugging Face cache.
+tokenization. This covers the 100M-token training budget plus the 512-example
+ordinary-validation holdout, fixed 128-example controller panel, and untouched
+512-example final holdout required by Bayesian Thompson runs. The bounded
+tokenized subset stays in memory instead of creating an Arrow cache for all
+14.9M rows in `sample-10BT`; the original FineWeb shards are still read from
+the shared Hugging Face cache.
 
 ```bash
 export OUT=/mnt/experiments/matformer
@@ -341,11 +347,110 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --override "model.granularity_prefixes=$prefixes"
 ```
 
-## Adaptive Thompson
+## Bayesian Thompson, adaptive global
+
+These commands select one granularity for every block during each 50-step
+decision window. The `bayesian_thompson` preset supplies the required Gaussian
+controller and disjoint controller/final-holdout data contracts.
 
 ```bash
 sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
-  --mode nested-random --run-id dmodel256-explicit-nested-random-slicing-none-adaptive-thompson \
+  --mode nested-random --run-id dmodel256-explicit-nested-random-slicing-none-adaptive-global-thompson \
+  --override training.token_budget=100000000 \
+  --override training.optimizer.preset=adam \
+  --override training.learning_rate=0.001 \
+  --override training.learning_rate_scale_rule=none \
+  --override model.variant=slicing \
+  --override model.correction_mode=none \
+  --override model.membership_correction=false \
+  --override model.granularity_mode=explicit \
+  --override "model.granularities=$labels" \
+  --override "model.granularity_prefixes=$prefixes" \
+  --override model.granularity_sampling_mode=adaptive_global \
+  --override model.adaptive_sampler_strategy=thompson \
+  --override model.adaptive_controller.preset=bayesian_thompson
+```
+
+```bash
+sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
+  --mode nested-random --run-id dmodel256-explicit-nested-random-slicing-gmc-adaptive-global-thompson \
+  --override training.token_budget=100000000 \
+  --override training.optimizer.preset=adam \
+  --override training.learning_rate=0.001 \
+  --override training.learning_rate_scale_rule=none \
+  --override model.variant=slicing \
+  --override model.correction_mode=gmc \
+  --override model.membership_correction=true \
+  --override model.granularity_mode=explicit \
+  --override "model.granularities=$labels" \
+  --override "model.granularity_prefixes=$prefixes" \
+  --override model.granularity_sampling_mode=adaptive_global \
+  --override model.adaptive_sampler_strategy=thompson \
+  --override model.adaptive_controller.preset=bayesian_thompson
+```
+
+```bash
+sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
+  --mode nested-random --run-id dmodel256-explicit-nested-random-concat-none-adaptive-global-thompson \
+  --override training.token_budget=100000000 \
+  --override training.optimizer.preset=adam \
+  --override training.learning_rate=0.001 \
+  --override training.learning_rate_scale_rule=none \
+  --override model.variant=concat \
+  --override model.correction_mode=none \
+  --override model.membership_correction=false \
+  --override model.granularity_mode=explicit \
+  --override "model.granularities=$labels" \
+  --override "model.granularity_prefixes=$prefixes" \
+  --override model.granularity_sampling_mode=adaptive_global \
+  --override model.adaptive_sampler_strategy=thompson \
+  --override model.adaptive_controller.preset=bayesian_thompson
+```
+
+```bash
+sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
+  --mode nested-random --run-id dmodel256-explicit-nested-random-concat-gmc-adaptive-global-thompson \
+  --override training.token_budget=100000000 \
+  --override training.optimizer.preset=adam \
+  --override training.learning_rate=0.001 \
+  --override training.learning_rate_scale_rule=none \
+  --override model.variant=concat \
+  --override model.correction_mode=gmc \
+  --override model.membership_correction=true \
+  --override model.granularity_mode=explicit \
+  --override "model.granularities=$labels" \
+  --override "model.granularity_prefixes=$prefixes" \
+  --override model.granularity_sampling_mode=adaptive_global \
+  --override model.adaptive_sampler_strategy=thompson \
+  --override model.adaptive_controller.preset=bayesian_thompson
+```
+
+```bash
+sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
+  --mode nested-random --run-id dmodel256-explicit-nested-random-concat-lmc-adaptive-global-thompson \
+  --override training.token_budget=100000000 \
+  --override training.optimizer.preset=adam \
+  --override training.learning_rate=0.001 \
+  --override training.learning_rate_scale_rule=none \
+  --override model.variant=concat \
+  --override model.correction_mode=lmc \
+  --override model.membership_correction=true \
+  --override model.granularity_mode=explicit \
+  --override "model.granularities=$labels" \
+  --override "model.granularity_prefixes=$prefixes" \
+  --override model.granularity_sampling_mode=adaptive_global \
+  --override model.adaptive_sampler_strategy=thompson \
+  --override model.adaptive_controller.preset=bayesian_thompson
+```
+
+## Bayesian Thompson, adaptive per block
+
+These commands select a complete per-block granularity profile for each
+50-step decision window using the same fixed-panel reward contract.
+
+```bash
+sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
+  --mode nested-random --run-id dmodel256-explicit-nested-random-slicing-none-adaptive-per-block-thompson \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
   --override training.learning_rate=0.001 \
@@ -357,12 +462,13 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --override "model.granularities=$labels" \
   --override "model.granularity_prefixes=$prefixes" \
   --override model.granularity_sampling_mode=adaptive_per_block \
-  --override model.adaptive_sampler_strategy=thompson
+  --override model.adaptive_sampler_strategy=thompson \
+  --override model.adaptive_controller.preset=bayesian_thompson
 ```
 
 ```bash
 sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
-  --mode nested-random --run-id dmodel256-explicit-nested-random-slicing-gmc-adaptive-thompson \
+  --mode nested-random --run-id dmodel256-explicit-nested-random-slicing-gmc-adaptive-per-block-thompson \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
   --override training.learning_rate=0.001 \
@@ -374,12 +480,13 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --override "model.granularities=$labels" \
   --override "model.granularity_prefixes=$prefixes" \
   --override model.granularity_sampling_mode=adaptive_per_block \
-  --override model.adaptive_sampler_strategy=thompson
+  --override model.adaptive_sampler_strategy=thompson \
+  --override model.adaptive_controller.preset=bayesian_thompson
 ```
 
 ```bash
 sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
-  --mode nested-random --run-id dmodel256-explicit-nested-random-concat-none-adaptive-thompson \
+  --mode nested-random --run-id dmodel256-explicit-nested-random-concat-none-adaptive-per-block-thompson \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
   --override training.learning_rate=0.001 \
@@ -391,12 +498,13 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --override "model.granularities=$labels" \
   --override "model.granularity_prefixes=$prefixes" \
   --override model.granularity_sampling_mode=adaptive_per_block \
-  --override model.adaptive_sampler_strategy=thompson
+  --override model.adaptive_sampler_strategy=thompson \
+  --override model.adaptive_controller.preset=bayesian_thompson
 ```
 
 ```bash
 sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
-  --mode nested-random --run-id dmodel256-explicit-nested-random-concat-gmc-adaptive-thompson \
+  --mode nested-random --run-id dmodel256-explicit-nested-random-concat-gmc-adaptive-per-block-thompson \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
   --override training.learning_rate=0.001 \
@@ -408,12 +516,13 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --override "model.granularities=$labels" \
   --override "model.granularity_prefixes=$prefixes" \
   --override model.granularity_sampling_mode=adaptive_per_block \
-  --override model.adaptive_sampler_strategy=thompson
+  --override model.adaptive_sampler_strategy=thompson \
+  --override model.adaptive_controller.preset=bayesian_thompson
 ```
 
 ```bash
 sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
-  --mode nested-random --run-id dmodel256-explicit-nested-random-concat-lmc-adaptive-thompson \
+  --mode nested-random --run-id dmodel256-explicit-nested-random-concat-lmc-adaptive-per-block-thompson \
   --override training.token_budget=100000000 \
   --override training.optimizer.preset=adam \
   --override training.learning_rate=0.001 \
@@ -425,7 +534,8 @@ sbatch --gres=gpu:1 "$script" --repo-root "$repo" --output-root "$OUT" \
   --override "model.granularities=$labels" \
   --override "model.granularity_prefixes=$prefixes" \
   --override model.granularity_sampling_mode=adaptive_per_block \
-  --override model.adaptive_sampler_strategy=thompson
+  --override model.adaptive_sampler_strategy=thompson \
+  --override model.adaptive_controller.preset=bayesian_thompson
 ```
 
 ## Adaptive UCB

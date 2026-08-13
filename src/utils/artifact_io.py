@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import errno
+import hashlib
+import json
+import os
 import random
 import time
 from pathlib import Path
@@ -219,6 +222,89 @@ def remove_resolved_failure(
 
 def emit_artifact_event(heartbeat_writer, event_type: str, stage: str, **fields: Any):
     _emit_best_effort(heartbeat_writer, event_type, stage, **fields)
+
+
+def append_jsonl_artifact(
+    path: str | Path,
+    payload: Mapping[str, Any],
+    *,
+    settings: Mapping[str, Any] | None = None,
+    heartbeat_writer=None,
+    state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Durably append one JSON object without rewriting committed records."""
+
+    return append_jsonl_artifacts(
+        path,
+        [payload],
+        settings=settings,
+        heartbeat_writer=heartbeat_writer,
+        state=state,
+    )
+
+
+def append_jsonl_artifacts(
+    path: str | Path,
+    payloads: list[Mapping[str, Any]],
+    *,
+    settings: Mapping[str, Any] | None = None,
+    heartbeat_writer=None,
+    state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Durably append a same-boundary JSONL batch as one transaction."""
+
+    if not payloads:
+        raise ValueError("JSONL artifact batch must contain at least one record")
+
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    original_offset = output_path.stat().st_size if output_path.exists() else 0
+    encoded_records = [
+        (
+            json.dumps(dict(payload), sort_keys=True, separators=(",", ":"))
+            + "\n"
+        ).encode("utf-8")
+        for payload in payloads
+    ]
+    encoded_record = b"".join(encoded_records)
+
+    def append_attempt(_attempt: int) -> dict[str, Any]:
+        mode = "r+b" if output_path.exists() else "w+b"
+        try:
+            with output_path.open(mode) as output_file:
+                output_file.truncate(original_offset)
+                output_file.seek(original_offset)
+                output_file.write(encoded_record)
+                output_file.flush()
+                os.fsync(output_file.fileno())
+        except Exception:
+            try:
+                with output_path.open("r+b") as output_file:
+                    output_file.truncate(original_offset)
+                    output_file.flush()
+                    os.fsync(output_file.fileno())
+            except OSError:
+                pass
+            raise
+        return {
+            "path": str(output_path),
+            "start_offset": original_offset,
+            "last_committed_offset": original_offset + len(encoded_record),
+            "event_hash": hashlib.sha256(encoded_record).hexdigest(),
+            "event_hashes": [
+                hashlib.sha256(record).hexdigest() for record in encoded_records
+            ],
+            "event_count": len(encoded_records),
+        }
+
+    return retry_artifact_io(
+        append_attempt,
+        target_path=output_path,
+        operation_name="controller_jsonl_append",
+        settings=settings,
+        heartbeat_writer=heartbeat_writer,
+        state=state,
+    )
 
 
 def _emit_best_effort(heartbeat_writer, event_type: str, stage: str, **fields: Any):

@@ -6,6 +6,7 @@ import csv
 import hashlib
 import io
 import json
+import math
 import os
 import statistics
 import tempfile
@@ -17,6 +18,8 @@ from src.utils.config import (
     write_resolved_config,
 )
 from src.utils.artifact_io import (
+    append_jsonl_artifact,
+    append_jsonl_artifacts,
     emit_artifact_event,
     remove_resolved_failure,
     resolved_artifact_io,
@@ -38,6 +41,7 @@ METRICS_COLUMNS = [
     "run_id",
     "step",
     "split",
+    "microstep",
     "model_family",
     "model_size_label",
     "model_shape_label",
@@ -65,12 +69,34 @@ METRICS_COLUMNS = [
     "adaptive_sampler_previous_pattern",
     "adaptive_reward_summary",
     "adaptive_correction_penalty_summary",
+    "controller_method_family",
+    "controller_method_version",
+    "controller_strategy",
+    "controller_scope",
+    "controller_action",
+    "controller_window_index",
+    "controller_window_progress",
+    "controller_boundary_step",
+    "controller_latest_objective",
+    "controller_latest_reward",
+    "controller_latest_prediction_error",
+    "controller_manifest_hash",
+    "final_holdout_manifest_hash",
+    "controller_metrics_path",
+    "controller_summary_path",
+    "controller_reset_enabled",
+    "controller_reset_policy",
+    "controller_episode_index",
+    "controller_episode_offset_steps",
+    "controller_selection_source",
     "reward",
     "correction_penalty",
     "loss",
     "perplexity",
     "tokens_seen",
     "content_tokens_seen",
+    "optimizer_window_microsteps",
+    "committed_tokens_this_step",
     "evaluation_examples",
     "evaluation_batches",
     "evaluation_target_tokens",
@@ -118,7 +144,7 @@ SCALING_RESULTS_COLUMNS = [
     "num_layers",
     "num_attention_heads",
     "context_length",
-    "vocab_size_assumption",
+    "vocab_size",
     "token_budget",
     "effective_world_size",
     "total_parameters",
@@ -218,6 +244,7 @@ RUN_SUMMARY_FIELDS = [
     "warmup_ratio",
     "warmup_steps",
     "resolved_warmup_steps",
+    "gradient_accumulation_steps",
     "gradient_clip_norm",
     "scheduler_name",
     "scheduler_warmup_steps",
@@ -232,8 +259,11 @@ RUN_SUMMARY_FIELDS = [
     "final_validation",
     "final_validation_reason",
     "expected_tokens_per_step",
+    "expected_tokens_per_microstep",
     "derived_max_steps",
     "effective_world_size",
+    "validation_interval_tokens",
+    "tokenizer_manifest_hash",
     "tokens_seen",
     "content_tokens_seen",
     "stop_reason",
@@ -248,7 +278,7 @@ RUN_SUMMARY_FIELDS = [
     "num_layers",
     "num_attention_heads",
     "context_length",
-    "vocab_size_assumption",
+    "vocab_size",
     "parameter_counts",
     "parameter_counts_by_granularity",
     "preset_selections",
@@ -300,6 +330,118 @@ class ArtifactError(ValueError):
     """Raised when an artifact would miss required analysis fields."""
 
 
+class StreamingMetricsAccumulator:
+    """Checkpointable bounded summary of an arbitrarily large metrics stream."""
+
+    def __init__(self, state: Mapping[str, Any] | None = None, *, trailing_count: int = 5):
+        state = dict(state or {})
+        self.trailing_count = max(1, int(state.get("trailing_count", trailing_count)))
+        self.last_training_step = int(state.get("last_training_step", 0))
+        self.tokens_seen = int(state.get("tokens_seen", 0))
+        self.content_tokens_seen = int(state.get("content_tokens_seen", 0))
+        self.training_row_count = int(state.get("training_row_count", 0))
+        self.validation_row_count = int(state.get("validation_row_count", 0))
+        self.best_validation = copy_json_mapping(state.get("best_validation"))
+        self.best_validation_by_granularity = {
+            str(key): dict(value)
+            for key, value in dict(
+                state.get("best_validation_by_granularity", {})
+            ).items()
+        }
+        self.trailing_validation_by_granularity = {
+            str(key): [dict(row) for row in rows][-self.trailing_count :]
+            for key, rows in dict(
+                state.get("trailing_validation_by_granularity", {})
+            ).items()
+        }
+        self.selection_counts = {
+            str(key): int(value)
+            for key, value in dict(state.get("selection_counts", {})).items()
+        }
+        self.checkpoint_selection = copy_json_mapping(
+            state.get("checkpoint_selection")
+        )
+
+    def update(self, rows: Iterable[Mapping[str, Any]]) -> None:
+        for raw_row in rows:
+            row = dict(raw_row)
+            split = str(row.get("split") or "")
+            if split == "train":
+                self.training_row_count += 1
+                step = _int_value(row.get("step"))
+                if step >= self.last_training_step:
+                    self.last_training_step = step
+                    self.tokens_seen = max(
+                        self.tokens_seen, _int_value(row.get("tokens_seen"))
+                    )
+                    self.content_tokens_seen = max(
+                        self.content_tokens_seen,
+                        _int_value(
+                            row.get("content_tokens_seen", row.get("tokens_seen"))
+                        ),
+                    )
+                action = row.get("controller_action") or row.get("granularity")
+                if action not in (None, ""):
+                    key = str(action)
+                    self.selection_counts[key] = self.selection_counts.get(key, 0) + 1
+                continue
+            if split != "validation" or row.get("loss") in (None, ""):
+                continue
+            self.validation_row_count += 1
+            loss = float(row["loss"])
+            if not math.isfinite(loss):
+                continue
+            compact = dict(row)
+            if self.best_validation is None or loss < float(
+                self.best_validation["loss"]
+            ):
+                self.best_validation = compact
+            granularity = str(row.get("granularity") or "")
+            current = self.best_validation_by_granularity.get(granularity)
+            if current is None or loss < float(current["loss"]):
+                self.best_validation_by_granularity[granularity] = compact
+            trailing = self.trailing_validation_by_granularity.setdefault(
+                granularity, []
+            )
+            trailing.append(compact)
+            if len(trailing) > self.trailing_count:
+                del trailing[: len(trailing) - self.trailing_count]
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "trailing_count": self.trailing_count,
+            "last_training_step": self.last_training_step,
+            "tokens_seen": self.tokens_seen,
+            "content_tokens_seen": self.content_tokens_seen,
+            "training_row_count": self.training_row_count,
+            "validation_row_count": self.validation_row_count,
+            "best_validation": self.best_validation,
+            "best_validation_by_granularity": self.best_validation_by_granularity,
+            "trailing_validation_by_granularity": (
+                self.trailing_validation_by_granularity
+            ),
+            "selection_counts": self.selection_counts,
+            "checkpoint_selection": self.checkpoint_selection,
+        }
+
+    def validation_summary_rows(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for trailing in self.trailing_validation_by_granularity.values():
+            rows.extend(dict(row) for row in trailing)
+        for row in self.best_validation_by_granularity.values():
+            rows.append(dict(row))
+        unique: dict[tuple[Any, Any, Any], dict[str, Any]] = {}
+        for row in rows:
+            key = (row.get("step"), row.get("granularity"), row.get("split"))
+            unique[key] = row
+        return sorted(unique.values(), key=lambda row: _int_value(row.get("step")))
+
+
+def copy_json_mapping(value: Any) -> dict[str, Any] | None:
+    return dict(value) if isinstance(value, Mapping) else None
+
+
 class MetricsJournal:
     """Bounded metrics buffer with durable incremental flushes and resume repair."""
 
@@ -312,6 +454,7 @@ class MetricsJournal:
         artifact_io_config: Mapping[str, Any] | None = None,
         heartbeat_writer=None,
         artifact_state: dict[str, Any] | None = None,
+        write_enabled: bool = True,
     ) -> None:
         self.output_dir = Path(output_dir)
         self.path = self.output_dir / "metrics.csv"
@@ -322,21 +465,32 @@ class MetricsJournal:
         self.artifact_io = resolved_artifact_io(artifact_io_config)
         self.heartbeat_writer = heartbeat_writer
         self.artifact_state = artifact_state
+        self.write_enabled = bool(write_enabled)
         self.pending_row_limit = int(self.artifact_io["metrics_pending_row_limit"])
         self.spool_path = self._build_spool_path()
-        recovered = recover_metrics_rows(self.path, checkpoint_step=checkpoint_step)
-        self._validation_steps.update(
-            int(row["step"])
-            for row in recovered
-            if row.get("split") == "validation"
+        saved_accumulator = (
+            artifact_state.get("metrics_accumulator_state")
+            if isinstance(artifact_state, Mapping)
+            else None
         )
-        write_metrics_csv(
-            self.output_dir,
-            recovered,
-            artifact_io=self.artifact_io,
-            heartbeat_writer=self.heartbeat_writer,
-            artifact_state=self.artifact_state,
-        )
+        self.accumulator = StreamingMetricsAccumulator(saved_accumulator)
+        self._retained_row_limit = 100_000
+        self._retained_rows: list[dict[str, Any]] = []
+        self._retention_overflow = False
+        if self.write_enabled:
+            self._repair_existing_metrics(
+                checkpoint_step=int(checkpoint_step),
+                rebuild_accumulator=saved_accumulator is None,
+            )
+        if self.write_enabled and not self.path.exists():
+            write_metrics_csv(
+                self.output_dir,
+                [],
+                artifact_io=self.artifact_io,
+                heartbeat_writer=self.heartbeat_writer,
+                artifact_state=self.artifact_state,
+            )
+        self._checkpoint_accumulator()
 
     def append(
         self,
@@ -348,6 +502,11 @@ class MetricsJournal:
         if not normalized:
             if force:
                 self.flush()
+            return
+        self.accumulator.update(normalized)
+        self._retain_rows(normalized)
+        self._checkpoint_accumulator()
+        if not self.write_enabled:
             return
         self._buffer.extend(normalized)
         if len(self._buffer) >= self.pending_row_limit:
@@ -367,6 +526,8 @@ class MetricsJournal:
         return int(step) in self._validation_steps
 
     def flush(self, *, strict: bool = False) -> None:
+        if not self.write_enabled:
+            return
         if not self._buffer:
             return
         try:
@@ -420,6 +581,34 @@ class MetricsJournal:
         self.flush(strict=True)
         return read_metrics_csv(self.path)
 
+    def summary_rows(self) -> list[dict[str, Any]]:
+        """Return exact small-run rows or a bounded validation summary."""
+
+        self.flush(strict=True)
+        if not self._retention_overflow:
+            return [dict(row) for row in self._retained_rows]
+        return self.accumulator.validation_summary_rows()
+
+    def iter_rows(self, *, split: str | None = None):
+        self.flush(strict=True)
+        if not self.path.exists():
+            return
+        with self.path.open("r", encoding="utf-8", newline="") as metrics_file:
+            for row in csv.DictReader(metrics_file):
+                if split is None or row.get("split") == split:
+                    yield dict(row)
+
+    def training_outcome(self) -> dict[str, int]:
+        return {
+            "steps_completed": self.accumulator.last_training_step,
+            "tokens_seen": self.accumulator.tokens_seen,
+            "content_tokens_seen": self.accumulator.content_tokens_seen,
+        }
+
+    def record_checkpoint_selection(self, selection: Mapping[str, Any]) -> None:
+        self.accumulator.checkpoint_selection = dict(selection)
+        self._checkpoint_accumulator()
+
     def artifact_summary_fields(self) -> dict[str, Any]:
         return {
             "deferred_metric_rows": len(self._buffer),
@@ -439,6 +628,74 @@ class MetricsJournal:
             / "matformer-artifact-spool"
             / f"{run_id}-{identity}.metrics.pending.csv"
         )
+
+    def _checkpoint_accumulator(self) -> None:
+        if self.artifact_state is not None:
+            self.artifact_state["metrics_accumulator_state"] = (
+                self.accumulator.state_dict()
+            )
+
+    def _retain_rows(self, rows: Iterable[Mapping[str, Any]]) -> None:
+        if self._retention_overflow:
+            return
+        for row in rows:
+            if len(self._retained_rows) >= self._retained_row_limit:
+                self._retained_rows.clear()
+                self._retention_overflow = True
+                return
+            self._retained_rows.append(dict(row))
+
+    def _repair_existing_metrics(
+        self,
+        *,
+        checkpoint_step: int,
+        rebuild_accumulator: bool,
+    ) -> None:
+        if not self.path.exists() or self.path.stat().st_size == 0:
+            return
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                newline="",
+                dir=self.output_dir,
+                prefix=".metrics.repair-",
+                suffix=".csv",
+                delete=False,
+            ) as target:
+                temporary_path = Path(target.name)
+                writer = csv.DictWriter(target, fieldnames=METRICS_COLUMNS)
+                writer.writeheader()
+                with self.path.open(
+                    "r", encoding="utf-8", newline=""
+                ) as source:
+                    reader = csv.DictReader(source)
+                    if reader.fieldnames != METRICS_COLUMNS:
+                        return
+                    for row in reader:
+                        if None in row or any(value is None for value in row.values()):
+                            break
+                        try:
+                            row_step = int(row.get("step") or 0)
+                        except (TypeError, ValueError):
+                            break
+                        if row_step > checkpoint_step:
+                            continue
+                        writer.writerow(row)
+                        if row.get("split") == "validation":
+                            self._validation_steps.add(row_step)
+                        if rebuild_accumulator:
+                            self.accumulator.update([row])
+                        self._retain_rows([row])
+                target.flush()
+                os.fsync(target.fileno())
+            os.replace(temporary_path, self.path)
+            temporary_path = None
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
     def _write_spool(self) -> None:
         self.spool_path.parent.mkdir(parents=True, exist_ok=True)
@@ -624,6 +881,9 @@ def build_run_summary(
             "resolved_warmup_steps",
             training["scheduler"]["resolved_warmup_steps"],
         ),
+        "gradient_accumulation_steps": training.get(
+            "gradient_accumulation_steps", 1
+        ),
         "gradient_clip_norm": training.get("gradient_clip_norm"),
         "scheduler_name": training["scheduler_name"],
         "scheduler_warmup_steps": training["scheduler"]["kwargs"]["warmup_steps"],
@@ -646,8 +906,15 @@ def build_run_summary(
         .get("validation", {})
         .get("run_at_completion_reason"),
         "expected_tokens_per_step": training["expected_tokens_per_step"],
+        "expected_tokens_per_microstep": training.get(
+            "expected_tokens_per_microstep"
+        ),
         "derived_max_steps": training["derived_max_steps"],
         "effective_world_size": training["effective_world_size"],
+        "validation_interval_tokens": config.get("evaluation", {})
+        .get("validation", {})
+        .get("interval_tokens", 0),
+        "tokenizer_manifest_hash": model.get("tokenizer_manifest_hash"),
         "tokens_seen": tokens_seen,
         "content_tokens_seen": content_tokens_seen,
         "stop_reason": stop_reason,
@@ -666,10 +933,7 @@ def build_run_summary(
         "num_layers": model.get("num_layers"),
         "num_attention_heads": model.get("num_attention_heads"),
         "context_length": model.get("context_length"),
-        "vocab_size_assumption": model.get(
-            "vocab_size_assumption",
-            model.get("vocab_size"),
-        ),
+        "vocab_size": model.get("vocab_size"),
         "parameter_counts": config.get("parameter_counts"),
         "parameter_counts_by_granularity": config.get(
             "parameter_counts_by_granularity"
@@ -780,14 +1044,32 @@ def _build_warmup_policy(config: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(warmup, Mapping):
         warmup = {}
 
-    return {
+    policy = warmup.get("policy", "full_only")
+    resolved = {
         "enabled": bool(warmup.get("enabled", False)),
         "duration": warmup.get("duration", 0),
         "unit": warmup.get("unit", "epochs"),
+        "policy": policy,
         "completed": warmup.get("completed", False),
         "completion_step": warmup.get("completion_step"),
         "transition_reason": warmup.get("transition_reason"),
     }
+    if policy == "balanced_global":
+        resolved.update(
+            action_interval_steps=warmup.get("action_interval_steps"),
+            schedule_seed=warmup.get("schedule_seed"),
+            schedule_hash=warmup.get("schedule_hash"),
+            schedule=warmup.get("schedule"),
+            passes=warmup.get("passes"),
+            requested_steps=warmup.get("duration", 0),
+            completed_steps=warmup.get("completed_steps", 0),
+            current_window_index=warmup.get("current_window_index", 0),
+            current_window_offset=warmup.get("current_window_offset", 0),
+            per_granularity_counts=warmup.get("per_granularity_counts", {}),
+            controller_start_step=warmup.get("controller_start_step"),
+            posterior_updated_during_warmup=False,
+        )
+    return resolved
 
 
 def write_run_summary(
@@ -1115,10 +1397,7 @@ def build_scaling_result_rows(
                 "num_layers": model.get("num_layers"),
                 "num_attention_heads": model.get("num_attention_heads"),
                 "context_length": model.get("context_length"),
-                "vocab_size_assumption": model.get(
-                    "vocab_size_assumption",
-                    model.get("vocab_size"),
-                ),
+                "vocab_size": model.get("vocab_size"),
                 "token_budget": training.get("token_budget"),
                 "effective_world_size": training.get("effective_world_size"),
                 "total_parameters": parameter_counts["total_parameters"],
@@ -1219,9 +1498,7 @@ def build_pilot_comparison_rows(
                             "num_attention_heads"
                         ),
                         "context_length": summary.get("context_length"),
-                        "vocab_size_assumption": summary.get(
-                            "vocab_size_assumption"
-                        ),
+                        "vocab_size": summary.get("vocab_size"),
                         "token_budget": summary.get("token_budget"),
                         "effective_world_size": summary.get(
                             "effective_world_size"
@@ -1298,9 +1575,7 @@ def build_pilot_comparison_rows(
                         "num_attention_heads"
                     ),
                     "context_length": omitted_row.get("context_length"),
-                    "vocab_size_assumption": omitted_row.get(
-                        "vocab_size_assumption"
-                    ),
+                    "vocab_size": omitted_row.get("vocab_size"),
                     "token_budget": omitted_row.get("token_budget"),
                     "effective_world_size": omitted_row.get(
                         "effective_world_size"
@@ -1444,6 +1719,713 @@ def latest_metric_rows_by_granularity(
     return {
         granularity: row_with_key[2]
         for granularity, row_with_key in latest_rows.items()
+    }
+
+
+CONTROLLER_EVENT_TYPES = {
+    "initial_boundary",
+    "completed_window",
+    "terminal_incomplete",
+    "controller_failure",
+    "warmup_schedule_initialized",
+    "warmup_window_completed",
+    "warmup_completed",
+    "warmup_terminal_incomplete",
+    "episode_initialized",
+    "episode_completed",
+    "posterior_reset",
+    "posterior_preserved",
+    "acquisition_progress",
+    "acquisition_completed",
+}
+
+
+def append_controller_event(
+    path: str | Path,
+    event: Mapping[str, Any],
+    *,
+    distributed_context: Any | None = None,
+    artifact_io: Mapping[str, Any] | None = None,
+    heartbeat_writer=None,
+    artifact_state: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Validate and append one committed controller lifecycle event."""
+
+    if not _should_write_shared_artifact(distributed_context):
+        return None
+    normalized = _controller_json_value(event)
+    _validate_controller_event(normalized)
+    return append_jsonl_artifact(
+        path,
+        normalized,
+        settings=artifact_io,
+        heartbeat_writer=heartbeat_writer,
+        state=artifact_state,
+    )
+
+
+def append_controller_events(
+    path: str | Path,
+    events: Iterable[Mapping[str, Any]],
+    *,
+    distributed_context: Any | None = None,
+    artifact_io: Mapping[str, Any] | None = None,
+    heartbeat_writer=None,
+    artifact_state: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Validate and transactionally append one same-boundary event batch."""
+
+    if not _should_write_shared_artifact(distributed_context):
+        return None
+    normalized = [_controller_json_value(event) for event in events]
+    if not normalized:
+        raise ArtifactError("Controller event batch must not be empty")
+    for event in normalized:
+        _validate_controller_event(event)
+    return append_jsonl_artifacts(
+        path,
+        normalized,
+        settings=artifact_io,
+        heartbeat_writer=heartbeat_writer,
+        state=artifact_state,
+    )
+
+
+def read_controller_events(path: str | Path) -> list[dict[str, Any]]:
+    journal_path = Path(path)
+    if not journal_path.exists():
+        return []
+    events = []
+    with journal_path.open("r", encoding="utf-8") as journal_file:
+        for line_number, line in enumerate(journal_file, start=1):
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise ArtifactError(
+                    f"Invalid controller journal JSON on line {line_number}"
+                ) from error
+            _validate_controller_event(event)
+            events.append(event)
+    return events
+
+
+def build_controller_summary(
+    *,
+    controller_state: Mapping[str, Any],
+    controller_events: Iterable[Mapping[str, Any]],
+    controller_metrics_path: str | Path,
+) -> dict[str, Any]:
+    """Aggregate the append-only journal without discarding final belief state."""
+
+    state = _controller_json_value(controller_state)
+    events = [_controller_json_value(event) for event in controller_events]
+    for event in events:
+        _validate_controller_event(event)
+    journal_path = Path(controller_metrics_path)
+    completed = [
+        event for event in events if event["event_type"] == "completed_window"
+    ]
+    evaluations = [
+        event
+        for event in events
+        if event["event_type"] in {"initial_boundary", "completed_window"}
+    ]
+    failures = [
+        event for event in events if event["event_type"] == "controller_failure"
+    ]
+    warmup_events = [
+        event for event in events if str(event.get("event_type", "")).startswith("warmup_")
+    ]
+    warmup_initialized = next(
+        (
+            event
+            for event in warmup_events
+            if event["event_type"] == "warmup_schedule_initialized"
+        ),
+        None,
+    )
+    warmup_terminal = next(
+        (
+            event
+            for event in reversed(warmup_events)
+            if event["event_type"]
+            in {"warmup_completed", "warmup_terminal_incomplete"}
+        ),
+        None,
+    )
+    initial_boundary = next(
+        (event for event in events if event["event_type"] == "initial_boundary"),
+        None,
+    )
+    belief = state.get("belief", {})
+    covariance = belief.get("posterior_covariance")
+    window = state.get("window", {})
+    terminal_status = window.get("terminal_status", "continuing")
+    if terminal_status == "complete_boundary":
+        terminal_status = "complete"
+    action_frequencies = controller_action_frequency_counts(events)
+    forced_action_frequencies = controller_action_frequency_counts(
+        events,
+        selection_source="forced_acquisition",
+    )
+    thompson_action_frequencies = controller_action_frequency_counts(
+        events,
+        selection_source="thompson",
+    )
+    effect_uncertainty = controller_effect_uncertainty_summary(
+        state.get("feature_schema"),
+        covariance,
+    )
+
+    return {
+        "schema_version": int(state.get("schema_version", 1)),
+        "method_family": state.get("method_family"),
+        "method_version": state.get("method_version"),
+        "strategy": state.get("strategy"),
+        "scope": state.get("scope"),
+        "ordered_granularities": list(state.get("ordered_granularities", [])),
+        "feature_schema": state.get("feature_schema"),
+        "probabilistic_inputs": state.get("probabilistic_inputs"),
+        "manifest_hashes": state.get("manifest_hashes"),
+        "decision_interval_steps": window.get("decision_interval_steps"),
+        "warmup_policy": (
+            "balanced_global" if warmup_initialized is not None else "full_only"
+        ),
+        "requested_warmup_steps": (
+            warmup_initialized.get("requested_warmup_steps", 0)
+            if warmup_initialized is not None
+            else 0
+        ),
+        "completed_warmup_steps": (
+            warmup_terminal.get("completed_warmup_steps", 0)
+            if warmup_terminal is not None
+            else 0
+        ),
+        "warmup_schedule_seed": (
+            warmup_initialized.get("schedule_seed")
+            if warmup_initialized is not None
+            else None
+        ),
+        "warmup_schedule_hash": (
+            warmup_initialized.get("schedule_hash")
+            if warmup_initialized is not None
+            else None
+        ),
+        "warmup_schedule": (
+            warmup_initialized.get("schedule")
+            if warmup_initialized is not None
+            else None
+        ),
+        "warmup_action_interval_steps": (
+            warmup_initialized.get("action_interval_steps")
+            if warmup_initialized is not None
+            else None
+        ),
+        "warmup_action_counts": (
+            warmup_terminal.get("per_granularity_counts", {})
+            if warmup_terminal is not None
+            else {}
+        ),
+        "controller_start_step": (
+            initial_boundary.get("boundary_step")
+            if initial_boundary is not None
+            else (
+                warmup_terminal.get("controller_start_step")
+                if warmup_terminal is not None
+                else None
+            )
+        ),
+        "baseline_step": (
+            initial_boundary.get("boundary_step")
+            if initial_boundary is not None
+            else None
+        ),
+        "first_adaptive_action": (
+            initial_boundary.get("selected_action")
+            if initial_boundary is not None
+            else None
+        ),
+        "prior_untouched": (
+            initial_boundary.get("prior_untouched")
+            if initial_boundary is not None
+            else None
+        ),
+        "posterior_updated_during_warmup": any(
+            event.get("posterior_updated") is not False for event in warmup_events
+        )
+        if warmup_events
+        else False,
+        "completed_observation_count": len(completed),
+        "controller_evaluation_count": len(evaluations),
+        "action_frequencies": action_frequencies,
+        "forced_acquisition_action_frequencies": forced_action_frequencies,
+        "thompson_action_frequencies": thompson_action_frequencies,
+        "action_entropy": _action_frequency_entropy(action_frequencies),
+        "forced_acquisition_action_entropy": _action_frequency_entropy(
+            forced_action_frequencies
+        ),
+        "thompson_action_entropy": _action_frequency_entropy(
+            thompson_action_frequencies
+        ),
+        "per_block_granularity_frequencies": (
+            action_frequencies if state.get("scope") == "per_block" else None
+        ),
+        "final_posterior_mean": belief.get("posterior_mean"),
+        "final_posterior_covariance": covariance,
+        "uncertainty_summary": controller_uncertainty_summary(covariance),
+        "effect_uncertainty": effect_uncertainty,
+        "boundary_summaries": {
+            "objective": _scalar_summary(
+                [
+                    event.get("post_window_objective", event.get("controller_objective"))
+                    for event in evaluations
+                ]
+            ),
+            "reward": _scalar_summary([event.get("reward") for event in completed]),
+            "prediction_error": _scalar_summary(
+                [event.get("prediction_error") for event in completed]
+            ),
+        },
+        "terminal_window": {
+            "status": terminal_status,
+            "window_index": window.get("window_index"),
+            "completed_optimizer_steps": window.get("completed_optimizer_steps"),
+            "decision_interval_steps": window.get("decision_interval_steps"),
+        },
+        "resume_provenance": state.get("resume"),
+        "failure_summary": failures[-1] if failures else state.get("failure"),
+        "reset": state.get("reset"),
+        "reset_enabled": bool(state.get("reset", {}).get("enabled", False)),
+        "reset_count": state.get("reset", {}).get("reset_count", 0),
+        "reset_steps": state.get("reset", {}).get("reset_steps", []),
+        "completed_episodes": state.get("reset", {}).get(
+            "completed_episodes", []
+        ),
+        "controller_metrics_path": str(journal_path),
+        "controller_metrics_hash": (
+            hashlib.sha256(journal_path.read_bytes()).hexdigest()
+            if journal_path.exists()
+            else hashlib.sha256(b"").hexdigest()
+        ),
+    }
+
+
+def write_controller_summary(
+    output_dir: str | Path,
+    summary: Mapping[str, Any],
+    *,
+    distributed_context: Any | None = None,
+    artifact_io: Mapping[str, Any] | None = None,
+    heartbeat_writer=None,
+    artifact_state: dict[str, Any] | None = None,
+) -> Path | None:
+    return write_json_artifact(
+        Path(output_dir) / "controller_summary.json",
+        _controller_json_value(summary),
+        distributed_context=distributed_context,
+        artifact_io=artifact_io,
+        heartbeat_writer=heartbeat_writer,
+        artifact_state=artifact_state,
+    )
+
+
+def controller_action_frequency_counts(
+    events: Iterable[Mapping[str, Any]],
+    *,
+    selection_source: str | None = None,
+) -> dict[str, Any]:
+    event_list = list(events)
+    scope = next(
+        (
+            event.get("scope")
+            for event in event_list
+            if event.get("scope") in {"global", "per_block"}
+        ),
+        "global",
+    )
+    if scope == "per_block":
+        completed_actions = [
+            event.get("action")
+            for event in event_list
+            if event.get("event_type") == "completed_window"
+            and (
+                selection_source is None
+                or event.get("selection_source", "thompson") == selection_source
+                or (
+                    isinstance(event.get("action"), Mapping)
+                    and event["action"].get(
+                        "selection_source",
+                        event.get("selection_source", "thompson"),
+                    )
+                    == selection_source
+                )
+            )
+            and isinstance(event.get("action"), Mapping)
+        ]
+        counted_actions = completed_actions
+        if not counted_actions and selection_source is None:
+            counted_actions = [
+                event.get("selected_action")
+                for event in event_list
+                if isinstance(event.get("selected_action"), Mapping)
+            ]
+        profiles = [
+            list(action.get("block_granularities", []))
+            for action in counted_actions
+            if isinstance(action.get("block_granularities"), list)
+        ]
+        labels = []
+        for event in event_list:
+            for label in event.get("ordered_granularities", []):
+                if str(label) not in labels:
+                    labels.append(str(label))
+        block_count = max((len(profile) for profile in profiles), default=0)
+        counts = {
+            f"block_{block_index}": {label: 0 for label in labels}
+            for block_index in range(block_count)
+        }
+        for profile in profiles:
+            for block_index, label in enumerate(profile):
+                block_key = f"block_{block_index}"
+                label_key = str(label)
+                counts.setdefault(block_key, {}).setdefault(label_key, 0)
+                counts[block_key][label_key] += 1
+        return counts
+
+    counts: dict[str, int] = {}
+    for event in event_list:
+        for label in event.get("ordered_granularities", []):
+            counts.setdefault(str(label), 0)
+    for event in event_list:
+        if event.get("event_type") != "completed_window":
+            continue
+        action = event.get("action")
+        if not isinstance(action, Mapping):
+            continue
+        if selection_source is not None and (
+            event.get(
+                "selection_source",
+                action.get("selection_source", "thompson"),
+            )
+            != selection_source
+        ):
+            continue
+        label = action.get("global_granularity")
+        if label is not None:
+            counts[str(label)] = counts.get(str(label), 0) + 1
+    if not counts and selection_source is None:
+        for event in event_list:
+            action = event.get("selected_action")
+            if isinstance(action, Mapping) and action.get("global_granularity") is not None:
+                label = str(action["global_granularity"])
+                counts[label] = counts.get(label, 0) + 1
+    return counts
+
+
+def _action_frequency_entropy(frequencies: Mapping[str, Any]) -> float | None:
+    counts = [
+        int(value)
+        for value in frequencies.values()
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    ]
+    total = sum(counts)
+    if total <= 0:
+        return None
+    probabilities = [count / total for count in counts if count > 0]
+    return -sum(probability * math.log(probability) for probability in probabilities)
+
+
+def controller_uncertainty_summary(covariance: Any) -> dict[str, Any]:
+    matrix = _controller_json_value(covariance)
+    if not isinstance(matrix, list) or not matrix:
+        return {}
+    diagonal = []
+    for index, row in enumerate(matrix):
+        if not isinstance(row, list) or index >= len(row):
+            return {}
+        variance = float(row[index])
+        diagonal.append(max(variance, 0.0) ** 0.5)
+    return {
+        "posterior_stddev": diagonal,
+        "mean_posterior_stddev": statistics.fmean(diagonal),
+        "min_posterior_stddev": min(diagonal),
+        "max_posterior_stddev": max(diagonal),
+        "posterior_covariance_trace": sum(value * value for value in diagonal),
+    }
+
+
+def controller_effect_uncertainty_summary(
+    feature_schema: Any,
+    covariance: Any,
+) -> dict[str, Any]:
+    """Expose coefficient and additive block/label posterior uncertainty."""
+
+    schema = _controller_json_value(feature_schema)
+    matrix = _controller_json_value(covariance)
+    if not isinstance(schema, Mapping) or not isinstance(matrix, list) or not matrix:
+        return {}
+    dimension = int(schema.get("dimension", 0))
+    coefficient_names = schema.get("coefficient_names")
+    if (
+        dimension <= 0
+        or len(matrix) != dimension
+        or not isinstance(coefficient_names, list)
+        or len(coefficient_names) != dimension
+        or any(not isinstance(row, list) or len(row) != dimension for row in matrix)
+    ):
+        return {}
+
+    coefficient_stddev = {
+        str(name): max(float(matrix[index][index]), 0.0) ** 0.5
+        for index, name in enumerate(coefficient_names)
+    }
+    summary: dict[str, Any] = {
+        "coefficient_stddev": coefficient_stddev,
+    }
+    if schema.get("scope") != "per_block":
+        return summary
+
+    labels = list(schema.get("ordered_granularities", []))
+    basis = schema.get("contrast_basis")
+    block_count = int(schema.get("block_count", 0))
+    contrast_count = max(0, len(labels) - 1)
+    if (
+        block_count <= 0
+        or not isinstance(basis, list)
+        or len(basis) != len(labels)
+        or any(not isinstance(row, list) or len(row) != contrast_count for row in basis)
+    ):
+        return summary
+
+    per_block_effects: dict[str, dict[str, float]] = {}
+    for block_index in range(block_count):
+        block_effects = {}
+        start = 1 + block_index * contrast_count
+        for label_index, label in enumerate(labels):
+            effect = [0.0] * dimension
+            effect[start : start + contrast_count] = [
+                float(value) for value in basis[label_index]
+            ]
+            variance = sum(
+                effect[row_index]
+                * float(matrix[row_index][column_index])
+                * effect[column_index]
+                for row_index in range(dimension)
+                for column_index in range(dimension)
+            )
+            block_effects[str(label)] = max(variance, 0.0) ** 0.5
+        per_block_effects[f"block_{block_index}"] = block_effects
+    summary["per_block_granularity_effect_stddev"] = per_block_effects
+    return summary
+
+
+def build_compact_controller_metric_fields(
+    controller_state: Mapping[str, Any] | None,
+    latest_event: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not isinstance(controller_state, Mapping):
+        return {}
+    window = controller_state.get("window", {})
+    manifests = controller_state.get("manifest_hashes", {})
+    action = window.get("current_action")
+    if not isinstance(action, Mapping) and isinstance(latest_event, Mapping):
+        action = latest_event.get("action") or latest_event.get("selected_action")
+    event = latest_event if isinstance(latest_event, Mapping) else {}
+    objective = event.get("post_window_objective", event.get("controller_objective"))
+    return {
+        "controller_method_family": controller_state.get("method_family"),
+        "controller_method_version": controller_state.get("method_version"),
+        "controller_strategy": controller_state.get("strategy"),
+        "controller_scope": controller_state.get("scope"),
+        "controller_action": _compact_action_summary(action),
+        "controller_window_index": window.get("window_index"),
+        "controller_window_progress": window.get("completed_optimizer_steps"),
+        "controller_boundary_step": window.get("boundary_step"),
+        "controller_latest_objective": objective,
+        "controller_latest_reward": event.get("reward"),
+        "controller_latest_prediction_error": event.get("prediction_error"),
+        "controller_manifest_hash": manifests.get("controller_manifest_hash"),
+        "final_holdout_manifest_hash": manifests.get("final_holdout_manifest_hash"),
+        "controller_metrics_path": controller_state.get("journal", {}).get("path"),
+        "controller_summary_path": "controller_summary.json",
+        "controller_reset_enabled": bool(
+            controller_state.get("reset", {}).get("enabled", False)
+        ),
+        "controller_reset_policy": controller_state.get("reset", {})
+        .get("contract", {})
+        .get("policy"),
+        "controller_episode_index": controller_state.get("reset", {}).get(
+            "episode_index"
+        ),
+        "controller_episode_offset_steps": controller_state.get("reset", {}).get(
+            "episode_offset_steps"
+        ),
+        "controller_selection_source": window.get("selection_source"),
+    }
+
+
+def format_controller_lifecycle_log(event: Mapping[str, Any]) -> str:
+    event_type = str(event.get("event_type"))
+    action = event.get("selected_action") or event.get("action")
+    fields = [
+        "[probabilistic-controller]",
+        f"event={event_type}",
+        f"method={event.get('method_family')}",
+        f"scope={event.get('scope')}",
+        f"boundary_step={event.get('boundary_step', event.get('boundary_step_end'))}",
+        f"window_index={event.get('window_index')}",
+        f"action={_compact_action_summary(action)}",
+    ]
+    if event_type == "initial_boundary":
+        fields.append(f"objective={event.get('controller_objective')}")
+    elif event_type == "completed_window":
+        fields.extend(
+            [
+                f"pre_objective={event.get('pre_window_objective')}",
+                f"post_objective={event.get('post_window_objective')}",
+                f"reward={event.get('reward')}",
+                f"prediction_error={event.get('prediction_error')}",
+            ]
+        )
+    elif event_type == "terminal_incomplete":
+        fields.extend(
+            [
+                "progress="
+                f"{event.get('completed_optimizer_steps')}/"
+                f"{event.get('decision_interval_steps')}",
+                f"pre_objective={event.get('pre_window_objective')}",
+                f"observation_emitted={event.get('observation_emitted')}",
+            ]
+        )
+    elif event_type == "controller_failure":
+        fields.extend(
+            [
+                f"failing_stage={event.get('failing_stage')}",
+                f"error_category={event.get('error_category')}",
+                f"posterior_updated={event.get('posterior_updated')}",
+                f"new_action_selected={event.get('new_action_selected')}",
+            ]
+        )
+    elif event_type.startswith("warmup_"):
+        fields.extend(
+            [
+                f"phase={event.get('phase')}",
+                f"schedule_hash={event.get('schedule_hash')}",
+                "progress="
+                f"{event.get('completed_optimizer_steps')}/"
+                f"{event.get('action_interval_steps')}",
+                f"posterior_updated={event.get('posterior_updated')}",
+            ]
+        )
+    elif event_type in {
+        "episode_initialized",
+        "episode_completed",
+        "posterior_reset",
+        "posterior_preserved",
+        "acquisition_progress",
+        "acquisition_completed",
+    }:
+        fields.extend(
+            [
+                f"episode_index={event.get('episode_index')}",
+                f"episode_offset_steps={event.get('episode_offset_steps')}",
+                f"selection_source={event.get('selection_source')}",
+                f"schedule_hash={event.get('schedule_hash')}",
+            ]
+        )
+    fields.append(f"uncertainty={_compact_uncertainty(event.get('uncertainty_summary'))}")
+    return " ".join(fields)
+
+
+def _validate_controller_event(event: Mapping[str, Any]) -> None:
+    event_type = event.get("event_type")
+    if event_type not in CONTROLLER_EVENT_TYPES:
+        raise ArtifactError(f"Unknown controller event type: {event_type!r}")
+    required = {
+        "schema_version",
+        "event_type",
+        "boundary_step",
+        "window_index",
+    }
+    missing = sorted(field for field in required if field not in event)
+    if missing:
+        raise ArtifactError(
+            f"Controller {event_type} event missing required fields: {missing}"
+        )
+    if event_type == "initial_boundary" and "reward" in event:
+        raise ArtifactError("initial boundary event must not contain reward")
+    if event_type == "controller_failure":
+        if event.get("posterior_updated") is not False:
+            raise ArtifactError("failure event posterior_updated must be false")
+        if event.get("new_action_selected") is not False:
+            raise ArtifactError("failure event new_action_selected must be false")
+        if "posterior_mean" in event or "posterior_covariance" in event:
+            raise ArtifactError("failure event must not contain posterior state")
+    if event_type.startswith("warmup_"):
+        if event.get("phase") != "warmup":
+            raise ArtifactError("warmup event phase must be warmup")
+        if event.get("posterior_updated") is not False:
+            raise ArtifactError("warmup event posterior_updated must be false")
+        if not event.get("schedule_hash"):
+            raise ArtifactError("warmup event schedule_hash is required")
+    if event_type in {"episode_initialized", "acquisition_progress", "acquisition_completed"}:
+        if not event.get("schedule_hash"):
+            raise ArtifactError(f"{event_type} event schedule_hash is required")
+    if event_type == "posterior_reset" and event.get("policy") != "full_prior":
+        raise ArtifactError("posterior reset event policy must be full_prior")
+    if event_type == "posterior_preserved":
+        if event.get("policy") != "acquisition_only":
+            raise ArtifactError(
+                "posterior preserved event policy must be acquisition_only"
+            )
+        if event.get("posterior_updated") is not False:
+            raise ArtifactError(
+                "posterior preserved event posterior_updated must be false"
+            )
+        if "posterior_mean" not in event or "posterior_covariance" not in event:
+            raise ArtifactError(
+                "posterior preserved event must contain posterior state"
+            )
+
+
+def _controller_json_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _controller_json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_controller_json_value(item) for item in value]
+    if hasattr(value, "tolist"):
+        return _controller_json_value(value.tolist())
+    if isinstance(value, Path):
+        return str(value)
+    return value
+
+
+def _compact_action_summary(action: Any) -> Any:
+    if not isinstance(action, Mapping):
+        return None
+    if action.get("global_granularity") is not None:
+        return str(action["global_granularity"])
+    block_actions = action.get("block_granularities")
+    return ",".join(str(label) for label in block_actions) if block_actions else None
+
+
+def _compact_uncertainty(summary: Any) -> Any:
+    if not isinstance(summary, Mapping):
+        return None
+    return summary.get("mean_posterior_stddev")
+
+
+def _scalar_summary(values: Iterable[Any]) -> dict[str, Any]:
+    finite_values = [float(value) for value in values if value is not None]
+    if not finite_values:
+        return {"count": 0, "mean": None, "min": None, "max": None}
+    return {
+        "count": len(finite_values),
+        "mean": statistics.fmean(finite_values),
+        "min": min(finite_values),
+        "max": max(finite_values),
     }
 
 
@@ -1629,6 +2611,7 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
     )
 
     defaults = {
+        "microstep": normalized_row.get("step"),
         "model_size_label": model_shape_label,
         "model_shape_label": model_shape_label,
         "sampling_mode": None,
@@ -1654,6 +2637,26 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "adaptive_sampler_previous_pattern": None,
         "adaptive_reward_summary": None,
         "adaptive_correction_penalty_summary": None,
+        "controller_method_family": None,
+        "controller_method_version": None,
+        "controller_strategy": None,
+        "controller_scope": None,
+        "controller_action": None,
+        "controller_window_index": None,
+        "controller_window_progress": None,
+        "controller_boundary_step": None,
+        "controller_latest_objective": None,
+        "controller_latest_reward": None,
+        "controller_latest_prediction_error": None,
+        "controller_manifest_hash": None,
+        "final_holdout_manifest_hash": None,
+        "controller_metrics_path": None,
+        "controller_summary_path": None,
+        "controller_reset_enabled": None,
+        "controller_reset_policy": None,
+        "controller_episode_index": None,
+        "controller_episode_offset_steps": None,
+        "controller_selection_source": None,
         "reward": None,
         "correction_penalty": None,
         "model_family_slug": None,
@@ -1665,10 +2668,12 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "num_layers": None,
         "num_attention_heads": None,
         "context_length": None,
-        "vocab_size_assumption": None,
+        "vocab_size": None,
         "token_budget": None,
         "effective_world_size": None,
         "content_tokens_seen": normalized_row.get("tokens_seen"),
+        "optimizer_window_microsteps": None,
+        "committed_tokens_this_step": None,
         "evaluation_examples": None,
         "evaluation_batches": None,
         "evaluation_target_tokens": None,

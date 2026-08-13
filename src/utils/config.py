@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+import numpy as np
 import yaml
 
 from src.utils.artifact_io import DEFAULT_ARTIFACT_IO
@@ -20,7 +21,12 @@ from src.utils.model_size import (
     derive_token_budget_slug,
 )
 from src.utils.monitoring import DEFAULT_MONITORING_BACKEND, VALID_MONITORING_BACKENDS
-from src.utils.reproducibility import DATA_SPLIT_VERSION, SEED_STREAM_VERSION
+from src.utils.reproducibility import (
+    DATA_SPLIT_VERSION,
+    SEED_STREAM_VERSION,
+    build_balanced_warmup_schedule,
+    seed_for,
+)
 
 
 VALID_GRANULARITIES = {"s", "m", "l", "xl"}
@@ -30,14 +36,25 @@ VALID_CORRECTION_MODES = {"none", "gmc", "lmc"}
 VALID_MODEL_GRANULARITY_SAMPLING_MODES = {
     "global",
     "per_block",
+    "adaptive_global",
     "adaptive_per_block",
 }
 VALID_ADAPTIVE_SAMPLER_STRATEGIES = {"thompson", "ucb"}
+PROBABILISTIC_ADAPTIVE_SAMPLING_MODES = {
+    "adaptive_global",
+    "adaptive_per_block",
+}
+BAYESIAN_CONTROLLER_METHOD_FAMILY = "bayesian_gaussian_linear_thompson"
+BAYESIAN_CONTROLLER_METHOD_VERSION = 1
+BAYESIAN_COVARIANCE_TOLERANCE = 1e-10
 VALID_LEARNING_RATE_SCALE_RULES = {"none", "linear", "sqrt"}
 VALID_OPTIMIZER_NAMES = {"adamw", "sgd"}
 VALID_COMPLETION_LABELS = {"debug", "run"}
 VALID_GRANULARITY_SAMPLING = {"all", "random"}
 VALID_PRE_NESTED_WARMUP_UNITS = {"epochs", "steps"}
+VALID_PRE_NESTED_WARMUP_POLICIES = {"full_only", "balanced_global"}
+VALID_CONTROLLER_RESET_POLICIES = {"full_prior", "acquisition_only"}
+VALID_CONTROLLER_RESET_ACQUISITION_POLICIES = {"balanced_global"}
 VALID_MIXED_PRECISION_MODES = {"none", "bf16", "fp16"}
 DEFAULT_MODEL_VARIANT = "slicing"
 VALID_SAMPLING_MODES = {"nested-random", "nested-all", "standalone"}
@@ -47,6 +64,20 @@ CANONICAL_GRANULARITY_PREFIX_FRACTIONS = {
     "m": (1, 4),
     "l": (1, 2),
     "xl": (1, 1),
+}
+PRODUCTION_GRANULARITY_ORDER = (
+    "g125",
+    "g250",
+    "g375",
+    "g500",
+    "g625",
+    "g750",
+    "g875",
+    "g1000",
+)
+PRODUCTION_GRANULARITY_PREFIXES = {
+    label: (index + 1) / 8.0
+    for index, label in enumerate(PRODUCTION_GRANULARITY_ORDER)
 }
 DEFAULT_FFN_MULTIPLIER = 4
 CONFIG_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -203,6 +234,8 @@ def resolve_run_config(
     _resolve_model_variant_defaults(resolved)
     _resolve_model_correction_defaults(resolved)
     _resolve_model_dimension_and_granularity_metadata(resolved)
+    _validate_packed_mmap_sampling_overrides(resolved)
+    _resolve_model_tokenizer_defaults(resolved)
     if family_size_slug is None:
         family_size_slug = _resolve_family_size_slug(resolved)
     resolved["run"]["family_size_slug"] = family_size_slug
@@ -215,6 +248,7 @@ def resolve_run_config(
         explicit_override_keys=explicit_override_keys,
     )
     _resolve_adaptive_sampler_defaults(resolved)
+    _resolve_distributed_contract_defaults(resolved)
     _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
     _resolve_parameter_reporting_defaults(resolved)
     _resolve_long_run_defaults(resolved)
@@ -244,6 +278,8 @@ def resolve_all_run_configs(
         _resolve_model_variant_defaults(resolved)
         _resolve_model_correction_defaults(resolved)
         _resolve_model_dimension_and_granularity_metadata(resolved)
+        _validate_packed_mmap_sampling_overrides(resolved)
+        _resolve_model_tokenizer_defaults(resolved)
         resolved["run"]["family_size_slug"] = _resolve_family_size_slug(resolved)
         _resolve_naming_defaults(resolved)
         _resolve_output_paths(resolved)
@@ -254,6 +290,7 @@ def resolve_all_run_configs(
             explicit_override_keys=explicit_override_keys,
         )
         _resolve_adaptive_sampler_defaults(resolved)
+        _resolve_distributed_contract_defaults(resolved)
         _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
         _resolve_parameter_reporting_defaults(resolved)
         _resolve_long_run_defaults(resolved)
@@ -274,6 +311,8 @@ def resolve_all_run_configs(
         _resolve_model_variant_defaults(resolved)
         _resolve_model_correction_defaults(resolved)
         _resolve_model_dimension_and_granularity_metadata(resolved)
+        _validate_packed_mmap_sampling_overrides(resolved)
+        _resolve_model_tokenizer_defaults(resolved)
         _resolve_naming_defaults(resolved)
         _resolve_output_paths(resolved)
         _resolve_sampling_mode_defaults(
@@ -282,6 +321,7 @@ def resolve_all_run_configs(
             requested_run_sampling_mode=requested_run_sampling_mode,
         )
         _resolve_adaptive_sampler_defaults(resolved)
+        _resolve_distributed_contract_defaults(resolved)
         _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
         _resolve_parameter_reporting_defaults(resolved)
         _resolve_long_run_defaults(resolved)
@@ -547,7 +587,7 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "num_attention_heads",
             "intermediate_size",
             "context_length",
-            "vocab_size_assumption",
+            "vocab_size",
             "granularities",
         ],
     )
@@ -562,7 +602,9 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         [
             "token_budget",
             "effective_world_size",
+            "expected_tokens_per_microstep",
             "expected_tokens_per_step",
+            "gradient_accumulation_steps",
             "derived_max_steps",
             "max_steps",
             "base_learning_rate",
@@ -618,6 +660,7 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         [
             "enabled",
             "interval_steps",
+            "interval_tokens",
             "run_at_completion",
             "holdout",
             "trailing_summary_evaluations",
@@ -777,43 +820,50 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             raise ConfigError(
                 "model.requested_correction_mode must be a string or null"
             )
-        expected_membership_correction = requested_mode.strip() != "none"
-        if model["membership_correction"] != expected_membership_correction:
-            raise ConfigError(
-                "model.correction_mode and model.membership_correction must not disagree"
-            )
+    if model["membership_correction"] != (correction_mode != "none"):
+        raise ConfigError(
+            "model.membership_correction must be derived from model.correction_mode"
+        )
 
-    if granularity_sampling_mode == "adaptive_per_block":
+    if granularity_sampling_mode in PROBABILISTIC_ADAPTIVE_SAMPLING_MODES:
         if run.get("sampling_mode") != "nested-random":
             raise ConfigError(
-                "model.granularity_sampling_mode=adaptive_per_block requires "
+                f"model.granularity_sampling_mode={granularity_sampling_mode} requires "
                 "nested-random runs"
             )
-        _require_fields(
-            model,
-            "model",
-            [
-                "adaptive_sampler_strategy",
-                "adaptive_sampler_exploration_scale",
-                "adaptive_sampler_decay_rate",
-                "adaptive_sampler_reward_penalty_weight",
-            ],
-        )
-        _normalize_adaptive_sampler_strategy(
+        _require_fields(model, "model", ["adaptive_sampler_strategy"])
+        strategy = _normalize_adaptive_sampler_strategy(
             model["adaptive_sampler_strategy"]
         )
-        _nonnegative_finite_float(
-            model["adaptive_sampler_exploration_scale"],
-            "model.adaptive_sampler_exploration_scale",
-        )
-        _nonnegative_finite_float(
-            model["adaptive_sampler_decay_rate"],
-            "model.adaptive_sampler_decay_rate",
-        )
-        _nonnegative_finite_float(
-            model["adaptive_sampler_reward_penalty_weight"],
-            "model.adaptive_sampler_reward_penalty_weight",
-        )
+        if strategy == "thompson":
+            _validate_resolved_bayesian_adaptive_configuration(config)
+        else:
+            if granularity_sampling_mode != "adaptive_per_block":
+                raise ConfigError(
+                    "model.granularity_sampling_mode=adaptive_global does not "
+                    "support model.adaptive_sampler_strategy=ucb"
+                )
+            _require_fields(
+                model,
+                "model",
+                [
+                    "adaptive_sampler_exploration_scale",
+                    "adaptive_sampler_decay_rate",
+                    "adaptive_sampler_reward_penalty_weight",
+                ],
+            )
+            _nonnegative_finite_float(
+                model["adaptive_sampler_exploration_scale"],
+                "model.adaptive_sampler_exploration_scale",
+            )
+            _nonnegative_finite_float(
+                model["adaptive_sampler_decay_rate"],
+                "model.adaptive_sampler_decay_rate",
+            )
+            _nonnegative_finite_float(
+                model["adaptive_sampler_reward_penalty_weight"],
+                "model.adaptive_sampler_reward_penalty_weight",
+            )
 
     if "d_model" in model and "hidden_size" in model:
         if _positive_int(model["d_model"], "model.d_model") != _positive_int(
@@ -885,6 +935,17 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         validation.get("interval_steps"),
         "evaluation.validation.interval_steps",
     )
+    _nonnegative_int(
+        validation.get("interval_tokens"),
+        "evaluation.validation.interval_tokens",
+    )
+    if int(validation.get("interval_steps", 0)) > 0 and int(
+        validation.get("interval_tokens", 0)
+    ) > 0:
+        raise ConfigError(
+            "evaluation.validation.interval_tokens and a positive interval_steps "
+            "are mutually exclusive"
+        )
     if not isinstance(validation.get("run_at_completion"), bool):
         raise ConfigError(
             "evaluation.validation.run_at_completion must be a boolean"
@@ -996,6 +1057,52 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         raise ConfigError(
             "training.pre_nested_warmup.duration must be positive when enabled"
         )
+    warmup_policy = warmup.get("policy")
+    if warmup_policy not in VALID_PRE_NESTED_WARMUP_POLICIES:
+        raise ConfigError(
+            "training.pre_nested_warmup.policy must be one of "
+            f"{sorted(VALID_PRE_NESTED_WARMUP_POLICIES)}"
+        )
+    if warmup_policy == "balanced_global":
+        if model.get("granularity_sampling_mode") not in (
+            "adaptive_global",
+            "adaptive_per_block",
+        ) or model.get("adaptive_sampler_strategy") != "thompson":
+            raise ConfigError(
+                "training.pre_nested_warmup.policy=balanced_global requires a "
+                "probabilistic adaptive_global or adaptive_per_block run"
+            )
+        if warmup_unit != "steps":
+            raise ConfigError(
+                "training.pre_nested_warmup.policy=balanced_global requires unit=steps"
+            )
+        interval = warmup.get("action_interval_steps")
+        if isinstance(interval, bool) or not isinstance(interval, int) or interval <= 0:
+            raise ConfigError(
+                "training.pre_nested_warmup.action_interval_steps must be a "
+                "positive integer"
+            )
+        if warmup_enabled:
+            granularities = list(model.get("granularities", []))
+            denominator = interval * len(granularities)
+            if denominator <= 0 or warmup_duration % denominator != 0:
+                raise ConfigError(
+                    "training.pre_nested_warmup.duration must be divisible by "
+                    "action_interval_steps * number of granularities"
+                )
+            passes = warmup_duration // denominator
+            if passes < 2:
+                raise ConfigError(
+                    "training.pre_nested_warmup balanced_global requires at least "
+                    "two complete passes over all granularities"
+                )
+            schedule = warmup.get("schedule")
+            if not isinstance(schedule, list) or len(schedule) != (
+                warmup_duration // interval
+            ):
+                raise ConfigError(
+                    "training.pre_nested_warmup balanced schedule is incomplete"
+                )
 
     if model_topology == "standalone":
         granularity = run.get("granularity")
@@ -1024,6 +1131,111 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
     _validate_dmodel256_pilot_fields(run, model, training)
 
     _validate_derived_training_length(training, model)
+    _validate_distributed_and_prepared_corpus_contract(config)
+
+
+def _validate_distributed_and_prepared_corpus_contract(
+    config: Mapping[str, Any],
+) -> None:
+    training = config["training"]
+    model = config["model"]
+    dataset = config["dataset"]
+    distributed = training.get("distributed", {})
+    if not isinstance(distributed, Mapping):
+        raise ConfigError("training.distributed must be a mapping")
+    expected_world_size = _positive_int(
+        distributed.get("expected_world_size", training["effective_world_size"]),
+        "training.distributed.expected_world_size",
+    )
+    if expected_world_size not in {1, 2, 3, 4}:
+        raise ConfigError(
+            "training.distributed.expected_world_size must be between 1 and 4"
+        )
+    if int(training["effective_world_size"]) != expected_world_size:
+        raise ConfigError(
+            "training.effective_world_size must match "
+            "training.distributed.expected_world_size"
+        )
+    if (
+        expected_world_size > 1
+        and model.get("granularity_sampling_mode") == "adaptive_per_block"
+        and model.get("adaptive_sampler_strategy") == "ucb"
+    ):
+        raise ConfigError(
+            "adaptive_per_block + ucb is unsupported when world size exceeds one"
+        )
+
+    mode = dataset.get("mode", "raw_tokenized")
+    if mode != "packed_mmap":
+        return
+    if dataset.get("sample_limit") is not None:
+        raise ConfigError(
+            "dataset.sample_limit is forbidden when dataset.mode=packed_mmap"
+        )
+    if bool(dataset.get("tokenization_keep_in_memory", False)):
+        raise ConfigError(
+            "in-memory tokenization is forbidden when dataset.mode=packed_mmap"
+        )
+    if int(dataset.get("data_seed", -1)) != 42:
+        raise ConfigError("dataset.mode=packed_mmap requires dataset.data_seed=42")
+    prepared_dir = dataset.get("prepared_corpus_dir")
+    if not isinstance(prepared_dir, str) or not prepared_dir.strip():
+        raise ConfigError(
+            "dataset.mode=packed_mmap requires dataset.prepared_corpus_dir"
+        )
+    if config["run"]["model_family"] == "nested":
+        if tuple(model.get("granularities", ())) != PRODUCTION_GRANULARITY_ORDER:
+            raise ConfigError(
+                "10B packed-mmap nested runs require ordered granularities "
+                f"{list(PRODUCTION_GRANULARITY_ORDER)}"
+            )
+        prefixes = model.get("granularity_prefixes", {})
+        if any(
+            not math.isclose(
+                float(prefixes.get(label, -1.0)),
+                expected,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+            for label, expected in PRODUCTION_GRANULARITY_PREFIXES.items()
+        ):
+            raise ConfigError(
+                "10B packed-mmap runs require 0.125-width granularity prefixes"
+            )
+    try:
+        from src.training.packed_corpus import load_corpus_manifest
+
+        manifest = load_corpus_manifest(prepared_dir, verify_shards=False)
+    except Exception as error:
+        raise ConfigError(f"Prepared corpus validation failed: {error}") from error
+    if int(manifest["context_length"]) != int(model["context_length"]):
+        raise ConfigError("Prepared corpus context length does not match the model")
+    if int(manifest["data_seed"]) != int(dataset["data_seed"]):
+        raise ConfigError("Prepared corpus data seed does not match the run")
+    if int(manifest["roles"]["optimizer_training"]["token_count"]) != int(
+        training["token_budget"]
+    ):
+        raise ConfigError("Prepared corpus token count does not match training.token_budget")
+    tokenizer = manifest["tokenizer"]
+    if tokenizer.get("name") != model.get("tokenizer_name") or tokenizer.get(
+        "revision"
+    ) != model.get("tokenizer_revision"):
+        raise ConfigError("Prepared corpus tokenizer identity does not match the model")
+    if tokenizer.get("manifest_hash") != model.get("tokenizer_manifest_hash"):
+        raise ConfigError(
+            "Prepared corpus tokenizer manifest hash does not match the model"
+        )
+    if tokenizer.get("sentencepiece_model_sha256") != model.get(
+        "tokenizer_model_sha256"
+    ):
+        raise ConfigError(
+            "Prepared corpus tokenizer model checksum does not match the model"
+        )
+    if int(tokenizer.get("vocab_size", -1)) != int(model["vocab_size"]):
+        raise ConfigError("Prepared corpus tokenizer vocabulary does not match the model")
+    if isinstance(dataset, dict):
+        dataset["corpus_hash"] = manifest["corpus_hash"]
+        dataset["role_manifest_hashes"] = dict(manifest["role_manifest_hashes"])
 
 
 def _compose_single_run(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -1088,11 +1300,7 @@ def _resolve_model_correction_defaults(config: dict[str, Any]) -> None:
         resolved_mode = "gmc" if membership_correction else "none"
     else:
         resolved_mode = _normalize_correction_mode(requested_mode)
-        expected_membership_correction = resolved_mode != "none"
-        if membership_correction != expected_membership_correction:
-            raise ConfigError(
-                "model.correction_mode and model.membership_correction must not disagree"
-            )
+        membership_correction = resolved_mode != "none"
 
     if resolved_mode == "lmc" and not _is_concat_model_path(config):
         raise ConfigError(
@@ -1207,6 +1415,49 @@ def _resolve_model_dimension_and_granularity_metadata(config: dict[str, Any]) ->
             model["intermediate_size"],
             resolved_prefixes,
             granularities,
+        )
+
+
+def _resolve_model_tokenizer_defaults(config: dict[str, Any]) -> None:
+    """Resolve an immutable local tokenizer while retaining historical Hub fields."""
+
+    model = config.setdefault("model", {})
+    tokenizer_dir = model.get("tokenizer_dir")
+    if tokenizer_dir in (None, ""):
+        return
+    if not isinstance(tokenizer_dir, str):
+        raise ConfigError("model.tokenizer_dir must be a string")
+    try:
+        from src.training.fineweb_tokenizer import load_tokenizer_manifest
+
+        manifest = load_tokenizer_manifest(tokenizer_dir, verify_files=True)
+    except Exception as error:
+        raise ConfigError(f"Local tokenizer validation failed: {error}") from error
+    configured_vocab_size = _positive_int(
+        model.get("vocab_size"), "model.vocab_size"
+    )
+    if int(manifest["vocab_size"]) != configured_vocab_size:
+        raise ConfigError(
+            "Local tokenizer vocabulary must equal model.vocab_size"
+        )
+    model["tokenizer_dir"] = str(Path(tokenizer_dir).expanduser().resolve())
+    model["tokenizer_name"] = manifest["tokenizer_name"]
+    model["tokenizer_revision"] = manifest["manifest_hash"]
+    model["tokenizer_manifest_hash"] = manifest["manifest_hash"]
+    model["tokenizer_model_sha256"] = manifest["sentencepiece_model_sha256"]
+
+
+def _validate_packed_mmap_sampling_overrides(config: Mapping[str, Any]) -> None:
+    """Reject per-run sampling before resolving external corpus dependencies."""
+
+    dataset = config.get("dataset", {})
+    if (
+        isinstance(dataset, Mapping)
+        and dataset.get("mode") == "packed_mmap"
+        and dataset.get("sample_limit") is not None
+    ):
+        raise ConfigError(
+            "dataset.sample_limit is forbidden when dataset.mode=packed_mmap"
         )
 
 
@@ -1451,7 +1702,11 @@ def _resolve_sampling_mode_defaults(
         derived_run_sampling_mode = run_sampling_mode
     elif legacy_alias_mode == "global":
         derived_run_sampling_mode = "nested-all"
-    elif canonical_mode in {"per_block", "adaptive_per_block"} or legacy_alias_mode == "per_block":
+    elif canonical_mode in {
+        "per_block",
+        "adaptive_global",
+        "adaptive_per_block",
+    } or legacy_alias_mode == "per_block":
         derived_run_sampling_mode = "nested-random"
     elif run_sampling_mode is not None:
         derived_run_sampling_mode = run_sampling_mode
@@ -1465,10 +1720,13 @@ def _resolve_sampling_mode_defaults(
             f"model.granularity_sampling_mode={canonical_mode} conflicts with {requirement}"
         )
 
-    if canonical_mode == "adaptive_per_block" and derived_run_sampling_mode != "nested-random":
+    if (
+        canonical_mode in PROBABILISTIC_ADAPTIVE_SAMPLING_MODES
+        and derived_run_sampling_mode != "nested-random"
+    ):
         _raise_granularity_sampling_conflict("nested-random runs")
     if (
-        canonical_mode == "adaptive_per_block"
+        canonical_mode in PROBABILISTIC_ADAPTIVE_SAMPLING_MODES
         and requested_granularity_sampling_alias is not None
         and requested_granularity_sampling_alias != "random"
     ):
@@ -1478,13 +1736,13 @@ def _resolve_sampling_mode_defaults(
     if derived_run_sampling_mode in {"nested-all", "standalone"} and canonical_mode != "global":
         _raise_granularity_sampling_conflict(
             "nested-random runs"
-            if canonical_mode == "adaptive_per_block"
+            if canonical_mode in PROBABILISTIC_ADAPTIVE_SAMPLING_MODES
             else "nested runs"
         )
     if model_family == "standalone" and canonical_mode != "global":
         _raise_granularity_sampling_conflict(
             "nested-random runs"
-            if canonical_mode == "adaptive_per_block"
+            if canonical_mode in PROBABILISTIC_ADAPTIVE_SAMPLING_MODES
             else "nested runs"
         )
     if requested_run_sampling_mode is not None and requested_granularity_sampling_alias is not None:
@@ -1525,6 +1783,7 @@ def _resolve_adaptive_sampler_defaults(config: dict[str, Any]) -> None:
     if not isinstance(model, dict):
         return
 
+    sampling_mode = model.get("granularity_sampling_mode")
     adaptive_fields_requested = any(
         field in model
         for field in (
@@ -1532,12 +1791,36 @@ def _resolve_adaptive_sampler_defaults(config: dict[str, Any]) -> None:
             "adaptive_sampler_exploration_scale",
             "adaptive_sampler_decay_rate",
             "adaptive_sampler_reward_penalty_weight",
+            "adaptive_controller",
         )
     )
-    if model.get("granularity_sampling_mode") != "adaptive_per_block" and not adaptive_fields_requested:
+    if (
+        sampling_mode not in PROBABILISTIC_ADAPTIVE_SAMPLING_MODES
+        and not adaptive_fields_requested
+    ):
         return
 
     strategy = model.get("adaptive_sampler_strategy", "thompson")
+    strategy = _normalize_adaptive_sampler_strategy(strategy)
+    model["adaptive_sampler_strategy"] = strategy
+
+    if sampling_mode == "adaptive_global" and strategy == "ucb":
+        raise ConfigError(
+            "model.granularity_sampling_mode=adaptive_global does not support "
+            "model.adaptive_sampler_strategy=ucb"
+        )
+
+    if sampling_mode in PROBABILISTIC_ADAPTIVE_SAMPLING_MODES and strategy == "thompson":
+        _resolve_bayesian_adaptive_configuration(config)
+        return
+
+    _resolve_legacy_adaptive_sampler_defaults(model, strategy)
+
+
+def _resolve_legacy_adaptive_sampler_defaults(
+    model: dict[str, Any],
+    strategy: str,
+) -> None:
     exploration_scale = model.get("adaptive_sampler_exploration_scale", 1.0)
     decay_rate = model.get("adaptive_sampler_decay_rate", 0.0)
     reward_penalty_weight = model.get(
@@ -1545,9 +1828,7 @@ def _resolve_adaptive_sampler_defaults(config: dict[str, Any]) -> None:
         1.0,
     )
 
-    model["adaptive_sampler_strategy"] = _normalize_adaptive_sampler_strategy(
-        strategy
-    )
+    model["adaptive_sampler_strategy"] = strategy
     model["adaptive_sampler_exploration_scale"] = _nonnegative_finite_float(
         exploration_scale,
         "model.adaptive_sampler_exploration_scale",
@@ -1560,6 +1841,497 @@ def _resolve_adaptive_sampler_defaults(config: dict[str, Any]) -> None:
         reward_penalty_weight,
         "model.adaptive_sampler_reward_penalty_weight",
     )
+
+
+def _resolve_bayesian_adaptive_configuration(config: dict[str, Any]) -> None:
+    model = config["model"]
+    sampling_mode = model["granularity_sampling_mode"]
+
+    legacy_fields = [
+        field_name
+        for field_name in (
+            "adaptive_sampler_exploration_scale",
+            "adaptive_sampler_decay_rate",
+            "adaptive_sampler_reward_penalty_weight",
+        )
+        if field_name in model
+    ]
+    if legacy_fields:
+        raise ConfigError(
+            "Thompson migration to the Bayesian controller cannot mix legacy "
+            f"adaptive sampler fields: {legacy_fields}"
+        )
+
+    raw_controller = model.get("adaptive_controller")
+    if not isinstance(raw_controller, Mapping):
+        raise ConfigError(
+            "Thompson migration requires an explicit Bayesian mapping at "
+            "model.adaptive_controller"
+        )
+    controller = copy.deepcopy(dict(raw_controller))
+    controller = _resolve_bayesian_controller_preset(config, controller)
+    evaluation = config.setdefault("evaluation", {})
+    required_controller_fields = (
+        "prior_mean",
+        "prior_covariance",
+        "observation_noise_variance",
+        "process_noise_covariance",
+    )
+    missing_controller_fields = [
+        field_name
+        for field_name in required_controller_fields
+        if field_name not in controller
+    ]
+    if missing_controller_fields:
+        raise ConfigError(
+            "Thompson migration requires explicit Bayesian controller fields: "
+            f"{missing_controller_fields}"
+        )
+
+    granularities = model.get("granularities")
+    if not isinstance(granularities, list) or not granularities:
+        raise ConfigError(
+            "Bayesian Thompson requires model.granularities to be a non-empty list"
+        )
+    block_count = _strict_positive_int(
+        model.get("num_layers"),
+        "model.num_layers",
+    )
+    scope = "global" if sampling_mode == "adaptive_global" else "per_block"
+    feature_model = "arms" if scope == "global" else "additive"
+    coefficient_dimension = (
+        len(granularities)
+        if scope == "global"
+        else 1 + block_count * (len(granularities) - 1)
+    )
+
+    controller["decision_interval_steps"] = _strict_positive_int(
+        controller.get("decision_interval_steps", 50),
+        "model.adaptive_controller.decision_interval_steps",
+    )
+    resolved_prior_mean = _resolve_bayesian_mean(
+        controller["prior_mean"],
+        coefficient_dimension,
+        "model.adaptive_controller.prior_mean",
+    )
+    resolved_prior_covariance = _resolve_bayesian_covariance(
+        controller["prior_covariance"],
+        coefficient_dimension,
+        "model.adaptive_controller.prior_covariance",
+    )
+    observation_noise_variance = _finite_float(
+        controller["observation_noise_variance"],
+        "model.adaptive_controller.observation_noise_variance",
+    )
+    if observation_noise_variance <= 0.0:
+        raise ConfigError(
+            "model.adaptive_controller.observation_noise_variance must be positive"
+        )
+    resolved_process_noise_covariance = _resolve_bayesian_covariance(
+        controller["process_noise_covariance"],
+        coefficient_dimension,
+        "model.adaptive_controller.process_noise_covariance",
+    )
+
+    fixed_fields = {
+        "strategy": "thompson",
+        "scope": scope,
+        "feature_model": feature_model,
+        "context_model": "intercept_only",
+        "transition_model": "identity",
+        "compute_weight": 0.0,
+        "switch_weight": 0.0,
+        "method_family": BAYESIAN_CONTROLLER_METHOD_FAMILY,
+        "method_version": BAYESIAN_CONTROLLER_METHOD_VERSION,
+    }
+    for field_name, expected_value in fixed_fields.items():
+        if field_name in controller and controller[field_name] != expected_value:
+            if field_name in {"compute_weight", "switch_weight"}:
+                raise ConfigError(
+                    f"model.adaptive_controller.{field_name} must be zero"
+                )
+            raise ConfigError(
+                f"model.adaptive_controller.{field_name} must be "
+                f"{expected_value!r}"
+            )
+        controller[field_name] = expected_value
+
+    controller["coefficient_dimension"] = coefficient_dimension
+    controller["block_count"] = block_count
+    controller["ordered_granularities"] = list(granularities)
+    controller["prior_mean_input"] = copy.deepcopy(controller["prior_mean"])
+    controller["prior_covariance_input"] = copy.deepcopy(
+        controller["prior_covariance"]
+    )
+    controller["process_noise_covariance_input"] = copy.deepcopy(
+        controller["process_noise_covariance"]
+    )
+    controller["resolved_prior_mean"] = resolved_prior_mean
+    controller["resolved_prior_covariance"] = resolved_prior_covariance
+    controller["observation_noise_variance"] = observation_noise_variance
+    controller["resolved_process_noise_covariance"] = (
+        resolved_process_noise_covariance
+    )
+    controller["reset"] = _resolve_controller_reset_configuration(
+        config,
+        controller,
+        scope=scope,
+        ordered_granularities=list(granularities),
+    )
+
+    controller_role = _resolve_fixed_bayesian_data_role(
+        evaluation,
+        "adaptive_controller",
+        {
+            "enabled": True,
+            "source": "configured_dataset_split",
+            "examples": 128,
+            "objective_weights": "uniform",
+            "fixed_manifest": True,
+        },
+    )
+    final_holdout_role = _resolve_fixed_bayesian_data_role(
+        evaluation,
+        "final_holdout",
+        {
+            "enabled": True,
+            "source": "configured_dataset_split",
+            "examples": 512,
+            "fixed_manifest": True,
+            "evaluate_during_training": False,
+        },
+    )
+    controller_role.setdefault("manifest_hash", "pending")
+    final_holdout_role.setdefault("manifest_hash", "pending")
+    controller["controller_panel_contract"] = copy.deepcopy(controller_role)
+    controller["final_holdout_contract"] = copy.deepcopy(final_holdout_role)
+
+    model["adaptive_controller"] = controller
+    evaluation["adaptive_controller"] = controller_role
+    evaluation["final_holdout"] = final_holdout_role
+
+
+def _resolve_controller_reset_configuration(
+    config: dict[str, Any],
+    controller: Mapping[str, Any],
+    *,
+    scope: str,
+    ordered_granularities: list[str],
+) -> dict[str, Any]:
+    raw_reset = controller.get("reset", {})
+    if raw_reset is None:
+        raw_reset = {}
+    if not isinstance(raw_reset, Mapping):
+        raise ConfigError("model.adaptive_controller.reset must be a mapping")
+    reset = copy.deepcopy(dict(raw_reset))
+    reset["enabled"] = _normalize_bool(
+        reset.get("enabled", False),
+        "model.adaptive_controller.reset.enabled",
+    )
+
+    policy = reset.get("policy", "full_prior")
+    if not isinstance(policy, str) or policy.strip() not in VALID_CONTROLLER_RESET_POLICIES:
+        raise ConfigError(
+            "model.adaptive_controller.reset.policy must be 'full_prior' or "
+            "'acquisition_only'"
+        )
+    reset["policy"] = policy.strip()
+    acquisition_policy = reset.get("acquisition_policy", "balanced_global")
+    if (
+        not isinstance(acquisition_policy, str)
+        or acquisition_policy.strip()
+        not in VALID_CONTROLLER_RESET_ACQUISITION_POLICIES
+    ):
+        raise ConfigError(
+            "model.adaptive_controller.reset.acquisition_policy must be "
+            "'balanced_global'"
+        )
+    reset["acquisition_policy"] = acquisition_policy.strip()
+    reset["acquisition_passes"] = _strict_positive_int(
+        reset.get("acquisition_passes", 1),
+        "model.adaptive_controller.reset.acquisition_passes",
+    )
+    reset["schedule_seed_stream_name"] = "controller_reset_schedule"
+    reset["schedule_seed"] = seed_for(config, "controller_reset_schedule")
+
+    if not reset["enabled"]:
+        interval = reset.get("interval_steps")
+        if interval is not None:
+            interval = _strict_positive_int(
+                interval,
+                "model.adaptive_controller.reset.interval_steps",
+            )
+        return {
+            "enabled": False,
+            "interval_steps": interval,
+            "policy": reset["policy"],
+            "acquisition_policy": reset["acquisition_policy"],
+            "acquisition_passes": reset["acquisition_passes"],
+            "schedule_seed_stream_name": reset["schedule_seed_stream_name"],
+            "schedule_seed": reset["schedule_seed"],
+        }
+
+    if scope != "global":
+        raise ConfigError(
+            "model.adaptive_controller.reset is supported only for adaptive_global"
+        )
+    resolved_process_noise = np.asarray(
+        controller["resolved_process_noise_covariance"],
+        dtype=np.float64,
+    )
+    if not np.all(resolved_process_noise == 0.0):
+        raise ConfigError(
+            "model.adaptive_controller.process_noise_covariance must be exactly "
+            "zero when reset is enabled"
+        )
+    if "interval_steps" not in reset:
+        raise ConfigError(
+            "model.adaptive_controller.reset.interval_steps is required when reset "
+            "is enabled"
+        )
+    interval_steps = _strict_positive_int(
+        reset["interval_steps"],
+        "model.adaptive_controller.reset.interval_steps",
+    )
+    decision_interval = int(controller["decision_interval_steps"])
+    if interval_steps % decision_interval != 0:
+        raise ConfigError(
+            "model.adaptive_controller.reset.interval_steps must be divisible by "
+            "model.adaptive_controller.decision_interval_steps"
+        )
+    episode_windows = interval_steps // decision_interval
+    acquisition_windows = len(ordered_granularities) * reset["acquisition_passes"]
+    if episode_windows < 2 * acquisition_windows:
+        raise ConfigError(
+            "model.adaptive_controller.reset.interval_steps must provide enough "
+            "windows for acquisition plus at least an equal number of Thompson "
+            "windows"
+        )
+    return {
+        "enabled": True,
+        "interval_steps": interval_steps,
+        "policy": reset["policy"],
+        "acquisition_policy": reset["acquisition_policy"],
+        "acquisition_passes": reset["acquisition_passes"],
+        "schedule_seed_stream_name": reset["schedule_seed_stream_name"],
+        "schedule_seed": reset["schedule_seed"],
+        "episode_window_count": episode_windows,
+        "acquisition_window_count": acquisition_windows,
+        "minimum_thompson_window_count": acquisition_windows,
+    }
+
+
+def _resolve_bayesian_controller_preset(
+    config: dict[str, Any],
+    controller: dict[str, Any],
+) -> dict[str, Any]:
+    preset_name = controller.get("preset")
+    if preset_name in (None, ""):
+        return controller
+
+    if not isinstance(preset_name, str):
+        raise ConfigError("model.adaptive_controller.preset must be a string")
+
+    preset_name = preset_name.strip()
+    if not preset_name:
+        raise ConfigError(
+            "model.adaptive_controller.preset must be a non-empty string"
+        )
+
+    preset_path = (
+        PRESET_REGISTRY_ROOT / "adaptive_controller" / f"{preset_name}.yaml"
+    )
+    preset = _load_preset_registry_entry(
+        preset_path,
+        preset_name,
+        preset_field="model.adaptive_controller.preset",
+    )
+    preset_evaluation = preset.get("evaluation", {})
+    if not isinstance(preset_evaluation, Mapping):
+        raise ConfigError(
+            f"Preset registry entry {preset_path} must define evaluation as a mapping"
+        )
+
+    evaluation = config.setdefault("evaluation", {})
+    if not isinstance(evaluation, dict):
+        raise ConfigError("evaluation must be a mapping")
+    config["evaluation"] = _deep_merge_dicts(preset_evaluation, evaluation)
+
+    configured_controller = {
+        key: value for key, value in controller.items() if key != "preset"
+    }
+    resolved_controller = _deep_merge_dicts(
+        preset.get("kwargs", {}),
+        configured_controller,
+    )
+    resolved_controller["preset"] = preset_name
+    resolved_controller["preset_registry_path"] = str(preset_path)
+    return resolved_controller
+
+
+def _resolve_fixed_bayesian_data_role(
+    evaluation: dict[str, Any],
+    section_name: str,
+    expected_fields: Mapping[str, Any],
+) -> dict[str, Any]:
+    section = evaluation.get(section_name)
+    if not isinstance(section, Mapping):
+        raise ConfigError(
+            "Thompson migration requires an explicit Bayesian data-role mapping "
+            f"at evaluation.{section_name}"
+        )
+    resolved = copy.deepcopy(dict(section))
+    missing_fields = [
+        field_name for field_name in expected_fields if field_name not in resolved
+    ]
+    if missing_fields:
+        raise ConfigError(
+            "Thompson migration requires explicit Bayesian data-role fields at "
+            f"evaluation.{section_name}: {missing_fields}"
+        )
+    for field_name, expected_value in expected_fields.items():
+        field_path = f"evaluation.{section_name}.{field_name}"
+        actual_value = resolved[field_name]
+        if isinstance(expected_value, bool):
+            actual_value = _normalize_bool(actual_value, field_path)
+        elif isinstance(expected_value, int):
+            actual_value = _strict_positive_int(actual_value, field_path)
+        elif isinstance(expected_value, str):
+            if not isinstance(actual_value, str):
+                raise ConfigError(f"{field_path} must be {expected_value!r}")
+            actual_value = actual_value.strip()
+        if actual_value != expected_value:
+            raise ConfigError(f"{field_path} must be {expected_value!r}")
+        resolved[field_name] = actual_value
+    return resolved
+
+
+def _resolve_bayesian_mean(
+    value: Any,
+    dimension: int,
+    field_name: str,
+) -> list[float]:
+    if isinstance(value, list):
+        if len(value) != dimension:
+            raise ConfigError(
+                f"{field_name} dimension must be {dimension}; found {len(value)}"
+            )
+        return [
+            _finite_float(component, f"{field_name}[{index}]")
+            for index, component in enumerate(value)
+        ]
+    scalar = _finite_float(value, field_name)
+    return [scalar] * dimension
+
+
+def _resolve_bayesian_covariance(
+    value: Any,
+    dimension: int,
+    field_name: str,
+) -> list[list[float]]:
+    if isinstance(value, Mapping):
+        if set(value) != {"intercept", "effects"}:
+            raise ConfigError(
+                f"{field_name} structured diagonal requires exactly "
+                "intercept and effects"
+            )
+        intercept = _finite_float(value["intercept"], f"{field_name}.intercept")
+        effects = _finite_float(value["effects"], f"{field_name}.effects")
+        if intercept < 0.0 or effects < 0.0:
+            raise ConfigError(f"{field_name} must be positive semidefinite")
+        diagonal = [intercept, *([effects] * (dimension - 1))]
+        return [
+            [diagonal[row] if row == column else 0.0 for column in range(dimension)]
+            for row in range(dimension)
+        ]
+    if not isinstance(value, list):
+        scalar = _finite_float(value, field_name)
+        if scalar < 0.0:
+            raise ConfigError(f"{field_name} must be positive semidefinite")
+        return [
+            [scalar if row == column else 0.0 for column in range(dimension)]
+            for row in range(dimension)
+        ]
+
+    if len(value) != dimension:
+        raise ConfigError(
+            f"{field_name} dimension must be {dimension}; found {len(value)}"
+        )
+    is_dense = any(isinstance(component, list) for component in value)
+    if not is_dense:
+        diagonal = [
+            _finite_float(component, f"{field_name}[{index}]")
+            for index, component in enumerate(value)
+        ]
+        if any(component < 0.0 for component in diagonal):
+            raise ConfigError(f"{field_name} must be positive semidefinite")
+        return [
+            [diagonal[row] if row == column else 0.0 for column in range(dimension)]
+            for row in range(dimension)
+        ]
+
+    if any(not isinstance(row, list) or len(row) != dimension for row in value):
+        raise ConfigError(f"{field_name} dimension must be {dimension}x{dimension}")
+    dense = np.asarray(
+        [
+            [
+                _finite_float(component, f"{field_name}[{row_index}][{column_index}]")
+                for column_index, component in enumerate(row)
+            ]
+            for row_index, row in enumerate(value)
+        ],
+        dtype=np.float64,
+    )
+    scale = max(1.0, float(np.max(np.abs(dense))))
+    tolerance = BAYESIAN_COVARIANCE_TOLERANCE * scale
+    if not np.allclose(dense, dense.T, rtol=0.0, atol=tolerance):
+        raise ConfigError(f"{field_name} must be symmetric")
+    dense = (dense + dense.T) * 0.5
+    try:
+        minimum_eigenvalue = float(np.linalg.eigvalsh(dense)[0])
+    except np.linalg.LinAlgError as error:
+        raise ConfigError(
+            f"{field_name} positive semidefinite validation failed"
+        ) from error
+    if minimum_eigenvalue < -tolerance:
+        raise ConfigError(f"{field_name} must be positive semidefinite")
+    return dense.tolist()
+
+
+def _finite_float(value: Any, field_name: str) -> float:
+    number = _coerce_float(value, field_name)
+    if not math.isfinite(number):
+        raise ConfigError(f"{field_name} must be finite")
+    return number
+
+
+def _strict_positive_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ConfigError(f"{field_name} must be a positive integer")
+    return value
+
+
+def _validate_resolved_bayesian_adaptive_configuration(
+    config: Mapping[str, Any],
+) -> None:
+    expected = copy.deepcopy(dict(config))
+    _resolve_bayesian_adaptive_configuration(expected)
+
+    model = config.get("model", {})
+    evaluation = config.get("evaluation", {})
+    expected_model = expected["model"]
+    expected_evaluation = expected["evaluation"]
+    if model.get("adaptive_controller") != expected_model.get(
+        "adaptive_controller"
+    ):
+        raise ConfigError(
+            "model.adaptive_controller does not match the resolved Bayesian contract"
+        )
+    for section_name in ("adaptive_controller", "final_holdout"):
+        if evaluation.get(section_name) != expected_evaluation.get(section_name):
+            raise ConfigError(
+                f"evaluation.{section_name} does not match the resolved Bayesian contract"
+            )
 
 
 def _normalize_run_sampling_mode(raw_mode: Any) -> str:
@@ -1593,6 +2365,7 @@ def _granularity_sampling_alias_from_mode(mode: str) -> str:
     return {
         "global": "all",
         "per_block": "random",
+        "adaptive_global": "random",
         "adaptive_per_block": "random",
     }[mode]
 
@@ -1622,7 +2395,7 @@ def _build_granularity_pattern_provenance(
             if run_sampling_mode == "nested-all"
             else (
                 "single"
-                if granularity_sampling_mode == "global"
+                if granularity_sampling_mode in {"global", "adaptive_global"}
                 else "per_block"
             )
         ),
@@ -1691,7 +2464,7 @@ def _validate_dmodel256_pilot_fields(
                 "num_layers",
                 "num_attention_heads",
                 "context_length",
-                "vocab_size_assumption",
+                "vocab_size",
                 "granularity_prefixes",
             ],
         )
@@ -1955,6 +2728,30 @@ def _resolve_training_length(
     )
 
 
+def _resolve_distributed_contract_defaults(config: dict[str, Any]) -> None:
+    training = config.setdefault("training", {})
+    distributed = training.setdefault("distributed", {})
+    if not isinstance(distributed, dict):
+        raise ConfigError("training.distributed must be a mapping")
+    env_world_size = _resolve_effective_world_size()
+    expected = distributed.get("expected_world_size", env_world_size)
+    expected = _positive_int(
+        expected,
+        "training.distributed.expected_world_size",
+    )
+    if expected not in {1, 2, 3, 4}:
+        raise ConfigError(
+            "training.distributed.expected_world_size must be between 1 and 4"
+        )
+    raw_world_size = os.environ.get("WORLD_SIZE")
+    if raw_world_size not in (None, "") and env_world_size != expected:
+        raise ConfigError(
+            "training.distributed.expected_world_size does not match WORLD_SIZE: "
+            f"expected={expected}, runtime={env_world_size}"
+        )
+    distributed["expected_world_size"] = expected
+
+
 def _resolve_parameter_reporting_defaults(config: dict[str, Any]) -> None:
     reporting = config.setdefault("parameter_reporting", {})
     if not isinstance(reporting, dict):
@@ -2011,13 +2808,28 @@ def resolve_training_length_for_world_size(
         "training.batch_size_per_process",
     )
     context_length = _positive_int(model.get("context_length"), "model.context_length")
+    gradient_accumulation_steps = _positive_int(
+        training.get("gradient_accumulation_steps", 1),
+        "training.gradient_accumulation_steps",
+    )
     if effective_world_size is None:
-        effective_world_size = _resolve_effective_world_size()
+        distributed = training.get("distributed", {})
+        configured_world_size = (
+            distributed.get("expected_world_size")
+            if isinstance(distributed, Mapping)
+            else None
+        )
+        effective_world_size = (
+            int(configured_world_size)
+            if configured_world_size is not None
+            else _resolve_effective_world_size()
+        )
         if world_size_source is None:
-            has_world_size = os.environ.get("WORLD_SIZE") not in (None, "")
             world_size_source = (
-                "WORLD_SIZE"
-                if has_world_size
+                "training.distributed.expected_world_size"
+                if configured_world_size is not None
+                else "WORLD_SIZE"
+                if os.environ.get("WORLD_SIZE") not in (None, "")
                 else "single_process"
             )
     else:
@@ -2028,8 +2840,11 @@ def resolve_training_length_for_world_size(
         if world_size_source is None:
             world_size_source = "distributed_context"
 
-    expected_tokens_per_step = (
+    expected_tokens_per_microstep = (
         batch_size_per_process * context_length * effective_world_size
+    )
+    expected_tokens_per_step = (
+        expected_tokens_per_microstep * gradient_accumulation_steps
     )
     derived_max_steps = math.ceil(token_budget / expected_tokens_per_step)
 
@@ -2044,6 +2859,8 @@ def resolve_training_length_for_world_size(
     training["batch_size_per_process"] = batch_size_per_process
     training["effective_world_size"] = effective_world_size
     training["effective_world_size_source"] = world_size_source
+    training["gradient_accumulation_steps"] = gradient_accumulation_steps
+    training["expected_tokens_per_microstep"] = expected_tokens_per_microstep
     training["expected_tokens_per_step"] = expected_tokens_per_step
     training["derived_max_steps"] = derived_max_steps
     training["max_steps_cap"] = max_steps_cap
@@ -2359,6 +3176,15 @@ def _resolve_evaluation_defaults(config: dict[str, Any]) -> None:
         canonical_interval if canonical_interval is not None else legacy_interval or 0,
         "evaluation.validation.interval_steps",
     )
+    validation["interval_tokens"] = _nonnegative_int(
+        validation.get("interval_tokens", 0),
+        "evaluation.validation.interval_tokens",
+    )
+    if validation["interval_steps"] > 0 and validation["interval_tokens"] > 0:
+        raise ConfigError(
+            "evaluation.validation.interval_tokens and a positive interval_steps "
+            "are mutually exclusive"
+        )
 
     legacy_completion = evaluation.get("final_validation")
     canonical_completion = validation.get("run_at_completion")
@@ -2506,6 +3332,61 @@ def _resolve_pre_nested_warmup_defaults(config: dict[str, Any]) -> None:
             f"{sorted(VALID_PRE_NESTED_WARMUP_UNITS)}"
         )
     warmup["unit"] = warmup_unit
+    policy = warmup.get("policy", "full_only")
+    if not isinstance(policy, str):
+        raise ConfigError("training.pre_nested_warmup.policy must be a string")
+    policy = policy.strip()
+    if policy not in VALID_PRE_NESTED_WARMUP_POLICIES:
+        raise ConfigError(
+            "training.pre_nested_warmup.policy must be one of "
+            f"{sorted(VALID_PRE_NESTED_WARMUP_POLICIES)}"
+        )
+    warmup["policy"] = policy
+
+    if policy == "balanced_global" and warmup["enabled"]:
+        controller = config.get("model", {}).get("adaptive_controller", {})
+        default_interval = (
+            controller.get("decision_interval_steps")
+            if isinstance(controller, Mapping)
+            else None
+        )
+        raw_interval = warmup.get("action_interval_steps", default_interval)
+        if raw_interval is None:
+            raise ConfigError(
+                "training.pre_nested_warmup.action_interval_steps is required for "
+                "balanced_global warmup"
+            )
+        warmup["action_interval_steps"] = _positive_int(
+            raw_interval,
+            "training.pre_nested_warmup.action_interval_steps",
+        )
+        granularities = list(config.get("model", {}).get("granularities", []))
+        interval = warmup["action_interval_steps"]
+        denominator = int(interval) * len(granularities)
+        if denominator <= 0 or int(warmup["duration"]) % denominator != 0:
+            raise ConfigError(
+                "training.pre_nested_warmup.duration must be divisible by "
+                "action_interval_steps * number of granularities"
+            )
+        passes = int(warmup["duration"]) // denominator
+        if passes < 2:
+            raise ConfigError(
+                "training.pre_nested_warmup balanced_global requires at least two "
+                "complete passes over all granularities"
+            )
+        schedule_seed = seed_for(config, "pre_nested_warmup_schedule")
+        schedule, schedule_hash = build_balanced_warmup_schedule(
+            granularities,
+            passes=passes,
+            seed=schedule_seed,
+            action_interval_steps=int(interval),
+            duration_steps=int(warmup["duration"]),
+        )
+        warmup["schedule_seed"] = schedule_seed
+        warmup["schedule_hash"] = schedule_hash
+        warmup["schedule"] = schedule
+        warmup["passes"] = passes
+        warmup["controller_start_step"] = int(warmup["duration"])
     run = config.get("run", {})
     warmup["active"] = bool(warmup["enabled"]) and run.get("model_family") == "nested"
     warmup["completed"] = bool(warmup.get("completed", False))
@@ -2697,10 +3578,12 @@ def _resolve_training_optimizer_preset(
 def _load_preset_registry_entry(
     preset_path: Path,
     preset_name: str,
+    *,
+    preset_field: str = "training.optimizer.preset",
 ) -> dict[str, Any]:
     if not preset_path.is_file():
         raise ConfigError(
-            f"Unknown training.optimizer.preset={preset_name!r}; "
+            f"Unknown {preset_field}={preset_name!r}; "
             f"missing registry file: {preset_path}"
         )
 
@@ -2821,13 +3704,26 @@ def _validate_derived_training_length(
         training["effective_world_size"],
         "training.effective_world_size",
     )
-    expected_tokens_per_step = (
+    gradient_accumulation_steps = _positive_int(
+        training.get("gradient_accumulation_steps", 1),
+        "training.gradient_accumulation_steps",
+    )
+    expected_tokens_per_microstep = (
         batch_size_per_process * context_length * effective_world_size
+    )
+    if training.get("expected_tokens_per_microstep") != expected_tokens_per_microstep:
+        raise ConfigError(
+            "training.expected_tokens_per_microstep must equal "
+            "batch_size_per_process * context_length * effective_world_size"
+        )
+    expected_tokens_per_step = (
+        expected_tokens_per_microstep * gradient_accumulation_steps
     )
     if training["expected_tokens_per_step"] != expected_tokens_per_step:
         raise ConfigError(
             "training.expected_tokens_per_step must equal "
             "batch_size_per_process * context_length * effective_world_size"
+            " * gradient_accumulation_steps"
         )
 
     derived_max_steps = math.ceil(token_budget / expected_tokens_per_step)
@@ -2910,6 +3806,11 @@ def _set_dotted_value(config: dict[str, Any], key: str, value: Any) -> None:
     for part in path[:-1]:
         if part not in current:
             current[part] = {}
+        elif isinstance(current[part], bool):
+            # Legacy configuration allows boolean feature switches such as
+            # ``evaluation.validation: true``. Preserve that switch when a
+            # more specific command-line override promotes it to a mapping.
+            current[part] = {"enabled": current[part]}
         if not isinstance(current[part], dict):
             raise ConfigError(f"Cannot set override {key}; {part} is not a mapping")
         current = current[part]

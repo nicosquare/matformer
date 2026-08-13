@@ -30,6 +30,8 @@ Options:
   --mode MODE                 nested-random, nested-all, standalone, or comparison.
   --granularity NAME          Standalone granularity from the resolved config.
   --python-bin PATH           Python executable to use inside the job.
+  --final-holdout-only PATH   Evaluate one completed run without training. May be
+                              repeated to evaluate several runs sequentially.
   -h, --help                  Show this message.
 
 Any remaining args are forwarded to the training launcher, for example:
@@ -42,6 +44,9 @@ when Slurm GPU count variables are unavailable.
 
 Resource requests can be overridden at submission time, for example:
   sbatch --gres=gpu:2 --time=01:00:00 --mem=32G scripts/slurm_dmodel256_pilot.sh --output-root /mnt/experiments/matformer --override training.max_steps_cap=1
+
+Finalize completed runs in one single-GPU allocation, without retraining:
+  sbatch --gres=gpu:1 scripts/slurm_dmodel256_pilot.sh --final-holdout-only /mnt/experiments/matformer/run-a --final-holdout-only /mnt/experiments/matformer/run-b
 USAGE
 }
 
@@ -49,6 +54,7 @@ REPO_ROOT_ARG=""
 OUTPUT_ROOT_ARG=""
 MODE_ARG=""
 GRANULARITY_ARG=""
+FINAL_HOLDOUT_RUN_DIRS=()
 FORWARDED_ARGS=()
 DEFAULT_RUN_ID="dmodel256-pilot-comparison-001"
 if [[ -n "${RUN_ID:-}" ]]; then
@@ -115,6 +121,14 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       export PYTHON_BIN="$2"
+      shift 2
+      ;;
+    --final-holdout-only)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --final-holdout-only" >&2
+        exit 2
+      fi
+      FINAL_HOLDOUT_RUN_DIRS+=("$2")
       shift 2
       ;;
     -h|--help)
@@ -308,61 +322,36 @@ printf 'GPUs per node: %s\n' "$GPUS_PER_NODE"
 printf 'OMP_NUM_THREADS: %s\n' "$OMP_NUM_THREADS"
 printf 'MKL_NUM_THREADS: %s\n' "$MKL_NUM_THREADS"
 
-append_mode_overrides() {
-  local mode="$1"
-  local granularity="${2:-}"
-  case "$mode" in
-    nested-random)
-      TRAIN_ARGS+=(--override "run.model_family=nested")
-      TRAIN_ARGS+=(--override "run.sampling_mode=nested-random")
-      ;;
-    nested-all)
-      TRAIN_ARGS+=(--override "run.model_family=nested")
-      TRAIN_ARGS+=(--override "run.sampling_mode=nested-all")
-      ;;
-    standalone)
-      if [[ -z "$granularity" ]]; then
-        echo "Standalone mode requires --granularity" >&2
-        exit 2
-      fi
-      TRAIN_ARGS+=(--override "run.model_family=standalone")
-      TRAIN_ARGS+=(--override "run.sampling_mode=standalone")
-      TRAIN_ARGS+=(--override "run.granularity=$granularity")
-      ;;
-    comparison)
-      echo "Multi-GPU Slurm jobs run one selected mode; submit nested-random, nested-all, and standalone jobs separately." >&2
-      exit 2
-      ;;
-    *)
-      echo "Unknown --mode: $mode" >&2
-      exit 2
-      ;;
-  esac
-}
+if [[ ${#FINAL_HOLDOUT_RUN_DIRS[@]} -gt 0 ]]; then
+  if [[ -n "$MODE_ARG" || -n "$GRANULARITY_ARG" || ${#FORWARDED_ARGS[@]} -gt 0 ]]; then
+    echo "--final-holdout-only cannot be combined with training mode or forwarded training arguments" >&2
+    exit 2
+  fi
+  FINAL_HOLDOUT_COMMAND=("$PYTHON_BIN" scripts/evaluate_final_holdout.py)
+  for run_dir in "${FINAL_HOLDOUT_RUN_DIRS[@]}"; do
+    printf 'Finalizing completed run: %s\n' "$run_dir"
+    "${FINAL_HOLDOUT_COMMAND[@]}" \
+      --run-dir "$run_dir" \
+      --device cuda \
+      --skip-existing
+  done
+  exit 0
+fi
 
 if [[ "$GPUS_PER_NODE" -gt 1 ]]; then
-  OUTPUT_ARGS=(--output-root "$OUTPUT_ROOT")
-  TRAIN_ARGS=(
-    train.py
-    --config "${CONFIG_PATH:-configs/dmodel256_pilot_comparison.yaml}"
-    "${OUTPUT_ARGS[@]}"
-    "${FORWARDED_ARGS[@]}"
-  )
-  if [[ "$RUN_ID_EXPLICIT" == "true" ]]; then
-    TRAIN_ARGS+=(--override "run.run_id=$RUN_ID")
-  fi
-  if [[ -n "$MODE_ARG" ]]; then
-    append_mode_overrides "$MODE_ARG" "$GRANULARITY_ARG"
-    if [[ "$RUN_ID_EXPLICIT" != "true" ]]; then
-      TRAIN_ARGS+=(--override "run.run_id=$(mode_run_id "$MODE_ARG" "$GRANULARITY_ARG")")
+  BASE_PYTHON_BIN="$PYTHON_BIN"
+  # Keep the historical multi-GPU behavior to one selected run, including when
+  # the base config/run id is used without an explicit --mode.
+  export RUN_ID="$DISPLAY_RUN_ID"
+  export FINAL_HOLDOUT_PYTHON_BIN="$BASE_PYTHON_BIN"
+  if [[ -z "${PYTHON_CONFIG_BIN:-}" ]]; then
+    if [[ -x "$DEFAULT_CONDA_PYTHON" ]]; then
+      export PYTHON_CONFIG_BIN="$DEFAULT_CONDA_PYTHON"
+    else
+      export PYTHON_CONFIG_BIN=python
     fi
   fi
-  exec "$PYTHON_BIN" -m torch.distributed.run \
-    --standalone \
-    --max_restarts 0 \
-    --monitor_interval 5 \
-    --nproc_per_node "$GPUS_PER_NODE" \
-    "${TRAIN_ARGS[@]}"
+  export PYTHON_BIN="$BASE_PYTHON_BIN -m torch.distributed.run --standalone --max_restarts 0 --monitor_interval 5 --nproc_per_node $GPUS_PER_NODE"
 fi
 
 RUNNER_ARGS=()
@@ -373,5 +362,9 @@ if [[ -n "$GRANULARITY_ARG" ]]; then
   RUNNER_ARGS+=(--granularity "$GRANULARITY_ARG")
 fi
 RUNNER_ARGS+=("${FORWARDED_ARGS[@]}")
+RUNNER_ARGS+=(
+  --override
+  "training.distributed.expected_world_size=$GPUS_PER_NODE"
+)
 
 exec bash scripts/run_dmodel256_pilot.sh "${RUNNER_ARGS[@]}"

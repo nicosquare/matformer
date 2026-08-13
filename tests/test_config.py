@@ -4,6 +4,7 @@ import math
 import textwrap
 
 import pytest
+import yaml
 
 from src.utils.config import (
     ConfigError,
@@ -14,6 +15,7 @@ from src.utils.config import (
 )
 from src.models.correction import correction_context_from_config
 from src.models.granularity import build_granularity_pattern
+from src.utils.reproducibility import derive_seed
 
 
 def _write_single_run_config(tmp_path):
@@ -34,7 +36,7 @@ def _write_single_run_config(tmp_path):
               num_layers: 2
               num_attention_heads: 4
               context_length: 64
-              vocab_size_assumption: 32000
+              vocab_size: 32000
               granularities: [s, m, l, xl]
 
             training:
@@ -304,6 +306,7 @@ def test_explicit_nested_random_mode_keeps_legacy_alias_stable_for_adaptive():
             "run.sampling_mode=nested-random",
             "training.granularity_sampling=random",
             "model.granularity_sampling_mode=adaptive_per_block",
+            "model.adaptive_sampler_strategy=ucb",
         ],
     )
 
@@ -337,9 +340,12 @@ def test_explicit_model_sampling_modes_preserve_nested_random_run_mode(
     selected_granularities,
     expected_local_correction_active,
 ):
+    overrides = [f"model.granularity_sampling_mode={sampling_mode}"]
+    if sampling_mode == "adaptive_per_block":
+        overrides.append("model.adaptive_sampler_strategy=ucb")
     resolved = resolve_run_config(
         "configs/dmodel256_pilot_comparison.yaml",
-        overrides=[f"model.granularity_sampling_mode={sampling_mode}"],
+        overrides=overrides,
     )
 
     assert resolved["run"]["sampling_mode"] == "nested-random"
@@ -375,7 +381,7 @@ def test_explicit_model_sampling_modes_preserve_nested_random_run_mode(
     else:
         assert context.derived_membership_pattern == ()
     if sampling_mode == "adaptive_per_block":
-        assert resolved["model"]["adaptive_sampler_strategy"] == "thompson"
+        assert resolved["model"]["adaptive_sampler_strategy"] == "ucb"
         assert resolved["model"]["adaptive_sampler_exploration_scale"] == 1.0
         assert resolved["model"]["adaptive_sampler_decay_rate"] == 0.0
         assert resolved["model"]["adaptive_sampler_reward_penalty_weight"] == 1.0
@@ -399,6 +405,470 @@ def test_adaptive_sampler_controls_override_and_validate():
     assert resolved["model"]["adaptive_sampler_exploration_scale"] == 2.5
     assert resolved["model"]["adaptive_sampler_decay_rate"] == 0.125
     assert resolved["model"]["adaptive_sampler_reward_penalty_weight"] == 0.75
+
+
+def _resolve_probabilistic_fixture(fixture_path, *, overrides=None):
+    return resolve_run_config(fixture_path, overrides=overrides)
+
+
+@pytest.mark.parametrize(
+    "fixture_path, expected_mode, expected_scope, expected_feature_model, expected_dimension",
+    [
+        (
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            "adaptive_global",
+            "global",
+            "arms",
+            3,
+        ),
+        (
+            "tests/fixtures/probabilistic_adaptive_per_block_smoke.yaml",
+            "adaptive_per_block",
+            "per_block",
+            "additive",
+            5,
+        ),
+    ],
+)
+def test_probabilistic_adaptive_scopes_resolve_explicit_bayesian_contract(
+    fixture_path,
+    expected_mode,
+    expected_scope,
+    expected_feature_model,
+    expected_dimension,
+):
+    resolved = _resolve_probabilistic_fixture(fixture_path)
+    model = resolved["model"]
+    controller = model["adaptive_controller"]
+
+    assert model["granularity_sampling_mode"] == expected_mode
+    assert model["resolved_sampling_mode"] == expected_mode
+    assert model["adaptive_sampler_strategy"] == "thompson"
+    assert model["granularities"] == ["micro", "medium", "full"]
+    assert controller["scope"] == expected_scope
+    assert controller["feature_model"] == expected_feature_model
+    assert controller["coefficient_dimension"] == expected_dimension
+    assert controller["context_model"] == "intercept_only"
+    assert controller["transition_model"] == "identity"
+    assert controller["compute_weight"] == 0.0
+    assert controller["switch_weight"] == 0.0
+
+
+def test_probabilistic_adaptive_decision_interval_defaults_to_50(tmp_path):
+    with open(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+        encoding="utf-8",
+    ) as config_file:
+        raw = yaml.safe_load(config_file)
+    raw["model"]["adaptive_controller"].pop("decision_interval_steps")
+    config_path = tmp_path / "probabilistic-default-window.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    resolved = resolve_run_config(config_path)
+
+    assert resolved["model"]["adaptive_controller"]["decision_interval_steps"] == 50
+
+
+@pytest.mark.parametrize(
+    "sampling_mode, expected_scope, expected_dimension",
+    [
+        ("adaptive_global", "global", 4),
+        ("adaptive_per_block", "per_block", 49),
+    ],
+)
+def test_bayesian_thompson_preset_resolves_controller_and_data_roles(
+    sampling_mode,
+    expected_scope,
+    expected_dimension,
+):
+    resolved = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        overrides=[
+            f"model.granularity_sampling_mode={sampling_mode}",
+            "model.adaptive_sampler_strategy=thompson",
+            "model.adaptive_controller.preset=bayesian_thompson",
+        ],
+    )
+
+    controller = resolved["model"]["adaptive_controller"]
+    assert controller["preset"] == "bayesian_thompson"
+    assert controller["preset_registry_path"].endswith(
+        "configs/presets/adaptive_controller/bayesian_thompson.yaml"
+    )
+    assert controller["scope"] == expected_scope
+    assert controller["coefficient_dimension"] == expected_dimension
+    assert controller["decision_interval_steps"] == 50
+    assert controller["prior_mean_input"] == 0.0
+    assert controller["prior_covariance_input"] == 1.0
+    assert controller["observation_noise_variance"] == 0.01
+    assert controller["process_noise_covariance_input"] == 0.0001
+    assert resolved["evaluation"]["adaptive_controller"]["examples"] == 128
+    assert resolved["evaluation"]["final_holdout"]["examples"] == 512
+
+
+def test_bayesian_thompson_preset_allows_explicit_parameter_overrides():
+    resolved = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        overrides=[
+            "model.granularity_sampling_mode=adaptive_global",
+            "model.adaptive_sampler_strategy=thompson",
+            "model.adaptive_controller.preset=bayesian_thompson",
+            "model.adaptive_controller.decision_interval_steps=25",
+            "model.adaptive_controller.prior_covariance=2.0",
+        ],
+    )
+
+    controller = resolved["model"]["adaptive_controller"]
+    assert controller["decision_interval_steps"] == 25
+    assert controller["prior_covariance_input"] == 2.0
+
+
+def test_unknown_bayesian_controller_preset_fails_before_training():
+    with pytest.raises(
+        ConfigError,
+        match=r"Unknown model\.adaptive_controller\.preset='missing'",
+    ):
+        resolve_run_config(
+            "configs/dmodel256_pilot_comparison.yaml",
+            overrides=[
+                "model.granularity_sampling_mode=adaptive_global",
+                "model.adaptive_sampler_strategy=thompson",
+                "model.adaptive_controller.preset=missing",
+            ],
+        )
+
+
+def test_probabilistic_adaptive_normalizes_scalar_gaussian_inputs_to_float64_shape():
+    resolved = _resolve_probabilistic_fixture(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml"
+    )
+    controller = resolved["model"]["adaptive_controller"]
+
+    assert controller["resolved_prior_mean"] == [0.0, 0.0, 0.0]
+    assert controller["resolved_prior_covariance"] == [
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ]
+    assert controller["resolved_process_noise_covariance"] == [
+        [0.0001, 0.0, 0.0],
+        [0.0, 0.0001, 0.0],
+        [0.0, 0.0, 0.0001],
+    ]
+    assert controller["observation_noise_variance"] == 0.01
+
+
+def test_probabilistic_adaptive_accepts_degenerate_psd_process_covariance():
+    resolved = _resolve_probabilistic_fixture(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+        overrides={"model.adaptive_controller.process_noise_covariance": 0.0},
+    )
+
+    assert resolved["model"]["adaptive_controller"][
+        "resolved_process_noise_covariance"
+    ] == [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+
+
+def test_probabilistic_reset_defaults_disabled_without_changing_thompson():
+    resolved = _resolve_probabilistic_fixture(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml"
+    )
+
+    assert resolved["model"]["adaptive_controller"]["reset"] == {
+        "enabled": False,
+        "interval_steps": None,
+        "policy": "full_prior",
+        "acquisition_policy": "balanced_global",
+        "acquisition_passes": 1,
+        "schedule_seed_stream_name": "controller_reset_schedule",
+        "schedule_seed": derive_seed(42, "controller_reset_schedule"),
+    }
+
+
+def test_probabilistic_global_reset_resolves_complete_contract():
+    resolved = _resolve_probabilistic_fixture(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+        overrides={
+            "model.adaptive_controller.process_noise_covariance": 0.0,
+            "model.adaptive_controller.reset.enabled": True,
+            "model.adaptive_controller.reset.interval_steps": 12,
+        },
+    )
+    reset = resolved["model"]["adaptive_controller"]["reset"]
+
+    assert reset["enabled"] is True
+    assert reset["interval_steps"] == 12
+    assert reset["policy"] == "full_prior"
+    assert reset["acquisition_policy"] == "balanced_global"
+    assert reset["acquisition_passes"] == 1
+    assert reset["episode_window_count"] == 6
+    assert reset["acquisition_window_count"] == 3
+    assert reset["minimum_thompson_window_count"] == 3
+
+
+def test_probabilistic_global_acquisition_only_resolves_complete_contract():
+    resolved = _resolve_probabilistic_fixture(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+        overrides={
+            "model.adaptive_controller.process_noise_covariance": 0.0,
+            "model.adaptive_controller.reset.enabled": True,
+            "model.adaptive_controller.reset.interval_steps": 12,
+            "model.adaptive_controller.reset.policy": "acquisition_only",
+        },
+    )
+
+    assert resolved["model"]["adaptive_controller"]["reset"] == {
+        "enabled": True,
+        "interval_steps": 12,
+        "policy": "acquisition_only",
+        "acquisition_policy": "balanced_global",
+        "acquisition_passes": 1,
+        "schedule_seed_stream_name": "controller_reset_schedule",
+        "schedule_seed": derive_seed(42, "controller_reset_schedule"),
+        "episode_window_count": 6,
+        "acquisition_window_count": 3,
+        "minimum_thompson_window_count": 3,
+    }
+
+
+def test_probabilistic_reset_rejects_unknown_policy():
+    with pytest.raises(ConfigError, match="reset.policy.*acquisition_only"):
+        _resolve_probabilistic_fixture(
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            overrides={"model.adaptive_controller.reset.policy": "unknown"},
+        )
+
+
+@pytest.mark.parametrize(
+    "fixture_path, overrides, expected_message",
+    [
+        (
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            {
+                "model.adaptive_controller.reset.enabled": True,
+                "model.adaptive_controller.reset.interval_steps": 12,
+            },
+            "process_noise_covariance.*exactly zero",
+        ),
+        (
+            "tests/fixtures/probabilistic_adaptive_per_block_smoke.yaml",
+            {
+                "model.adaptive_controller.process_noise_covariance": 0.0,
+                "model.adaptive_controller.reset.enabled": True,
+                "model.adaptive_controller.reset.interval_steps": 12,
+            },
+            "reset.*adaptive_global",
+        ),
+        (
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            {
+                "model.adaptive_controller.process_noise_covariance": 0.0,
+                "model.adaptive_controller.reset.enabled": True,
+                "model.adaptive_controller.reset.interval_steps": 13,
+            },
+            "interval_steps.*divisible.*decision_interval_steps",
+        ),
+        (
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            {
+                "model.adaptive_controller.process_noise_covariance": 0.0,
+                "model.adaptive_controller.reset.enabled": True,
+                "model.adaptive_controller.reset.interval_steps": 10,
+            },
+            "enough windows.*acquisition.*Thompson",
+        ),
+    ],
+)
+def test_probabilistic_reset_rejects_incompatible_contracts(
+    fixture_path,
+    overrides,
+    expected_message,
+):
+    with pytest.raises(ConfigError, match=expected_message):
+        _resolve_probabilistic_fixture(fixture_path, overrides=overrides)
+
+
+def test_seed42_reset_experiment_manifest_is_opt_in_and_matched():
+    with open(
+        "configs/opt-in_exps/probabilistic_global_reset_seed42.yaml",
+        encoding="utf-8",
+    ) as config_file:
+        manifest = yaml.safe_load(config_file)
+
+    experiment = manifest["experiment"]
+    assert experiment["seed"] == 42
+    assert experiment["default_queue"] is False
+    assert experiment["invariants"]["decision_interval_steps"] == 50
+    assert experiment["invariants"]["pre_adaptive_warmup_steps"] == 500
+    assert experiment["invariants"]["process_noise_covariance"] == 0.0
+    assert experiment["invariants"]["data_manifests"] == (
+        "matched_by_seed_and_role_contract"
+    )
+    variants = manifest["variants"]
+    assert len(variants) == 4
+    assert variants[0]["overrides"] == {
+        "model.adaptive_controller.reset.enabled": False
+    }
+    assert [
+        variant["overrides"].get(
+            "model.adaptive_controller.reset.interval_steps"
+        )
+        for variant in variants[1:]
+    ] == [500, 1000, 2000]
+
+
+def test_legacy_thompson_configuration_requires_explicit_bayesian_migration():
+    with pytest.raises(ConfigError, match="(?i)migration.*Bayesian"):
+        resolve_run_config("tests/fixtures/legacy_thompson_config.yaml")
+
+
+@pytest.mark.parametrize(
+    "field, value, expected_message",
+    [
+        ("prior_mean", math.nan, "prior_mean.*finite"),
+        ("prior_covariance", -1.0, "prior_covariance.*positive semidefinite"),
+        ("prior_covariance", [1.0, 1.0], "prior_covariance.*dimension"),
+        (
+            "prior_covariance",
+            [[1.0, 0.5, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            "prior_covariance.*symmetric",
+        ),
+        ("observation_noise_variance", 0.0, "observation_noise_variance.*positive"),
+        ("observation_noise_variance", math.inf, "observation_noise_variance.*finite"),
+        (
+            "process_noise_covariance",
+            [0.0, -0.1, 0.0],
+            "process_noise_covariance.*positive semidefinite",
+        ),
+        (
+            "process_noise_covariance",
+            [[0.1, 0.2, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]],
+            "process_noise_covariance.*symmetric",
+        ),
+    ],
+)
+def test_probabilistic_adaptive_rejects_invalid_prior_and_noise_inputs(
+    field,
+    value,
+    expected_message,
+):
+    with pytest.raises(ConfigError, match=expected_message):
+        _resolve_probabilistic_fixture(
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            overrides={f"model.adaptive_controller.{field}": value},
+        )
+
+
+@pytest.mark.parametrize("field", ["compute_weight", "switch_weight"])
+def test_probabilistic_adaptive_rejects_nonzero_fixed_costs(field):
+    with pytest.raises(ConfigError, match=rf"{field}.*zero"):
+        _resolve_probabilistic_fixture(
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            overrides={f"model.adaptive_controller.{field}": 0.25},
+        )
+
+
+def test_adaptive_global_rejects_ucb_instead_of_falling_back():
+    with pytest.raises(ConfigError, match="adaptive_global.*ucb"):
+        _resolve_probabilistic_fixture(
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            overrides={"model.adaptive_sampler_strategy": "ucb"},
+        )
+
+
+def test_ucb_resolution_remains_on_legacy_configuration_contract():
+    resolved = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        overrides={
+            "model.granularity_sampling_mode": "adaptive_per_block",
+            "model.adaptive_sampler_strategy": "ucb",
+            "model.adaptive_sampler_exploration_scale": 2.5,
+            "model.adaptive_sampler_decay_rate": 0.125,
+            "model.adaptive_sampler_reward_penalty_weight": 0.75,
+        },
+    )
+    model = resolved["model"]
+
+    assert model["resolved_sampling_mode"] == "adaptive_per_block"
+    assert model["adaptive_sampler_strategy"] == "ucb"
+    assert model["adaptive_sampler_exploration_scale"] == 2.5
+    assert model["adaptive_sampler_decay_rate"] == 0.125
+    assert model["adaptive_sampler_reward_penalty_weight"] == 0.75
+    assert "adaptive_controller" not in model
+
+
+@pytest.mark.parametrize(
+    "config_path, run_id, overrides, expected_run_mode, expected_model_mode, expected_training_alias, expected_granularities",
+    [
+        (
+            "configs/dmodel256_pilot_comparison.yaml",
+            None,
+            [
+                "run.sampling_mode=nested-random",
+                "model.granularity_sampling_mode=global",
+            ],
+            "nested-random",
+            "global",
+            "random",
+            ["s", "m", "l", "xl"],
+        ),
+        (
+            "configs/dmodel256_pilot_comparison.yaml",
+            None,
+            [
+                "run.sampling_mode=nested-random",
+                "model.granularity_sampling_mode=per_block",
+            ],
+            "nested-random",
+            "per_block",
+            "random",
+            ["s", "m", "l", "xl"],
+        ),
+        (
+            "configs/dmodel256_pilot_comparison.yaml",
+            None,
+            [
+                "run.sampling_mode=nested-all",
+                "model.granularity_sampling_mode=global",
+            ],
+            "nested-all",
+            "global",
+            "all",
+            ["s", "m", "l", "xl"],
+        ),
+        (
+            "configs/debug_matrix.yaml",
+            "debug-standalone-m-001",
+            [],
+            "standalone",
+            "global",
+            "all",
+            ["m"],
+        ),
+    ],
+)
+def test_non_bayesian_sampling_modes_keep_their_resolved_contract(
+    config_path,
+    run_id,
+    overrides,
+    expected_run_mode,
+    expected_model_mode,
+    expected_training_alias,
+    expected_granularities,
+):
+    resolved = resolve_run_config(
+        config_path,
+        run_id=run_id,
+        overrides=overrides,
+    )
+
+    assert resolved["run"]["sampling_mode"] == expected_run_mode
+    assert resolved["model"]["granularity_sampling_mode"] == expected_model_mode
+    assert resolved["model"]["resolved_sampling_mode"] == expected_model_mode
+    assert resolved["training"]["granularity_sampling"] == expected_training_alias
+    assert resolved["model"]["granularities"] == expected_granularities
+    assert "adaptive_sampler_strategy" not in resolved["model"]
+    assert "adaptive_controller" not in resolved["model"]
 
 
 @pytest.mark.parametrize(
@@ -445,7 +915,6 @@ def test_legacy_granularity_sampling_alias_resolves_to_canonical_model_mode(
             [
                 "model.granularity_sampling_mode=per_block",
                 "model.correction_mode=none",
-                "model.membership_correction=false",
             ],
             False,
         ),
@@ -556,6 +1025,7 @@ def test_resolve_minimal_config_includes_long_run_defaults(tmp_path):
         "enabled": False,
         "duration": 0,
         "unit": "epochs",
+        "policy": "full_only",
         "active": False,
         "completed": False,
         "completion_step": None,
@@ -605,6 +1075,7 @@ def test_pre_nested_warmup_validation_rules(tmp_path):
         "enabled": True,
         "duration": 3,
         "unit": "steps",
+        "policy": "full_only",
         "active": True,
         "completed": False,
         "completion_step": None,
@@ -647,6 +1118,138 @@ def test_pre_nested_warmup_validation_rules(tmp_path):
             ],
         )
 
+
+def test_balanced_global_pre_nested_warmup_resolves_schedule_and_defaults(tmp_path):
+    resolved = resolve_run_config(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+        output_dir=tmp_path / "probabilistic-adaptive-global-smoke-001",
+        overrides={
+            "training.pre_nested_warmup.enabled": True,
+            "training.pre_nested_warmup.duration": 12,
+            "training.pre_nested_warmup.unit": "steps",
+            "training.pre_nested_warmup.policy": "balanced_global",
+        },
+    )
+    warmup = resolved["training"]["pre_nested_warmup"]
+
+    assert warmup["action_interval_steps"] == 2
+    assert warmup["passes"] == 2
+    assert warmup["controller_start_step"] == 12
+    assert len(warmup["schedule"]) == 6
+    assert len(warmup["schedule_hash"]) == 64
+    assert warmup["schedule_seed"] == derive_seed(
+        resolved["run"]["seed"],
+        "pre_nested_warmup_schedule",
+    )
+    assert all(
+        warmup["schedule"].count(label) == 2
+        for label in resolved["model"]["granularities"]
+    )
+
+
+def test_five_granularity_500_step_balanced_warmup_reference_is_exactly_balanced():
+    resolved = resolve_run_config(
+        "configs/opt-in_exps/probabilistic_balanced_warmup_500.yaml"
+    )
+    warmup = resolved["training"]["pre_nested_warmup"]
+
+    assert warmup["duration"] == 500
+    assert warmup["action_interval_steps"] == 50
+    assert warmup["passes"] == 2
+    assert len(resolved["model"]["granularities"]) == 5
+    assert {
+        label: warmup["schedule"].count(label)
+        for label in resolved["model"]["granularities"]
+    } == {label: 2 for label in resolved["model"]["granularities"]}
+
+
+@pytest.mark.parametrize(
+    ("fixture", "overrides", "message"),
+    [
+        (
+            "configs/debug_matrix.yaml",
+            {
+                "training.pre_nested_warmup.enabled": True,
+                "training.pre_nested_warmup.duration": 16,
+                "training.pre_nested_warmup.unit": "steps",
+                "training.pre_nested_warmup.policy": "balanced_global",
+                "training.pre_nested_warmup.action_interval_steps": 2,
+            },
+            "requires a probabilistic",
+        ),
+        (
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            {
+                "training.pre_nested_warmup.enabled": True,
+                "training.pre_nested_warmup.duration": 12,
+                "training.pre_nested_warmup.unit": "epochs",
+                "training.pre_nested_warmup.policy": "balanced_global",
+            },
+            "requires unit=steps",
+        ),
+        (
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            {
+                "training.pre_nested_warmup.enabled": True,
+                "training.pre_nested_warmup.duration": 6,
+                "training.pre_nested_warmup.unit": "steps",
+                "training.pre_nested_warmup.policy": "balanced_global",
+                "training.pre_nested_warmup.action_interval_steps": 2,
+            },
+            "at least two complete passes",
+        ),
+        (
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            {
+                "training.pre_nested_warmup.enabled": True,
+                "training.pre_nested_warmup.duration": 13,
+                "training.pre_nested_warmup.unit": "steps",
+                "training.pre_nested_warmup.policy": "balanced_global",
+                "training.pre_nested_warmup.action_interval_steps": 2,
+            },
+            "must be divisible",
+        ),
+        (
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            {
+                "training.pre_nested_warmup.enabled": True,
+                "training.pre_nested_warmup.duration": 12,
+                "training.pre_nested_warmup.unit": "steps",
+                "training.pre_nested_warmup.policy": "balanced_global",
+                "training.pre_nested_warmup.action_interval_steps": 0,
+            },
+            "positive integer",
+        ),
+        (
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            {
+                "training.pre_nested_warmup.enabled": True,
+                "training.pre_nested_warmup.duration": 12,
+                "training.pre_nested_warmup.unit": "steps",
+                "training.pre_nested_warmup.policy": "nested_all",
+            },
+            "policy must be one of",
+        ),
+    ],
+)
+def test_balanced_global_pre_nested_warmup_rejects_invalid_contracts(
+    tmp_path,
+    fixture,
+    overrides,
+    message,
+):
+    with pytest.raises(ConfigError, match=message):
+        resolved_run_id = (
+            "debug-nested-001"
+            if fixture == "configs/debug_matrix.yaml"
+            else "probabilistic-adaptive-global-smoke-001"
+        )
+        resolve_run_config(
+            fixture,
+            run_id="debug-nested-001" if fixture == "configs/debug_matrix.yaml" else None,
+            output_dir=tmp_path / resolved_run_id,
+            overrides=overrides,
+        )
 
 def test_dmodel256_completion_label_validation():
     resolved = resolve_run_config("configs/dmodel256_pilot_comparison.yaml")
@@ -854,12 +1457,22 @@ def test_shared_configs_resolve_default_model_variant():
 @pytest.mark.parametrize(
     "overrides, expected_mode, expected_membership_correction",
     [
-        (["model.correction_mode=none", "model.membership_correction=false"], "none", False),
+        (["model.correction_mode=none"], "none", False),
         (["model.correction_mode=gmc"], "gmc", True),
         (
             ["model.variant=concat", "model.correction_mode=lmc"],
             "lmc",
             True,
+        ),
+        (
+            ["model.correction_mode=gmc", "model.membership_correction=false"],
+            "gmc",
+            True,
+        ),
+        (
+            ["model.correction_mode=none", "model.membership_correction=true"],
+            "none",
+            False,
         ),
     ],
 )
@@ -877,25 +1490,6 @@ def test_explicit_correction_modes_resolve_and_validate(
     assert resolved["model"]["requested_correction_mode"] == expected_mode
     assert resolved["model"]["correction_mode"] == expected_mode
     assert resolved["model"]["membership_correction"] is expected_membership_correction
-
-
-@pytest.mark.parametrize(
-    "overrides",
-    [
-        ["model.correction_mode=gmc", "model.membership_correction=false"],
-        ["model.correction_mode=none", "model.membership_correction=true"],
-    ],
-)
-def test_membership_correction_conflicts_fail_fast(overrides):
-    with pytest.raises(
-        ConfigError,
-        match="model.correction_mode and model.membership_correction must not disagree",
-    ):
-        resolve_run_config(
-            "configs/debug_matrix.yaml",
-            run_id="debug-nested-001",
-            overrides=overrides,
-        )
 
 
 def test_lmc_is_rejected_for_non_concat_runs():
@@ -925,10 +1519,7 @@ def test_slicing_allows_disabling_membership_correction():
     resolved = resolve_run_config(
         "configs/debug_matrix.yaml",
         run_id="debug-nested-001",
-        overrides=[
-            "model.correction_mode=none",
-            "model.membership_correction=false",
-        ],
+        overrides=["model.correction_mode=none"],
     )
 
     assert resolved["model"]["variant"] == "slicing"
@@ -1020,7 +1611,7 @@ def test_dmodel256_pilot_config_preserves_clarified_terms_and_shape_fields():
     assert model["num_layers"] == 16
     assert model["num_attention_heads"] == 16
     assert model["context_length"] == 1024
-    assert model["vocab_size_assumption"] == 256000
+    assert model["vocab_size"] == 256000
     assert model["granularity_prefixes"] == {
         "s": 0.125,
         "m": 0.25,
@@ -1429,3 +2020,167 @@ def test_single_run_resolves_explicit_schedule_and_optimizer_overrides(tmp_path)
             "weight_decay": 0.0,
         },
     }
+# Production packed-mmap contract -------------------------------------------------
+
+
+def _production_manifest():
+    return {
+        "schema_version": 2,
+        "context_length": 1024,
+        "data_seed": 42,
+        "corpus_hash": "corpus-hash",
+        "tokenizer": {
+            "name": "fineweb_sentencepiece_bpe_256k",
+            "revision": "tokenizer-hash",
+            "manifest_hash": "tokenizer-hash",
+            "sentencepiece_model_sha256": "model-hash",
+            "vocab_size": 256000,
+        },
+        "role_manifest_hashes": {
+            "optimizer_training": "training-hash",
+            "ordinary_validation": "validation-hash",
+            "controller": "controller-hash",
+            "final_holdout": "final-hash",
+        },
+        "roles": {
+            "optimizer_training": {"token_count": 10_000_000_000},
+        },
+    }
+
+
+def test_10b_production_preflight_resolves_exact_four_gpu_schedule(tmp_path, monkeypatch):
+    import src.training.packed_corpus as packed_corpus
+    import src.training.fineweb_tokenizer as fineweb_tokenizer
+
+    monkeypatch.delenv("WORLD_SIZE", raising=False)
+    monkeypatch.setattr(
+        packed_corpus,
+        "load_corpus_manifest",
+        lambda *args, **kwargs: _production_manifest(),
+    )
+    monkeypatch.setattr(
+        fineweb_tokenizer,
+        "load_tokenizer_manifest",
+        lambda *args, **kwargs: {
+            "tokenizer_name": "fineweb_sentencepiece_bpe_256k",
+            "manifest_hash": "tokenizer-hash",
+            "sentencepiece_model_sha256": "model-hash",
+            "vocab_size": 256000,
+        },
+    )
+    resolved = resolve_run_config(
+        "configs/opt-in_exps/slicing_10b_base.yaml",
+        output_dir=tmp_path / "slicing-10b-base",
+        overrides=[
+            "dataset.prepared_corpus_dir=/prepared/fineweb",
+            "model.tokenizer_dir=/prepared/tokenizer",
+        ],
+    )
+    training = resolved["training"]
+    assert training["expected_tokens_per_microstep"] == 16_384
+    assert training["gradient_accumulation_steps"] == 64
+    assert training["expected_tokens_per_step"] == 1_048_576
+    assert training["derived_max_steps"] == 9_537
+    assert training["max_steps"] == 9_537
+    assert training["resolved_warmup_steps"] == 156
+    assert resolved["evaluation"]["validation"]["interval_tokens"] == 500_000_000
+    assert resolved["model"]["correction_mode"] == "none"
+    assert resolved["model"]["membership_correction"] is False
+    assert resolved["model"]["granularities"] == [
+        "g125", "g250", "g375", "g500", "g625", "g750", "g875", "g1000"
+    ]
+    assert resolved["dataset"]["corpus_hash"] == "corpus-hash"
+
+
+def test_validation_token_and_positive_step_cadence_are_mutually_exclusive():
+    with pytest.raises(ConfigError, match="mutually exclusive"):
+        resolve_run_config(
+            "tests/fixtures/explicit_granularity_smoke.yaml",
+            overrides=[
+                "evaluation.validation.interval_steps=2",
+                "evaluation.validation.interval_tokens=1000",
+            ],
+        )
+
+
+def test_10b_bayesian_dimensions_and_balanced_warmup(tmp_path, monkeypatch):
+    import src.training.packed_corpus as packed_corpus
+    import src.training.fineweb_tokenizer as fineweb_tokenizer
+
+    monkeypatch.delenv("WORLD_SIZE", raising=False)
+    monkeypatch.setattr(
+        packed_corpus,
+        "load_corpus_manifest",
+        lambda *args, **kwargs: _production_manifest(),
+    )
+    monkeypatch.setattr(
+        fineweb_tokenizer,
+        "load_tokenizer_manifest",
+        lambda *args, **kwargs: {
+            "tokenizer_name": "fineweb_sentencepiece_bpe_256k",
+            "manifest_hash": "tokenizer-hash",
+            "sentencepiece_model_sha256": "model-hash",
+            "vocab_size": 256000,
+        },
+    )
+    common = [
+        "dataset.prepared_corpus_dir=/prepared/fineweb",
+        "model.tokenizer_dir=/prepared/tokenizer",
+    ]
+    global_config = resolve_run_config(
+        "configs/opt-in_exps/slicing_10b_bayesian.yaml",
+        output_dir=tmp_path / "slicing-10b-bayesian-global",
+        overrides=common,
+    )
+    assert global_config["model"]["adaptive_controller"]["coefficient_dimension"] == 8
+    assert global_config["model"]["correction_mode"] == "none"
+    assert global_config["model"]["membership_correction"] is False
+    assert global_config["training"]["pre_nested_warmup"]["duration"] == 800
+    assert global_config["training"]["pre_nested_warmup"]["passes"] == 2
+    per_block = resolve_run_config(
+        "configs/opt-in_exps/slicing_10b_bayesian.yaml",
+        output_dir=tmp_path / "slicing-10b-bayesian-global",
+        overrides=[*common, "model.granularity_sampling_mode=adaptive_per_block"],
+    )
+    assert per_block["model"]["adaptive_controller"]["coefficient_dimension"] == 113
+
+    gmc = resolve_run_config(
+        "configs/opt-in_exps/slicing_10b_bayesian.yaml",
+        output_dir=tmp_path / "slicing-10b-bayesian-global",
+        overrides=[*common, "model.correction_mode=gmc"],
+    )
+    assert gmc["model"]["correction_mode"] == "gmc"
+    assert gmc["model"]["membership_correction"] is True
+
+
+def test_packed_mmap_rejects_per_run_sampling_and_distributed_ucb(tmp_path, monkeypatch):
+    import src.training.packed_corpus as packed_corpus
+
+    monkeypatch.delenv("WORLD_SIZE", raising=False)
+    monkeypatch.setattr(
+        packed_corpus,
+        "load_corpus_manifest",
+        lambda *args, **kwargs: _production_manifest(),
+    )
+    with pytest.raises(ConfigError, match="sample_limit is forbidden"):
+        resolve_run_config(
+            "configs/opt-in_exps/slicing_10b_base.yaml",
+            output_dir=tmp_path / "slicing-10b-base",
+            overrides=[
+                "dataset.prepared_corpus_dir=/prepared/fineweb",
+                "model.tokenizer_revision=deadbeef",
+                "dataset.sample_limit=1",
+            ],
+        )
+
+    with pytest.raises(ConfigError, match="ucb is unsupported"):
+        resolve_run_config(
+            "configs/debug_matrix.yaml",
+            run_id="debug-nested-001",
+            output_dir=tmp_path / "debug-nested-001",
+            overrides=[
+                "training.distributed.expected_world_size=2",
+                "model.granularity_sampling_mode=adaptive_per_block",
+                "model.adaptive_sampler_strategy=ucb",
+            ],
+        )

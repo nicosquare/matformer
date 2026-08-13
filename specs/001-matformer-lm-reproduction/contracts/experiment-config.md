@@ -31,7 +31,7 @@ model:
   num_attention_heads: 4
   intermediate_size: 1024
   context_length: 256
-  vocab_size_assumption: 32000
+  vocab_size: 32000
   granularities: [s, m, l, xl]
   granularity_prefixes:
     s: 0.125

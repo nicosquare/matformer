@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import torch
 from datasets import Dataset
 
@@ -322,6 +323,7 @@ def test_make_figures_reads_csv_artifacts(tmp_path):
     figure_paths = generate_figures(tmp_path, tmp_path / "figures")
 
     figure_names = {path.name for path in figure_paths}
+    assert {"consistency_vs_size.png", "medium_trend_report.md"} <= figure_names
     assert {
         "loss_vs_size.png",
         "ppl_vs_size.png",
@@ -329,9 +331,7 @@ def test_make_figures_reads_csv_artifacts(tmp_path):
         "ppl_vs_size_nested_random_no_corrections.png",
         "ppl_vs_size_nested_random_vs_nested_all_no_corrections.png",
         "accuracy_vs_size.png",
-        "consistency_vs_size.png",
-        "medium_trend_report.md",
-    } <= figure_names
+    }.isdisjoint(figure_names)
     for path in figure_paths:
         assert path.exists()
         assert path.stat().st_size > 0
@@ -774,6 +774,18 @@ def test_make_figures_plots_grouped_consistency_metrics_and_skips_deferred_rows(
 
 def test_make_figures_aggregates_task_results_for_accuracy_plot(tmp_path):
     run_dir = tmp_path / "dmodel256-nested-random-001"
+    run_dir.mkdir(parents=True)
+    (run_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "model": {
+                    "variant": "matformer_llama",
+                    "granularity_sampling_mode": "global",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
     write_scaling_results_csv(
         run_dir,
         [
@@ -876,7 +888,10 @@ def test_make_figures_aggregates_task_results_for_accuracy_plot(tmp_path):
         encoding="utf-8"
     )
     assert "average_downstream_accuracy: 0.8" in report
-    assert "nested-random / xl / dmodel256-nested-random-001" in report
+    assert (
+        "nested-random / matformer_llama / xl / dmodel256-nested-random-001"
+        in report
+    )
 
 
 def test_make_figures_refreshes_parameter_counts_from_run_config(tmp_path):
@@ -1264,3 +1279,360 @@ def test_train_cli_accepts_config_run_id_and_overrides():
     assert args.config == "configs/debug_matrix.yaml"
     assert args.run_id == "debug-nested-001"
     assert args.override == ["training.max_steps=1"]
+
+
+class TinyFinalHoldoutModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.tensor(0.5))
+        self.current_granularity = None
+        self.losses = {"micro": 3.0, "medium": 2.0, "full": 1.0}
+
+    def configure_subnetwork(self, granularity):
+        self.current_granularity = granularity
+
+    def forward(self, input_ids, attention_mask=None, labels=None):
+        loss = self.weight * 0.0 + self.losses[self.current_granularity]
+        return SimpleNamespace(loss=loss)
+
+
+def _final_holdout_api():
+    import importlib
+
+    try:
+        module = importlib.import_module("src.evaluation.final_holdout")
+    except ModuleNotFoundError:
+        pytest.fail(
+            "src.evaluation.final_holdout is required by the post-training "
+            "final-holdout contract"
+        )
+    for function_name in (
+        "resolve_existing_final_holdout_result",
+        "resolve_final_holdout_checkpoint",
+        "validate_final_holdout_provenance",
+        "evaluate_final_holdout",
+    ):
+        assert callable(getattr(module, function_name, None)), (
+            f"src.evaluation.final_holdout.{function_name} is required"
+        )
+    return module
+
+
+def _write_final_holdout_test_run(tmp_path, *, status="completed"):
+    from src.utils.reproducibility import stable_hash
+
+    run_id = "probabilistic-final-holdout-001"
+    run_dir = tmp_path / run_id
+    checkpoint_path = run_dir / "checkpoints" / "best_eval_step_4.pt"
+    checkpoint_path.parent.mkdir(parents=True)
+    model = TinyFinalHoldoutModel()
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "source_row_identity": list(range(512)),
+            "input_ids": [
+                [index + 1, index + 2, index + 3]
+                for index in range(512)
+            ],
+            "attention_mask": [[1, 1, 1] for _ in range(512)],
+        }
+    )
+    identities = [
+        {
+            "source_dataset_fingerprint": "controlled-final-fingerprint",
+            "source_row_identity": index,
+            "tokenization_identity": "controlled-tokenization-v1",
+            "valid_target_count": 2,
+        }
+        for index in range(512)
+    ]
+    manifest = {
+        "role": "final_holdout",
+        "source_provenance": {
+            "dataset_name": "controlled/final-holdout",
+            "source_split": "train",
+            "source_dataset_fingerprint": "controlled-final-fingerprint",
+            "tokenization_identity": "controlled-tokenization-v1",
+        },
+        "selection_seed": 303,
+        "selection_algorithm": "deterministic_without_replacement_v1",
+        "ordered_example_identities": identities,
+        "example_count": 512,
+        "example_identity_hash": stable_hash(identities),
+        "usable_target_policy": "at_least_one_causal_target_v1",
+    }
+    manifest["manifest_hash"] = stable_hash(manifest)
+    role_hashes = {
+        "data_roles_manifest_hash": "parent-manifest-hash",
+        "optimizer_training_manifest_hash": "training-manifest-hash",
+        "controller_manifest_hash": "controller-manifest-hash",
+        "ordinary_validation_manifest_hash": "validation-manifest-hash",
+        "final_holdout_manifest_hash": manifest["manifest_hash"],
+    }
+    config = {
+        "run": {"run_id": run_id, "output_dir": str(run_dir)},
+        "model": {
+            "granularities": ["micro", "medium", "full"],
+            "granularity_sampling_mode": "adaptive_global",
+            "adaptive_sampler_strategy": "thompson",
+            "adaptive_controller": {
+                "method_family": "bayesian_gaussian_linear_thompson",
+                "method_version": 1,
+                "scope": "global",
+                "ordered_granularities": ["micro", "medium", "full"],
+                **role_hashes,
+            },
+        },
+        "evaluation": {
+            "final_holdout": {
+                "enabled": True,
+                "examples": 512,
+                "fixed_manifest": True,
+                "evaluate_during_training": False,
+                "manifest_hash": manifest["manifest_hash"],
+            }
+        },
+        **role_hashes,
+    }
+    run_summary = {
+        "run_id": run_id,
+        "status": status,
+        "checkpoint_status": "best_eval",
+        "best_checkpoint_path": str(checkpoint_path),
+        "checkpoint_selection_step": 4,
+        "checkpoint_metric": "validation_loss",
+        "checkpoint_metric_value": 1.25,
+        "controller_metrics_path": str(run_dir / "controller_metrics.jsonl"),
+        "controller_summary_path": str(run_dir / "controller_summary.json"),
+        **role_hashes,
+    }
+    checkpoint = {
+        "run_id": run_id,
+        "model_state_dict": model.state_dict(),
+        "checkpoint_status": "best_eval",
+        "checkpoint_selection_step": 4,
+        "checkpoint_metric": "validation_loss",
+        "checkpoint_metric_value": 1.25,
+        "method_family": "bayesian_gaussian_linear_thompson",
+        "method_version": 1,
+        **role_hashes,
+    }
+    torch.save(checkpoint, checkpoint_path)
+    json_artifacts = {
+        "config.json": config,
+        "run_summary.json": run_summary,
+        "final_holdout_manifest.json": manifest,
+        "controller_summary.json": {
+            "method_family": "bayesian_gaussian_linear_thompson",
+            "method_version": 1,
+            "controller_metrics_hash": "controller-journal-hash",
+        },
+    }
+    for filename, payload in json_artifacts.items():
+        (run_dir / filename).write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    (run_dir / "controller_metrics.jsonl").write_text(
+        json.dumps({"event_type": "initial_boundary"}) + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "metrics.csv").write_text(
+        "run_id,step,split,loss\n"
+        f"{run_id},4,validation,1.25\n",
+        encoding="utf-8",
+    )
+    return {
+        "run_dir": run_dir,
+        "checkpoint_path": checkpoint_path,
+        "config": config,
+        "manifest": manifest,
+        "model": model,
+        "tokenized_dataset": tokenized_dataset,
+    }
+
+
+def test_final_holdout_requires_completed_run_and_resolves_checkpoint_fallback(
+    tmp_path,
+):
+    final_holdout = _final_holdout_api()
+    fixture = _write_final_holdout_test_run(tmp_path, status="running")
+
+    with pytest.raises(final_holdout.FinalHoldoutError, match="completed"):
+        final_holdout.resolve_final_holdout_checkpoint(fixture["run_dir"])
+
+    summary_path = fixture["run_dir"] / "run_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["status"] = "completed"
+    summary_path.write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    assert final_holdout.resolve_final_holdout_checkpoint(
+        fixture["run_dir"]
+    ) == fixture["checkpoint_path"]
+
+    summary["checkpoint_status"] = "none"
+    summary["best_checkpoint_path"] = None
+    summary_path.write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(final_holdout.FinalHoldoutError, match="explicit"):
+        final_holdout.resolve_final_holdout_checkpoint(fixture["run_dir"])
+    assert final_holdout.resolve_final_holdout_checkpoint(
+        fixture["run_dir"],
+        checkpoint_path=fixture["checkpoint_path"],
+    ) == fixture["checkpoint_path"]
+
+
+def test_final_holdout_rejects_manifest_and_checkpoint_provenance_mismatches(
+    tmp_path,
+):
+    final_holdout = _final_holdout_api()
+    fixture = _write_final_holdout_test_run(tmp_path)
+
+    provenance = final_holdout.validate_final_holdout_provenance(
+        fixture["run_dir"],
+        fixture["checkpoint_path"],
+    )
+    assert provenance["run_id"] == fixture["config"]["run"]["run_id"]
+    assert provenance["final_holdout_manifest_hash"] == fixture["manifest"][
+        "manifest_hash"
+    ]
+
+    checkpoint = torch.load(
+        fixture["checkpoint_path"],
+        map_location="cpu",
+        weights_only=False,
+    )
+    checkpoint["final_holdout_manifest_hash"] = "wrong-final-manifest-hash"
+    torch.save(checkpoint, fixture["checkpoint_path"])
+    with pytest.raises(final_holdout.FinalHoldoutError, match="manifest.*mismatch"):
+        final_holdout.validate_final_holdout_provenance(
+            fixture["run_dir"],
+            fixture["checkpoint_path"],
+        )
+
+
+def test_final_holdout_evaluates_all_granularities_deterministically_and_is_non_mutating(
+    tmp_path,
+):
+    from src.utils.reproducibility import stable_hash
+
+    final_holdout = _final_holdout_api()
+    fixture = _write_final_holdout_test_run(tmp_path)
+    protected_paths = [
+        fixture["run_dir"] / filename
+        for filename in (
+            "config.json",
+            "run_summary.json",
+            "controller_metrics.jsonl",
+            "controller_summary.json",
+            "metrics.csv",
+            "final_holdout_manifest.json",
+        )
+    ] + [fixture["checkpoint_path"]]
+    before = {path: path.read_bytes() for path in protected_paths}
+
+    first = final_holdout.evaluate_final_holdout(
+        fixture["run_dir"],
+        model=fixture["model"],
+        tokenized_dataset=fixture["tokenized_dataset"],
+        device="cpu",
+    )
+    second = final_holdout.evaluate_final_holdout(
+        fixture["run_dir"],
+        model=TinyFinalHoldoutModel(),
+        tokenized_dataset=fixture["tokenized_dataset"],
+        device="cpu",
+    )
+
+    expected_losses = [
+        {"granularity": "micro", "loss": 3.0},
+        {"granularity": "medium", "loss": 2.0},
+        {"granularity": "full", "loss": 1.0},
+    ]
+    for result in (first, second):
+        assert [
+            {"granularity": row["granularity"], "loss": row["loss"]}
+            for row in result["ordered_per_granularity_losses"]
+        ] == expected_losses
+        assert result["uniform_average_loss"] == pytest.approx(2.0)
+        assert result["aggregation_method"] == (
+            "target_token_weighted_causal_shift_float64"
+        )
+        assert result["final_holdout_manifest_hash"] == fixture["manifest"][
+            "manifest_hash"
+        ]
+        assert result["checkpoint_selection_provenance"]["source"] == (
+            "ordinary_validation"
+        )
+        assert len(result["result_hash"]) == 64
+    assert first["ordered_per_granularity_losses"] == second[
+        "ordered_per_granularity_losses"
+    ]
+
+    result_path = fixture["run_dir"] / "final_holdout_results.json"
+    saved_result = json.loads(result_path.read_text(encoding="utf-8"))
+    result_hash = saved_result.pop("result_hash")
+    assert result_hash == stable_hash(saved_result)
+    assert result_hash not in {
+        fixture["manifest"]["manifest_hash"],
+        "controller-journal-hash",
+    }
+    assert {path: path.read_bytes() for path in protected_paths} == before
+
+
+def test_final_holdout_reuses_only_valid_existing_result(tmp_path):
+    final_holdout = _final_holdout_api()
+    fixture = _write_final_holdout_test_run(tmp_path)
+
+    assert final_holdout.resolve_existing_final_holdout_result(
+        fixture["run_dir"]
+    ) is None
+    result = final_holdout.evaluate_final_holdout(
+        fixture["run_dir"],
+        model=fixture["model"],
+        tokenized_dataset=fixture["tokenized_dataset"],
+        device="cpu",
+    )
+    existing = final_holdout.resolve_existing_final_holdout_result(
+        fixture["run_dir"]
+    )
+    assert existing == result
+
+    result_path = fixture["run_dir"] / "final_holdout_results.json"
+    corrupted = json.loads(result_path.read_text(encoding="utf-8"))
+    corrupted["uniform_average_loss"] = 999.0
+    result_path.write_text(
+        json.dumps(corrupted, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(final_holdout.FinalHoldoutError, match="hash mismatch"):
+        final_holdout.resolve_existing_final_holdout_result(fixture["run_dir"])
+
+
+def test_final_holdout_resolves_hashed_artifacts_after_run_directory_move(tmp_path):
+    final_holdout = _final_holdout_api()
+    fixture = _write_final_holdout_test_run(tmp_path)
+    moved_parent = tmp_path / "archived"
+    moved_parent.mkdir()
+    moved_run_dir = moved_parent / fixture["run_dir"].name
+    fixture["run_dir"].rename(moved_run_dir)
+    moved_checkpoint = moved_run_dir / "checkpoints" / fixture[
+        "checkpoint_path"
+    ].name
+
+    assert final_holdout.resolve_final_holdout_checkpoint(
+        moved_run_dir
+    ) == moved_checkpoint
+    result = final_holdout.evaluate_final_holdout(
+        moved_run_dir,
+        model=fixture["model"],
+        tokenized_dataset=fixture["tokenized_dataset"],
+        device="cpu",
+    )
+    assert result["checkpoint_path"] == str(moved_checkpoint)
+    assert result["checkpoint_selection_provenance"]["source"] == (
+        "ordinary_validation"
+    )

@@ -1,3 +1,7 @@
+import json
+import os
+from pathlib import Path
+
 import torch
 import pytest
 from contextlib import nullcontext
@@ -11,6 +15,91 @@ from src.training.distributed import (
     sum_int,
 )
 from src.utils.config import ConfigError
+
+
+def _real_gloo_controller_worker(rank, world_size, init_path, result_dir):
+    os.environ["GLOO_SOCKET_IFNAME"] = "lo"
+    torch.distributed.init_process_group(
+        "gloo",
+        init_method=f"file://{init_path}",
+        rank=rank,
+        world_size=world_size,
+    )
+    try:
+        from src.training.probabilistic_controller import build_probabilistic_controller
+        from src.training.run import _synchronize_controller_commit
+
+        context = DistributedContext(
+            enabled=True,
+            rank=rank,
+            local_rank=rank,
+            world_size=world_size,
+            strategy="fsdp",
+            device="cpu",
+        )
+        controller = build_probabilistic_controller(
+            controller_config={
+                "method_family": "bayesian_gaussian_linear_thompson",
+                "method_version": 1,
+                "strategy": "thompson",
+                "scope": "global",
+                "feature_model": "arms",
+                "context_model": "intercept_only",
+                "transition_model": "identity",
+                "compute_weight": 0.0,
+                "switch_weight": 0.0,
+                "ordered_granularities": ["small", "full"],
+                "block_count": 2,
+                "decision_interval_steps": 2,
+                "resolved_prior_mean": [0.0, 0.0],
+                "resolved_prior_covariance": [[1.0, 0.0], [0.0, 1.0]],
+                "observation_noise_variance": 0.01,
+                "resolved_process_noise_covariance": [[0.0, 0.0], [0.0, 0.0]],
+                "reset": {"enabled": False, "policy": "full_prior"},
+            },
+            sampling_seed=123,
+            manifest_hashes={
+                "data_roles_manifest_hash": "roles",
+                "optimizer_training_manifest_hash": "training",
+                "controller_manifest_hash": "controller",
+                "ordinary_validation_manifest_hash": "validation",
+                "final_holdout_manifest_hash": "final",
+            },
+        )
+        event = None
+        if rank == 0:
+            event = controller.initialize_boundary(
+                boundary_step=0,
+                controller_objective=2.0,
+                ordered_component_losses=[2.5, 1.5],
+                evaluation_target_tokens=64,
+            )
+        run_state = {}
+        payload = _synchronize_controller_commit(
+            controller,
+            event=event,
+            status="success",
+            error_message=None,
+            distributed_context=context,
+            run_state=run_state,
+        )
+        Path(result_dir, f"rank-{rank}.json").write_text(
+            json.dumps(
+                {
+                    "state_hash": payload["controller_state_hash"],
+                    "global_granularity": payload["action"][
+                        "global_granularity"
+                    ],
+                    "sample_count": controller.state_dict()["sampling"][
+                        "sample_count"
+                    ],
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+    finally:
+        torch.distributed.destroy_process_group()
 
 
 def test_cpu_resolves_requested_bf16_and_checkpointing_to_none():
@@ -340,3 +429,236 @@ def test_wrap_model_for_distributed_uses_hf_style_fsdp_recipe(monkeypatch):
         fsdp_kwargs["auto_wrap_policy"].keywords["transformer_layer_cls"]
         == {distributed.LlamaDecoderLayer}
     )
+
+
+def test_probabilistic_controller_panel_partitions_and_reduces_like_single_process():
+    from types import SimpleNamespace
+
+    from datasets import Dataset
+
+    from src.evaluation.validation import evaluate_fixed_panel_objective
+    from src.training.data import (
+        DistributedValidationSampler,
+        build_language_model_dataloader,
+    )
+
+    class ControlledPanelModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.current_granularity = None
+
+        def configure_subnetwork(self, granularity):
+            self.current_granularity = granularity
+
+        def forward(self, input_ids, attention_mask=None, labels=None):
+            offsets = {"micro": 0.25, "medium": 0.5, "full": 1.0}
+            example_values = input_ids[:, 0].double() / 100.0
+            loss = example_values.mean() + offsets[self.current_granularity]
+            return SimpleNamespace(loss=loss)
+
+    panel = Dataset.from_dict(
+        {
+            "input_ids": [[index + 1, index + 2, index + 3] for index in range(128)],
+            "attention_mask": [[1, 1, 1] for _ in range(128)],
+        }
+    )
+    granularities = ["micro", "medium", "full"]
+    single_process = evaluate_fixed_panel_objective(
+        ControlledPanelModel(),
+        build_language_model_dataloader(panel, batch_size=8),
+        granularities,
+        device="cpu",
+        controller_manifest_hash="fixed-controller-panel",
+        boundary_step=4,
+    )
+
+    world_size = 4
+    samplers = [
+        DistributedValidationSampler(panel, rank=rank, world_size=world_size)
+        for rank in range(world_size)
+    ]
+    partitions = [list(sampler) for sampler in samplers]
+    flattened_indices = [index for partition in partitions for index in partition]
+    assert sorted(flattened_indices) == list(range(128))
+    assert len(flattened_indices) == len(set(flattened_indices)) == 128
+
+    local_results = [
+        evaluate_fixed_panel_objective(
+            ControlledPanelModel(),
+            build_language_model_dataloader(
+                panel,
+                batch_size=8,
+                sampler=sampler,
+            ),
+            granularities,
+            device="cpu",
+            controller_manifest_hash="fixed-controller-panel",
+            boundary_step=4,
+        )
+        for sampler in samplers
+    ]
+    reduced_component_losses = []
+    for component_index in range(len(granularities)):
+        total_nll = sum(
+            result["component_results"][component_index]["loss"]
+            * result["component_results"][component_index][
+                "evaluation_target_tokens"
+            ]
+            for result in local_results
+        )
+        total_targets = sum(
+            result["component_results"][component_index][
+                "evaluation_target_tokens"
+            ]
+            for result in local_results
+        )
+        assert total_targets == single_process["evaluation_target_tokens"] == 256
+        reduced_component_losses.append(total_nll / total_targets)
+
+    reduced_objective = sum(reduced_component_losses) / len(
+        reduced_component_losses
+    )
+    assert single_process["evaluation_example_count"] == sum(
+        result["evaluation_example_count"] for result in local_results
+    )
+    assert single_process["ordered_granularities"] == granularities
+    assert reduced_component_losses == pytest.approx(
+        single_process["ordered_component_losses"],
+        rel=1e-6,
+        abs=1e-8,
+    )
+    assert reduced_objective == pytest.approx(
+        single_process["uniform_objective"],
+        rel=1e-6,
+        abs=1e-8,
+    )
+
+
+def test_probabilistic_controller_rank_zero_owns_sampling_update_and_shared_outputs(
+    monkeypatch,
+    tmp_path,
+):
+    rank_zero = DistributedContext(enabled=True, rank=0, world_size=2)
+    nonzero = DistributedContext(enabled=True, rank=1, world_size=2)
+    transition_calls = []
+    lifecycle_logs = []
+    artifact_writes = []
+
+    def sample_and_update():
+        transition_calls.append(0)
+        return {
+            "controller_state": {
+                "method_version": 1,
+                "scope": "global",
+                "belief": {"round_index": 2},
+                "sampling": {"sample_count": 3},
+            },
+            "action": {"global_granularity": "medium"},
+        }
+
+    authoritative_payload = distributed.rank_zero_only(rank_zero, sample_and_update)
+    assert distributed.rank_zero_only(nonzero, sample_and_update) is None
+    assert transition_calls == [0]
+
+    broadcasts = []
+
+    def fake_broadcast(value, context, src=0):
+        assert src == 0
+        broadcasts.append((context.rank, value))
+        return authoritative_payload
+
+    monkeypatch.setattr(distributed, "broadcast_object", fake_broadcast)
+
+    rank_zero_payload = distributed.broadcast_probabilistic_controller_state(
+        controller_state=authoritative_payload["controller_state"],
+        action=authoritative_payload["action"],
+        context=rank_zero,
+    )
+    nonzero_payload = distributed.broadcast_probabilistic_controller_state(
+        controller_state=None,
+        action=None,
+        context=nonzero,
+    )
+
+    assert rank_zero_payload == nonzero_payload == authoritative_payload
+    assert broadcasts == [(0, authoritative_payload), (1, None)]
+    distributed.rank_zero_only(rank_zero, lifecycle_logs.append, "completed-window")
+    distributed.rank_zero_only(nonzero, lifecycle_logs.append, "completed-window")
+    distributed.rank_zero_only(rank_zero, artifact_writes.append, "controller.jsonl")
+    distributed.rank_zero_only(nonzero, artifact_writes.append, "controller.jsonl")
+    assert lifecycle_logs == ["completed-window"]
+    assert artifact_writes == ["controller.jsonl"]
+
+    from src.utils.metrics import append_controller_event
+
+    warmup_event = {
+        "schema_version": 1,
+        "event_type": "warmup_window_completed",
+        "phase": "warmup",
+        "schedule_hash": "shared-balanced-schedule",
+        "boundary_step": 2,
+        "window_index": 0,
+        "posterior_updated": False,
+    }
+    journal_path = tmp_path / "controller_metrics.jsonl"
+    append_controller_event(
+        journal_path,
+        warmup_event,
+        distributed_context=rank_zero,
+    )
+    append_controller_event(
+        journal_path,
+        warmup_event,
+        distributed_context=nonzero,
+    )
+    assert len(journal_path.read_text(encoding="utf-8").splitlines()) == 1
+
+    from src.utils.reproducibility import build_balanced_warmup_schedule
+
+    rank_zero_schedule = build_balanced_warmup_schedule(
+        ["micro", "medium", "full"],
+        passes=2,
+        seed=123,
+        action_interval_steps=2,
+        duration_steps=12,
+    )
+    nonzero_schedule = build_balanced_warmup_schedule(
+        ["micro", "medium", "full"],
+        passes=2,
+        seed=123,
+        action_interval_steps=2,
+        duration_steps=12,
+    )
+    assert rank_zero_schedule == nonzero_schedule
+
+
+def test_probabilistic_controller_rank_zero_broadcast_requires_complete_state():
+    context = DistributedContext(enabled=True, rank=0, world_size=2)
+
+    with pytest.raises(ConfigError, match="rank zero.*controller state"):
+        distributed.broadcast_probabilistic_controller_state(
+            controller_state=None,
+            action={"global_granularity": "micro"},
+            context=context,
+        )
+
+
+def test_real_two_process_gloo_rank_zero_controller_commit(tmp_path):
+    init_path = tmp_path / "gloo-init"
+    result_dir = tmp_path / "results"
+    result_dir.mkdir()
+
+    torch.multiprocessing.spawn(
+        _real_gloo_controller_worker,
+        args=(2, str(init_path), str(result_dir)),
+        nprocs=2,
+        join=True,
+    )
+
+    records = [
+        json.loads((result_dir / f"rank-{rank}.json").read_text(encoding="utf-8"))
+        for rank in range(2)
+    ]
+    assert records[0] == records[1]
+    assert records[0]["sample_count"] == 1
+    assert records[0]["global_granularity"] in ("small", "full")

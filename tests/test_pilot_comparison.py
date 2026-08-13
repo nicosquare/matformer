@@ -44,7 +44,7 @@ def _pilot_summary(
         "num_layers": 16,
         "num_attention_heads": 16,
         "context_length": 1024,
-        "vocab_size_assumption": 256000,
+        "vocab_size": 256000,
         "token_budget": 100_000_000,
         "effective_world_size": effective_world_size,
         "checkpoint_status": checkpoint_status,
@@ -201,3 +201,42 @@ def test_pilot_comparison_rows_cover_nested_and_standalone_modes(tmp_path):
     assert omitted["effective_world_size"] is None
     assert omitted["checkpoint_status"] == "unavailable"
     assert omitted["checkpoint_path"] is None
+
+
+def test_default_pilot_queue_matrix_does_not_add_adaptive_runs():
+    from scripts.queue_dmodel256_pilot import build_experiment_specs
+
+    specs = build_experiment_specs(["s", "m", "l", "xl"])
+
+    assert [spec.label for spec in specs] == [
+        "nested-random-slicing-none-global",
+        "nested-random-slicing-none-per_block",
+        "nested-random-slicing-gmc-global",
+        "nested-random-slicing-gmc-per_block",
+        "nested-random-concat-none-global",
+        "nested-random-concat-none-per_block",
+        "nested-random-concat-gmc-global",
+        "nested-random-concat-gmc-per_block",
+        "nested-random-concat-lmc-global",
+        "nested-random-concat-lmc-per_block",
+        "nested-all-slicing-none",
+        "nested-all-slicing-gmc",
+        "nested-all-concat-none",
+        "nested-all-concat-gmc",
+        "nested-all-concat-lmc",
+        "standalone-s",
+        "standalone-m",
+        "standalone-l",
+        "standalone-xl",
+    ]
+    serialized_specs = "\n".join(
+        value
+        for spec in specs
+        for value in (
+            spec.label,
+            *spec.run_overrides,
+            *spec.model_overrides,
+        )
+    )
+    assert "adaptive" not in serialized_specs
+    assert "thompson" not in serialized_specs

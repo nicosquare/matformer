@@ -85,7 +85,7 @@ Represents debug, pilot, or later scaling shape targets.
 - `num_layers`: Transformer layer count.
 - `num_attention_heads`: Attention-head count.
 - `context_length`: Maximum context length.
-- `vocab_size_assumption`: Vocabulary-size assumption.
+- `vocab_size`: Exact tokenizer vocabulary size used by the model.
 - `granularity_prefixes`: Ordered mapping of S/M/L/XL FFN prefix widths or
   fractions.
 - `training_token_budget`: Planned token budget.

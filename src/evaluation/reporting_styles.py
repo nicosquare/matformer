@@ -15,6 +15,12 @@ PARAMETER_COUNT_FIELDS = [
 
 LOSS_MOVING_AVERAGE_FRACTION = 0.1
 
+# Standalone references are marker-only observations in the size plots. Reserve
+# near-black for them so the expanding trained-curve palette can never reuse
+# their color, and use a light edge to keep overlapping points recognizable.
+STANDALONE_REFERENCE_COLOR = "#111111"
+STANDALONE_REFERENCE_EDGE_COLOR = "#ffffff"
+
 SIZE_PLOT_PANELS_DEFAULT = [
     ("nested-random", "slicing", None),
     ("nested-random", "concat", None),
@@ -27,8 +33,10 @@ SIZE_PLOT_PANELS_WITH_SAMPLING = [
     ("nested-random", "concat", "global"),
     ("nested-random", "slicing", "per_block"),
     ("nested-random", "concat", "per_block"),
-    ("nested-random", "slicing", "adaptive_per_block_thompson"),
-    ("nested-random", "concat", "adaptive_per_block_thompson"),
+    ("nested-random", "slicing", "probabilistic_global_thompson"),
+    ("nested-random", "concat", "probabilistic_global_thompson"),
+    ("nested-random", "slicing", "probabilistic_per_block_thompson"),
+    ("nested-random", "concat", "probabilistic_per_block_thompson"),
     ("nested-random", "slicing", "adaptive_per_block_ucb"),
     ("nested-random", "concat", "adaptive_per_block_ucb"),
     ("nested-all", "slicing", None),
@@ -38,15 +46,21 @@ SIZE_PLOT_PANELS_WITH_SAMPLING = [
 SCALING_GROUP_COLORS = {
     "nested-random / slicing / global": "tab:blue",
     "nested-random / slicing / per_block": "tab:cyan",
-    "nested-random / slicing / adaptive_per_block_thompson": "tab:green",
+    "nested-random / slicing / probabilistic_global_thompson": "tab:blue",
+    "nested-random / slicing / probabilistic_global_thompson_reset": "tab:purple",
+    "nested-random / slicing / probabilistic_global_thompson_acquisition_only": "tab:green",
+    "nested-random / slicing / probabilistic_per_block_thompson": "tab:cyan",
     "nested-random / slicing / adaptive_per_block_ucb": "tab:olive",
     "nested-random / concat / global": "tab:orange",
     "nested-random / concat / per_block": "tab:red",
-    "nested-random / concat / adaptive_per_block_thompson": "tab:purple",
+    "nested-random / concat / probabilistic_global_thompson": "tab:orange",
+    "nested-random / concat / probabilistic_global_thompson_reset": "tab:brown",
+    "nested-random / concat / probabilistic_global_thompson_acquisition_only": "tab:olive",
+    "nested-random / concat / probabilistic_per_block_thompson": "tab:red",
     "nested-random / concat / adaptive_per_block_ucb": "tab:pink",
     "nested-all / slicing": "tab:purple",
     "nested-all / concat": "tab:green",
-    "standalone": "tab:brown",
+    "standalone": STANDALONE_REFERENCE_COLOR,
 }
 
 SCALING_CORRECTION_STYLES = {
@@ -58,14 +72,20 @@ SCALING_CORRECTION_STYLES = {
 SCALING_SAMPLING_TONES = {
     "global": 0.0,
     "per_block": 0.28,
-    "adaptive_per_block_thompson": 0.4,
+    "probabilistic_global_thompson": 0.16,
+    "probabilistic_global_thompson_reset": 0.24,
+    "probabilistic_global_thompson_acquisition_only": 0.20,
+    "probabilistic_per_block_thompson": 0.34,
     "adaptive_per_block_ucb": 0.55,
 }
 
 SCALING_SAMPLING_MARKERS = {
     "global": "o",
     "per_block": "D",
-    "adaptive_per_block_thompson": "P",
+    "probabilistic_global_thompson": "*",
+    "probabilistic_global_thompson_reset": "P",
+    "probabilistic_global_thompson_acquisition_only": "h",
+    "probabilistic_per_block_thompson": "v",
     "adaptive_per_block_ucb": "X",
 }
 
@@ -98,7 +118,7 @@ PLOT_STYLE_PRESETS = {
         "series_colors": {
             "nested-all / slicing": "tab:blue",
             "nested-all / concat": "tab:orange",
-            "standalone": "tab:brown",
+            "standalone": STANDALONE_REFERENCE_COLOR,
         },
     },
     "nested_random_no_corrections": {
@@ -108,8 +128,6 @@ PLOT_STYLE_PRESETS = {
             "nested-random / concat / global": "nested-random / concat / global",
             "nested-random / slicing / per_block": "nested-random / slicing / per_block",
             "nested-random / concat / per_block": "nested-random / concat / per_block",
-            "nested-random / slicing / adaptive_per_block_thompson": "nested-random / slicing / adaptive_per_block_thompson",
-            "nested-random / concat / adaptive_per_block_thompson": "nested-random / concat / adaptive_per_block_thompson",
             "nested-random / slicing / adaptive_per_block_ucb": "nested-random / slicing / adaptive_per_block_ucb",
             "nested-random / concat / adaptive_per_block_ucb": "nested-random / concat / adaptive_per_block_ucb",
         },
@@ -118,11 +136,9 @@ PLOT_STYLE_PRESETS = {
             "nested-random / concat / global": "tab:orange",
             "nested-random / slicing / per_block": "tab:cyan",
             "nested-random / concat / per_block": "tab:red",
-            "nested-random / slicing / adaptive_per_block_thompson": "tab:green",
-            "nested-random / concat / adaptive_per_block_thompson": "tab:purple",
             "nested-random / slicing / adaptive_per_block_ucb": "tab:olive",
             "nested-random / concat / adaptive_per_block_ucb": "tab:pink",
-            "standalone": "tab:brown",
+            "standalone": STANDALONE_REFERENCE_COLOR,
         },
     },
     "nested_split_no_corrections": {
@@ -146,7 +162,7 @@ PLOT_STYLE_PRESETS = {
             "nested-all / concat / gmc": "Concat/GMC",
         },
         "series_colors": {
-            "standalone": "tab:brown",
+            "standalone": STANDALONE_REFERENCE_COLOR,
             "nested-random / slicing / none / global": "tab:red",
             "nested-random / concat / none / global": "tab:blue",
             "nested-random / concat / lmc": "tab:purple",
@@ -217,4 +233,3 @@ PPL_VS_SIZE_SPLIT_FIGURE_SPEC = {
         ],
     },
 }
-

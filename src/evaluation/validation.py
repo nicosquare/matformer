@@ -86,21 +86,25 @@ def evaluate_validation_loss(
             total_nll += float(outputs.loss.detach().double().item()) * valid_targets
             target_count += valid_targets
 
-    total_nll, batch_count, example_count, target_count, skipped_batch_count = _reduce_validation_stats(
-        total_nll,
-        batch_count,
-        example_count,
-        target_count,
-        skipped_batch_count,
-        device,
-        distributed,
+    total_nll, batch_count, example_count, target_count, skipped_batch_count = (
+        _reduce_validation_stats(
+            total_nll,
+            batch_count,
+            example_count,
+            target_count,
+            skipped_batch_count,
+            device,
+            distributed,
+        )
     )
 
     if was_training:
         model.train()
 
     if target_count == 0:
-        raise ValueError("Validation holdout contains zero valid causal prediction targets")
+        raise ValueError(
+            "Validation holdout contains zero valid causal prediction targets"
+        )
     loss = total_nll / target_count
     return {
         "granularity": granularity,
@@ -138,6 +142,87 @@ def evaluate_validation_per_granularity(
         ]
     finally:
         _restore_runtime_granularity_state(model, runtime_state)
+
+
+def evaluate_fixed_panel_objective(
+    model,
+    dataloader,
+    granularities: list[str],
+    device: torch.device | str,
+    distributed: bool = False,
+    config: dict[str, Any] | None = None,
+    controller_manifest_hash: str | None = None,
+    boundary_step: int | None = None,
+) -> dict[str, Any]:
+    """Evaluate the uniform all-granularity objective on one fixed panel."""
+
+    ordered_granularities = [str(granularity) for granularity in granularities]
+    if not ordered_granularities:
+        raise ValueError("Controller objective requires at least one granularity")
+    if len(set(ordered_granularities)) != len(ordered_granularities):
+        raise ValueError("Controller objective granularities must be unique")
+
+    component_results = evaluate_validation_per_granularity(
+        model,
+        dataloader,
+        ordered_granularities,
+        device,
+        distributed=distributed,
+        config=config,
+    )
+    component_losses = []
+    for expected_granularity, result in zip(
+        ordered_granularities,
+        component_results,
+        strict=True,
+    ):
+        if result.get("granularity") != expected_granularity:
+            raise ValueError(
+                "Controller objective granularity order changed during evaluation"
+            )
+        component_loss = float(result["loss"])
+        if not math.isfinite(component_loss):
+            raise ValueError(
+                "Controller objective produced a non-finite component loss for "
+                f"granularity {expected_granularity!r}"
+            )
+        component_losses.append(component_loss)
+
+    uniform_objective = math.fsum(component_losses) / len(component_losses)
+    if not math.isfinite(uniform_objective):
+        raise ValueError("Controller objective is non-finite")
+
+    evaluation_example_counts = {
+        int(result["evaluation_examples"]) for result in component_results
+    }
+    evaluation_target_counts = {
+        int(result["evaluation_target_tokens"]) for result in component_results
+    }
+    if len(evaluation_example_counts) != 1 or len(evaluation_target_counts) != 1:
+        raise ValueError(
+            "Controller objective component evaluations used inconsistent panel counts"
+        )
+
+    return {
+        "boundary_step": boundary_step,
+        "split": "controller",
+        "ordered_granularities": ordered_granularities,
+        "ordered_component_losses": component_losses,
+        "objective": uniform_objective,
+        "uniform_objective": uniform_objective,
+        "evaluation_example_count": next(iter(evaluation_example_counts)),
+        "evaluation_target_tokens": next(iter(evaluation_target_counts)),
+        "aggregation_method": "target_token_weighted_causal_shift_float64",
+        "objective_weighting": "uniform",
+        "controller_manifest_hash": controller_manifest_hash,
+        "evaluation_status": "complete",
+        "component_results": component_results,
+    }
+
+
+# Keep both descriptive call-site names available while controller lifecycle code lands.
+evaluate_controller_objective = evaluate_fixed_panel_objective
+evaluate_controller_panel_objective = evaluate_fixed_panel_objective
 
 
 def _capture_runtime_granularity_state(model) -> dict[str, Any]:
@@ -203,6 +288,11 @@ def validation_results_to_metric_rows(
         row = {
             "run_id": run["run_id"],
             "step": step,
+            "microstep": (
+                adaptive_artifacts.get("microstep")
+                if isinstance(adaptive_artifacts, Mapping)
+                else None
+            ),
             "split": split,
             "model_family": run["model_family"],
             "model_size_label": _model_shape_label(run),
@@ -222,15 +312,15 @@ def validation_results_to_metric_rows(
                 "resolved_sampling_mode",
                 model.get("granularity_sampling_mode", "global"),
             ),
-            "granularity_sampling_mode": model.get(
-                "granularity_sampling_mode"
-            ),
+            "granularity_sampling_mode": model.get("granularity_sampling_mode"),
             "granularity": result["granularity"],
             **resolved_granularity_artifact_fields(model),
             "granularity_pattern_summary": json_artifact_value(
-                granularity_pattern_summary
-                if granularity_pattern_summary is not None
-                else _default_granularity_pattern_summary(config)
+                _evaluated_granularity_pattern_summary(
+                    config,
+                    str(result["granularity"]),
+                    base_summary=granularity_pattern_summary,
+                )
             ),
             "correction_context": json_artifact_value(
                 correction_context
@@ -247,20 +337,26 @@ def validation_results_to_metric_rows(
                 if content_tokens_seen is None
                 else content_tokens_seen
             ),
+            "optimizer_window_microsteps": (
+                adaptive_artifacts.get("optimizer_window_microsteps")
+                if isinstance(adaptive_artifacts, Mapping)
+                else None
+            ),
+            "committed_tokens_this_step": (
+                adaptive_artifacts.get("committed_tokens_this_step")
+                if isinstance(adaptive_artifacts, Mapping)
+                else None
+            ),
             "evaluation_examples": result.get("evaluation_examples"),
             "evaluation_batches": result.get("evaluation_batches"),
             "evaluation_target_tokens": result.get("evaluation_target_tokens"),
-            "evaluation_skipped_batches": result.get(
-                "evaluation_skipped_batches"
-            ),
+            "evaluation_skipped_batches": result.get("evaluation_skipped_batches"),
             "validation_manifest_hash": config.get("validation_manifest_hash"),
             "validation_loss_aggregation": result.get(
                 "validation_loss_aggregation",
                 config.get("validation_loss_aggregation"),
             ),
-            "comparison_control_signature": config.get(
-                "comparison_control_signature"
-            ),
+            "comparison_control_signature": config.get("comparison_control_signature"),
             "wall_clock_seconds": wall_clock_seconds,
             "tokens_per_second": tokens_per_second,
             "peak_memory_bytes": peak_memory_bytes,
@@ -269,6 +365,34 @@ def validation_results_to_metric_rows(
             row.update(adaptive_artifacts)
         rows.append(row)
     return rows
+
+
+def _evaluated_granularity_pattern_summary(
+    config: Mapping[str, Any],
+    granularity: str,
+    *,
+    base_summary: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Describe the subnetwork evaluated for this specific validation row."""
+
+    summary = dict(
+        base_summary
+        if isinstance(base_summary, Mapping)
+        else _default_granularity_pattern_summary(dict(config))
+    )
+    run = config.get("run", {})
+    run_id = str(run.get("run_id") or "") if isinstance(run, Mapping) else ""
+    summary.update(
+        {
+            "pattern_type": "single",
+            "selected_granularities": [granularity],
+            "repeatable_source": [
+                run_id,
+                f"validation.granularity={granularity}",
+            ],
+        }
+    )
+    return summary
 
 
 def aggregate_scaling_summary(
@@ -436,18 +560,15 @@ def _default_correction_context(config: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(model, Mapping):
         model = {}
     sampling_mode = str(model.get("granularity_sampling_mode", "global"))
-    local_correction_active = (
-        sampling_mode == "per_block"
-        and model.get("correction_mode") in {"gmc", "lmc"}
-    )
+    local_correction_active = sampling_mode == "per_block" and model.get(
+        "correction_mode"
+    ) in {"gmc", "lmc"}
     return {
         "correction_mode": model.get("correction_mode"),
         "sampling_mode": sampling_mode,
         "local_correction_active": local_correction_active,
         "derived_membership_pattern": (
-            list(model.get("granularities", []))
-            if local_correction_active
-            else []
+            list(model.get("granularities", [])) if local_correction_active else []
         ),
     }
 

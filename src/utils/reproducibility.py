@@ -14,6 +14,13 @@ import numpy as np
 SEED_STREAM_VERSION = 1
 DATA_SPLIT_VERSION = 1
 STRICT_CUBLAS_WORKSPACE_CONFIG = ":4096:8"
+PROBABILISTIC_SEED_STREAMS = (
+    "controller_panel",
+    "final_holdout",
+    "posterior_sampling",
+    "pre_nested_warmup_schedule",
+    "controller_reset_schedule",
+)
 SEED_STREAMS = (
     "model_initialization",
     "python_training",
@@ -26,6 +33,7 @@ SEED_STREAMS = (
     "granularity_selection",
     "adaptive_sampling",
     "artifact_retry_jitter",
+    *PROBABILISTIC_SEED_STREAMS,
 )
 
 _DEDICATED_RANDOM_GENERATORS: dict[str, random.Random] = {}
@@ -215,6 +223,142 @@ def stable_hash(value: Any) -> str:
     return hashlib.sha256(serialized).hexdigest()
 
 
+def build_balanced_warmup_schedule(
+    granularities: list[str] | tuple[str, ...],
+    *,
+    passes: int,
+    seed: int,
+    action_interval_steps: int,
+    duration_steps: int,
+) -> tuple[list[str], str]:
+    """Build independently shuffled, complete granularity passes.
+
+    A local generator deliberately isolates schedule construction from all
+    training, dataloader, and posterior-sampling random state.
+    """
+
+    labels = [str(label) for label in granularities]
+    if not labels or len(set(labels)) != len(labels):
+        raise ValueError("balanced warmup granularities must be nonempty and unique")
+    if isinstance(passes, bool) or not isinstance(passes, int) or passes <= 0:
+        raise ValueError("balanced warmup passes must be a positive integer")
+    if (
+        isinstance(action_interval_steps, bool)
+        or not isinstance(action_interval_steps, int)
+        or action_interval_steps <= 0
+    ):
+        raise ValueError("balanced warmup action interval must be positive")
+    if (
+        isinstance(duration_steps, bool)
+        or not isinstance(duration_steps, int)
+        or duration_steps <= 0
+    ):
+        raise ValueError("balanced warmup duration must be positive")
+    if duration_steps != passes * action_interval_steps * len(labels):
+        raise ValueError("balanced warmup duration does not match complete passes")
+
+    generator = random.Random(int(seed))
+    schedule: list[str] = []
+    for _ in range(passes):
+        permutation = list(labels)
+        generator.shuffle(permutation)
+        schedule.extend(permutation)
+
+    schedule_identity = {
+        "version": 1,
+        "policy": "balanced_global",
+        "seed_stream_name": "pre_nested_warmup_schedule",
+        "resolved_seed": int(seed),
+        "ordered_granularities": labels,
+        "passes": int(passes),
+        "action_interval_steps": int(action_interval_steps),
+        "duration_steps": int(duration_steps),
+        "schedule": schedule,
+    }
+    return schedule, stable_hash(schedule_identity)
+
+
+def build_controller_reset_schedule(
+    granularities: list[str] | tuple[str, ...],
+    *,
+    acquisition_passes: int,
+    root_seed: int,
+    episode_index: int,
+) -> tuple[list[str], int, str]:
+    """Build deterministic, episode-indexed balanced acquisition passes."""
+
+    labels = [str(label) for label in granularities]
+    if not labels or len(set(labels)) != len(labels):
+        raise ValueError("controller reset granularities must be nonempty and unique")
+    if (
+        isinstance(acquisition_passes, bool)
+        or not isinstance(acquisition_passes, int)
+        or acquisition_passes <= 0
+    ):
+        raise ValueError("controller reset acquisition passes must be positive")
+    if isinstance(root_seed, bool) or not isinstance(root_seed, int) or root_seed < 0:
+        raise ValueError("controller reset root seed must be nonnegative")
+    if (
+        isinstance(episode_index, bool)
+        or not isinstance(episode_index, int)
+        or episode_index < 0
+    ):
+        raise ValueError("controller reset episode index must be nonnegative")
+
+    seed_material = (
+        f"controller-reset-schedule-v1 | {root_seed} | {episode_index}"
+    ).encode("utf-8")
+    episode_seed = int.from_bytes(
+        hashlib.sha256(seed_material).digest()[:8], "big"
+    ) & ((1 << 63) - 1)
+    generator = random.Random(episode_seed)
+    schedule: list[str] = []
+    for _ in range(acquisition_passes):
+        permutation = list(labels)
+        generator.shuffle(permutation)
+        schedule.extend(permutation)
+
+    identity = {
+        "version": 1,
+        "policy": "balanced_global",
+        "seed_stream_name": "controller_reset_schedule",
+        "root_seed": int(root_seed),
+        "episode_index": int(episode_index),
+        "episode_seed": int(episode_seed),
+        "ordered_granularities": labels,
+        "acquisition_passes": int(acquisition_passes),
+        "schedule": schedule,
+    }
+    return schedule, episode_seed, stable_hash(identity)
+
+
+def probabilistic_seed_provenance(
+    config: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Resolve the independent data-role and posterior seed streams."""
+
+    seed_stream_version = int(
+        config["run"]["reproducibility"]["seed_stream_version"]
+    )
+    return {
+        stream_name: {
+            "stream_name": stream_name,
+            "seed_stream_version": seed_stream_version,
+            "resolved_seed": seed_for(config, stream_name),
+        }
+        for stream_name in PROBABILISTIC_SEED_STREAMS
+    }
+
+
+def _uses_probabilistic_adaptive_controller(config: Mapping[str, Any]) -> bool:
+    model = config.get("model", {})
+    return (
+        model.get("granularity_sampling_mode")
+        in {"adaptive_global", "adaptive_per_block"}
+        and model.get("adaptive_sampler_strategy") == "thompson"
+    )
+
+
 def build_comparison_control_signature(config: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
     run = config["run"]
     training = config["training"]
@@ -231,13 +375,38 @@ def build_comparison_control_signature(config: Mapping[str, Any]) -> tuple[str, 
         "warmup_steps": training.get("resolved_warmup_steps"),
         "token_budget": training.get("token_budget"),
         "batch_size_per_process": training.get("batch_size_per_process"),
+        "gradient_accumulation_steps": training.get(
+            "gradient_accumulation_steps"
+        ),
+        "expected_tokens_per_microstep": training.get(
+            "expected_tokens_per_microstep"
+        ),
+        "expected_tokens_per_step": training.get("expected_tokens_per_step"),
         "precision": training.get("resolved_mixed_precision"),
         "context_length": model.get("context_length"),
         "validation_interval_steps": validation.get("interval_steps"),
+        "validation_interval_tokens": validation.get("interval_tokens"),
         "validation_run_at_completion": validation.get("run_at_completion"),
         "dataset_name": dataset.get("dataset_name"),
         "dataset_config_name": dataset.get("dataset_config_name"),
         "dataset_split": dataset.get("dataset_split"),
         "tokenizer_name": model.get("tokenizer_name"),
+        "tokenizer_revision": model.get("tokenizer_revision"),
+        "tokenizer_manifest_hash": model.get("tokenizer_manifest_hash"),
+        "prepared_corpus_hash": dataset.get("corpus_hash"),
+        "optimizer_training_role_hash": config.get(
+            "optimizer_training_manifest_hash"
+        ),
     }
+    if _uses_probabilistic_adaptive_controller(config):
+        inputs["probabilistic_seed_streams"] = probabilistic_seed_provenance(config)
+        inputs["probabilistic_data_role_manifests"] = {
+            "data_roles": config.get("data_roles_manifest_hash"),
+            "optimizer_training": config.get(
+                "optimizer_training_manifest_hash"
+            ),
+            "controller": config.get("controller_manifest_hash"),
+            "ordinary_validation": config.get("validation_manifest_hash"),
+            "final_holdout": config.get("final_holdout_manifest_hash"),
+        }
     return stable_hash(inputs), inputs

@@ -16,8 +16,12 @@ if str(REPO_ROOT) not in sys.path:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", default="outputs", help="Root containing run CSV artifacts.")
-    parser.add_argument("--output", default="outputs/figures", help="Figure output directory.")
+    parser.add_argument(
+        "--input", default="outputs", help="Root containing run CSV artifacts."
+    )
+    parser.add_argument(
+        "--output", default="outputs/figures", help="Figure output directory."
+    )
     parser.add_argument(
         "--no-refresh-counts",
         action="store_true",
@@ -37,6 +41,31 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Render validation loss figures with a logarithmic y axis.",
     )
+    parser.add_argument(
+        "--include-incomplete-validation-traces",
+        action="store_true",
+        help="Include incomplete runs as separate dashed validation traces.",
+    )
+    parser.add_argument(
+        "--variant",
+        dest="variants",
+        action="append",
+        choices=("slicing", "concat"),
+        help=(
+            "Only include this model variant. Repeat to include more than one; "
+            "omit to include every variant."
+        ),
+    )
+    parser.add_argument(
+        "--correction",
+        dest="corrections",
+        action="append",
+        choices=("none", "gmc", "lmc"),
+        help=(
+            "Only include this correction mode. Repeat to include more than one; "
+            "use 'none' for uncorrected runs."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -50,6 +79,11 @@ def main(argv: list[str] | None = None) -> None:
         refresh_counts=not args.no_refresh_counts,
         dpi=args.dpi,
         validation_loss_log_y=args.validation_loss_log_y,
+        include_incomplete_validation_traces=(
+            args.include_incomplete_validation_traces
+        ),
+        variants=args.variants,
+        corrections=args.corrections,
     )
     for path in figure_paths:
         print(path)

@@ -25,7 +25,7 @@ BASELINE_MATCH_FIELDS = [
     ("dataset.preprocessing_notes", "preprocessing"),
     ("training.token_budget", "token budget"),
     ("model.context_length", "context length"),
-    ("model.vocab_size_assumption", "vocabulary assumption"),
+    ("model.vocab_size", "vocabulary size"),
 ]
 
 DEBUG_MATRIX_CONFIG = Path("configs/debug_matrix.yaml")
