@@ -32,6 +32,32 @@ class FineWebTokenizerError(ValueError):
     """Raised when tokenizer artifacts or their provenance are invalid."""
 
 
+def sentencepiece_trainer_options(
+    vocab_size: int = DEFAULT_VOCAB_SIZE,
+) -> dict[str, Any]:
+    """Return the immutable SentencePiece training contract recorded in manifests."""
+
+    return {
+        "model_type": "bpe",
+        "vocab_size": int(vocab_size),
+        "unk_id": SPECIAL_TOKEN_IDS["unk"],
+        "bos_id": SPECIAL_TOKEN_IDS["bos"],
+        "eos_id": SPECIAL_TOKEN_IDS["eos"],
+        "pad_id": SPECIAL_TOKEN_IDS["pad"],
+        "unk_piece": SPECIAL_TOKEN_PIECES["unk"],
+        "bos_piece": SPECIAL_TOKEN_PIECES["bos"],
+        "eos_piece": SPECIAL_TOKEN_PIECES["eos"],
+        "pad_piece": SPECIAL_TOKEN_PIECES["pad"],
+        "byte_fallback": True,
+        "character_coverage": 0.9995,
+        "normalization_rule_name": "nmt_nfkc",
+        "hard_vocab_limit": True,
+        "shuffle_input_sentence": False,
+        "input_sentence_size": 0,
+        "num_threads": 1,
+    }
+
+
 def utf8_safe_chunks(text: str, max_bytes: int = DEFAULT_MAX_CHUNK_BYTES) -> Iterator[str]:
     """Yield nonempty character-aligned chunks whose UTF-8 encoding fits the limit."""
 
@@ -142,6 +168,76 @@ def load_tokenizer_manifest(
     if manifest.get("special_token_ids") != SPECIAL_TOKEN_IDS:
         raise FineWebTokenizerError("Tokenizer special IDs do not match the contract")
     return manifest
+
+
+def load_existing_tokenizer_if_matching(
+    tokenizer_dir: str | Path,
+    *,
+    source_dataset: str = "HuggingFaceFW/fineweb",
+    source_config: str = "sample-10BT",
+    source_split: str = "train",
+    text_column: str = "text",
+    data_seed: int = 42,
+    shuffle_buffer_size: int = 100_000,
+    document_count: int = DEFAULT_TOKENIZER_DOCUMENT_COUNT,
+    max_chunk_bytes: int = DEFAULT_MAX_CHUNK_BYTES,
+    vocab_size: int = DEFAULT_VOCAB_SIZE,
+) -> dict[str, Any] | None:
+    """Load a completed exact-match artifact, or return ``None`` when absent.
+
+    An existing directory is never treated as resumable scratch space. It must
+    be a fully checksum-valid tokenizer with the same preparation inputs.
+    """
+
+    root = Path(tokenizer_dir).expanduser().resolve()
+    if not root.exists():
+        return None
+    # Reject a changed request from manifest metadata before spending time on
+    # checksums. An accepted reuse is always followed by full verification.
+    manifest = load_tokenizer_manifest(root, verify_files=False)
+    expected = {
+        "training_version": TOKENIZER_TRAINING_VERSION,
+        "tokenizer_name": "fineweb_sentencepiece_bpe_256k",
+        "sentencepiece_version": "0.2.1",
+        "sentencepiece_options": sentencepiece_trainer_options(vocab_size),
+        "dataset.name": str(source_dataset),
+        "dataset.config_name": str(source_config),
+        "dataset.split": str(source_split),
+        "dataset.text_column": str(text_column),
+        "shuffle.seed": int(data_seed),
+        "shuffle.buffer_size": int(shuffle_buffer_size),
+        "reserved_document_count": sum(RESERVED_ROLE_COUNTS.values()),
+        "training_document_count": int(document_count),
+        "max_chunk_bytes": int(max_chunk_bytes),
+        "vocab_size": int(vocab_size),
+        "special_token_ids": dict(SPECIAL_TOKEN_IDS),
+        "special_token_pieces": dict(SPECIAL_TOKEN_PIECES),
+        "subword_sampling": False,
+    }
+
+    def value_at(path: str) -> Any:
+        value: Any = manifest
+        for component in path.split("."):
+            if not isinstance(value, Mapping) or component not in value:
+                return None
+            value = value[component]
+        return value
+
+    mismatches = {
+        field: {"actual": value_at(field), "expected": expected_value}
+        for field, expected_value in expected.items()
+        if value_at(field) != expected_value
+    }
+    if mismatches:
+        raise FineWebTokenizerError(
+            "Existing tokenizer does not match the requested preparation: "
+            + json.dumps(mismatches, sort_keys=True)
+        )
+    if int(manifest.get("training_chunk_count", 0)) <= 0:
+        raise FineWebTokenizerError(
+            "Existing tokenizer training_chunk_count must be positive"
+        )
+    return load_tokenizer_manifest(root, verify_files=True)
 
 
 def _write_training_input(
@@ -307,25 +403,7 @@ def train_fineweb_tokenizer(
             max_chunk_bytes=int(max_chunk_bytes),
         )
         model_prefix = staging / "tokenizer"
-        trainer_options = {
-            "model_type": "bpe",
-            "vocab_size": int(vocab_size),
-            "unk_id": SPECIAL_TOKEN_IDS["unk"],
-            "bos_id": SPECIAL_TOKEN_IDS["bos"],
-            "eos_id": SPECIAL_TOKEN_IDS["eos"],
-            "pad_id": SPECIAL_TOKEN_IDS["pad"],
-            "unk_piece": SPECIAL_TOKEN_PIECES["unk"],
-            "bos_piece": SPECIAL_TOKEN_PIECES["bos"],
-            "eos_piece": SPECIAL_TOKEN_PIECES["eos"],
-            "pad_piece": SPECIAL_TOKEN_PIECES["pad"],
-            "byte_fallback": True,
-            "character_coverage": 0.9995,
-            "normalization_rule_name": "nmt_nfkc",
-            "hard_vocab_limit": True,
-            "shuffle_input_sentence": False,
-            "input_sentence_size": 0,
-            "num_threads": 1,
-        }
+        trainer_options = sentencepiece_trainer_options(vocab_size)
         spm.SentencePieceTrainer.train(
             input=str(input_path),
             model_prefix=str(model_prefix),
@@ -361,6 +439,7 @@ def train_fineweb_tokenizer(
                 "config_name": source_config,
                 "split": source_split,
                 "fingerprint": source_fingerprint,
+                "text_column": text_column,
             },
             "shuffle": {
                 "seed": int(data_seed),
@@ -401,8 +480,13 @@ __all__ = [
     "DEFAULT_VOCAB_SIZE",
     "FineWebTokenizerError",
     "SPECIAL_TOKEN_IDS",
+    "SPECIAL_TOKEN_PIECES",
+    "TOKENIZER_MANIFEST_SCHEMA_VERSION",
+    "TOKENIZER_TRAINING_VERSION",
+    "load_existing_tokenizer_if_matching",
     "load_tokenizer_manifest",
     "select_tokenizer_training_documents",
+    "sentencepiece_trainer_options",
     "train_fineweb_tokenizer",
     "utf8_safe_chunks",
 ]

@@ -13,6 +13,8 @@ import json
 import os
 import shutil
 import tempfile
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
@@ -29,6 +31,8 @@ PERMUTATION_VERSION = "numpy_pcg64_permutation_v1"
 DEFAULT_DATA_SEED = 42
 DEFAULT_CONTEXT_LENGTH = 1024
 DEFAULT_TRAINING_TOKEN_BUDGET = 10_000_000_000
+DEFAULT_SHUFFLE_BUFFER_SIZE = 100_000
+DEFAULT_SHARD_TOKEN_CAPACITY = 256 * 1024 * 1024
 RESERVED_ROLE_COUNTS = {
     "ordinary_validation": 512,
     "controller": 128,
@@ -44,6 +48,15 @@ ALL_CORPUS_ROLES = (
 
 class PackedCorpusError(ValueError):
     """Raised when a prepared corpus violates the immutable data contract."""
+
+
+def _resolved_shard_token_capacity(
+    shard_token_capacity: int, context_length: int
+) -> int:
+    return max(
+        int(context_length),
+        (int(shard_token_capacity) // int(context_length)) * int(context_length),
+    )
 
 
 def sha256_file(path: str | Path, *, chunk_bytes: int = 8 * 1024 * 1024) -> str:
@@ -164,9 +177,8 @@ class _RoleShardWriter:
         self.root.mkdir(parents=True, exist_ok=False)
         self.role = role
         self.context_length = int(context_length)
-        self.shard_token_capacity = max(
-            self.context_length,
-            (int(shard_token_capacity) // self.context_length) * self.context_length,
+        self.shard_token_capacity = _resolved_shard_token_capacity(
+            shard_token_capacity, self.context_length
         )
         self.exact_token_limit = (
             None if exact_token_limit is None else int(exact_token_limit)
@@ -318,6 +330,50 @@ def _tokenize_document(tokenizer: Any, text: str) -> list[int]:
     return [int(value) for value in token_ids]
 
 
+def _ordered_tokenize_documents(
+    records: Iterable[tuple[Any, Mapping[str, Any]]],
+    tokenizer: Any,
+    *,
+    text_column: str,
+    workers: int,
+) -> Iterator[tuple[Any, list[int]]]:
+    """Tokenize with bounded concurrency while yielding source order exactly."""
+
+    worker_count = int(workers)
+
+    def tokenize_record(document: Mapping[str, Any]) -> list[int]:
+        if text_column not in document:
+            raise PackedCorpusError(
+                f"Source document is missing text column {text_column!r}"
+            )
+        return _tokenize_document(tokenizer, str(document[text_column]))
+
+    if worker_count == 1:
+        for metadata, document in records:
+            yield metadata, tokenize_record(document)
+        return
+
+    # Keep memory and streamed-source lookahead bounded. Futures are always
+    # consumed from the left, so completion timing cannot reorder the corpus.
+    max_pending = worker_count * 4
+    pending: deque[tuple[Any, Future[list[int]]]] = deque()
+    executor = ThreadPoolExecutor(
+        max_workers=worker_count,
+        thread_name_prefix="fineweb-tokenize",
+    )
+    try:
+        for metadata, document in records:
+            pending.append((metadata, executor.submit(tokenize_record, document)))
+            if len(pending) >= max_pending:
+                first_metadata, future = pending.popleft()
+                yield first_metadata, future.result()
+        while pending:
+            metadata, future = pending.popleft()
+            yield metadata, future.result()
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+
 def prepare_packed_corpus(
     documents: Iterable[Mapping[str, Any]],
     tokenizer: Any,
@@ -333,7 +389,9 @@ def prepare_packed_corpus(
     data_seed: int = DEFAULT_DATA_SEED,
     context_length: int = DEFAULT_CONTEXT_LENGTH,
     training_token_budget: int = DEFAULT_TRAINING_TOKEN_BUDGET,
-    shard_token_capacity: int = 256 * 1024 * 1024,
+    shard_token_capacity: int = DEFAULT_SHARD_TOKEN_CAPACITY,
+    shuffle_buffer_size: int = DEFAULT_SHUFFLE_BUFFER_SIZE,
+    tokenization_workers: int = 1,
     tokenizer_manifest: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Consume one seeded FineWeb stream and atomically install a packed corpus."""
@@ -349,6 +407,8 @@ def prepare_packed_corpus(
         raise PackedCorpusError(
             "training_token_budget must be positive and divisible by context_length"
         )
+    if isinstance(tokenization_workers, bool) or int(tokenization_workers) <= 0:
+        raise PackedCorpusError("tokenization_workers must be positive")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_root = Path(
@@ -378,14 +438,15 @@ def prepare_packed_corpus(
                 exact_token_limit=None,
             )
             identities: list[dict[str, Any]] = []
-            for identity, document in selected:
-                if text_column not in document:
-                    raise PackedCorpusError(
-                        f"Source document is missing text column {text_column!r}"
-                    )
+            for identity, token_ids in _ordered_tokenize_documents(
+                selected,
+                tokenizer,
+                text_column=text_column,
+                workers=int(tokenization_workers),
+            ):
                 identities.append(identity)
                 writer.add_document(
-                    _tokenize_document(tokenizer, str(document[text_column])),
+                    token_ids,
                     eos_token_id=eos_token_id,
                 )
             role_manifest = writer.finish()
@@ -410,23 +471,34 @@ def prepare_packed_corpus(
         )
         training_identity_digest = hashlib.sha256()
         training_document_count = 0
-        for source_offset, document in enumerate(training_documents, start=sum(RESERVED_ROLE_COUNTS.values())):
-            if text_column not in document:
-                raise PackedCorpusError(
-                    f"Source document is missing text column {text_column!r}"
+
+        def training_records() -> Iterator[tuple[dict[str, Any], Mapping[str, Any]]]:
+            for source_offset, document in enumerate(
+                training_documents,
+                start=sum(RESERVED_ROLE_COUNTS.values()),
+            ):
+                yield (
+                    _document_identity(
+                        document,
+                        source_index=source_offset,
+                        source_fingerprint=source_fingerprint,
+                    ),
+                    document,
                 )
-            identity = _document_identity(
-                document,
-                source_index=source_offset,
-                source_fingerprint=source_fingerprint,
-            )
+
+        for identity, token_ids in _ordered_tokenize_documents(
+            training_records(),
+            tokenizer,
+            text_column=text_column,
+            workers=int(tokenization_workers),
+        ):
             identity_hash = stable_hash(identity)
             if any(identity_hash in identities for identities in reserved_identity_sets.values()):
                 raise PackedCorpusError("A reserved source document reappeared in training")
             training_identity_digest.update(identity_hash.encode("ascii"))
             training_document_count += 1
             training_writer.add_document(
-                _tokenize_document(tokenizer, str(document[text_column])),
+                token_ids,
                 eos_token_id=eos_token_id,
             )
             if training_writer.full:
@@ -469,6 +541,19 @@ def prepare_packed_corpus(
             },
             "tokenizer": token_identity,
             "training_token_budget": int(training_token_budget),
+            "preparation": {
+                "text_column": str(text_column),
+                "shuffle": {
+                    "seed": int(data_seed),
+                    "buffer_size": int(shuffle_buffer_size),
+                },
+                "shard_token_capacity": {
+                    "requested": int(shard_token_capacity),
+                    "resolved": _resolved_shard_token_capacity(
+                        shard_token_capacity, context_length
+                    ),
+                },
+            },
             "role_selection_order": list(RESERVED_ROLE_COUNTS),
             "reserved_role_counts": dict(RESERVED_ROLE_COUNTS),
             "reserved_pairwise_intersection_counts": pairwise_intersections,
@@ -550,6 +635,82 @@ def load_corpus_manifest(
         if total_tokens != int(role_manifest["token_count"]):
             raise PackedCorpusError(f"Prepared corpus role token count mismatch: {role}")
     return manifest
+
+
+def load_existing_corpus_if_matching(
+    prepared_corpus_dir: str | Path,
+    *,
+    tokenizer_manifest: Mapping[str, Any],
+    tokenizer_name: str,
+    tokenizer_revision: str,
+    source_dataset: str = "HuggingFaceFW/fineweb",
+    source_config: str = "sample-10BT",
+    source_split: str = "train",
+    text_column: str = "text",
+    data_seed: int = DEFAULT_DATA_SEED,
+    context_length: int = DEFAULT_CONTEXT_LENGTH,
+    training_token_budget: int = DEFAULT_TRAINING_TOKEN_BUDGET,
+    shard_token_capacity: int = DEFAULT_SHARD_TOKEN_CAPACITY,
+    shuffle_buffer_size: int = DEFAULT_SHUFFLE_BUFFER_SIZE,
+) -> dict[str, Any] | None:
+    """Load a fully verified exact-match corpus, or return ``None`` if absent."""
+
+    root = Path(prepared_corpus_dir).expanduser().resolve()
+    if not root.exists():
+        return None
+    # A changed request should fail from metadata without scanning a 10B-token
+    # artifact. Exact-match reuse still requires a complete checksum pass.
+    manifest = load_corpus_manifest(root, verify_shards=False)
+    tokenizer_payload = dict(tokenizer_manifest)
+    manifest_hash = tokenizer_payload.pop("manifest_hash", None)
+    if not isinstance(manifest_hash, str) or manifest_hash != stable_hash(
+        tokenizer_payload
+    ):
+        raise PackedCorpusError("Tokenizer manifest hash mismatch")
+    special_ids = tokenizer_manifest.get("special_token_ids", {})
+    expected = {
+        "data_seed": int(data_seed),
+        "context_length": int(context_length),
+        "source.dataset_name": str(source_dataset),
+        "source.dataset_config_name": str(source_config),
+        "source.split": str(source_split),
+        "tokenizer.name": str(tokenizer_name),
+        "tokenizer.revision": str(tokenizer_revision),
+        "tokenizer.manifest_hash": manifest_hash,
+        "tokenizer.sentencepiece_model_sha256": tokenizer_manifest.get(
+            "sentencepiece_model_sha256"
+        ),
+        "tokenizer.vocab_size": int(tokenizer_manifest.get("vocab_size", 0) or 0),
+        "tokenizer.eos_token_id": int(special_ids.get("eos", -1)),
+        "training_token_budget": int(training_token_budget),
+        "preparation.text_column": str(text_column),
+        "preparation.shuffle.seed": int(data_seed),
+        "preparation.shuffle.buffer_size": int(shuffle_buffer_size),
+        "preparation.shard_token_capacity.requested": int(shard_token_capacity),
+        "preparation.shard_token_capacity.resolved": _resolved_shard_token_capacity(
+            shard_token_capacity, context_length
+        ),
+    }
+
+    def value_at(path: str) -> Any:
+        value: Any = manifest
+        for component in path.split("."):
+            if not isinstance(value, Mapping) or component not in value:
+                return None
+            value = value[component]
+        return value
+
+    mismatches = {
+        field: {"actual": value_at(field), "expected": expected_value}
+        for field, expected_value in expected.items()
+        if value_at(field) != expected_value
+    }
+    if mismatches:
+        raise PackedCorpusError(
+            "Existing prepared corpus does not match the requested preparation: "
+            + json.dumps(mismatches, sort_keys=True)
+        )
+    return load_corpus_manifest(root, verify_shards=True)
 
 
 def audit_packed_corpus(

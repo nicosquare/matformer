@@ -6,18 +6,27 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Sequence
 
 from datasets import load_dataset
 from transformers import AutoTokenizer
 
 from src.training.packed_corpus import (
     DEFAULT_TRAINING_TOKEN_BUDGET,
+    load_existing_corpus_if_matching,
     prepare_packed_corpus,
 )
 from src.training.fineweb_tokenizer import load_tokenizer_manifest
 
 
-def parse_args() -> argparse.Namespace:
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument(
@@ -47,14 +56,72 @@ def parse_args() -> argparse.Namespace:
         default=100_000,
         help="FineWeb streaming shuffle buffer; the resulting order is seed-pinned",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--tokenization-workers",
+        type=positive_int,
+        default=1,
+        help=(
+            "Ordered tokenizer worker threads; increase for faster future corpus "
+            "builds without changing packed-token order"
+        ),
+    )
+    return parser.parse_args(argv)
 
 
-def main() -> None:
-    args = parse_args()
+def _summary(
+    args: argparse.Namespace,
+    manifest: dict,
+    tokenizer_manifest: dict,
+    *,
+    status: str,
+) -> dict:
+    return {
+        "status": status,
+        "output_dir": str(Path(args.output_dir).expanduser().resolve()),
+        "corpus_hash": manifest["corpus_hash"],
+        "training_token_count": manifest["roles"]["optimizer_training"][
+            "token_count"
+        ],
+        "role_manifest_hashes": manifest["role_manifest_hashes"],
+        "tokenizer_manifest_hash": tokenizer_manifest["manifest_hash"],
+        "tokenization_workers": args.tokenization_workers,
+    }
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    args = parse_args(argv)
     tokenizer_manifest = load_tokenizer_manifest(
         args.prepared_tokenizer_dir, verify_files=True
     )
+    existing = load_existing_corpus_if_matching(
+        args.output_dir,
+        tokenizer_manifest=tokenizer_manifest,
+        tokenizer_name=tokenizer_manifest["tokenizer_name"],
+        tokenizer_revision=tokenizer_manifest["manifest_hash"],
+        source_dataset=args.dataset,
+        source_config=args.dataset_config,
+        source_split=args.split,
+        text_column=args.text_column,
+        data_seed=args.data_seed,
+        context_length=args.context_length,
+        training_token_budget=args.training_token_budget,
+        shard_token_capacity=args.shard_token_capacity,
+        shuffle_buffer_size=args.shuffle_buffer_size,
+    )
+    if existing is not None:
+        print(
+            json.dumps(
+                _summary(
+                    args,
+                    existing,
+                    tokenizer_manifest,
+                    status="already_prepared",
+                ),
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
     tokenizer = AutoTokenizer.from_pretrained(
         args.prepared_tokenizer_dir,
         local_files_only=True,
@@ -90,19 +157,13 @@ def main() -> None:
         context_length=args.context_length,
         training_token_budget=args.training_token_budget,
         shard_token_capacity=args.shard_token_capacity,
+        shuffle_buffer_size=args.shuffle_buffer_size,
+        tokenization_workers=args.tokenization_workers,
         tokenizer_manifest=tokenizer_manifest,
     )
     print(
         json.dumps(
-            {
-                "output_dir": str(Path(args.output_dir).expanduser().resolve()),
-                "corpus_hash": manifest["corpus_hash"],
-                "training_token_count": manifest["roles"]["optimizer_training"][
-                    "token_count"
-                ],
-                "role_manifest_hashes": manifest["role_manifest_hashes"],
-                "tokenizer_manifest_hash": tokenizer_manifest["manifest_hash"],
-            },
+            _summary(args, manifest, tokenizer_manifest, status="prepared"),
             indent=2,
             sort_keys=True,
         )

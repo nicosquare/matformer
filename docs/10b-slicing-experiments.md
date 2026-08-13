@@ -13,7 +13,8 @@ python scripts/train_fineweb_tokenizer.py \
 
 python scripts/prepare_fineweb_corpus.py \
   --output-dir "$CORPUS" \
-  --prepared-tokenizer-dir "$TOKENIZER"
+  --prepared-tokenizer-dir "$TOKENIZER" \
+  --tokenization-workers 8
 
 python scripts/audit_prepared_corpus.py \
   --prepared-corpus-dir "$CORPUS" \
@@ -29,6 +30,19 @@ checksums, tokenizer/corpus provenance, exact vocabulary compatibility, role
 separation, and exactly 10,000,000,000 packed training token IDs. Preparation
 tokenizes without padding or truncation, inserts EOS between source documents,
 and packs contiguous 1,024-token rows.
+
+Both preparation commands are safe to repeat with the same arguments. If the
+output already exists, the tokenizer command verifies its manifest and every
+tokenizer-file checksum; the corpus command verifies its manifest, tokenizer
+provenance, preparation arguments, and every shard checksum. An exact match
+prints `status: already_prepared` and exits before FineWeb is loaded. A partial,
+corrupt, or differently configured output fails without modifying it. The
+corpus check reads all packed shards, so it can take a few minutes for the 10B
+artifact, but it avoids the much longer tokenization and packing pass.
+`--tokenization-workers` defaults to `1`; increase it for future corpus builds.
+Workers tokenize concurrently through a bounded thread pool while results are
+committed in source order, so the setting affects throughput but not corpus
+identity. It does not alter a preparation process that is already running.
 
 The commands below submit exactly one experiment each. The Slurm wrapper derives
 `training.distributed.expected_world_size` from its allocation; the production

@@ -5,14 +5,66 @@ import json
 import pytest
 
 from src.training.fineweb_tokenizer import (
+    DEFAULT_MAX_CHUNK_BYTES,
+    DEFAULT_TOKENIZER_DOCUMENT_COUNT,
+    DEFAULT_VOCAB_SIZE,
     FineWebTokenizerError,
     SPECIAL_TOKEN_IDS,
+    SPECIAL_TOKEN_PIECES,
+    TOKENIZER_MANIFEST_SCHEMA_VERSION,
+    TOKENIZER_TRAINING_VERSION,
+    load_existing_tokenizer_if_matching,
     load_tokenizer_manifest,
     select_tokenizer_training_documents,
+    sentencepiece_trainer_options,
     utf8_safe_chunks,
 )
 from src.training.packed_corpus import sha256_file
 from src.utils.reproducibility import stable_hash
+
+
+def write_matching_tokenizer_artifact(tmp_path):
+    tokenizer_dir = tmp_path / "tokenizer"
+    tokenizer_dir.mkdir()
+    model = tokenizer_dir / "tokenizer.model"
+    config = tokenizer_dir / "tokenizer_config.json"
+    model.write_bytes(b"model")
+    config.write_text("{}\n", encoding="utf-8")
+    files = {path.name: sha256_file(path) for path in (model, config)}
+    manifest = {
+        "schema_version": TOKENIZER_MANIFEST_SCHEMA_VERSION,
+        "training_version": TOKENIZER_TRAINING_VERSION,
+        "tokenizer_name": "fineweb_sentencepiece_bpe_256k",
+        "sentencepiece_version": "0.2.1",
+        "sentencepiece_options": sentencepiece_trainer_options(DEFAULT_VOCAB_SIZE),
+        "dataset": {
+            "name": "HuggingFaceFW/fineweb",
+            "config_name": "sample-10BT",
+            "split": "train",
+            "fingerprint": "fixture-fingerprint",
+            "text_column": "text",
+        },
+        "shuffle": {"seed": 42, "buffer_size": 100_000},
+        "reserved_document_count": 1_152,
+        "training_document_count": DEFAULT_TOKENIZER_DOCUMENT_COUNT,
+        "training_chunk_count": 123,
+        "max_chunk_bytes": DEFAULT_MAX_CHUNK_BYTES,
+        "source_identity_stream_hash": "source-hash",
+        "raw_input_hash": "raw-hash",
+        "normalized_input_hash": "normalized-hash",
+        "vocab_size": DEFAULT_VOCAB_SIZE,
+        "special_token_ids": SPECIAL_TOKEN_IDS,
+        "special_token_pieces": SPECIAL_TOKEN_PIECES,
+        "subword_sampling": False,
+        "sentencepiece_model_file": model.name,
+        "sentencepiece_model_sha256": files[model.name],
+        "files": files,
+    }
+    manifest["manifest_hash"] = stable_hash(manifest)
+    (tokenizer_dir / "tokenizer_manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    return tokenizer_dir, manifest
 
 
 def test_tokenizer_selection_excludes_all_reserved_roles_and_takes_exact_count():
@@ -66,6 +118,35 @@ def test_tokenizer_manifest_hash_and_file_checksums_are_authoritative(tmp_path):
     model.write_bytes(b"changed")
     with pytest.raises(FineWebTokenizerError, match="checksum mismatch"):
         load_tokenizer_manifest(tokenizer_dir)
+
+
+def test_matching_existing_tokenizer_is_reused_and_mismatch_is_rejected(tmp_path):
+    tokenizer_dir, expected = write_matching_tokenizer_artifact(tmp_path)
+
+    loaded = load_existing_tokenizer_if_matching(tokenizer_dir)
+    assert loaded == expected
+    assert load_existing_tokenizer_if_matching(tmp_path / "missing") is None
+
+    with pytest.raises(FineWebTokenizerError, match="does not match.*document_count"):
+        load_existing_tokenizer_if_matching(
+            tokenizer_dir,
+            document_count=DEFAULT_TOKENIZER_DOCUMENT_COUNT - 1,
+        )
+
+
+def test_existing_tokenizer_cli_exits_before_loading_fineweb(tmp_path, monkeypatch, capsys):
+    from scripts import train_fineweb_tokenizer as command
+
+    tokenizer_dir, expected = write_matching_tokenizer_artifact(tmp_path)
+
+    def fail_load(*args, **kwargs):
+        raise AssertionError("FineWeb must not be loaded for a matching tokenizer")
+
+    monkeypatch.setattr(command, "load_dataset", fail_load)
+    command.main(["--output-dir", str(tokenizer_dir)])
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["status"] == "already_prepared"
+    assert summary["tokenizer_revision"] == expected["manifest_hash"]
 
 
 def test_local_sentencepiece_directory_loads_through_auto_tokenizer(tmp_path):
