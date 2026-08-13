@@ -288,6 +288,11 @@ def validation_results_to_metric_rows(
         row = {
             "run_id": run["run_id"],
             "step": step,
+            "microstep": (
+                adaptive_artifacts.get("microstep")
+                if isinstance(adaptive_artifacts, Mapping)
+                else None
+            ),
             "split": split,
             "model_family": run["model_family"],
             "model_size_label": _model_shape_label(run),
@@ -331,6 +336,16 @@ def validation_results_to_metric_rows(
                 result["tokens_seen"]
                 if content_tokens_seen is None
                 else content_tokens_seen
+            ),
+            "optimizer_window_microsteps": (
+                adaptive_artifacts.get("optimizer_window_microsteps")
+                if isinstance(adaptive_artifacts, Mapping)
+                else None
+            ),
+            "committed_tokens_this_step": (
+                adaptive_artifacts.get("committed_tokens_this_step")
+                if isinstance(adaptive_artifacts, Mapping)
+                else None
             ),
             "evaluation_examples": result.get("evaluation_examples"),
             "evaluation_batches": result.get("evaluation_batches"),

@@ -23,7 +23,7 @@ from torch.utils.data import Dataset, Sampler
 from src.utils.reproducibility import stable_hash
 
 
-PACKED_CORPUS_SCHEMA_VERSION = 1
+PACKED_CORPUS_SCHEMA_VERSION = 2
 PACKING_VERSION = "contiguous_eos_uint32_v1"
 PERMUTATION_VERSION = "numpy_pcg64_permutation_v1"
 DEFAULT_DATA_SEED = 42
@@ -54,7 +54,13 @@ def sha256_file(path: str | Path, *, chunk_bytes: int = 8 * 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
-def tokenizer_identity(tokenizer: Any, *, name: str, revision: str) -> dict[str, Any]:
+def tokenizer_identity(
+    tokenizer: Any,
+    *,
+    name: str,
+    revision: str,
+    tokenizer_manifest: Mapping[str, Any],
+) -> dict[str, Any]:
     eos_token_id = getattr(tokenizer, "eos_token_id", None)
     if eos_token_id is None:
         raise PackedCorpusError("The pinned tokenizer must define eos_token_id")
@@ -65,6 +71,33 @@ def tokenizer_identity(tokenizer: Any, *, name: str, revision: str) -> dict[str,
         "vocab_size": int(getattr(tokenizer, "vocab_size", 0) or 0),
         "tokenization": "no_padding_no_truncation",
     }
+    manifest_payload = dict(tokenizer_manifest)
+    manifest_hash = manifest_payload.pop("manifest_hash", None)
+    if not isinstance(manifest_hash, str) or manifest_hash != stable_hash(
+        manifest_payload
+    ):
+        raise PackedCorpusError("Tokenizer manifest hash mismatch")
+    manifest_vocab_size = int(tokenizer_manifest.get("vocab_size", 0) or 0)
+    if manifest_vocab_size != identity["vocab_size"]:
+        raise PackedCorpusError(
+            "Tokenizer vocabulary does not match its prepared manifest"
+        )
+    if str(name) != str(tokenizer_manifest.get("tokenizer_name")):
+        raise PackedCorpusError("Tokenizer name does not match its manifest")
+    if str(revision) != manifest_hash:
+        raise PackedCorpusError("Tokenizer revision must be its manifest hash")
+    special_ids = tokenizer_manifest.get("special_token_ids", {})
+    if int(special_ids.get("eos", -1)) != identity["eos_token_id"]:
+        raise PackedCorpusError("Tokenizer EOS ID does not match its manifest")
+    model_checksum = tokenizer_manifest.get("sentencepiece_model_sha256")
+    if not isinstance(model_checksum, str) or not model_checksum:
+        raise PackedCorpusError("Tokenizer model checksum is missing")
+    identity.update(
+        {
+            "manifest_hash": manifest_hash,
+            "sentencepiece_model_sha256": model_checksum,
+        }
+    )
     identity["identity_hash"] = stable_hash(identity)
     return identity
 
@@ -301,6 +334,7 @@ def prepare_packed_corpus(
     context_length: int = DEFAULT_CONTEXT_LENGTH,
     training_token_budget: int = DEFAULT_TRAINING_TOKEN_BUDGET,
     shard_token_capacity: int = 256 * 1024 * 1024,
+    tokenizer_manifest: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Consume one seeded FineWeb stream and atomically install a packed corpus."""
 
@@ -329,6 +363,7 @@ def prepare_packed_corpus(
             tokenizer,
             name=tokenizer_name,
             revision=tokenizer_revision,
+            tokenizer_manifest=tokenizer_manifest,
         )
         eos_token_id = int(token_identity["eos_token_id"])
         role_manifests: dict[str, dict[str, Any]] = {}
@@ -474,6 +509,16 @@ def load_corpus_manifest(
         raise PackedCorpusError("Prepared corpus manifest hash mismatch")
     if manifest.get("schema_version") != PACKED_CORPUS_SCHEMA_VERSION:
         raise PackedCorpusError("Prepared corpus schema version mismatch")
+    tokenizer = manifest.get("tokenizer")
+    if not isinstance(tokenizer, Mapping) or any(
+        field not in tokenizer
+        for field in (
+            "manifest_hash",
+            "sentencepiece_model_sha256",
+            "vocab_size",
+        )
+    ):
+        raise PackedCorpusError("Prepared corpus tokenizer provenance is incomplete")
     if manifest.get("packing_version") != PACKING_VERSION:
         raise PackedCorpusError("Prepared corpus packing version mismatch")
     if manifest.get("permutation_version") != PERMUTATION_VERSION:
@@ -511,6 +556,8 @@ def audit_packed_corpus(
     prepared_corpus_dir: str | Path,
     *,
     required_training_tokens: int = DEFAULT_TRAINING_TOKEN_BUDGET,
+    prepared_tokenizer_dir: str | Path | None = None,
+    required_vocab_size: int | None = None,
 ) -> dict[str, Any]:
     manifest = load_corpus_manifest(prepared_corpus_dir, verify_shards=True)
     training = manifest["roles"]["optimizer_training"]
@@ -522,6 +569,35 @@ def audit_packed_corpus(
     intersections = manifest.get("reserved_pairwise_intersection_counts", {})
     if any(int(value) != 0 for value in intersections.values()):
         raise PackedCorpusError("Prepared corpus reserved roles overlap")
+    tokenizer = manifest["tokenizer"]
+    if required_vocab_size is not None and int(tokenizer.get("vocab_size", -1)) != int(
+        required_vocab_size
+    ):
+        raise PackedCorpusError(
+            "Prepared corpus tokenizer vocabulary does not match the required size"
+        )
+    if prepared_tokenizer_dir is not None:
+        from src.training.fineweb_tokenizer import load_tokenizer_manifest
+
+        tokenizer_manifest = load_tokenizer_manifest(
+            prepared_tokenizer_dir, verify_files=True
+        )
+        expected = {
+            "manifest_hash": tokenizer_manifest["manifest_hash"],
+            "sentencepiece_model_sha256": tokenizer_manifest[
+                "sentencepiece_model_sha256"
+            ],
+            "vocab_size": tokenizer_manifest["vocab_size"],
+        }
+        mismatches = {
+            field: (tokenizer.get(field), value)
+            for field, value in expected.items()
+            if tokenizer.get(field) != value
+        }
+        if mismatches:
+            raise PackedCorpusError(
+                f"Prepared corpus tokenizer provenance mismatch: {mismatches}"
+            )
     return {
         "status": "passed",
         "corpus_hash": manifest["corpus_hash"],
@@ -531,6 +607,10 @@ def audit_packed_corpus(
         "verified_shard_count": sum(
             len(role["shards"]) for role in manifest["roles"].values()
         ),
+        "schema_version": manifest["schema_version"],
+        "tokenizer_manifest_hash": tokenizer.get("manifest_hash"),
+        "tokenizer_model_sha256": tokenizer.get("sentencepiece_model_sha256"),
+        "tokenizer_vocab_size": tokenizer.get("vocab_size"),
     }
 
 

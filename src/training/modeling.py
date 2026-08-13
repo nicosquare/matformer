@@ -134,6 +134,20 @@ def build_llama_config(config: dict[str, Any]) -> LlamaConfig:
 def load_tokenizer(config: dict[str, Any]):
     model = config["model"]
     dataset = config["dataset"]
+    tokenizer_dir = model.get("tokenizer_dir")
+    if tokenizer_dir:
+        from src.training.fineweb_tokenizer import load_tokenizer_manifest
+
+        manifest = load_tokenizer_manifest(tokenizer_dir, verify_files=True)
+        if manifest["manifest_hash"] != model.get("tokenizer_revision"):
+            raise ConfigError("Local tokenizer revision changed after config resolution")
+        tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_dir,
+            local_files_only=True,
+        )
+        if int(tokenizer.vocab_size) != int(model["vocab_size_assumption"]):
+            raise ConfigError("Loaded tokenizer vocabulary does not match the model")
+        return tokenizer
     tokenizer_name = dataset.get("tokenizer_name") or model.get("tokenizer_name")
     tokenizer_name = tokenizer_name or model["base_model_name"]
     try:

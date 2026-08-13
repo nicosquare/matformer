@@ -1240,6 +1240,21 @@ def _save_model_checkpoint_rank_zero(
                 "batch_size_per_process": config["training"][
                     "batch_size_per_process"
                 ],
+                "gradient_accumulation_steps": config["training"].get(
+                    "gradient_accumulation_steps", 1
+                ),
+                "expected_tokens_per_microstep": config["training"].get(
+                    "expected_tokens_per_microstep"
+                ),
+                "expected_tokens_per_step": config["training"].get(
+                    "expected_tokens_per_step"
+                ),
+                "validation_interval_tokens": config.get("evaluation", {})
+                .get("validation", {})
+                .get("interval_tokens", 0),
+                "tokenizer_manifest_hash": config.get("model", {}).get(
+                    "tokenizer_manifest_hash"
+                ),
                 "world_size": int(
                     getattr(distributed_context, "world_size", 1)
                 ),
@@ -1261,15 +1276,23 @@ def _save_model_checkpoint_rank_zero(
             ],
             **resolved_granularity_artifact_fields(config.get("model", {})),
             "step": run_state.get("step", run_state.get("last_completed_step", 0)),
+            "microstep": run_state.get("microstep", 0),
             "epoch": run_state.get("epoch", 0),
             "batch_index": run_state.get("batch_index", 0),
             "tokens_seen": run_state.get("tokens_seen", 0),
             "content_tokens_seen": run_state.get("content_tokens_seen", 0),
             "sampler_state": copy.deepcopy(run_state.get("sampler_state")),
+            "next_validation_tokens": run_state.get("next_validation_tokens"),
+            "optimizer_window_microsteps": run_state.get(
+                "optimizer_window_microsteps"
+            ),
             "metrics_accumulator_state": copy.deepcopy(
                 run_state.get("metrics_accumulator_state")
             ),
             "corpus_hash": config.get("corpus_hash"),
+            "tokenizer_manifest_hash": config.get("model", {}).get(
+                "tokenizer_manifest_hash"
+            ),
             "data_roles_manifest_hash": config.get("data_roles_manifest_hash"),
             "optimizer_training_manifest_hash": config.get(
                 "optimizer_training_manifest_hash"
@@ -1770,10 +1793,18 @@ def build_initial_continuation_state(config: dict[str, Any]) -> dict[str, Any]:
         "pending_best_checkpoint": None,
         "unresolved_artifact_failures": [],
         "last_completed_step": 0,
+        "microstep": 0,
         "resume_count": 0,
         "tokens_seen": 0,
         "content_tokens_seen": 0,
         "sampler_state": None,
+        "next_validation_tokens": (
+            config.get("evaluation", {}).get("validation", {}).get(
+                "interval_tokens", 0
+            )
+            or None
+        ),
+        "optimizer_window_microsteps": 0,
         "metrics_accumulator_state": None,
         "step": 0,
         "epoch": 0,
@@ -2302,6 +2333,9 @@ def load_checkpoint_state(
     if config is not None and config.get("dataset", {}).get("mode") == "packed_mmap":
         expected_data_hashes = {
             "corpus_hash": config.get("corpus_hash"),
+            "tokenizer_manifest_hash": config.get("model", {}).get(
+                "tokenizer_manifest_hash"
+            ),
             "data_roles_manifest_hash": config.get("data_roles_manifest_hash"),
             "optimizer_training_manifest_hash": config.get(
                 "optimizer_training_manifest_hash"
@@ -2368,10 +2402,15 @@ def load_checkpoint_state(
         "latest_checkpoint_step": last_completed_step,
         "continuation_source_checkpoint_path": str(checkpoint_path),
         "last_completed_step": last_completed_step,
+        "microstep": int(checkpoint.get("microstep", last_completed_step)),
         "resume_count": resume_count,
         "tokens_seen": tokens_seen,
         "content_tokens_seen": content_tokens_seen,
         "sampler_state": copy.deepcopy(checkpoint.get("sampler_state")),
+        "next_validation_tokens": checkpoint.get("next_validation_tokens"),
+        "optimizer_window_microsteps": checkpoint.get(
+            "optimizer_window_microsteps"
+        ),
         "metrics_accumulator_state": copy.deepcopy(
             checkpoint.get("metrics_accumulator_state")
         ),
@@ -2503,6 +2542,11 @@ def _validate_reproducibility_payload(
         "validation_manifest_hash",
         "comparison_control_signature",
         "batch_size_per_process",
+        "gradient_accumulation_steps",
+        "expected_tokens_per_microstep",
+        "expected_tokens_per_step",
+        "validation_interval_tokens",
+        "tokenizer_manifest_hash",
         "world_size",
         "rank_topology",
         "rng_state",
@@ -2530,6 +2574,21 @@ def _validate_reproducibility_payload(
             "comparison_control_signature"
         ),
         "batch_size_per_process": config["training"]["batch_size_per_process"],
+        "gradient_accumulation_steps": config["training"].get(
+            "gradient_accumulation_steps", 1
+        ),
+        "expected_tokens_per_microstep": config["training"].get(
+            "expected_tokens_per_microstep"
+        ),
+        "expected_tokens_per_step": config["training"].get(
+            "expected_tokens_per_step"
+        ),
+        "validation_interval_tokens": config.get("evaluation", {})
+        .get("validation", {})
+        .get("interval_tokens", 0),
+        "tokenizer_manifest_hash": config.get("model", {}).get(
+            "tokenizer_manifest_hash"
+        ),
         "world_size": int(getattr(distributed_context, "world_size", 1)),
     }
     mismatches = {

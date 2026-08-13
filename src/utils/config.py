@@ -234,6 +234,8 @@ def resolve_run_config(
     _resolve_model_variant_defaults(resolved)
     _resolve_model_correction_defaults(resolved)
     _resolve_model_dimension_and_granularity_metadata(resolved)
+    _validate_packed_mmap_sampling_overrides(resolved)
+    _resolve_model_tokenizer_defaults(resolved)
     if family_size_slug is None:
         family_size_slug = _resolve_family_size_slug(resolved)
     resolved["run"]["family_size_slug"] = family_size_slug
@@ -276,6 +278,8 @@ def resolve_all_run_configs(
         _resolve_model_variant_defaults(resolved)
         _resolve_model_correction_defaults(resolved)
         _resolve_model_dimension_and_granularity_metadata(resolved)
+        _validate_packed_mmap_sampling_overrides(resolved)
+        _resolve_model_tokenizer_defaults(resolved)
         resolved["run"]["family_size_slug"] = _resolve_family_size_slug(resolved)
         _resolve_naming_defaults(resolved)
         _resolve_output_paths(resolved)
@@ -307,6 +311,8 @@ def resolve_all_run_configs(
         _resolve_model_variant_defaults(resolved)
         _resolve_model_correction_defaults(resolved)
         _resolve_model_dimension_and_granularity_metadata(resolved)
+        _validate_packed_mmap_sampling_overrides(resolved)
+        _resolve_model_tokenizer_defaults(resolved)
         _resolve_naming_defaults(resolved)
         _resolve_output_paths(resolved)
         _resolve_sampling_mode_defaults(
@@ -596,7 +602,9 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         [
             "token_budget",
             "effective_world_size",
+            "expected_tokens_per_microstep",
             "expected_tokens_per_step",
+            "gradient_accumulation_steps",
             "derived_max_steps",
             "max_steps",
             "base_learning_rate",
@@ -652,6 +660,7 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         [
             "enabled",
             "interval_steps",
+            "interval_tokens",
             "run_at_completion",
             "holdout",
             "trailing_summary_evaluations",
@@ -927,6 +936,17 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         validation.get("interval_steps"),
         "evaluation.validation.interval_steps",
     )
+    _nonnegative_int(
+        validation.get("interval_tokens"),
+        "evaluation.validation.interval_tokens",
+    )
+    if int(validation.get("interval_steps", 0)) > 0 and int(
+        validation.get("interval_tokens", 0)
+    ) > 0:
+        raise ConfigError(
+            "evaluation.validation.interval_tokens and a positive interval_steps "
+            "are mutually exclusive"
+        )
     if not isinstance(validation.get("run_at_completion"), bool):
         raise ConfigError(
             "evaluation.validation.run_at_completion must be a boolean"
@@ -1202,6 +1222,18 @@ def _validate_distributed_and_prepared_corpus_contract(
         "revision"
     ) != model.get("tokenizer_revision"):
         raise ConfigError("Prepared corpus tokenizer identity does not match the model")
+    if tokenizer.get("manifest_hash") != model.get("tokenizer_manifest_hash"):
+        raise ConfigError(
+            "Prepared corpus tokenizer manifest hash does not match the model"
+        )
+    if tokenizer.get("sentencepiece_model_sha256") != model.get(
+        "tokenizer_model_sha256"
+    ):
+        raise ConfigError(
+            "Prepared corpus tokenizer model checksum does not match the model"
+        )
+    if int(tokenizer.get("vocab_size", -1)) != int(model["vocab_size_assumption"]):
+        raise ConfigError("Prepared corpus tokenizer vocabulary does not match the model")
     if isinstance(dataset, dict):
         dataset["corpus_hash"] = manifest["corpus_hash"]
         dataset["role_manifest_hashes"] = dict(manifest["role_manifest_hashes"])
@@ -1388,6 +1420,49 @@ def _resolve_model_dimension_and_granularity_metadata(config: dict[str, Any]) ->
             model["intermediate_size"],
             resolved_prefixes,
             granularities,
+        )
+
+
+def _resolve_model_tokenizer_defaults(config: dict[str, Any]) -> None:
+    """Resolve an immutable local tokenizer while retaining historical Hub fields."""
+
+    model = config.setdefault("model", {})
+    tokenizer_dir = model.get("tokenizer_dir")
+    if tokenizer_dir in (None, ""):
+        return
+    if not isinstance(tokenizer_dir, str):
+        raise ConfigError("model.tokenizer_dir must be a string")
+    try:
+        from src.training.fineweb_tokenizer import load_tokenizer_manifest
+
+        manifest = load_tokenizer_manifest(tokenizer_dir, verify_files=True)
+    except Exception as error:
+        raise ConfigError(f"Local tokenizer validation failed: {error}") from error
+    assumed_vocab = _positive_int(
+        model.get("vocab_size_assumption"), "model.vocab_size_assumption"
+    )
+    if int(manifest["vocab_size"]) != assumed_vocab:
+        raise ConfigError(
+            "Local tokenizer vocabulary must equal model.vocab_size_assumption"
+        )
+    model["tokenizer_dir"] = str(Path(tokenizer_dir).expanduser().resolve())
+    model["tokenizer_name"] = manifest["tokenizer_name"]
+    model["tokenizer_revision"] = manifest["manifest_hash"]
+    model["tokenizer_manifest_hash"] = manifest["manifest_hash"]
+    model["tokenizer_model_sha256"] = manifest["sentencepiece_model_sha256"]
+
+
+def _validate_packed_mmap_sampling_overrides(config: Mapping[str, Any]) -> None:
+    """Reject per-run sampling before resolving external corpus dependencies."""
+
+    dataset = config.get("dataset", {})
+    if (
+        isinstance(dataset, Mapping)
+        and dataset.get("mode") == "packed_mmap"
+        and dataset.get("sample_limit") is not None
+    ):
+        raise ConfigError(
+            "dataset.sample_limit is forbidden when dataset.mode=packed_mmap"
         )
 
 
@@ -2738,6 +2813,10 @@ def resolve_training_length_for_world_size(
         "training.batch_size_per_process",
     )
     context_length = _positive_int(model.get("context_length"), "model.context_length")
+    gradient_accumulation_steps = _positive_int(
+        training.get("gradient_accumulation_steps", 1),
+        "training.gradient_accumulation_steps",
+    )
     if effective_world_size is None:
         distributed = training.get("distributed", {})
         configured_world_size = (
@@ -2766,8 +2845,11 @@ def resolve_training_length_for_world_size(
         if world_size_source is None:
             world_size_source = "distributed_context"
 
-    expected_tokens_per_step = (
+    expected_tokens_per_microstep = (
         batch_size_per_process * context_length * effective_world_size
+    )
+    expected_tokens_per_step = (
+        expected_tokens_per_microstep * gradient_accumulation_steps
     )
     derived_max_steps = math.ceil(token_budget / expected_tokens_per_step)
 
@@ -2782,6 +2864,8 @@ def resolve_training_length_for_world_size(
     training["batch_size_per_process"] = batch_size_per_process
     training["effective_world_size"] = effective_world_size
     training["effective_world_size_source"] = world_size_source
+    training["gradient_accumulation_steps"] = gradient_accumulation_steps
+    training["expected_tokens_per_microstep"] = expected_tokens_per_microstep
     training["expected_tokens_per_step"] = expected_tokens_per_step
     training["derived_max_steps"] = derived_max_steps
     training["max_steps_cap"] = max_steps_cap
@@ -3097,6 +3181,15 @@ def _resolve_evaluation_defaults(config: dict[str, Any]) -> None:
         canonical_interval if canonical_interval is not None else legacy_interval or 0,
         "evaluation.validation.interval_steps",
     )
+    validation["interval_tokens"] = _nonnegative_int(
+        validation.get("interval_tokens", 0),
+        "evaluation.validation.interval_tokens",
+    )
+    if validation["interval_steps"] > 0 and validation["interval_tokens"] > 0:
+        raise ConfigError(
+            "evaluation.validation.interval_tokens and a positive interval_steps "
+            "are mutually exclusive"
+        )
 
     legacy_completion = evaluation.get("final_validation")
     canonical_completion = validation.get("run_at_completion")
@@ -3616,13 +3709,26 @@ def _validate_derived_training_length(
         training["effective_world_size"],
         "training.effective_world_size",
     )
-    expected_tokens_per_step = (
+    gradient_accumulation_steps = _positive_int(
+        training.get("gradient_accumulation_steps", 1),
+        "training.gradient_accumulation_steps",
+    )
+    expected_tokens_per_microstep = (
         batch_size_per_process * context_length * effective_world_size
+    )
+    if training.get("expected_tokens_per_microstep") != expected_tokens_per_microstep:
+        raise ConfigError(
+            "training.expected_tokens_per_microstep must equal "
+            "batch_size_per_process * context_length * effective_world_size"
+        )
+    expected_tokens_per_step = (
+        expected_tokens_per_microstep * gradient_accumulation_steps
     )
     if training["expected_tokens_per_step"] != expected_tokens_per_step:
         raise ConfigError(
             "training.expected_tokens_per_step must equal "
             "batch_size_per_process * context_length * effective_world_size"
+            " * gradient_accumulation_steps"
         )
 
     derived_max_steps = math.ceil(token_budget / expected_tokens_per_step)
@@ -3705,6 +3811,11 @@ def _set_dotted_value(config: dict[str, Any], key: str, value: Any) -> None:
     for part in path[:-1]:
         if part not in current:
             current[part] = {}
+        elif isinstance(current[part], bool):
+            # Legacy configuration allows boolean feature switches such as
+            # ``evaluation.validation: true``. Preserve that switch when a
+            # more specific command-line override promotes it to a mapping.
+            current[part] = {"enabled": current[part]}
         if not isinstance(current[part], dict):
             raise ConfigError(f"Cannot set override {key}; {part} is not a mapping")
         current = current[part]

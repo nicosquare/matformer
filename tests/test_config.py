@@ -2038,12 +2038,16 @@ def test_single_run_resolves_explicit_schedule_and_optimizer_overrides(tmp_path)
 
 def _production_manifest():
     return {
+        "schema_version": 2,
         "context_length": 1024,
         "data_seed": 42,
         "corpus_hash": "corpus-hash",
         "tokenizer": {
-            "name": "hf-internal-testing/llama-tokenizer",
-            "revision": "deadbeef",
+            "name": "fineweb_sentencepiece_bpe_256k",
+            "revision": "tokenizer-hash",
+            "manifest_hash": "tokenizer-hash",
+            "sentencepiece_model_sha256": "model-hash",
+            "vocab_size": 256000,
         },
         "role_manifest_hashes": {
             "optimizer_training": "training-hash",
@@ -2059,34 +2063,60 @@ def _production_manifest():
 
 def test_10b_production_preflight_resolves_exact_four_gpu_schedule(tmp_path, monkeypatch):
     import src.training.packed_corpus as packed_corpus
+    import src.training.fineweb_tokenizer as fineweb_tokenizer
 
     monkeypatch.delenv("WORLD_SIZE", raising=False)
     monkeypatch.setattr(
         packed_corpus,
         "load_corpus_manifest",
         lambda *args, **kwargs: _production_manifest(),
+    )
+    monkeypatch.setattr(
+        fineweb_tokenizer,
+        "load_tokenizer_manifest",
+        lambda *args, **kwargs: {
+            "tokenizer_name": "fineweb_sentencepiece_bpe_256k",
+            "manifest_hash": "tokenizer-hash",
+            "sentencepiece_model_sha256": "model-hash",
+            "vocab_size": 256000,
+        },
     )
     resolved = resolve_run_config(
         "configs/opt-in_exps/slicing_10b_base.yaml",
         output_dir=tmp_path / "slicing-10b-base",
         overrides=[
             "dataset.prepared_corpus_dir=/prepared/fineweb",
-            "model.tokenizer_revision=deadbeef",
+            "model.tokenizer_dir=/prepared/tokenizer",
         ],
     )
     training = resolved["training"]
-    assert training["expected_tokens_per_step"] == 16_384
-    assert training["derived_max_steps"] == 610_352
-    assert training["max_steps"] == 610_352
-    assert training["resolved_warmup_steps"] == 9_980
+    assert training["expected_tokens_per_microstep"] == 16_384
+    assert training["gradient_accumulation_steps"] == 64
+    assert training["expected_tokens_per_step"] == 1_048_576
+    assert training["derived_max_steps"] == 9_537
+    assert training["max_steps"] == 9_537
+    assert training["resolved_warmup_steps"] == 156
+    assert resolved["evaluation"]["validation"]["interval_tokens"] == 500_000_000
     assert resolved["model"]["granularities"] == [
         "g125", "g250", "g375", "g500", "g625", "g750", "g875", "g1000"
     ]
     assert resolved["dataset"]["corpus_hash"] == "corpus-hash"
 
 
+def test_validation_token_and_positive_step_cadence_are_mutually_exclusive():
+    with pytest.raises(ConfigError, match="mutually exclusive"):
+        resolve_run_config(
+            "tests/fixtures/explicit_granularity_smoke.yaml",
+            overrides=[
+                "evaluation.validation.interval_steps=2",
+                "evaluation.validation.interval_tokens=1000",
+            ],
+        )
+
+
 def test_10b_bayesian_dimensions_and_balanced_warmup(tmp_path, monkeypatch):
     import src.training.packed_corpus as packed_corpus
+    import src.training.fineweb_tokenizer as fineweb_tokenizer
 
     monkeypatch.delenv("WORLD_SIZE", raising=False)
     monkeypatch.setattr(
@@ -2094,9 +2124,19 @@ def test_10b_bayesian_dimensions_and_balanced_warmup(tmp_path, monkeypatch):
         "load_corpus_manifest",
         lambda *args, **kwargs: _production_manifest(),
     )
+    monkeypatch.setattr(
+        fineweb_tokenizer,
+        "load_tokenizer_manifest",
+        lambda *args, **kwargs: {
+            "tokenizer_name": "fineweb_sentencepiece_bpe_256k",
+            "manifest_hash": "tokenizer-hash",
+            "sentencepiece_model_sha256": "model-hash",
+            "vocab_size": 256000,
+        },
+    )
     common = [
         "dataset.prepared_corpus_dir=/prepared/fineweb",
-        "model.tokenizer_revision=deadbeef",
+        "model.tokenizer_dir=/prepared/tokenizer",
     ]
     global_config = resolve_run_config(
         "configs/opt-in_exps/slicing_10b_bayesian.yaml",

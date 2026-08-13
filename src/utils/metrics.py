@@ -41,6 +41,7 @@ METRICS_COLUMNS = [
     "run_id",
     "step",
     "split",
+    "microstep",
     "model_family",
     "model_size_label",
     "model_shape_label",
@@ -94,6 +95,8 @@ METRICS_COLUMNS = [
     "perplexity",
     "tokens_seen",
     "content_tokens_seen",
+    "optimizer_window_microsteps",
+    "committed_tokens_this_step",
     "evaluation_examples",
     "evaluation_batches",
     "evaluation_target_tokens",
@@ -241,6 +244,7 @@ RUN_SUMMARY_FIELDS = [
     "warmup_ratio",
     "warmup_steps",
     "resolved_warmup_steps",
+    "gradient_accumulation_steps",
     "gradient_clip_norm",
     "scheduler_name",
     "scheduler_warmup_steps",
@@ -255,8 +259,11 @@ RUN_SUMMARY_FIELDS = [
     "final_validation",
     "final_validation_reason",
     "expected_tokens_per_step",
+    "expected_tokens_per_microstep",
     "derived_max_steps",
     "effective_world_size",
+    "validation_interval_tokens",
+    "tokenizer_manifest_hash",
     "tokens_seen",
     "content_tokens_seen",
     "stop_reason",
@@ -874,6 +881,9 @@ def build_run_summary(
             "resolved_warmup_steps",
             training["scheduler"]["resolved_warmup_steps"],
         ),
+        "gradient_accumulation_steps": training.get(
+            "gradient_accumulation_steps", 1
+        ),
         "gradient_clip_norm": training.get("gradient_clip_norm"),
         "scheduler_name": training["scheduler_name"],
         "scheduler_warmup_steps": training["scheduler"]["kwargs"]["warmup_steps"],
@@ -896,8 +906,15 @@ def build_run_summary(
         .get("validation", {})
         .get("run_at_completion_reason"),
         "expected_tokens_per_step": training["expected_tokens_per_step"],
+        "expected_tokens_per_microstep": training.get(
+            "expected_tokens_per_microstep"
+        ),
         "derived_max_steps": training["derived_max_steps"],
         "effective_world_size": training["effective_world_size"],
+        "validation_interval_tokens": config.get("evaluation", {})
+        .get("validation", {})
+        .get("interval_tokens", 0),
+        "tokenizer_manifest_hash": model.get("tokenizer_manifest_hash"),
         "tokens_seen": tokens_seen,
         "content_tokens_seen": content_tokens_seen,
         "stop_reason": stop_reason,
@@ -2604,6 +2621,7 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
     )
 
     defaults = {
+        "microstep": normalized_row.get("step"),
         "model_size_label": model_shape_label,
         "model_shape_label": model_shape_label,
         "sampling_mode": None,
@@ -2664,6 +2682,8 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "token_budget": None,
         "effective_world_size": None,
         "content_tokens_seen": normalized_row.get("tokens_seen"),
+        "optimizer_window_microsteps": None,
+        "committed_tokens_this_step": None,
         "evaluation_examples": None,
         "evaluation_batches": None,
         "evaluation_target_tokens": None,

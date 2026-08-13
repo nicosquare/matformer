@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import itertools
+import json
 
 import pytest
 import torch
@@ -16,10 +17,11 @@ from src.training.packed_corpus import (
     prepare_packed_corpus,
 )
 from src.training.steps import weighted_loss_for_distributed_batch
+from src.utils.reproducibility import stable_hash
 
 
 class TinyTokenizer:
-    eos_token_id = 99
+    eos_token_id = 2
     vocab_size = 128
 
     def __call__(self, text, **kwargs):
@@ -32,13 +34,27 @@ def documents(count: int):
         yield {"id": f"doc-{index}", "text": f"{index % 40} {(index + 1) % 40}"}
 
 
+def tiny_tokenizer_manifest():
+    manifest = {
+        "schema_version": 1,
+        "tokenizer_name": "tiny",
+        "vocab_size": TinyTokenizer.vocab_size,
+        "special_token_ids": {"unk": 0, "bos": 1, "eos": 2, "pad": 3},
+        "sentencepiece_model_sha256": "tiny-model-checksum",
+    }
+    manifest["manifest_hash"] = stable_hash(manifest)
+    return manifest
+
+
 def prepare_small(tmp_path, *, training_tokens=32):
+    tokenizer_manifest = tiny_tokenizer_manifest()
     return prepare_packed_corpus(
         documents(1200),
         TinyTokenizer(),
         tmp_path / "corpus",
         tokenizer_name="tiny",
-        tokenizer_revision="deadbeef",
+        tokenizer_revision=tokenizer_manifest["manifest_hash"],
+        tokenizer_manifest=tokenizer_manifest,
         source_fingerprint="fineweb-test-fingerprint",
         context_length=4,
         training_token_budget=training_tokens,
@@ -69,25 +85,41 @@ def test_packing_has_eos_boundaries_exact_budget_roles_and_hashes(tmp_path):
     assert identity_sets["controller"].isdisjoint(identity_sets["final_holdout"])
     validation = PackedMMapDataset(tmp_path / "corpus", "ordinary_validation")
     flattened = list(itertools.chain.from_iterable(validation[index]["input_ids"] for index in range(2)))
-    assert flattened[:6] == [0, 1, 99, 1, 2, 99]
+    assert flattened[:6] == [0, 1, 2, 1, 2, 2]
     audit = audit_packed_corpus(tmp_path / "corpus", required_training_tokens=32)
     assert audit["status"] == "passed"
     assert audit["corpus_hash"] == created["corpus_hash"]
 
 
 def test_preparation_fails_when_unique_training_budget_is_unavailable(tmp_path):
+    tokenizer_manifest = tiny_tokenizer_manifest()
     with pytest.raises(PackedCorpusError, match="Insufficient source data"):
         prepare_packed_corpus(
             documents(1153),
             TinyTokenizer(),
             tmp_path / "corpus",
             tokenizer_name="tiny",
-            tokenizer_revision="deadbeef",
+            tokenizer_revision=tokenizer_manifest["manifest_hash"],
+            tokenizer_manifest=tokenizer_manifest,
             source_fingerprint="fineweb-test-fingerprint",
             context_length=4,
             training_token_budget=64,
             shard_token_capacity=16,
         )
+
+
+def test_corpus_loader_rejects_pre_provenance_schema(tmp_path):
+    prepare_small(tmp_path)
+    manifest_path = tmp_path / "corpus" / "corpus_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["schema_version"] = 1
+    manifest.pop("corpus_hash")
+    manifest["corpus_hash"] = stable_hash(manifest)
+    manifest_path.chmod(0o644)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(PackedCorpusError, match="schema version mismatch"):
+        load_corpus_manifest(tmp_path / "corpus")
 
 
 def test_no_padding_partitions_are_deterministic_disjoint_and_complete():

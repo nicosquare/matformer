@@ -62,6 +62,9 @@ def main(argv: list[str] | None = None) -> None:
                     "batch_size_per_process": resolved["training"][
                         "batch_size_per_process"
                     ],
+                    "gradient_accumulation_steps": resolved["training"][
+                        "gradient_accumulation_steps"
+                    ],
                     "dataset_sample_limit": resolved["dataset"].get(
                         "sample_limit"
                     ),
@@ -81,6 +84,9 @@ def main(argv: list[str] | None = None) -> None:
                     "effective_world_size": resolved["training"][
                         "effective_world_size"
                     ],
+                    "expected_tokens_per_microstep": resolved["training"][
+                        "expected_tokens_per_microstep"
+                    ],
                     "expected_tokens_per_step": resolved["training"][
                         "expected_tokens_per_step"
                     ],
@@ -90,6 +96,9 @@ def main(argv: list[str] | None = None) -> None:
                     "resolved_warmup_steps": resolved["training"][
                         "resolved_warmup_steps"
                     ],
+                    "tokenizer_manifest_hash": resolved["model"].get(
+                        "tokenizer_manifest_hash"
+                    ),
                     "ordered_granularities": resolved["model"]["granularities"],
                     "granularity_prefixes": resolved["model"].get(
                         "granularity_prefixes"

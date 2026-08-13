@@ -10,7 +10,9 @@ except ImportError:  # pragma: no cover - optional dependency
 
 load_dotenv()
 
+import copy
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -47,6 +49,7 @@ from src.training.checkpointing import (
 )
 from src.training.distributed import (
     autocast_context,
+    sum_float,
     sum_int,
 )
 from src.training.monitoring import NoopHeartbeatWriter
@@ -67,7 +70,12 @@ from src.utils.metrics import (
     summarize_runtime_granularity_pattern_from_config,
     write_json_artifact,
 )
-from src.utils.reproducibility import dedicated_random, seed_for
+from src.utils.reproducibility import (
+    capture_rng_state,
+    dedicated_random,
+    restore_rng_state,
+    seed_for,
+)
 
 
 def build_optimizer_and_scheduler(model, training: Mapping[str, Any]):
@@ -204,6 +212,212 @@ def _maybe_apply_concat_lmc_optimizer_step(
     _apply_concat_lmc_corrections(snapshots)
 
 
+def optimizer_window_loss_scale(
+    *,
+    local_valid_targets: int,
+    total_window_valid_targets: int,
+    distributed_context=None,
+    granularity_count: int = 1,
+) -> float:
+    """Return the exact FSDP scale for one local loss contribution."""
+
+    local_count = int(local_valid_targets)
+    total_count = int(total_window_valid_targets)
+    granularity_count = int(granularity_count)
+    if local_count <= 0 or total_count <= 0 or local_count > total_count:
+        raise ValueError("Optimizer-window weighting requires valid target counts")
+    if granularity_count <= 0:
+        raise ValueError("granularity_count must be positive")
+    world_size = int(getattr(distributed_context, "world_size", 1))
+    return world_size * local_count / total_count / granularity_count
+
+
+def group_optimizer_windows(iterable, accumulation_steps: int):
+    """Yield consecutive, nonempty windows, including a final partial window."""
+
+    accumulation_steps = int(accumulation_steps)
+    if accumulation_steps <= 0:
+        raise ValueError("accumulation_steps must be positive")
+    iterator = iter(iterable)
+    while True:
+        window = []
+        for _ in range(accumulation_steps):
+            try:
+                window.append(next(iterator))
+            except StopIteration:
+                break
+        if not window:
+            return
+        yield window
+
+
+def validation_token_thresholds_crossed(
+    previous_tokens: int,
+    committed_tokens: int,
+    *,
+    interval_tokens: int,
+    next_threshold: int | None = None,
+) -> tuple[list[int], int | None]:
+    """Resolve every cadence threshold crossed by one committed optimizer update."""
+
+    interval = int(interval_tokens)
+    if interval <= 0:
+        return [], None
+    previous = int(previous_tokens)
+    committed = int(committed_tokens)
+    threshold = int(next_threshold or interval)
+    if threshold <= previous:
+        threshold = ((previous // interval) + 1) * interval
+    crossed = []
+    while threshold <= committed:
+        crossed.append(threshold)
+        threshold += interval
+    return crossed, threshold
+
+
+def _select_optimizer_window_action(
+    config: dict[str, Any],
+    granularities: list[str],
+    device: torch.device,
+    *,
+    optimizer_step: int,
+    supports_layer_granularities: bool,
+    forced_global_action=None,
+    probabilistic_controller=None,
+    adaptive_sampler_state=None,
+    stage_name: str,
+) -> dict[str, Any]:
+    model_sampling_mode = str(
+        config["model"].get("granularity_sampling_mode", "global")
+    )
+    run_sampling_mode = str(config["run"].get("sampling_mode", "nested-random"))
+    if forced_global_action is not None:
+        selected = forced_global_action(optimizer_step) if callable(
+            forced_global_action
+        ) else forced_global_action
+        selected = str(selected)
+        if selected not in granularities:
+            raise ConfigError(
+                f"forced global action must be a resolved granularity: {selected!r}"
+            )
+        return {"kind": "global", "granularities": [selected]}
+    if run_sampling_mode == "nested-all":
+        return {"kind": "nested_all", "granularities": list(granularities)}
+    if model_sampling_mode == "adaptive_global" and probabilistic_controller is not None:
+        selected = probabilistic_global_layer_granularities(
+            config, probabilistic_controller
+        )[0]
+        return {"kind": "global", "granularities": [selected]}
+    if (
+        model_sampling_mode == "adaptive_per_block"
+        and probabilistic_controller is not None
+    ):
+        return {
+            "kind": "per_block",
+            "granularities": probabilistic_per_block_layer_granularities(
+                config, probabilistic_controller
+            ),
+        }
+    if model_sampling_mode == "adaptive_per_block" and supports_layer_granularities:
+        if adaptive_sampler_state is None:
+            raise ConfigError("adaptive_per_block runs require adaptive sampler state")
+        return {
+            "kind": "per_block",
+            "granularities": select_adaptive_sampler_layer_granularities(
+                adaptive_sampler_state,
+                block_count=int(config["model"]["num_layers"]),
+                step=optimizer_step,
+                phase=stage_name,
+                granularities=granularities,
+                adaptive_seed=seed_for(config, "adaptive_sampling"),
+            ),
+        }
+    if model_sampling_mode == "per_block" and supports_layer_granularities:
+        return {
+            "kind": "per_block",
+            "granularities": select_training_layer_granularities(
+                config, granularities, device
+            ),
+        }
+    return {
+        "kind": "global",
+        "granularities": select_training_granularities(
+            config, granularities, device
+        ),
+    }
+
+
+def _backward_context(model, *, synchronize: bool):
+    if synchronize or not hasattr(model, "no_sync"):
+        return nullcontext()
+    return model.no_sync()
+
+
+def _forward_backward_microbatch(
+    config: dict[str, Any],
+    model,
+    batch: dict[str, torch.Tensor],
+    action: Mapping[str, Any],
+    *,
+    device: torch.device,
+    local_valid_targets: int,
+    total_window_valid_targets: int,
+    distributed_context=None,
+    is_last_microstep: bool,
+) -> tuple[list[tuple[str, float, dict[str, Any], dict[str, Any]]], int]:
+    """Run one microbatch under a preselected optimizer-window action."""
+
+    selected = list(action["granularities"])
+    metric_data = []
+    if action["kind"] == "nested_all":
+        total_losses = len(selected)
+        for granularity_index, granularity in enumerate(selected):
+            synchronize = is_last_microstep and granularity_index == total_losses - 1
+            with _backward_context(model, synchronize=synchronize):
+                configure_model_granularity(model, granularity)
+                pattern, correction = _runtime_granularity_artifacts(config, model)
+                with autocast_context(config, device):
+                    outputs = model(
+                        input_ids=batch["input_ids"],
+                        attention_mask=batch.get("attention_mask"),
+                        labels=batch["labels"],
+                    )
+                loss_value = float(outputs.loss.detach().float().cpu().item())
+                metric_data.append((granularity, loss_value, pattern, correction))
+                scale = optimizer_window_loss_scale(
+                    local_valid_targets=local_valid_targets,
+                    total_window_valid_targets=total_window_valid_targets,
+                    distributed_context=distributed_context,
+                    granularity_count=total_losses,
+                )
+                (outputs.loss * scale).backward()
+        return metric_data, total_losses
+
+    with _backward_context(model, synchronize=is_last_microstep):
+        if action["kind"] == "per_block":
+            configure_model_layer_granularities(model, selected)
+            label = ",".join(selected)
+        else:
+            configure_model_granularity(model, selected[0])
+            label = selected[0]
+        pattern, correction = _runtime_granularity_artifacts(config, model)
+        with autocast_context(config, device):
+            outputs = model(
+                input_ids=batch["input_ids"],
+                attention_mask=batch.get("attention_mask"),
+                labels=batch["labels"],
+            )
+        loss_value = float(outputs.loss.detach().float().cpu().item())
+        metric_data.append((label, loss_value, pattern, correction))
+        scale = optimizer_window_loss_scale(
+            local_valid_targets=local_valid_targets,
+            total_window_valid_targets=total_window_valid_targets,
+            distributed_context=distributed_context,
+        )
+        (outputs.loss * scale).backward()
+    return metric_data, 1
+
+
 def train_for_steps(
     config: dict[str, Any],
     model,
@@ -229,13 +443,14 @@ def train_for_steps(
     run = config["run"]
     granularities = list(config["model"]["granularities"])
     model_sampling_mode = str(config["model"].get("granularity_sampling_mode", "global"))
-    run_sampling_mode = str(run.get("sampling_mode", "nested-random"))
     target_model = model.module if hasattr(model, "module") else model
     supports_layer_granularities = hasattr(target_model, "configure_layer_granularities")
     token_budget = training["token_budget"]
     max_steps = training["max_steps"]
     validation_config = config.get("evaluation", {}).get("validation", {})
     eval_interval = int(validation_config.get("interval_steps", 0))
+    eval_interval_tokens = int(validation_config.get("interval_tokens", 0))
+    accumulation_steps = int(training.get("gradient_accumulation_steps", 1))
 
     metrics_rows = []
     start_time = time.time()
@@ -272,6 +487,14 @@ def train_for_steps(
     run_state["epoch"] = resume_epoch
     run_state["batch_index"] = resume_batch_index
     run_state["content_tokens_seen"] = content_tokens_seen
+    run_state.setdefault("microstep", int(run_state.get("microstep", step)))
+    if eval_interval_tokens > 0:
+        run_state.setdefault(
+            "next_validation_tokens",
+            ((tokens_seen // eval_interval_tokens) + 1) * eval_interval_tokens,
+        )
+    else:
+        run_state.setdefault("next_validation_tokens", None)
     run_state.setdefault("latest_checkpoint_step", int(run_state.get("last_completed_step", 0)))
     run_state.setdefault("status", "fresh")
     if continuation_latest_checkpoint_policy(config)["enabled"] and not run_state.get("latest_checkpoint_path"):
@@ -303,446 +526,303 @@ def train_for_steps(
             made_progress = False
             current_epoch = epoch
             epoch += 1
-            for batch_index_in_epoch, batch in enumerate(train_dataloader):
-                if current_epoch == resume_epoch and batch_index_in_epoch < resume_batch_index:
-                    continue
-                if step >= max_steps or tokens_seen >= token_budget:
+            indexed_batches = iter(enumerate(train_dataloader))
+            while step < max_steps and tokens_seen < token_budget:
+                window_rng_snapshot = capture_rng_state()
+                window_state_snapshot = copy.deepcopy(run_state)
+                controller_snapshot = (
+                    probabilistic_controller.transaction_snapshot()
+                    if probabilistic_controller is not None
+                    else None
+                )
+                window_sampler_snapshot = training_data.packed_sampler_state(
+                    train_dataloader
+                )
+                window: list[tuple[int, dict[str, torch.Tensor]]] = []
+                while len(window) < accumulation_steps:
+                    try:
+                        batch_index_in_epoch, batch = next(indexed_batches)
+                    except StopIteration:
+                        break
+                    if (
+                        current_epoch == resume_epoch
+                        and batch_index_in_epoch < resume_batch_index
+                    ):
+                        continue
+                    window.append((batch_index_in_epoch, batch))
+                if not window:
                     break
-
                 made_progress = True
-                step += 1
-                batch = move_batch_to_device(batch, device)
-                local_valid_targets = count_valid_prediction_targets(batch)
-                if local_valid_targets <= 0:
-                    raise ValueError(
-                        "Training batch contains zero valid causal prediction targets"
-                    )
-                global_valid_targets = sum_int(
-                    local_valid_targets,
-                    device=device,
-                    context=distributed_context,
-                )
-                content_tokens_seen += global_content_tokens_for_batch(
-                    batch,
-                    device=device,
-                    distributed_context=distributed_context,
-                )
-                tokens_seen = budget_tokens_seen_for_step(config, step)
-
-                optimizer.zero_grad(set_to_none=True)
-
-                step_metric_rows_data: list[
-                    tuple[str, float, dict[str, Any], dict[str, Any]]
-                ] = []
-                if forced_global_action is not None:
-                    forced_granularity = (
-                        forced_global_action(step)
-                        if callable(forced_global_action)
-                        else forced_global_action
-                    )
-                    forced_granularity = str(forced_granularity)
-                    if forced_granularity not in granularities:
-                        raise ConfigError(
-                            "forced global action must be one of the resolved "
-                            f"granularities: {forced_granularity!r}"
+                optimizer_committed = False
+                try:
+                    prepared_window = [
+                        (batch_index, move_batch_to_device(batch, device))
+                        for batch_index, batch in window
+                    ]
+                    local_target_counts = [
+                        count_valid_prediction_targets(batch)
+                        for _, batch in prepared_window
+                    ]
+                    if any(count <= 0 for count in local_target_counts):
+                        raise ValueError(
+                            "Training microbatch contains zero valid causal prediction targets"
                         )
-                    configure_model_granularity(model, forced_granularity)
-                    step_runtime_pattern_summary, step_correction_context = _runtime_granularity_artifacts(
-                        config,
-                        model,
+                    total_window_valid_targets = sum_int(
+                        sum(local_target_counts),
+                        device=device,
+                        context=distributed_context,
                     )
-                    with autocast_context(config, device):
-                        outputs = model(
-                            input_ids=batch["input_ids"],
-                            attention_mask=batch.get("attention_mask"),
-                            labels=batch["labels"],
-                        )
-                    combined_loss = outputs.loss
-                    combined_loss_value = float(
-                        combined_loss.detach().float().cpu().item()
-                    )
-                    step_metric_rows_data.append(
-                        (
-                            forced_granularity,
-                            combined_loss_value,
-                            step_runtime_pattern_summary,
-                            step_correction_context,
-                        )
-                    )
-                    total_losses = 1
-                elif run_sampling_mode == "nested-all":
-                    selected_granularities = select_training_granularities(
+                    pending_step = step + 1
+                    action = _select_optimizer_window_action(
                         config,
                         granularities,
                         device,
+                        optimizer_step=pending_step,
+                        supports_layer_granularities=supports_layer_granularities,
+                        forced_global_action=forced_global_action,
+                        probabilistic_controller=probabilistic_controller,
+                        adaptive_sampler_state=adaptive_sampler_state,
+                        stage_name=stage_name,
                     )
-                    detached_losses: list[float] = []
-                    total_losses = len(selected_granularities)
-                    for granularity in selected_granularities:
-                        configure_model_granularity(model, granularity)
-                        step_runtime_pattern_summary, step_correction_context = _runtime_granularity_artifacts(
+                    optimizer.zero_grad(set_to_none=True)
+                    local_loss_numerators: dict[str, float] = {}
+                    runtime_artifacts: dict[
+                        str, tuple[dict[str, Any], dict[str, Any]]
+                    ] = {}
+                    total_losses = 1
+                    local_window_content_tokens = 0
+                    for microstep_index, (
+                        _,
+                        batch,
+                    ) in enumerate(prepared_window, start=1):
+                        local_count = local_target_counts[microstep_index - 1]
+                        micro_metrics, total_losses = _forward_backward_microbatch(
                             config,
                             model,
-                        )
-                        with autocast_context(config, device):
-                            outputs = model(
-                                input_ids=batch["input_ids"],
-                                attention_mask=batch.get("attention_mask"),
-                                labels=batch["labels"],
-                            )
-                        detached_loss = float(outputs.loss.detach().float().cpu().item())
-                        detached_losses.append(detached_loss)
-                        step_metric_rows_data.append(
-                            (
-                                granularity,
-                                detached_loss,
-                                step_runtime_pattern_summary,
-                                step_correction_context,
-                            )
-                        )
-                        weighted_loss_for_distributed_batch(
-                            outputs.loss / total_losses,
-                            local_valid_targets=local_valid_targets,
-                            global_valid_targets=global_valid_targets,
+                            batch,
+                            action,
+                            device=device,
+                            local_valid_targets=local_count,
+                            total_window_valid_targets=total_window_valid_targets,
                             distributed_context=distributed_context,
-                        ).backward()
-                    combined_loss_value = sum(detached_losses) / total_losses
-                elif model_sampling_mode == "adaptive_global" and probabilistic_controller is not None:
-                    selected_layer_granularities = (
-                        probabilistic_global_layer_granularities(
-                            config,
-                            probabilistic_controller,
+                            is_last_microstep=microstep_index == len(prepared_window),
                         )
-                    )
-                    configure_model_granularity(
-                        model,
-                        selected_layer_granularities[0],
-                    )
-                    step_runtime_pattern_summary, step_correction_context = _runtime_granularity_artifacts(
-                        config,
-                        model,
-                    )
-                    with autocast_context(config, device):
-                        outputs = model(
-                            input_ids=batch["input_ids"],
-                            attention_mask=batch.get("attention_mask"),
-                            labels=batch["labels"],
-                        )
-                    combined_loss = outputs.loss
-                    combined_loss_value = float(
-                        combined_loss.detach().float().cpu().item()
-                    )
-                    step_metric_rows_data.append(
-                        (
-                            selected_layer_granularities[0],
-                            combined_loss_value,
-                            step_runtime_pattern_summary,
-                            step_correction_context,
-                        )
-                    )
-                    total_losses = 1
-                elif (
-                    model_sampling_mode == "adaptive_per_block"
-                    and probabilistic_controller is not None
-                ):
-                    selected_layer_granularities = (
-                        probabilistic_per_block_layer_granularities(
-                            config,
-                            probabilistic_controller,
-                        )
-                    )
-                    configure_model_layer_granularities(
-                        model,
-                        selected_layer_granularities,
-                    )
-                    step_runtime_pattern_summary, step_correction_context = _runtime_granularity_artifacts(
-                        config,
-                        model,
-                    )
-                    with autocast_context(config, device):
-                        outputs = model(
-                            input_ids=batch["input_ids"],
-                            attention_mask=batch.get("attention_mask"),
-                            labels=batch["labels"],
-                        )
-                    combined_loss = outputs.loss
-                    combined_loss_value = float(
-                        combined_loss.detach().float().cpu().item()
-                    )
-                    step_metric_rows_data.append(
-                        (
-                            ",".join(selected_layer_granularities),
-                            combined_loss_value,
-                            step_runtime_pattern_summary,
-                            step_correction_context,
-                        )
-                    )
-                    total_losses = 1
-                elif model_sampling_mode == "adaptive_per_block" and supports_layer_granularities:
-                    if adaptive_sampler_state is None:
-                        raise ConfigError(
-                            "adaptive_per_block runs require adaptive sampler state"
-                        )
-                    selected_layer_granularities = select_adaptive_sampler_layer_granularities(
-                        adaptive_sampler_state,
-                        block_count=int(config["model"]["num_layers"]),
-                        step=step,
-                        phase=stage_name,
-                        granularities=granularities,
-                        adaptive_seed=seed_for(config, "adaptive_sampling"),
-                    )
-                    configure_model_layer_granularities(
-                        model,
-                        selected_layer_granularities,
-                    )
-                    step_runtime_pattern_summary, step_correction_context = _runtime_granularity_artifacts(
-                        config,
-                        model,
-                    )
-                    with autocast_context(config, device):
-                        outputs = model(
-                            input_ids=batch["input_ids"],
-                            attention_mask=batch.get("attention_mask"),
-                            labels=batch["labels"],
-                        )
-                    combined_loss = outputs.loss
-                    combined_loss_value = float(
-                        combined_loss.detach().float().cpu().item()
-                    )
-                    step_metric_rows_data.append(
-                        (
-                            ",".join(selected_layer_granularities),
-                            combined_loss_value,
-                            step_runtime_pattern_summary,
-                            step_correction_context,
-                        )
-                    )
-                    total_losses = 1
-                elif model_sampling_mode == "per_block" and supports_layer_granularities:
-                    selected_layer_granularities = select_training_layer_granularities(
-                        config,
-                        granularities,
-                        device,
-                    )
-                    configure_model_layer_granularities(
-                        model,
-                        selected_layer_granularities,
-                    )
-                    step_runtime_pattern_summary, step_correction_context = _runtime_granularity_artifacts(
-                        config,
-                        model,
-                    )
-                    with autocast_context(config, device):
-                        outputs = model(
-                            input_ids=batch["input_ids"],
-                            attention_mask=batch.get("attention_mask"),
-                            labels=batch["labels"],
-                        )
-                    combined_loss = outputs.loss
-                    combined_loss_value = float(
-                        combined_loss.detach().float().cpu().item()
-                    )
-                    step_metric_rows_data.append(
-                        (
-                            ",".join(selected_layer_granularities),
-                            combined_loss_value,
-                            step_runtime_pattern_summary,
-                            step_correction_context,
-                        )
-                    )
-                    total_losses = 1
-                else:
-                    selected_granularities = select_training_granularities(
-                        config,
-                        granularities,
-                        device,
-                    )
-                    forward_losses: list[torch.Tensor] = []
-                    for granularity in selected_granularities:
-                        configure_model_granularity(model, granularity)
-                        step_runtime_pattern_summary, step_correction_context = _runtime_granularity_artifacts(
-                            config,
-                            model,
-                        )
-                        with autocast_context(config, device):
-                            outputs = model(
-                                input_ids=batch["input_ids"],
-                                attention_mask=batch.get("attention_mask"),
-                                labels=batch["labels"],
+                        local_window_content_tokens += count_content_tokens(batch)
+                        for label, loss_value, pattern, correction in micro_metrics:
+                            local_loss_numerators[label] = (
+                                local_loss_numerators.get(label, 0.0)
+                                + loss_value * local_count
                             )
-                        forward_losses.append(outputs.loss)
-                        detached_loss = float(
-                            outputs.loss.detach().float().cpu().item()
-                        )
-                        step_metric_rows_data.append(
-                            (
-                                granularity,
-                                detached_loss,
-                                step_runtime_pattern_summary,
-                                step_correction_context,
+                            runtime_artifacts[label] = (pattern, correction)
+                        now = time.time()
+                        if heartbeat_cadence.should_emit(step=pending_step, now=now):
+                            heartbeat_writer.heartbeat(
+                                stage_name,
+                                **heartbeat_training_fields(
+                                    config,
+                                    step=pending_step,
+                                    tokens_seen=tokens_seen,
+                                    content_tokens_seen=content_tokens_seen,
+                                    peak_gpu_memory_bytes=current_peak_memory_bytes(
+                                        device
+                                    ),
+                                ),
+                                pending_optimizer_step=pending_step,
+                                pending_microstep=microstep_index,
+                                optimizer_window_microsteps=len(prepared_window),
+                                committed_microsteps=int(run_state["microstep"]),
                             )
+                            heartbeat_cadence.mark_emitted(
+                                step=pending_step, now=now
+                            )
+
+                    gradient_clip_norm = training.get("gradient_clip_norm")
+                    if gradient_clip_norm is not None:
+                        clip_grad_norm_(model.parameters(), float(gradient_clip_norm))
+                    _maybe_apply_concat_lmc_optimizer_step(
+                        config,
+                        model,
+                        optimizer,
+                        total_losses=total_losses,
+                    )
+                    scheduler.step()
+                    optimizer_committed = True
+                    step = pending_step
+
+                    previous_tokens_seen = tokens_seen
+                    committed_tokens = sum_int(
+                        local_window_content_tokens,
+                        device=device,
+                        context=distributed_context,
+                    )
+                    content_tokens_seen += committed_tokens
+                    if config.get("dataset", {}).get("mode") == "packed_mmap":
+                        tokens_seen = min(tokens_seen + committed_tokens, token_budget)
+                    else:
+                        # Historical raw-tokenized runs retain their nominal packed
+                        # budget semantics; production packed-mmap commits exact IDs.
+                        tokens_seen = budget_tokens_seen_for_step(config, step)
+                    crossed_thresholds, next_threshold = (
+                        validation_token_thresholds_crossed(
+                            previous_tokens_seen,
+                            tokens_seen,
+                            interval_tokens=eval_interval_tokens,
+                            next_threshold=run_state.get(
+                                "next_validation_tokens"
+                            ),
                         )
-                    combined_loss = (
-                        forward_losses[0]
-                        if len(forward_losses) == 1
-                        else torch.stack(forward_losses).mean()
                     )
-                    total_losses = len(forward_losses)
-                    combined_loss_value = float(
-                        combined_loss.detach().float().cpu().item()
+                    if eval_interval_tokens > 0:
+                        run_state["next_validation_tokens"] = next_threshold
+                    committed_microsteps = int(run_state["microstep"]) + len(window)
+                    last_batch_index = window[-1][0]
+                    run_state.update(
+                        {
+                            "status": "resumed"
+                            if int(run_state.get("resume_count", 0)) > 0
+                            else "fresh",
+                            "last_completed_step": step,
+                            "step": step,
+                            "microstep": committed_microsteps,
+                            "epoch": current_epoch,
+                            "batch_index": last_batch_index + 1,
+                            "tokens_seen": tokens_seen,
+                            "content_tokens_seen": content_tokens_seen,
+                            "optimizer_window_microsteps": len(window),
+                        }
                     )
+                    sampler_state = training_data.packed_sampler_state(
+                        train_dataloader
+                    )
+                    if sampler_state is not None:
+                        run_state["sampler_state"] = sampler_state
+                    if probabilistic_controller is not None:
+                        probabilistic_controller.record_successful_optimizer_step()
 
-                if forced_global_action is not None or run_sampling_mode != "nested-all":
-                    weighted_loss_for_distributed_batch(
-                        combined_loss,
-                        local_valid_targets=local_valid_targets,
-                        global_valid_targets=global_valid_targets,
-                        distributed_context=distributed_context,
-                    ).backward()
-
-                gradient_clip_norm = training.get("gradient_clip_norm")
-                if gradient_clip_norm is not None:
-                    clip_grad_norm_(model.parameters(), float(gradient_clip_norm))
-
-                _maybe_apply_concat_lmc_optimizer_step(
-                    config,
-                    model,
-                    optimizer,
-                    total_losses=total_losses,
-                )
-                if probabilistic_controller is not None:
-                    probabilistic_controller.record_successful_optimizer_step()
-                scheduler.step()
-                run_state.update(
-                    {
-                        "last_completed_step": step,
-                        "step": step,
-                        "epoch": current_epoch,
-                        "batch_index": batch_index_in_epoch + 1,
-                        "tokens_seen": tokens_seen,
-                        "content_tokens_seen": content_tokens_seen,
+                    global_losses = {
+                        label: sum_float(
+                            numerator,
+                            device=device,
+                            context=distributed_context,
+                        )
+                        / total_window_valid_targets
+                        for label, numerator in local_loss_numerators.items()
                     }
-                )
-                sampler_state = training_data.packed_sampler_state(train_dataloader)
-                if sampler_state is not None:
-                    run_state["sampler_state"] = sampler_state
-                if successful_step_callback is not None:
-                    successful_step_callback(step=step, tokens_seen=tokens_seen)
-                if probabilistic_boundary_callback is not None:
-                    probabilistic_boundary_callback(
+                    latest_loss = sum(global_losses.values()) / len(global_losses)
+                    if successful_step_callback is not None:
+                        successful_step_callback(step=step, tokens_seen=tokens_seen)
+                    if probabilistic_boundary_callback is not None:
+                        probabilistic_boundary_callback(
+                            step=step, tokens_seen=tokens_seen
+                        )
+
+                    if probabilistic_controller is not None:
+                        run_state.pop("adaptive_sampler_previous_loss", None)
+                        run_state.pop("adaptive_sampler_previous_pattern", None)
+                        run_state.pop("adaptive_reward_summary", None)
+                        run_state.pop("adaptive_correction_penalty_summary", None)
+                    elif (
+                        model_sampling_mode == "adaptive_per_block"
+                        and adaptive_sampler_state is not None
+                    ):
+                        _update_adaptive_sampler_runtime_state(
+                            config,
+                            run_state,
+                            adaptive_sampler_state,
+                            phase=stage_name,
+                            latest_loss=latest_loss,
+                            selected_layer_granularities=list(
+                                action["granularities"]
+                            ),
+                            step=step,
+                            epoch=current_epoch,
+                        )
+                    elif model_sampling_mode != "adaptive_per_block":
+                        run_state.pop("adaptive_sampler_previous_loss", None)
+                        run_state.pop("adaptive_sampler_previous_pattern", None)
+                        run_state.pop("adaptive_reward_summary", None)
+                        run_state.pop("adaptive_correction_penalty_summary", None)
+
+                    elapsed = time.time() - start_time
+                    peak_memory_bytes = current_peak_memory_bytes(device)
+                    tokens_per_second = tokens_seen / elapsed if elapsed > 0 else None
+                    adaptive_artifacts = _runtime_sampler_artifact_fields(
+                        config, run_state, probabilistic_controller
+                    )
+                    adaptive_artifacts.update(
+                        {
+                            "microstep": committed_microsteps,
+                            "optimizer_window_microsteps": len(window),
+                            "committed_tokens_this_step": committed_tokens,
+                        }
+                    )
+                    step_metric_rows = []
+                    for label, loss_value in global_losses.items():
+                        pattern, correction = runtime_artifacts[label]
+                        step_metric_rows.append(
+                            build_training_metric_row(
+                                config,
+                                step=step,
+                                granularity=label,
+                                loss=loss_value,
+                                tokens_seen=tokens_seen,
+                                content_tokens_seen=content_tokens_seen,
+                                wall_clock_seconds=elapsed,
+                                peak_memory_bytes=peak_memory_bytes,
+                                granularity_pattern_summary=pattern,
+                                correction_context=correction,
+                                adaptive_artifacts=adaptive_artifacts,
+                            )
+                        )
+                    _record_metric_rows(
+                        metrics_rows,
+                        step_metric_rows,
+                        metrics_journal=metrics_journal,
+                    )
+                    if monitoring_session is not None:
+                        monitoring_session.log_rows(step_metric_rows)
+                    maybe_emit_training_heartbeat(
+                        heartbeat_writer,
+                        heartbeat_cadence,
+                        config,
                         step=step,
                         tokens_seen=tokens_seen,
-                    )
-
-                elapsed = time.time() - start_time
-                peak_memory_bytes = current_peak_memory_bytes(device)
-                latest_loss = combined_loss_value
-                if probabilistic_controller is not None:
-                    run_state.pop("adaptive_sampler_previous_loss", None)
-                    run_state.pop("adaptive_sampler_previous_pattern", None)
-                    run_state.pop("adaptive_reward_summary", None)
-                    run_state.pop("adaptive_correction_penalty_summary", None)
-                elif model_sampling_mode == "adaptive_per_block" and adaptive_sampler_state is not None:
-                    _update_adaptive_sampler_runtime_state(
-                        config,
-                        run_state,
-                        adaptive_sampler_state,
-                        phase=stage_name,
+                        content_tokens_seen=content_tokens_seen,
                         latest_loss=latest_loss,
-                        selected_layer_granularities=selected_layer_granularities,
-                        step=step,
-                        epoch=current_epoch,
+                        tokens_per_second=tokens_per_second,
+                        peak_gpu_memory_bytes=peak_memory_bytes,
+                        stage_name=stage_name,
                     )
-                elif model_sampling_mode != "adaptive_per_block":
-                    run_state.pop("adaptive_sampler_previous_loss", None)
-                    run_state.pop("adaptive_sampler_previous_pattern", None)
-                    run_state.pop("adaptive_reward_summary", None)
-                    run_state.pop("adaptive_correction_penalty_summary", None)
-                tokens_per_second = tokens_seen / elapsed if elapsed > 0 else None
-                adaptive_artifacts = _runtime_sampler_artifact_fields(
-                    config,
-                    run_state,
-                    probabilistic_controller,
-                )
-                step_metric_rows = []
-                run_state.update(
-                    {
-                        "status": "resumed" if int(run_state.get("resume_count", 0)) > 0 else "fresh",
-                        "last_completed_step": step,
-                        "step": step,
-                        "epoch": current_epoch,
-                        "batch_index": batch_index_in_epoch + 1,
-                        "tokens_seen": tokens_seen,
-                        "content_tokens_seen": content_tokens_seen,
-                    }
-                )
-                maybe_emit_training_heartbeat(
-                    heartbeat_writer,
-                    heartbeat_cadence,
-                    config,
-                    step=step,
-                    tokens_seen=tokens_seen,
-                    content_tokens_seen=content_tokens_seen,
-                    latest_loss=latest_loss,
-                    tokens_per_second=tokens_per_second,
-                    peak_gpu_memory_bytes=peak_memory_bytes,
-                    stage_name=stage_name,
-                )
-
-                for (
-                    granularity,
-                    loss_value,
-                    step_runtime_pattern_summary,
-                    step_correction_context,
-                ) in step_metric_rows_data:
-                    step_metric_rows.append(
-                        build_training_metric_row(
-                            config,
-                            step=step,
-                            granularity=granularity,
-                            loss=loss_value,
-                            tokens_seen=tokens_seen,
-                            content_tokens_seen=content_tokens_seen,
-                            wall_clock_seconds=elapsed,
-                            peak_memory_bytes=peak_memory_bytes,
-                            granularity_pattern_summary=step_runtime_pattern_summary,
-                            correction_context=step_correction_context,
-                            adaptive_artifacts=adaptive_artifacts,
+                    if (
+                        metrics_journal is not None
+                        and training_checkpointing.should_save_latest_checkpoint(
+                            config, step, "step"
                         )
-                    )
-                _record_metric_rows(
-                    metrics_rows,
-                    step_metric_rows,
-                    metrics_journal=metrics_journal,
-                )
-                if monitoring_session is not None:
-                    monitoring_session.log_rows(step_metric_rows)
-                if (
-                    metrics_journal is not None
-                    and training_checkpointing.should_save_latest_checkpoint(
+                    ):
+                        metrics_journal.flush()
+                    training_checkpointing.maybe_write_latest_checkpoint(
                         config,
-                        step,
-                        "step",
+                        model,
+                        optimizer,
+                        scheduler,
+                        heartbeat_writer,
+                        run_state,
+                        reason="step",
+                        step=step,
+                        distributed_context=distributed_context,
                     )
-                ):
-                    metrics_journal.flush()
-                training_checkpointing.maybe_write_latest_checkpoint(
-                    config,
-                    model,
-                    optimizer,
-                    scheduler,
-                    heartbeat_writer,
-                    run_state,
-                    reason="step",
-                    step=step,
-                    distributed_context=distributed_context,
-                )
 
-                if (
-                    bool(validation_config.get("enabled", False))
-                    and eval_interval > 0
-                    and step % eval_interval == 0
-                ):
+                    step_validation = eval_interval > 0 and step % eval_interval == 0
+                    validation_triggers = (
+                        crossed_thresholds
+                        if crossed_thresholds
+                        else ([None] if step_validation else [])
+                    )
+                    if not validation_triggers or not bool(
+                        validation_config.get("enabled", False)
+                    ):
+                        continue
+                    run_state["validation_trigger_tokens"] = validation_triggers[-1]
                     with heartbeat_stage(
                         heartbeat_writer,
                         "validation",
@@ -829,9 +909,24 @@ def train_for_steps(
                         step=step,
                         distributed_context=distributed_context,
                     )
-
-                if step >= max_steps or tokens_seen >= token_budget:
-                    break
+                except Exception:
+                    if not optimizer_committed:
+                        restore_rng_state(window_rng_snapshot)
+                        if controller_snapshot is not None:
+                            probabilistic_controller.restore_transaction_snapshot(
+                                controller_snapshot
+                            )
+                        run_state.clear()
+                        run_state.update(window_state_snapshot)
+                        if window_sampler_snapshot is not None:
+                            training_data.restore_packed_sampler_state(
+                                train_dataloader, window_sampler_snapshot
+                            )
+                            run_state["sampler_state"] = copy.deepcopy(
+                                window_sampler_snapshot
+                            )
+                    optimizer.zero_grad(set_to_none=True)
+                    raise
             if not made_progress:
                 break
 
@@ -1323,6 +1418,7 @@ def build_training_metric_row(
     row = {
         "run_id": run["run_id"],
         "step": step,
+        "microstep": None,
         "split": "train",
         "model_family": run["model_family"],
         "model_size_label": _model_shape_label(run),
@@ -1361,6 +1457,8 @@ def build_training_metric_row(
         "perplexity": perplexity_from_loss(loss),
         "tokens_seen": tokens_seen,
         "content_tokens_seen": content_tokens_seen,
+        "optimizer_window_microsteps": None,
+        "committed_tokens_this_step": None,
         "wall_clock_seconds": wall_clock_seconds,
         "tokens_per_second": tokens_per_second,
         "peak_memory_bytes": peak_memory_bytes,

@@ -21,8 +21,7 @@ run:
 
 model:
   base_model_name: dmodel256-matformer-llama-swiglu
-  tokenizer_name: hf-internal-testing/llama-tokenizer
-  tokenizer_revision: __PINNED_TOKENIZER_REVISION__
+  tokenizer_dir: __PREPARED_TOKENIZER_DIR__
   variant: slicing
   correction_mode: none
   membership_correction: false
@@ -48,6 +47,7 @@ training:
   token_budget: 10000000000
   max_steps_cap: null
   batch_size_per_process: 4
+  gradient_accumulation_steps: 64
   learning_rate: 0.001
   learning_rate_scale_rule: none
   warmup_ratio: 0.01635
@@ -116,7 +116,8 @@ monitoring:
 evaluation:
   validation:
     enabled: true
-    interval_steps: 5000
+    interval_steps: 0
+    interval_tokens: 500000000
     run_at_completion: true
     holdout:
       source: configured_dataset_split

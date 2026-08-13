@@ -375,14 +375,28 @@ def build_comparison_control_signature(config: Mapping[str, Any]) -> tuple[str, 
         "warmup_steps": training.get("resolved_warmup_steps"),
         "token_budget": training.get("token_budget"),
         "batch_size_per_process": training.get("batch_size_per_process"),
+        "gradient_accumulation_steps": training.get(
+            "gradient_accumulation_steps"
+        ),
+        "expected_tokens_per_microstep": training.get(
+            "expected_tokens_per_microstep"
+        ),
+        "expected_tokens_per_step": training.get("expected_tokens_per_step"),
         "precision": training.get("resolved_mixed_precision"),
         "context_length": model.get("context_length"),
         "validation_interval_steps": validation.get("interval_steps"),
+        "validation_interval_tokens": validation.get("interval_tokens"),
         "validation_run_at_completion": validation.get("run_at_completion"),
         "dataset_name": dataset.get("dataset_name"),
         "dataset_config_name": dataset.get("dataset_config_name"),
         "dataset_split": dataset.get("dataset_split"),
         "tokenizer_name": model.get("tokenizer_name"),
+        "tokenizer_revision": model.get("tokenizer_revision"),
+        "tokenizer_manifest_hash": model.get("tokenizer_manifest_hash"),
+        "prepared_corpus_hash": dataset.get("corpus_hash"),
+        "optimizer_training_role_hash": config.get(
+            "optimizer_training_manifest_hash"
+        ),
     }
     if _uses_probabilistic_adaptive_controller(config):
         inputs["probabilistic_seed_streams"] = probabilistic_seed_provenance(config)

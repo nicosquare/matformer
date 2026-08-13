@@ -15,6 +15,8 @@ from src.training.packed_corpus import (
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepared-corpus-dir", required=True)
+    parser.add_argument("--prepared-tokenizer-dir")
+    parser.add_argument("--required-vocab-size", type=int)
     parser.add_argument(
         "--required-training-tokens",
         type=int,
@@ -26,6 +28,8 @@ def main() -> None:
             audit_packed_corpus(
                 args.prepared_corpus_dir,
                 required_training_tokens=args.required_training_tokens,
+                prepared_tokenizer_dir=args.prepared_tokenizer_dir,
+                required_vocab_size=args.required_vocab_size,
             ),
             indent=2,
             sort_keys=True,

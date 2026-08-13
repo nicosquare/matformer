@@ -675,6 +675,14 @@ def build_packed_mmap_dataloaders(
     tokenizer = manifest["tokenizer"]
     if tokenizer.get("name") != tokenizer_name or tokenizer.get("revision") != tokenizer_revision:
         raise DataError("Prepared corpus tokenizer identity does not match the run")
+    if tokenizer.get("manifest_hash") != config["model"].get(
+        "tokenizer_manifest_hash"
+    ):
+        raise DataError("Prepared corpus tokenizer manifest does not match the run")
+    if int(tokenizer.get("vocab_size", -1)) != int(
+        config["model"]["vocab_size_assumption"]
+    ):
+        raise DataError("Prepared corpus tokenizer vocabulary does not match the run")
 
     role_datasets = {
         role: PackedMMapDataset(prepared_dir, role)
