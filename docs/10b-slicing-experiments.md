@@ -42,29 +42,30 @@ export BAYES=configs/opt-in_exps/slicing_10b_bayesian.yaml
 COMMON="--output-root $OUT --override dataset.prepared_corpus_dir=$CORPUS --override model.tokenizer_dir=$TOKENIZER"
 ```
 
-The reference control is eight-width random-global with no correction. Random
-global GMC, per-block, nested-all, standalone, and Bayesian commands are
-explicit extensions. There is no queue or automatic fan-out.
+Both production configs default to plain slicing (`correction_mode: none`).
+`correction_mode` is the only correction input needed on the command line;
+the resolved `membership_correction` boolean is derived from it. The commands
+do not queue or fan out experiments.
 
-Reference control and random extensions, one run per command:
+## Plain slicing variants — initial focus
+
+Run these variants first. The random-global run is the reference control.
 
 ```bash
-sbatch --job-name=10b-random-global-none scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode nested-random --run-id 10b-random-global-none $COMMON --override model.granularity_sampling_mode=global --override model.correction_mode=none --override model.membership_correction=false
-sbatch --job-name=10b-random-global-gmc scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode nested-random --run-id 10b-random-global-gmc $COMMON --override model.granularity_sampling_mode=global --override model.correction_mode=gmc --override model.membership_correction=true
-sbatch --job-name=10b-random-per-block-none scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode nested-random --run-id 10b-random-per-block-none $COMMON --override model.granularity_sampling_mode=per_block --override model.correction_mode=none --override model.membership_correction=false
-sbatch --job-name=10b-random-per-block-gmc scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode nested-random --run-id 10b-random-per-block-gmc $COMMON --override model.granularity_sampling_mode=per_block --override model.correction_mode=gmc --override model.membership_correction=true
+# Plain slicing: random global reference control
+sbatch --job-name=10b-random-global-plain scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode nested-random --run-id 10b-random-global-plain $COMMON --override model.granularity_sampling_mode=global
+
+# Plain slicing: random independent per-block sampling
+sbatch --job-name=10b-random-per-block-plain scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode nested-random --run-id 10b-random-per-block-plain $COMMON --override model.granularity_sampling_mode=per_block
 ```
 
-Nested-all, one run per command:
-
 ```bash
-sbatch --job-name=10b-nested-all-none scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode nested-all --run-id 10b-nested-all-none $COMMON --override model.correction_mode=none --override model.membership_correction=false
-sbatch --job-name=10b-nested-all-gmc scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode nested-all --run-id 10b-nested-all-gmc $COMMON --override model.correction_mode=gmc --override model.membership_correction=true
+# Plain slicing: evaluate and train all eight nested granularities per microstep
+sbatch --job-name=10b-nested-all-plain scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode nested-all --run-id 10b-nested-all-plain $COMMON
 ```
 
-Standalone, one run per command:
-
 ```bash
+# Plain slicing: independent standalone controls for every width
 sbatch --job-name=10b-standalone-g125 scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode standalone --granularity g125 --run-id 10b-standalone-g125 $COMMON
 sbatch --job-name=10b-standalone-g250 scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode standalone --granularity g250 --run-id 10b-standalone-g250 $COMMON
 sbatch --job-name=10b-standalone-g375 scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode standalone --granularity g375 --run-id 10b-standalone-g375 $COMMON
@@ -75,13 +76,36 @@ sbatch --job-name=10b-standalone-g875 scripts/slurm_dmodel256_pilot.sh --config 
 sbatch --job-name=10b-standalone-g1000 scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode standalone --granularity g1000 --run-id 10b-standalone-g1000 $COMMON
 ```
 
-Bayesian TS + GMC, one run per command:
+```bash
+# Plain slicing: Bayesian Thompson sampling variants
+sbatch --job-name=10b-ts-global-plain scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-global-plain $COMMON
+sbatch --job-name=10b-ts-per-block-plain scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-per-block-plain $COMMON --override model.granularity_sampling_mode=adaptive_per_block
+sbatch --job-name=10b-ts-global-plain-reset-k2000 scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-global-plain-reset-k2000 $COMMON --override model.adaptive_controller.reset.enabled=true --override model.adaptive_controller.reset.interval_steps=2000 --override model.adaptive_controller.reset.policy=full_prior --override model.adaptive_controller.reset.acquisition_policy=balanced_global --override model.adaptive_controller.reset.acquisition_passes=1
+sbatch --job-name=10b-ts-global-plain-acquisition-k2000 scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-global-plain-acquisition-k2000 $COMMON --override model.adaptive_controller.reset.enabled=true --override model.adaptive_controller.reset.interval_steps=2000 --override model.adaptive_controller.reset.policy=acquisition_only --override model.adaptive_controller.reset.acquisition_policy=balanced_global --override model.adaptive_controller.reset.acquisition_passes=1
+```
+
+## GMC extensions
+
+Run these after the corresponding plain-slicing variants. GMC is enabled with
+one override; `membership_correction=true` is inferred.
 
 ```bash
-sbatch --job-name=10b-ts-global scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-global $COMMON
-sbatch --job-name=10b-ts-per-block scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-per-block $COMMON --override model.granularity_sampling_mode=adaptive_per_block
-sbatch --job-name=10b-ts-global-reset-k2000 scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-global-reset-k2000 $COMMON --override model.adaptive_controller.reset.enabled=true --override model.adaptive_controller.reset.interval_steps=2000 --override model.adaptive_controller.reset.policy=full_prior --override model.adaptive_controller.reset.acquisition_policy=balanced_global --override model.adaptive_controller.reset.acquisition_passes=1
-sbatch --job-name=10b-ts-global-acquisition-k2000 scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-global-acquisition-k2000 $COMMON --override model.adaptive_controller.reset.enabled=true --override model.adaptive_controller.reset.interval_steps=2000 --override model.adaptive_controller.reset.policy=acquisition_only --override model.adaptive_controller.reset.acquisition_policy=balanced_global --override model.adaptive_controller.reset.acquisition_passes=1
+# GMC: random global and random independent per-block sampling
+sbatch --job-name=10b-random-global-gmc scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode nested-random --run-id 10b-random-global-gmc $COMMON --override model.granularity_sampling_mode=global --override model.correction_mode=gmc
+sbatch --job-name=10b-random-per-block-gmc scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode nested-random --run-id 10b-random-per-block-gmc $COMMON --override model.granularity_sampling_mode=per_block --override model.correction_mode=gmc
+```
+
+```bash
+# GMC: nested-all
+sbatch --job-name=10b-nested-all-gmc scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode nested-all --run-id 10b-nested-all-gmc $COMMON --override model.correction_mode=gmc
+```
+
+```bash
+# GMC: Bayesian Thompson sampling variants
+sbatch --job-name=10b-ts-global-gmc scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-global-gmc $COMMON --override model.correction_mode=gmc
+sbatch --job-name=10b-ts-per-block-gmc scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-per-block-gmc $COMMON --override model.granularity_sampling_mode=adaptive_per_block --override model.correction_mode=gmc
+sbatch --job-name=10b-ts-global-gmc-reset-k2000 scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-global-gmc-reset-k2000 $COMMON --override model.correction_mode=gmc --override model.adaptive_controller.reset.enabled=true --override model.adaptive_controller.reset.interval_steps=2000 --override model.adaptive_controller.reset.policy=full_prior --override model.adaptive_controller.reset.acquisition_policy=balanced_global --override model.adaptive_controller.reset.acquisition_passes=1
+sbatch --job-name=10b-ts-global-gmc-acquisition-k2000 scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-global-gmc-acquisition-k2000 $COMMON --override model.correction_mode=gmc --override model.adaptive_controller.reset.enabled=true --override model.adaptive_controller.reset.interval_steps=2000 --override model.adaptive_controller.reset.policy=acquisition_only --override model.adaptive_controller.reset.acquisition_policy=balanced_global --override model.adaptive_controller.reset.acquisition_passes=1
 ```
 
 For four GPUs the preflight must report four 1,024-token sequences per rank,

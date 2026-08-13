@@ -15,7 +15,6 @@ model:
   granularity_mode: explicit
   variant: slicing
   correction_mode: gmc
-  membership_correction: true
   tokenizer_name: hf-internal-testing/llama-tokenizer
   d_model: 128
   num_layers: 2

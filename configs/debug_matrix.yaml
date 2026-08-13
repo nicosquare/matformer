@@ -10,7 +10,6 @@ model:
   base_model_name: debug-llama
   variant: slicing
   correction_mode: gmc
-  membership_correction: true
   tokenizer_name: hf-internal-testing/llama-tokenizer
   d_model: 128
   num_layers: 2

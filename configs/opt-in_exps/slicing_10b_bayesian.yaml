@@ -1,4 +1,4 @@
-# Production Bayesian TS + GMC contract over the shared prepared 10B corpus.
+# Production Bayesian TS plain-slicing contract over the shared prepared 10B corpus.
 run:
   run_id: slicing-10b-bayesian-global
   phase_id: slicing_10b_unique_tokens
@@ -22,8 +22,7 @@ model:
   base_model_name: dmodel256-matformer-llama-swiglu
   tokenizer_dir: __PREPARED_TOKENIZER_DIR__
   variant: slicing
-  correction_mode: gmc
-  membership_correction: true
+  correction_mode: none
   granularity_mode: explicit
   granularity_sampling_mode: adaptive_global
   adaptive_sampler_strategy: thompson

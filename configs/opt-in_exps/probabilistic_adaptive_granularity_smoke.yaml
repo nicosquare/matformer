@@ -25,7 +25,6 @@ model:
   base_model_name: dmodel256-matformer-llama-swiglu
   variant: slicing
   correction_mode: gmc
-  membership_correction: true
   tokenizer_name: hf-internal-testing/llama-tokenizer
   d_model: 256
   num_layers: 16

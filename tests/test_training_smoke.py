@@ -292,8 +292,7 @@ def _run_concat_lmc_case(tmp_path, monkeypatch, correction_mode):
             "training.scheduler.kwargs.warmup_steps=0",
             "training.gradient_clip_norm=1000",
             "evaluation.validation=false",
-        ]
-        + (["model.membership_correction=false"] if correction_mode == "none" else []),
+        ],
     )
     tokenized_dataset = Dataset.from_dict(
         {

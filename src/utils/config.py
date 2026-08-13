@@ -820,11 +820,10 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             raise ConfigError(
                 "model.requested_correction_mode must be a string or null"
             )
-        expected_membership_correction = requested_mode.strip() != "none"
-        if model["membership_correction"] != expected_membership_correction:
-            raise ConfigError(
-                "model.correction_mode and model.membership_correction must not disagree"
-            )
+    if model["membership_correction"] != (correction_mode != "none"):
+        raise ConfigError(
+            "model.membership_correction must be derived from model.correction_mode"
+        )
 
     if granularity_sampling_mode in PROBABILISTIC_ADAPTIVE_SAMPLING_MODES:
         if run.get("sampling_mode") != "nested-random":
@@ -1301,11 +1300,7 @@ def _resolve_model_correction_defaults(config: dict[str, Any]) -> None:
         resolved_mode = "gmc" if membership_correction else "none"
     else:
         resolved_mode = _normalize_correction_mode(requested_mode)
-        expected_membership_correction = resolved_mode != "none"
-        if membership_correction != expected_membership_correction:
-            raise ConfigError(
-                "model.correction_mode and model.membership_correction must not disagree"
-            )
+        membership_correction = resolved_mode != "none"
 
     if resolved_mode == "lmc" and not _is_concat_model_path(config):
         raise ConfigError(

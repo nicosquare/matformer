@@ -915,7 +915,6 @@ def test_legacy_granularity_sampling_alias_resolves_to_canonical_model_mode(
             [
                 "model.granularity_sampling_mode=per_block",
                 "model.correction_mode=none",
-                "model.membership_correction=false",
             ],
             False,
         ),
@@ -1458,12 +1457,22 @@ def test_shared_configs_resolve_default_model_variant():
 @pytest.mark.parametrize(
     "overrides, expected_mode, expected_membership_correction",
     [
-        (["model.correction_mode=none", "model.membership_correction=false"], "none", False),
+        (["model.correction_mode=none"], "none", False),
         (["model.correction_mode=gmc"], "gmc", True),
         (
             ["model.variant=concat", "model.correction_mode=lmc"],
             "lmc",
             True,
+        ),
+        (
+            ["model.correction_mode=gmc", "model.membership_correction=false"],
+            "gmc",
+            True,
+        ),
+        (
+            ["model.correction_mode=none", "model.membership_correction=true"],
+            "none",
+            False,
         ),
     ],
 )
@@ -1481,25 +1490,6 @@ def test_explicit_correction_modes_resolve_and_validate(
     assert resolved["model"]["requested_correction_mode"] == expected_mode
     assert resolved["model"]["correction_mode"] == expected_mode
     assert resolved["model"]["membership_correction"] is expected_membership_correction
-
-
-@pytest.mark.parametrize(
-    "overrides",
-    [
-        ["model.correction_mode=gmc", "model.membership_correction=false"],
-        ["model.correction_mode=none", "model.membership_correction=true"],
-    ],
-)
-def test_membership_correction_conflicts_fail_fast(overrides):
-    with pytest.raises(
-        ConfigError,
-        match="model.correction_mode and model.membership_correction must not disagree",
-    ):
-        resolve_run_config(
-            "configs/debug_matrix.yaml",
-            run_id="debug-nested-001",
-            overrides=overrides,
-        )
 
 
 def test_lmc_is_rejected_for_non_concat_runs():
@@ -1529,10 +1519,7 @@ def test_slicing_allows_disabling_membership_correction():
     resolved = resolve_run_config(
         "configs/debug_matrix.yaml",
         run_id="debug-nested-001",
-        overrides=[
-            "model.correction_mode=none",
-            "model.membership_correction=false",
-        ],
+        overrides=["model.correction_mode=none"],
     )
 
     assert resolved["model"]["variant"] == "slicing"
@@ -2097,6 +2084,8 @@ def test_10b_production_preflight_resolves_exact_four_gpu_schedule(tmp_path, mon
     assert training["max_steps"] == 9_537
     assert training["resolved_warmup_steps"] == 156
     assert resolved["evaluation"]["validation"]["interval_tokens"] == 500_000_000
+    assert resolved["model"]["correction_mode"] == "none"
+    assert resolved["model"]["membership_correction"] is False
     assert resolved["model"]["granularities"] == [
         "g125", "g250", "g375", "g500", "g625", "g750", "g875", "g1000"
     ]
@@ -2144,6 +2133,8 @@ def test_10b_bayesian_dimensions_and_balanced_warmup(tmp_path, monkeypatch):
         overrides=common,
     )
     assert global_config["model"]["adaptive_controller"]["coefficient_dimension"] == 8
+    assert global_config["model"]["correction_mode"] == "none"
+    assert global_config["model"]["membership_correction"] is False
     assert global_config["training"]["pre_nested_warmup"]["duration"] == 800
     assert global_config["training"]["pre_nested_warmup"]["passes"] == 2
     per_block = resolve_run_config(
@@ -2152,6 +2143,14 @@ def test_10b_bayesian_dimensions_and_balanced_warmup(tmp_path, monkeypatch):
         overrides=[*common, "model.granularity_sampling_mode=adaptive_per_block"],
     )
     assert per_block["model"]["adaptive_controller"]["coefficient_dimension"] == 113
+
+    gmc = resolve_run_config(
+        "configs/opt-in_exps/slicing_10b_bayesian.yaml",
+        output_dir=tmp_path / "slicing-10b-bayesian-global",
+        overrides=[*common, "model.correction_mode=gmc"],
+    )
+    assert gmc["model"]["correction_mode"] == "gmc"
+    assert gmc["model"]["membership_correction"] is True
 
 
 def test_packed_mmap_rejects_per_run_sampling_and_distributed_ucb(tmp_path, monkeypatch):

@@ -24,7 +24,6 @@ model:
   tokenizer_dir: __PREPARED_TOKENIZER_DIR__
   variant: slicing
   correction_mode: none
-  membership_correction: false
   granularity_mode: explicit
   granularity_sampling_mode: global
   d_model: 256
