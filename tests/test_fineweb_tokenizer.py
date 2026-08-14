@@ -134,6 +134,24 @@ def test_matching_existing_tokenizer_is_reused_and_mismatch_is_rejected(tmp_path
         )
 
 
+def test_legacy_schema_v1_manifest_implicitly_uses_default_text_column(tmp_path):
+    tokenizer_dir, manifest = write_matching_tokenizer_artifact(tmp_path)
+    manifest["dataset"].pop("text_column")
+    manifest.pop("manifest_hash")
+    manifest["manifest_hash"] = stable_hash(manifest)
+    manifest_path = tokenizer_dir / "tokenizer_manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    original_bytes = manifest_path.read_bytes()
+
+    assert load_existing_tokenizer_if_matching(tokenizer_dir) == manifest
+    assert manifest_path.read_bytes() == original_bytes
+    with pytest.raises(FineWebTokenizerError, match="dataset.text_column"):
+        load_existing_tokenizer_if_matching(
+            tokenizer_dir,
+            text_column="content",
+        )
+
+
 def test_existing_tokenizer_cli_exits_before_loading_fineweb(tmp_path, monkeypatch, capsys):
     from scripts import train_fineweb_tokenizer as command
 

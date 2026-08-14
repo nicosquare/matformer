@@ -6,6 +6,7 @@ import copy
 import hashlib
 import os
 import random
+from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
@@ -670,6 +671,14 @@ def build_packed_mmap_dataloaders(
         )
     if int(manifest["data_seed"]) != int(dataset_config.get("data_seed", -1)):
         raise DataError("Prepared corpus data seed does not match dataset.data_seed")
+    source = manifest["source"]
+    source_expected = {
+        "dataset_name": dataset_config.get("dataset_name"),
+        "dataset_config_name": dataset_config.get("dataset_config_name"),
+        "split": dataset_config.get("dataset_split"),
+    }
+    if any(source.get(field) != value for field, value in source_expected.items()):
+        raise DataError("Prepared corpus source identity does not match the run")
     tokenizer_name = str(config["model"].get("tokenizer_name"))
     tokenizer_revision = str(config["model"].get("tokenizer_revision"))
     tokenizer = manifest["tokenizer"]
@@ -695,12 +704,26 @@ def build_packed_mmap_dataloaders(
     rank = int(getattr(distributed_context, "rank", 0))
     world_size = int(getattr(distributed_context, "world_size", 1))
     batch_size = int(config["training"]["batch_size_per_process"])
+    token_budget = int(config["training"]["token_budget"])
+    if token_budget <= 0 or token_budget % context_length:
+        raise DataError(
+            "training.token_budget must be positive and context-length aligned"
+        )
+    selected_sample_count = token_budget // context_length
+    available_sample_count = len(role_datasets["optimizer_training"])
+    if selected_sample_count > available_sample_count:
+        raise DataError("Requested token budget exceeds the prepared corpus")
+    ordering = manifest["training_order"]
     train_batch_sampler = NoPaddingDistributedBatchSampler(
-        len(role_datasets["optimizer_training"]),
+        available_sample_count,
         batch_size,
         rank,
         world_size,
         data_seed=int(dataset_config["data_seed"]),
+        selected_sample_count=selected_sample_count,
+        permutation_path=Path(prepared_dir) / ordering["path"],
+        permutation_hash_expected=ordering["sha256"],
+        permutation_version=ordering["permutation_version"],
     )
     pin_memory = device.type == "cuda"
     num_workers = int(config["training"].get("dataloader_num_workers", 0))

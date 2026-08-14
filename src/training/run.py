@@ -321,9 +321,14 @@ def _attach_probabilistic_role_provenance(
 
     if _uses_packed_mmap_corpus(config):
         config["corpus_hash"] = parent_manifest["corpus_hash"]
-        config["corpus_permutation_version"] = parent_manifest[
+        training_order = parent_manifest["training_order"]
+        config["corpus_permutation_version"] = training_order[
             "permutation_version"
         ]
+        config["corpus_permutation_hash"] = training_order["sha256"]
+        config["selected_optimizer_sample_count"] = int(
+            config["training"]["token_budget"]
+        ) // int(parent_manifest["context_length"])
         config["dataset"]["corpus_hash"] = parent_manifest["corpus_hash"]
 
     signature, inputs = build_comparison_control_signature(config)
@@ -1478,6 +1483,10 @@ def run_training(
             "corpus_permutation_version": config.get(
                 "corpus_permutation_version"
             ),
+            "corpus_permutation_hash": config.get("corpus_permutation_hash"),
+            "selected_optimizer_sample_count": config.get(
+                "selected_optimizer_sample_count"
+            ),
             "data_seed": config.get("dataset", {}).get("data_seed"),
             "sampler_state": copy.deepcopy(run_state.get("sampler_state")),
             "metrics_accumulator_state": copy.deepcopy(
@@ -1639,6 +1648,15 @@ def run_training(
                     )
                 failure_extra_fields = {
                     "corpus_hash": config.get("corpus_hash"),
+                    "corpus_permutation_version": config.get(
+                        "corpus_permutation_version"
+                    ),
+                    "corpus_permutation_hash": config.get(
+                        "corpus_permutation_hash"
+                    ),
+                    "selected_optimizer_sample_count": config.get(
+                        "selected_optimizer_sample_count"
+                    ),
                     "data_seed": config.get("dataset", {}).get("data_seed"),
                     "sampler_state": copy.deepcopy(run_state.get("sampler_state")),
                     "metrics_accumulator_state": copy.deepcopy(

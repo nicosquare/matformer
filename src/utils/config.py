@@ -1212,10 +1212,36 @@ def _validate_distributed_and_prepared_corpus_contract(
         raise ConfigError("Prepared corpus context length does not match the model")
     if int(manifest["data_seed"]) != int(dataset["data_seed"]):
         raise ConfigError("Prepared corpus data seed does not match the run")
-    if int(manifest["roles"]["optimizer_training"]["token_count"]) != int(
-        training["token_budget"]
-    ):
-        raise ConfigError("Prepared corpus token count does not match training.token_budget")
+    token_budget = int(training["token_budget"])
+    context_length = int(model["context_length"])
+    if token_budget <= 0 or token_budget % context_length:
+        raise ConfigError(
+            "training.token_budget must be positive and divisible by "
+            "model.context_length for a prepared corpus"
+        )
+    available_tokens = int(
+        manifest["roles"]["optimizer_training"]["token_count"]
+    )
+    if token_budget > available_tokens:
+        raise ConfigError(
+            "training.token_budget exceeds the prepared corpus optimizer tokens"
+        )
+    source = manifest["source"]
+    expected_source = {
+        "dataset_name": dataset.get("dataset_name"),
+        "dataset_config_name": dataset.get("dataset_config_name"),
+        "split": dataset.get("dataset_split"),
+    }
+    mismatched_source_fields = [
+        field
+        for field, expected in expected_source.items()
+        if source.get(field) != expected
+    ]
+    if mismatched_source_fields:
+        raise ConfigError(
+            "Prepared corpus source identity does not match dataset config: "
+            + ", ".join(mismatched_source_fields)
+        )
     tokenizer = manifest["tokenizer"]
     if tokenizer.get("name") != model.get("tokenizer_name") or tokenizer.get(
         "revision"
@@ -1236,6 +1262,12 @@ def _validate_distributed_and_prepared_corpus_contract(
     if isinstance(dataset, dict):
         dataset["corpus_hash"] = manifest["corpus_hash"]
         dataset["role_manifest_hashes"] = dict(manifest["role_manifest_hashes"])
+        dataset["available_optimizer_tokens"] = available_tokens
+        dataset["selected_optimizer_samples"] = token_budget // context_length
+        dataset["training_order_sha256"] = manifest["training_order"]["sha256"]
+        dataset["training_order_version"] = manifest["training_order"][
+            "permutation_version"
+        ]
 
 
 def _compose_single_run(config: Mapping[str, Any]) -> dict[str, Any]:

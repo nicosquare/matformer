@@ -2025,10 +2025,20 @@ def test_single_run_resolves_explicit_schedule_and_optimizer_overrides(tmp_path)
 
 def _production_manifest():
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "context_length": 1024,
         "data_seed": 42,
         "corpus_hash": "corpus-hash",
+        "source": {
+            "dataset_name": "HuggingFaceFW/fineweb",
+            "dataset_config_name": "sample-100BT",
+            "split": "train",
+            "source_exhausted": True,
+        },
+        "training_order": {
+            "sha256": "order-hash",
+            "permutation_version": "numpy_pcg64_uint64_le_v1",
+        },
         "tokenizer": {
             "name": "fineweb_sentencepiece_bpe_256k",
             "revision": "tokenizer-hash",
@@ -2043,7 +2053,7 @@ def _production_manifest():
             "final_holdout": "final-hash",
         },
         "roles": {
-            "optimizer_training": {"token_count": 10_000_000_000},
+            "optimizer_training": {"token_count": 90_000_000_000},
         },
     }
 
@@ -2090,6 +2100,56 @@ def test_10b_production_preflight_resolves_exact_four_gpu_schedule(tmp_path, mon
         "g125", "g250", "g375", "g500", "g625", "g750", "g875", "g1000"
     ]
     assert resolved["dataset"]["corpus_hash"] == "corpus-hash"
+    assert resolved["dataset"]["dataset_config_name"] == "sample-100BT"
+    assert resolved["dataset"]["available_optimizer_tokens"] == 90_000_000_000
+    assert resolved["dataset"]["selected_optimizer_samples"] == 9_765_625
+    assert resolved["dataset"]["training_order_sha256"] == "order-hash"
+
+
+def test_packed_preflight_rejects_oversized_misaligned_and_mismatched_source(
+    tmp_path, monkeypatch
+):
+    import src.training.fineweb_tokenizer as fineweb_tokenizer
+    import src.training.packed_corpus as packed_corpus
+
+    monkeypatch.delenv("WORLD_SIZE", raising=False)
+    manifest = _production_manifest()
+    monkeypatch.setattr(
+        packed_corpus, "load_corpus_manifest", lambda *args, **kwargs: manifest
+    )
+    monkeypatch.setattr(
+        fineweb_tokenizer,
+        "load_tokenizer_manifest",
+        lambda *args, **kwargs: {
+            "tokenizer_name": "fineweb_sentencepiece_bpe_256k",
+            "manifest_hash": "tokenizer-hash",
+            "sentencepiece_model_sha256": "model-hash",
+            "vocab_size": 256000,
+        },
+    )
+    common = [
+        "dataset.prepared_corpus_dir=/prepared/fineweb",
+        "model.tokenizer_dir=/prepared/tokenizer",
+    ]
+    with pytest.raises(ConfigError, match="exceeds.*optimizer tokens"):
+        resolve_run_config(
+            "configs/opt-in_exps/slicing_10b_base.yaml",
+            output_dir=tmp_path / "oversized" / "slicing-10b-base",
+            overrides=[*common, "training.token_budget=100000000000"],
+        )
+    with pytest.raises(ConfigError, match="divisible by model.context_length"):
+        resolve_run_config(
+            "configs/opt-in_exps/slicing_10b_base.yaml",
+            output_dir=tmp_path / "misaligned" / "slicing-10b-base",
+            overrides=[*common, "training.token_budget=10000000001"],
+        )
+    manifest["source"]["dataset_config_name"] = "sample-10BT"
+    with pytest.raises(ConfigError, match="source identity.*dataset_config_name"):
+        resolve_run_config(
+            "configs/opt-in_exps/slicing_10b_base.yaml",
+            output_dir=tmp_path / "source-mismatch" / "slicing-10b-base",
+            overrides=common,
+        )
 
 
 def test_validation_token_and_positive_step_cadence_are_mutually_exclusive():

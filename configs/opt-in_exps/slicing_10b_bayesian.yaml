@@ -1,4 +1,4 @@
-# Production Bayesian TS plain-slicing contract over the shared prepared 10B corpus.
+# Production Bayesian TS plain-slicing contract over the reusable full-source corpus.
 run:
   run_id: slicing-10b-bayesian-global
   phase_id: slicing_10b_unique_tokens
@@ -95,7 +95,7 @@ dataset:
   prepared_corpus_dir: __PREPARED_CORPUS_DIR__
   data_seed: 42
   dataset_name: HuggingFaceFW/fineweb
-  dataset_config_name: sample-10BT
+  dataset_config_name: sample-100BT
   dataset_split: train
   dataset_phase: production
   sample_limit: null

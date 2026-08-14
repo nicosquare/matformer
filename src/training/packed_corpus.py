@@ -1,23 +1,23 @@
 """Immutable packed-token corpus preparation and memory-mapped access.
 
-The production path deliberately keeps source-document selection separate from
-packing.  Reserved documents are selected before any token is written, while
-training provenance is represented by hashes instead of a JSON identity per
+The production path assigns deterministic source-document roles before packing
+each record. Reserved identities remain explicit, while optimizer-training
+provenance uses a resumable rolling hash chain rather than one JSON identity per
 packed sequence.
 """
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
-import shutil
-import tempfile
+import time
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 import numpy as np
 from torch.utils.data import Dataset, Sampler
@@ -25,12 +25,13 @@ from torch.utils.data import Dataset, Sampler
 from src.utils.reproducibility import stable_hash
 
 
-PACKED_CORPUS_SCHEMA_VERSION = 2
+PACKED_CORPUS_SCHEMA_VERSION = 3
 PACKING_VERSION = "contiguous_eos_uint32_v1"
-PERMUTATION_VERSION = "numpy_pcg64_permutation_v1"
+PERMUTATION_VERSION = "numpy_pcg64_uint64_le_v1"
+DOCUMENT_HASH_CHAIN_VERSION = "sha256_chain_v1"
+PREPARATION_PROGRESS_SCHEMA_VERSION = 1
 DEFAULT_DATA_SEED = 42
 DEFAULT_CONTEXT_LENGTH = 1024
-DEFAULT_TRAINING_TOKEN_BUDGET = 10_000_000_000
 DEFAULT_SHUFFLE_BUFFER_SIZE = 100_000
 DEFAULT_SHARD_TOKEN_CAPACITY = 256 * 1024 * 1024
 RESERVED_ROLE_COUNTS = {
@@ -48,6 +49,143 @@ ALL_CORPUS_ROLES = (
 
 class PackedCorpusError(ValueError):
     """Raised when a prepared corpus violates the immutable data contract."""
+
+
+def preparation_work_dir(output_dir: str | Path) -> Path:
+    output = Path(output_dir).expanduser().resolve()
+    return output.parent / f".{output.name}.preparing"
+
+
+def preparation_lock_path(output_dir: str | Path) -> Path:
+    output = Path(output_dir).expanduser().resolve()
+    return output.parent / f".{output.name}.prepare.lock"
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    temporary = path.with_name(f".{path.name}.tmp")
+    with temporary.open("w", encoding="utf-8") as target:
+        json.dump(payload, target, indent=2, sort_keys=True)
+        target.write("\n")
+        target.flush()
+        os.fsync(target.fileno())
+    os.replace(temporary, path)
+    _fsync_directory(path.parent)
+
+
+def _progress_envelope(payload: Mapping[str, Any]) -> dict[str, Any]:
+    body = dict(payload)
+    body["progress_hash"] = stable_hash(body)
+    return body
+
+
+def _load_progress(path: Path) -> dict[str, Any]:
+    try:
+        progress = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise PackedCorpusError(
+            f"Corrupt resumable preparation checkpoint: {path}"
+        ) from error
+    saved_hash = progress.pop("progress_hash", None)
+    if saved_hash != stable_hash(progress):
+        raise PackedCorpusError(
+            f"Corrupt resumable preparation checkpoint hash: {path}"
+        )
+    return progress
+
+
+def _initial_document_hash() -> str:
+    return hashlib.sha256(DOCUMENT_HASH_CHAIN_VERSION.encode("ascii")).hexdigest()
+
+
+def _extend_document_hash(previous: str, identity: Mapping[str, Any]) -> str:
+    digest = hashlib.sha256()
+    try:
+        digest.update(bytes.fromhex(previous))
+    except ValueError as error:
+        raise PackedCorpusError("Invalid rolling document-identity hash state") from error
+    digest.update(stable_hash(identity).encode("ascii"))
+    return digest.hexdigest()
+
+
+def _validate_partial_artifacts(work_root: Path, progress: Mapping[str, Any]) -> None:
+    """Validate every artifact referenced by resumable state without changing it."""
+
+    accounted_documents = 0
+    for role, role_manifest in progress.get("role_manifests", {}).items():
+        shards = role_manifest.get("shards", [])
+        if role_manifest.get("shard_set_hash") != stable_hash(shards):
+            raise PackedCorpusError(f"Corrupt completed role metadata: {role}")
+        token_count = 0
+        for shard in shards:
+            path = work_root / shard["path"]
+            if not path.is_file() or path.stat().st_size != int(shard["byte_count"]):
+                raise PackedCorpusError(f"Missing partial preparation shard: {path}")
+            if sha256_file(path) != shard["sha256"]:
+                raise PackedCorpusError(
+                    f"Partial preparation shard checksum mismatch: {path}"
+                )
+            token_count += int(shard["token_count"])
+        if token_count != int(role_manifest.get("token_count", -1)):
+            raise PackedCorpusError(f"Corrupt completed role token count: {role}")
+        accounted_documents += int(role_manifest.get("source_document_count", 0))
+
+    for role, state in progress.get("role_states", {}).items():
+        completed = state.get("completed_shards", [])
+        completed_tokens = 0
+        for shard in completed:
+            path = work_root / shard["path"]
+            if not path.is_file() or path.stat().st_size != int(shard["byte_count"]):
+                raise PackedCorpusError(f"Missing partial preparation shard: {path}")
+            if sha256_file(path) != shard["sha256"]:
+                raise PackedCorpusError(
+                    f"Partial preparation shard checksum mismatch: {path}"
+                )
+            completed_tokens += int(shard["token_count"])
+        shard_offset = int(state.get("shard_offset", -1))
+        if completed_tokens + shard_offset != int(state.get("token_count", -1)):
+            raise PackedCorpusError(f"Corrupt partial writer token count: {role}")
+        if shard_offset:
+            configuration = progress["configuration"]
+            partial_path = (
+                work_root / role / f"shard-{int(state['shard_index']):05d}.bin"
+            )
+            expected_bytes = int(
+                configuration["shard_token_capacity_resolved"]
+            ) * np.dtype(np.uint32).itemsize
+            if (
+                not partial_path.is_file()
+                or partial_path.stat().st_size != expected_bytes
+            ):
+                raise PackedCorpusError(
+                    f"Corrupt partial preparation shard: {partial_path}"
+                )
+        pending = state.get("pending_tokens", [])
+        if len(pending) >= int(progress["configuration"]["context_length"]):
+            raise PackedCorpusError(f"Corrupt pending-token state: {role}")
+        accounted_documents += int(state.get("source_document_count", 0))
+
+    if accounted_documents != int(
+        progress.get("committed_shuffled_document_count", -1)
+    ):
+        raise PackedCorpusError("Partial preparation document-count mismatch")
+
+    ordering = progress.get("training_order")
+    if ordering is not None:
+        path = work_root / ordering["path"]
+        if not path.is_file() or path.stat().st_size != int(ordering["byte_count"]):
+            raise PackedCorpusError("Partial preparation order artifact size mismatch")
+        if sha256_file(path) != ordering["sha256"]:
+            raise PackedCorpusError(
+                "Partial preparation order artifact checksum mismatch"
+            )
 
 
 def _resolved_shard_token_capacity(
@@ -171,17 +309,14 @@ class _RoleShardWriter:
         *,
         context_length: int,
         shard_token_capacity: int,
-        exact_token_limit: int | None,
+        state: Mapping[str, Any] | None = None,
     ) -> None:
         self.root = root / role
-        self.root.mkdir(parents=True, exist_ok=False)
+        self.root.mkdir(parents=True, exist_ok=state is not None)
         self.role = role
         self.context_length = int(context_length)
         self.shard_token_capacity = _resolved_shard_token_capacity(
             shard_token_capacity, self.context_length
-        )
-        self.exact_token_limit = (
-            None if exact_token_limit is None else int(exact_token_limit)
         )
         self.token_count = 0
         self.source_document_count = 0
@@ -192,14 +327,55 @@ class _RoleShardWriter:
         self._shard_map: np.memmap | None = None
         self._shard_offset = 0
         self._completed_shards: list[dict[str, Any]] = []
+        if state is not None:
+            self._restore_state(state)
 
-    @property
-    def full(self) -> bool:
-        return self.exact_token_limit is not None and self.token_count >= self.exact_token_limit
+    def _restore_state(self, state: Mapping[str, Any]) -> None:
+        if state.get("role") != self.role:
+            raise PackedCorpusError(f"Writer checkpoint role mismatch: {self.role}")
+        self.token_count = int(state.get("token_count", -1))
+        self.source_document_count = int(state.get("source_document_count", -1))
+        self._pending = [int(value) for value in state.get("pending_tokens", [])]
+        self._shard_index = int(state.get("shard_index", -1))
+        self._shard_offset = int(state.get("shard_offset", -1))
+        self._completed_shards = [dict(item) for item in state.get("completed_shards", [])]
+        if min(
+            self.token_count,
+            self.source_document_count,
+            self._shard_index,
+            self._shard_offset,
+        ) < 0:
+            raise PackedCorpusError(f"Invalid writer checkpoint for {self.role}")
+        completed_tokens = sum(
+            int(shard["token_count"]) for shard in self._completed_shards
+        )
+        if completed_tokens + self._shard_offset != self.token_count:
+            raise PackedCorpusError(f"Writer token-count mismatch for {self.role}")
+        for shard in self._completed_shards:
+            path = self.root.parent / shard["path"]
+            if not path.is_file() or path.stat().st_size != int(shard["byte_count"]):
+                raise PackedCorpusError(f"Missing checkpointed shard: {path}")
+            if sha256_file(path) != shard["sha256"]:
+                raise PackedCorpusError(f"Checkpointed shard checksum mismatch: {path}")
+        if self._shard_offset:
+            self._shard_path = self.root / f"shard-{self._shard_index:05d}.bin"
+            expected_bytes = self.shard_token_capacity * np.dtype(np.uint32).itemsize
+            if (
+                not self._shard_path.is_file()
+                or self._shard_path.stat().st_size != expected_bytes
+            ):
+                raise PackedCorpusError(
+                    f"Invalid partial checkpointed shard: {self._shard_path}"
+                )
+            self._shard_map = np.memmap(
+                self._shard_path,
+                mode="r+",
+                dtype=np.uint32,
+                shape=(self.shard_token_capacity,),
+            )
 
-    def add_document(self, token_ids: Sequence[int], *, eos_token_id: int) -> None:
-        if self.full:
-            return
+    def add_document(self, token_ids: Sequence[int], *, eos_token_id: int) -> bool:
+        completed_before = len(self._completed_shards)
         self.source_document_count += 1
         values = [int(value) for value in token_ids]
         values.append(int(eos_token_id))
@@ -207,32 +383,18 @@ class _RoleShardWriter:
             raise PackedCorpusError("Tokenizer emitted an ID outside uint32 range")
         self._pending.extend(values)
         complete_count = (len(self._pending) // self.context_length) * self.context_length
-        if self.exact_token_limit is not None:
-            complete_count = min(
-                complete_count,
-                self.exact_token_limit - self.token_count,
-            )
         if complete_count:
             self._write_tokens(self._pending[:complete_count])
             del self._pending[:complete_count]
+        return len(self._completed_shards) != completed_before
 
     def _open_shard(self) -> None:
-        remaining = (
-            self.shard_token_capacity
-            if self.exact_token_limit is None
-            else min(
-                self.shard_token_capacity,
-                self.exact_token_limit - self.token_count,
-            )
-        )
-        if remaining <= 0:
-            return
         self._shard_path = self.root / f"shard-{self._shard_index:05d}.bin"
         self._shard_map = np.memmap(
             self._shard_path,
             mode="w+",
             dtype=np.uint32,
-            shape=(remaining,),
+            shape=(self.shard_token_capacity,),
         )
         self._shard_offset = 0
 
@@ -242,7 +404,7 @@ class _RoleShardWriter:
             if self._shard_map is None:
                 self._open_shard()
             if self._shard_map is None:
-                raise PackedCorpusError("Packed corpus received more than its token limit")
+                raise PackedCorpusError("Packed shard could not be opened")
             available = len(self._shard_map) - self._shard_offset
             take = min(available, len(values) - offset)
             self._shard_map[self._shard_offset : self._shard_offset + take] = values[
@@ -275,6 +437,22 @@ class _RoleShardWriter:
         self._shard_offset = 0
         self._shard_index += 1
 
+    def flush(self) -> None:
+        if self._shard_map is not None:
+            self._shard_map.flush()
+
+    def state_dict(self) -> dict[str, Any]:
+        self.flush()
+        return {
+            "role": self.role,
+            "token_count": self.token_count,
+            "source_document_count": self.source_document_count,
+            "pending_tokens": list(self._pending),
+            "shard_index": self._shard_index,
+            "shard_offset": self._shard_offset,
+            "completed_shards": [dict(item) for item in self._completed_shards],
+        }
+
     def finish(self) -> dict[str, Any]:
         if self._shard_map is not None:
             # Reserved roles may end before the preallocated shard is full.
@@ -300,11 +478,6 @@ class _RoleShardWriter:
             self._shard_offset = 0
             self._shard_index += 1
         self.discarded_trailing_tokens = len(self._pending)
-        if self.exact_token_limit is not None and self.token_count != self.exact_token_limit:
-            raise PackedCorpusError(
-                f"Insufficient source data for {self.role}: expected exactly "
-                f"{self.exact_token_limit} packed tokens, found {self.token_count}"
-            )
         if self.token_count % self.context_length:
             raise PackedCorpusError(f"Packed role {self.role} is not sequence aligned")
         return {
@@ -382,196 +555,424 @@ def prepare_packed_corpus(
     tokenizer_name: str,
     tokenizer_revision: str,
     source_dataset: str = "HuggingFaceFW/fineweb",
-    source_config: str = "sample-10BT",
+    source_config: str = "sample-100BT",
     source_split: str = "train",
     source_fingerprint: str,
     text_column: str = "text",
     data_seed: int = DEFAULT_DATA_SEED,
     context_length: int = DEFAULT_CONTEXT_LENGTH,
-    training_token_budget: int = DEFAULT_TRAINING_TOKEN_BUDGET,
     shard_token_capacity: int = DEFAULT_SHARD_TOKEN_CAPACITY,
     shuffle_buffer_size: int = DEFAULT_SHUFFLE_BUFFER_SIZE,
     tokenization_workers: int = 1,
     tokenizer_manifest: Mapping[str, Any],
+    progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+    progress_interval_seconds: float = 60.0,
 ) -> dict[str, Any]:
-    """Consume one seeded FineWeb stream and atomically install a packed corpus."""
+    """Consume the complete seeded source and atomically publish a v3 corpus."""
 
     output_path = Path(output_dir).expanduser().resolve()
-    if output_path.exists():
-        raise PackedCorpusError(f"Prepared corpus directory already exists: {output_path}")
+    work_root = preparation_work_dir(output_path)
+    progress_path = work_root / "preparation_progress.json"
     if int(data_seed) != DEFAULT_DATA_SEED:
         raise PackedCorpusError("Unique-token production corpora require data_seed=42")
     if int(context_length) <= 1:
         raise PackedCorpusError("context_length must exceed one token")
-    if int(training_token_budget) <= 0 or int(training_token_budget) % int(context_length):
-        raise PackedCorpusError(
-            "training_token_budget must be positive and divisible by context_length"
-        )
     if isinstance(tokenization_workers, bool) or int(tokenization_workers) <= 0:
         raise PackedCorpusError("tokenization_workers must be positive")
+    if float(progress_interval_seconds) <= 0:
+        raise PackedCorpusError("progress_interval_seconds must be positive")
+
+    token_identity = tokenizer_identity(
+        tokenizer,
+        name=tokenizer_name,
+        revision=tokenizer_revision,
+        tokenizer_manifest=tokenizer_manifest,
+    )
+    resolved_capacity = _resolved_shard_token_capacity(
+        shard_token_capacity, context_length
+    )
+    preparation_configuration = {
+        "source": {
+            "dataset_name": str(source_dataset),
+            "dataset_config_name": str(source_config),
+            "split": str(source_split),
+            "fingerprint": str(source_fingerprint),
+        },
+        "tokenizer_identity_hash": token_identity["identity_hash"],
+        "context_length": int(context_length),
+        "data_seed": int(data_seed),
+        "text_column": str(text_column),
+        "shuffle_buffer_size": int(shuffle_buffer_size),
+        "packing_version": PACKING_VERSION,
+        "shard_token_capacity_requested": int(shard_token_capacity),
+        "shard_token_capacity_resolved": resolved_capacity,
+    }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_root = Path(
-        tempfile.mkdtemp(prefix=f".{output_path.name}.preparing-", dir=output_path.parent)
-    )
-    try:
-        reserved, training_documents = reserve_source_documents(
-            documents,
-            source_fingerprint=source_fingerprint,
-        )
-        token_identity = tokenizer_identity(
-            tokenizer,
-            name=tokenizer_name,
-            revision=tokenizer_revision,
-            tokenizer_manifest=tokenizer_manifest,
-        )
-        eos_token_id = int(token_identity["eos_token_id"])
-        role_manifests: dict[str, dict[str, Any]] = {}
-        reserved_identity_sets: dict[str, set[str]] = {}
+    lock_path = preparation_lock_path(output_path)
+    with lock_path.open("a+b") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise PackedCorpusError(
+                f"Corpus preparation is already running for {output_path}"
+            ) from error
+        if output_path.exists():
+            raise PackedCorpusError(
+                f"Prepared corpus directory already exists: {output_path}"
+            )
 
-        for role, selected in reserved.items():
-            writer = _RoleShardWriter(
-                temporary_root,
-                role,
-                context_length=context_length,
-                shard_token_capacity=shard_token_capacity,
-                exact_token_limit=None,
-            )
-            identities: list[dict[str, Any]] = []
-            for identity, token_ids in _ordered_tokenize_documents(
-                selected,
-                tokenizer,
-                text_column=text_column,
-                workers=int(tokenization_workers),
-            ):
-                identities.append(identity)
-                writer.add_document(
-                    token_ids,
-                    eos_token_id=eos_token_id,
+        if work_root.exists():
+            if not progress_path.is_file():
+                raise PackedCorpusError(
+                    f"Incomplete preparation has no valid checkpoint: {work_root}"
                 )
-            role_manifest = writer.finish()
-            role_manifest.update(
-                ordered_source_document_identities=identities,
-                source_document_identity_hash=stable_hash(identities),
-                example_count=len(identities),
-                ordered_example_identities=identities,
-                example_identity_hash=stable_hash(identities),
-            )
-            reserved_identity_sets[role] = {
-                stable_hash(identity) for identity in identities
+            progress = _load_progress(progress_path)
+            if progress.get("schema_version") != PREPARATION_PROGRESS_SCHEMA_VERSION:
+                raise PackedCorpusError("Resumable preparation schema mismatch")
+            if progress.get("configuration") != preparation_configuration:
+                raise PackedCorpusError(
+                    "Existing partial preparation is incompatible with the requested "
+                    "configuration"
+                )
+            _validate_partial_artifacts(work_root, progress)
+        else:
+            work_root.mkdir()
+            progress = {
+                "schema_version": PREPARATION_PROGRESS_SCHEMA_VERSION,
+                "configuration": preparation_configuration,
+                "phase": "tokenization",
+                "committed_shuffled_document_count": 0,
+                "rolling_document_identity_hash_version": DOCUMENT_HASH_CHAIN_VERSION,
+                "rolling_document_identity_hash": _initial_document_hash(),
+                "role_document_identity_hashes": {
+                    role: _initial_document_hash() for role in ALL_CORPUS_ROLES
+                },
+                "role_states": {},
+                "role_manifests": {},
+                "reserved_identities": {
+                    role: [] for role in RESERVED_ROLE_COUNTS
+                },
+                "source_exhausted": False,
             }
-            role_manifests[role] = role_manifest
+            _atomic_write_json(progress_path, _progress_envelope(progress))
 
-        training_writer = _RoleShardWriter(
-            temporary_root,
-            "optimizer_training",
-            context_length=context_length,
-            shard_token_capacity=shard_token_capacity,
-            exact_token_limit=training_token_budget,
-        )
-        training_identity_digest = hashlib.sha256()
-        training_document_count = 0
+        writers: dict[str, _RoleShardWriter] = {}
+        last_progress_at = time.monotonic()
 
-        def training_records() -> Iterator[tuple[dict[str, Any], Mapping[str, Any]]]:
-            for source_offset, document in enumerate(
-                training_documents,
-                start=sum(RESERVED_ROLE_COUNTS.values()),
-            ):
-                yield (
-                    _document_identity(
-                        document,
-                        source_index=source_offset,
-                        source_fingerprint=source_fingerprint,
-                    ),
-                    document,
-                )
-
-        for identity, token_ids in _ordered_tokenize_documents(
-            training_records(),
-            tokenizer,
-            text_column=text_column,
-            workers=int(tokenization_workers),
-        ):
-            identity_hash = stable_hash(identity)
-            if any(identity_hash in identities for identities in reserved_identity_sets.values()):
-                raise PackedCorpusError("A reserved source document reappeared in training")
-            training_identity_digest.update(identity_hash.encode("ascii"))
-            training_document_count += 1
-            training_writer.add_document(
-                token_ids,
-                eos_token_id=eos_token_id,
+        def emit_progress(event: str, role: str | None = None) -> None:
+            if progress_callback is None:
+                return
+            training_writer = writers.get("optimizer_training")
+            training_manifest = progress["role_manifests"].get(
+                "optimizer_training"
             )
-            if training_writer.full:
-                break
-        training_manifest = training_writer.finish()
-        training_manifest.update(
-            source_document_count=training_document_count,
-            source_document_identity_stream_hash=training_identity_digest.hexdigest(),
-            example_count=training_manifest["sequence_count"],
-        )
-        role_manifests["optimizer_training"] = training_manifest
+            if training_writer is not None:
+                token_count = training_writer.token_count
+                shard_count = len(training_writer._completed_shards)
+                current_shard_index = training_writer._shard_index
+                current_shard_offset = training_writer._shard_offset
+            elif training_manifest is not None:
+                token_count = int(training_manifest["token_count"])
+                shard_count = len(training_manifest["shards"])
+                current_shard_index = shard_count
+                current_shard_offset = 0
+            else:
+                token_count = 0
+                shard_count = 0
+                current_shard_index = 0
+                current_shard_offset = 0
+            try:
+                progress_callback(
+                    {
+                        "event": event,
+                        "phase": progress["phase"],
+                        "role": role,
+                        "committed_document_count": int(
+                            progress["committed_shuffled_document_count"]
+                        ),
+                        "optimizer_token_count": int(token_count),
+                        "completed_optimizer_shard_count": int(shard_count),
+                        "current_optimizer_shard_index": int(
+                            current_shard_index
+                        ),
+                        "current_optimizer_shard_offset": int(
+                            current_shard_offset
+                        ),
+                    }
+                )
+            except Exception:
+                # Progress reporting must never invalidate expensive corpus work.
+                return
 
-        role_hashes: dict[str, str] = {}
-        for role in ALL_CORPUS_ROLES:
-            payload = role_manifests[role]
-            payload["manifest_hash"] = stable_hash(payload)
-            role_hashes[role] = payload["manifest_hash"]
+        def get_writer(role: str) -> _RoleShardWriter:
+            if role not in writers:
+                saved = progress["role_states"].get(role)
+                writers[role] = _RoleShardWriter(
+                    work_root,
+                    role,
+                    context_length=context_length,
+                    shard_token_capacity=shard_token_capacity,
+                    state=saved,
+                )
+            return writers[role]
 
-        pairwise_intersections: dict[str, int] = {}
-        reserved_roles = tuple(RESERVED_ROLE_COUNTS)
-        for left_index, left in enumerate(reserved_roles):
-            for right in reserved_roles[left_index + 1 :]:
-                count = len(reserved_identity_sets[left] & reserved_identity_sets[right])
-                pairwise_intersections[f"{left}__{right}"] = count
-                if count:
-                    raise PackedCorpusError(f"Reserved document overlap: {left}, {right}")
+        def save_progress() -> None:
+            for role, writer in writers.items():
+                if role not in progress["role_manifests"]:
+                    progress["role_states"][role] = writer.state_dict()
+            _atomic_write_json(progress_path, _progress_envelope(progress))
 
-        manifest = {
-            "schema_version": PACKED_CORPUS_SCHEMA_VERSION,
-            "packing_version": PACKING_VERSION,
-            "permutation_version": PERMUTATION_VERSION,
-            "data_seed": int(data_seed),
-            "context_length": int(context_length),
-            "dtype": "uint32",
-            "source": {
-                "dataset_name": source_dataset,
-                "dataset_config_name": source_config,
-                "split": source_split,
-                "fingerprint": source_fingerprint,
-            },
-            "tokenizer": token_identity,
-            "training_token_budget": int(training_token_budget),
-            "preparation": {
-                "text_column": str(text_column),
-                "shuffle": {
-                    "seed": int(data_seed),
-                    "buffer_size": int(shuffle_buffer_size),
-                },
-                "shard_token_capacity": {
-                    "requested": int(shard_token_capacity),
-                    "resolved": _resolved_shard_token_capacity(
-                        shard_token_capacity, context_length
-                    ),
-                },
-            },
-            "role_selection_order": list(RESERVED_ROLE_COUNTS),
-            "reserved_role_counts": dict(RESERVED_ROLE_COUNTS),
-            "reserved_pairwise_intersection_counts": pairwise_intersections,
-            "role_manifest_hashes": role_hashes,
-            "roles": role_manifests,
+        def finish_role(role: str) -> None:
+            if role in progress["role_manifests"]:
+                return
+            writer = get_writer(role)
+            role_manifest = writer.finish()
+            identities = progress["reserved_identities"].get(role)
+            if identities is not None:
+                role_manifest.update(
+                    ordered_source_document_identities=identities,
+                    source_document_identity_hash=stable_hash(identities),
+                    example_count=len(identities),
+                    ordered_example_identities=identities,
+                    example_identity_hash=stable_hash(identities),
+                )
+            else:
+                role_manifest.update(
+                    source_document_identity_hash_version=DOCUMENT_HASH_CHAIN_VERSION,
+                    source_document_identity_stream_hash=progress[
+                        "role_document_identity_hashes"
+                    ][role],
+                    example_count=role_manifest["sequence_count"],
+                )
+            progress["role_manifests"][role] = role_manifest
+            progress["role_states"].pop(role, None)
+            save_progress()
+            emit_progress("role_completed", role)
+
+        reserved_boundaries: list[tuple[int, str]] = []
+        boundary = 0
+        for role, count in RESERVED_ROLE_COUNTS.items():
+            boundary += int(count)
+            reserved_boundaries.append((boundary, role))
+        reserved_total = boundary
+        reserved_identity_hashes = {
+            stable_hash(identity)
+            for role in RESERVED_ROLE_COUNTS
+            for identity in progress["reserved_identities"][role]
         }
-        manifest["corpus_hash"] = stable_hash(manifest)
-        manifest_path = temporary_root / "corpus_manifest.json"
-        manifest_path.write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        manifest_path.chmod(0o444)
-        os.replace(temporary_root, output_path)
-        return manifest
-    except Exception:
-        shutil.rmtree(temporary_root, ignore_errors=True)
-        raise
+
+        def role_for_index(index: int) -> str:
+            for end, role in reserved_boundaries:
+                if index < end:
+                    return role
+            return "optimizer_training"
+
+        try:
+            if progress["phase"] == "tokenization":
+                source_iterator = iter(documents)
+                committed = int(progress["committed_shuffled_document_count"])
+                for skipped in range(committed):
+                    try:
+                        next(source_iterator)
+                    except StopIteration as error:
+                        raise PackedCorpusError(
+                            "Source ended before the resumable checkpoint offset"
+                        ) from error
+
+                def pending_records():
+                    for source_index, document in enumerate(
+                        source_iterator, start=committed
+                    ):
+                        identity = _document_identity(
+                            document,
+                            source_index=source_index,
+                            source_fingerprint=source_fingerprint,
+                        )
+                        yield (source_index, identity, document)
+
+                for metadata, token_ids in _ordered_tokenize_documents(
+                    (
+                        ((source_index, identity), document)
+                        for source_index, identity, document in pending_records()
+                    ),
+                    tokenizer,
+                    text_column=text_column,
+                    workers=int(tokenization_workers),
+                ):
+                    source_index, identity = metadata
+                    role = role_for_index(source_index)
+                    identity_hash = stable_hash(identity)
+                    if (
+                        role == "optimizer_training"
+                        and identity_hash in reserved_identity_hashes
+                    ):
+                        raise PackedCorpusError(
+                            "A reserved source document reappeared in training"
+                        )
+                    completed_shard = get_writer(role).add_document(
+                        token_ids, eos_token_id=int(token_identity["eos_token_id"])
+                    )
+                    if role in RESERVED_ROLE_COUNTS:
+                        progress["reserved_identities"][role].append(identity)
+                        reserved_identity_hashes.add(identity_hash)
+                    progress["rolling_document_identity_hash"] = _extend_document_hash(
+                        progress["rolling_document_identity_hash"], identity
+                    )
+                    progress["role_document_identity_hashes"][role] = (
+                        _extend_document_hash(
+                            progress["role_document_identity_hashes"][role], identity
+                        )
+                    )
+                    progress["committed_shuffled_document_count"] = source_index + 1
+                    if source_index + 1 <= reserved_total:
+                        for end, reserved_role in reserved_boundaries:
+                            if source_index + 1 == end:
+                                finish_role(reserved_role)
+                                break
+                    elif completed_shard:
+                        save_progress()
+                        emit_progress("shard_completed", role)
+                    now = time.monotonic()
+                    if now - last_progress_at >= float(progress_interval_seconds):
+                        emit_progress("progress", role)
+                        last_progress_at = now
+
+                if int(progress["committed_shuffled_document_count"]) < reserved_total:
+                    raise PackedCorpusError(
+                        "FineWeb source ended before all reserved documents were selected"
+                    )
+                finish_role("optimizer_training")
+                progress["source_exhausted"] = True
+                progress["phase"] = "permutation"
+                save_progress()
+                emit_progress("source_exhausted", "optimizer_training")
+
+            if progress["phase"] == "permutation":
+                sequence_count = int(
+                    progress["role_manifests"]["optimizer_training"][
+                        "sequence_count"
+                    ]
+                )
+                ordering_path = work_root / "optimizer_training_order.u64"
+                temporary_ordering_path = work_root / ".optimizer_training_order.u64.tmp"
+                permutation = np.random.Generator(
+                    np.random.PCG64(int(data_seed))
+                ).permutation(sequence_count)
+                if sequence_count:
+                    ordering = np.memmap(
+                        temporary_ordering_path,
+                        mode="w+",
+                        dtype="<u8",
+                        shape=(sequence_count,),
+                    )
+                    ordering[:] = permutation
+                    ordering.flush()
+                    del ordering
+                else:
+                    temporary_ordering_path.touch()
+                os.replace(temporary_ordering_path, ordering_path)
+                ordering_path.chmod(0o444)
+                progress["training_order"] = {
+                    "path": ordering_path.name,
+                    "dtype": "uint64_le",
+                    "count": sequence_count,
+                    "byte_count": ordering_path.stat().st_size,
+                    "sha256": sha256_file(ordering_path),
+                    "seed": int(data_seed),
+                    "permutation_version": PERMUTATION_VERSION,
+                }
+                progress["phase"] = "publish"
+                save_progress()
+                emit_progress("permutation_completed", "optimizer_training")
+
+            role_manifests = {
+                role: dict(progress["role_manifests"][role])
+                for role in ALL_CORPUS_ROLES
+            }
+            role_hashes: dict[str, str] = {}
+            for role in ALL_CORPUS_ROLES:
+                role_manifests[role]["manifest_hash"] = stable_hash(
+                    role_manifests[role]
+                )
+                role_hashes[role] = role_manifests[role]["manifest_hash"]
+
+            reserved_identity_sets = {
+                role: {
+                    stable_hash(identity)
+                    for identity in progress["reserved_identities"][role]
+                }
+                for role in RESERVED_ROLE_COUNTS
+            }
+            pairwise_intersections: dict[str, int] = {}
+            reserved_roles = tuple(RESERVED_ROLE_COUNTS)
+            for left_index, left in enumerate(reserved_roles):
+                for right in reserved_roles[left_index + 1 :]:
+                    count = len(
+                        reserved_identity_sets[left] & reserved_identity_sets[right]
+                    )
+                    pairwise_intersections[f"{left}__{right}"] = count
+                    if count:
+                        raise PackedCorpusError(
+                            f"Reserved document overlap: {left}, {right}"
+                        )
+
+            training_role = role_manifests["optimizer_training"]
+            manifest = {
+                "schema_version": PACKED_CORPUS_SCHEMA_VERSION,
+                "packing_version": PACKING_VERSION,
+                "data_seed": int(data_seed),
+                "context_length": int(context_length),
+                "dtype": "uint32",
+                "source": {
+                    "dataset_name": source_dataset,
+                    "dataset_config_name": source_config,
+                    "split": source_split,
+                    "fingerprint": source_fingerprint,
+                    "source_exhausted": True,
+                    "shuffled_document_count": int(
+                        progress["committed_shuffled_document_count"]
+                    ),
+                    "rolling_document_identity_hash_version": DOCUMENT_HASH_CHAIN_VERSION,
+                    "rolling_document_identity_hash": progress[
+                        "rolling_document_identity_hash"
+                    ],
+                },
+                "tokenizer": token_identity,
+                "available_optimizer_token_count": int(training_role["token_count"]),
+                "available_optimizer_sequence_count": int(
+                    training_role["sequence_count"]
+                ),
+                "training_order": dict(progress["training_order"]),
+                "preparation": {
+                    "identity_hash": stable_hash(preparation_configuration),
+                    "text_column": str(text_column),
+                    "shuffle": {
+                        "seed": int(data_seed),
+                        "buffer_size": int(shuffle_buffer_size),
+                    },
+                    "shard_token_capacity": {
+                        "requested": int(shard_token_capacity),
+                        "resolved": resolved_capacity,
+                    },
+                },
+                "role_selection_order": list(RESERVED_ROLE_COUNTS),
+                "reserved_role_counts": dict(RESERVED_ROLE_COUNTS),
+                "reserved_pairwise_intersection_counts": pairwise_intersections,
+                "role_manifest_hashes": role_hashes,
+                "roles": role_manifests,
+            }
+            manifest["corpus_hash"] = stable_hash(manifest)
+            manifest_path = work_root / "corpus_manifest.json"
+            _atomic_write_json(manifest_path, manifest)
+            manifest_path.chmod(0o444)
+            progress_path.unlink()
+            os.replace(work_root, output_path)
+            _fsync_directory(output_path.parent)
+            return manifest
+        except Exception:
+            save_progress()
+            raise
 
 
 def load_corpus_manifest(
@@ -592,8 +993,17 @@ def load_corpus_manifest(
     payload.pop("corpus_hash", None)
     if saved_hash != stable_hash(payload):
         raise PackedCorpusError("Prepared corpus manifest hash mismatch")
-    if manifest.get("schema_version") != PACKED_CORPUS_SCHEMA_VERSION:
-        raise PackedCorpusError("Prepared corpus schema version mismatch")
+    schema_version = manifest.get("schema_version")
+    if schema_version != PACKED_CORPUS_SCHEMA_VERSION:
+        if schema_version == 2:
+            raise PackedCorpusError(
+                "Prepared corpus schema v2 is no longer supported; rebuild the "
+                "full source as a schema-v3 corpus"
+            )
+        raise PackedCorpusError(
+            f"Prepared corpus schema version mismatch: expected v3, found "
+            f"{schema_version!r}; rebuild the corpus"
+        )
     tokenizer = manifest.get("tokenizer")
     if not isinstance(tokenizer, Mapping) or any(
         field not in tokenizer
@@ -606,8 +1016,9 @@ def load_corpus_manifest(
         raise PackedCorpusError("Prepared corpus tokenizer provenance is incomplete")
     if manifest.get("packing_version") != PACKING_VERSION:
         raise PackedCorpusError("Prepared corpus packing version mismatch")
-    if manifest.get("permutation_version") != PERMUTATION_VERSION:
-        raise PackedCorpusError("Prepared corpus permutation version mismatch")
+    source = manifest.get("source")
+    if not isinstance(source, Mapping) or source.get("source_exhausted") is not True:
+        raise PackedCorpusError("Prepared corpus does not record source exhaustion")
     if manifest.get("dtype") != "uint32":
         raise PackedCorpusError("Prepared corpus dtype must be uint32")
     roles = manifest.get("roles")
@@ -634,6 +1045,33 @@ def load_corpus_manifest(
             total_tokens += int(shard["token_count"])
         if total_tokens != int(role_manifest["token_count"]):
             raise PackedCorpusError(f"Prepared corpus role token count mismatch: {role}")
+    training = roles["optimizer_training"]
+    if int(manifest.get("available_optimizer_token_count", -1)) != int(
+        training["token_count"]
+    ) or int(manifest.get("available_optimizer_sequence_count", -1)) != int(
+        training["sequence_count"]
+    ):
+        raise PackedCorpusError("Prepared corpus available optimizer counts mismatch")
+    ordering = manifest.get("training_order")
+    if not isinstance(ordering, Mapping):
+        raise PackedCorpusError("Prepared corpus training-order metadata is missing")
+    if ordering.get("permutation_version") != PERMUTATION_VERSION:
+        raise PackedCorpusError("Prepared corpus permutation version mismatch")
+    if ordering.get("dtype") != "uint64_le":
+        raise PackedCorpusError("Prepared corpus permutation dtype must be uint64_le")
+    if int(ordering.get("seed", -1)) != int(manifest["data_seed"]):
+        raise PackedCorpusError("Prepared corpus permutation seed mismatch")
+    if int(ordering.get("count", -1)) != int(training["sequence_count"]):
+        raise PackedCorpusError("Prepared corpus permutation count mismatch")
+    if int(ordering.get("byte_count", -1)) != int(ordering["count"]) * 8:
+        raise PackedCorpusError("Prepared corpus permutation byte count mismatch")
+    order_path = root / str(ordering.get("path", ""))
+    if not order_path.is_file():
+        raise PackedCorpusError(f"Prepared corpus permutation is missing: {order_path}")
+    if order_path.stat().st_size != int(ordering.get("byte_count", -1)):
+        raise PackedCorpusError("Prepared corpus permutation byte size mismatch")
+    if verify_shards and sha256_file(order_path) != ordering.get("sha256"):
+        raise PackedCorpusError("Prepared corpus permutation checksum mismatch")
     return manifest
 
 
@@ -644,12 +1082,11 @@ def load_existing_corpus_if_matching(
     tokenizer_name: str,
     tokenizer_revision: str,
     source_dataset: str = "HuggingFaceFW/fineweb",
-    source_config: str = "sample-10BT",
+    source_config: str = "sample-100BT",
     source_split: str = "train",
     text_column: str = "text",
     data_seed: int = DEFAULT_DATA_SEED,
     context_length: int = DEFAULT_CONTEXT_LENGTH,
-    training_token_budget: int = DEFAULT_TRAINING_TOKEN_BUDGET,
     shard_token_capacity: int = DEFAULT_SHARD_TOKEN_CAPACITY,
     shuffle_buffer_size: int = DEFAULT_SHUFFLE_BUFFER_SIZE,
 ) -> dict[str, Any] | None:
@@ -658,7 +1095,7 @@ def load_existing_corpus_if_matching(
     root = Path(prepared_corpus_dir).expanduser().resolve()
     if not root.exists():
         return None
-    # A changed request should fail from metadata without scanning a 10B-token
+    # A changed request should fail from metadata without scanning the full-source
     # artifact. Exact-match reuse still requires a complete checksum pass.
     manifest = load_corpus_manifest(root, verify_shards=False)
     tokenizer_payload = dict(tokenizer_manifest)
@@ -682,7 +1119,6 @@ def load_existing_corpus_if_matching(
         ),
         "tokenizer.vocab_size": int(tokenizer_manifest.get("vocab_size", 0) or 0),
         "tokenizer.eos_token_id": int(special_ids.get("eos", -1)),
-        "training_token_budget": int(training_token_budget),
         "preparation.text_column": str(text_column),
         "preparation.shuffle.seed": int(data_seed),
         "preparation.shuffle.buffer_size": int(shuffle_buffer_size),
@@ -716,17 +1152,41 @@ def load_existing_corpus_if_matching(
 def audit_packed_corpus(
     prepared_corpus_dir: str | Path,
     *,
-    required_training_tokens: int = DEFAULT_TRAINING_TOKEN_BUDGET,
+    minimum_training_tokens: int = 0,
     prepared_tokenizer_dir: str | Path | None = None,
     required_vocab_size: int | None = None,
 ) -> dict[str, Any]:
     manifest = load_corpus_manifest(prepared_corpus_dir, verify_shards=True)
     training = manifest["roles"]["optimizer_training"]
-    if int(training["token_count"]) != int(required_training_tokens):
+    if int(minimum_training_tokens) < 0:
+        raise PackedCorpusError("minimum_training_tokens must be nonnegative")
+    if int(training["token_count"]) < int(minimum_training_tokens):
         raise PackedCorpusError(
-            f"Training token audit expected {required_training_tokens}, "
+            f"Training token audit requires at least {minimum_training_tokens}, "
             f"found {training['token_count']}"
         )
+    ordering = manifest["training_order"]
+    ordering_count = int(ordering["count"])
+    order = (
+        np.memmap(
+            Path(prepared_corpus_dir).expanduser().resolve() / ordering["path"],
+            mode="r",
+            dtype="<u8",
+        )
+        if ordering_count
+        else np.asarray([], dtype="<u8")
+    )
+    seen = np.zeros(ordering_count, dtype=np.bool_)
+    chunk_size = 4 * 1024 * 1024
+    for start in range(0, ordering_count, chunk_size):
+        values = np.asarray(order[start : start + chunk_size])
+        if values.size and int(values.max()) >= ordering_count:
+            raise PackedCorpusError("Prepared corpus permutation index is out of range")
+        if len(np.unique(values)) != len(values) or np.any(seen[values]):
+            raise PackedCorpusError("Prepared corpus permutation contains duplicates")
+        seen[values] = True
+    if ordering_count and not bool(np.all(seen)):
+        raise PackedCorpusError("Prepared corpus permutation is incomplete")
     intersections = manifest.get("reserved_pairwise_intersection_counts", {})
     if any(int(value) != 0 for value in intersections.values()):
         raise PackedCorpusError("Prepared corpus reserved roles overlap")
@@ -768,6 +1228,11 @@ def audit_packed_corpus(
         "verified_shard_count": sum(
             len(role["shards"]) for role in manifest["roles"].values()
         ),
+        "source_document_count": int(
+            manifest["source"]["shuffled_document_count"]
+        ),
+        "training_order_sha256": manifest["training_order"]["sha256"],
+        "verified_training_order_count": ordering_count,
         "schema_version": manifest["schema_version"],
         "tokenizer_manifest_hash": tokenizer.get("manifest_hash"),
         "tokenizer_model_sha256": tokenizer.get("sentencepiece_model_sha256"),
@@ -836,7 +1301,7 @@ def deterministic_permutation(length: int, *, data_seed: int) -> np.ndarray:
 
 @dataclass
 class NoPaddingDistributedBatchSampler(Sampler[list[int]]):
-    """One deterministic global permutation, partitioned once without padding."""
+    """Stored corpus permutation prefix, partitioned without rank padding."""
 
     dataset_size: int
     batch_size_per_rank: int
@@ -844,6 +1309,10 @@ class NoPaddingDistributedBatchSampler(Sampler[list[int]]):
     world_size: int
     data_seed: int = DEFAULT_DATA_SEED
     cursor: int = 0
+    selected_sample_count: int | None = None
+    permutation_path: str | Path | None = None
+    permutation_hash_expected: str | None = None
+    permutation_version: str = PERMUTATION_VERSION
 
     def __post_init__(self) -> None:
         self.dataset_size = int(self.dataset_size)
@@ -852,17 +1321,46 @@ class NoPaddingDistributedBatchSampler(Sampler[list[int]]):
         self.world_size = int(self.world_size)
         self.data_seed = int(self.data_seed)
         self.cursor = int(self.cursor)
+        self.selected_sample_count = (
+            self.dataset_size
+            if self.selected_sample_count is None
+            else int(self.selected_sample_count)
+        )
         if self.dataset_size <= 0:
             raise PackedCorpusError("No-padding sampler requires a nonempty dataset")
         if self.batch_size_per_rank <= 0:
             raise PackedCorpusError("batch_size_per_rank must be positive")
         if self.world_size < 1 or not 0 <= self.rank < self.world_size:
             raise PackedCorpusError("Invalid distributed rank topology")
-        if not 0 <= self.cursor <= self.dataset_size:
+        if not 0 < self.selected_sample_count <= self.dataset_size:
+            raise PackedCorpusError(
+                "selected_sample_count must be within the available corpus"
+            )
+        if not 0 <= self.cursor <= self.selected_sample_count:
             raise PackedCorpusError("Sampler cursor is outside the permutation")
-        self._permutation = deterministic_permutation(
-            self.dataset_size, data_seed=self.data_seed
-        )
+        if self.permutation_version != PERMUTATION_VERSION:
+            raise PackedCorpusError("Unsupported stored permutation version")
+        if self.permutation_path is None:
+            # Retained for small standalone sampler tests; packed-mmap production
+            # always supplies the corpus-owned memory map.
+            self._permutation = deterministic_permutation(
+                self.dataset_size, data_seed=self.data_seed
+            ).astype("<u8", copy=False)
+            self._permutation_hash = hashlib.sha256(
+                self._permutation.tobytes()
+            ).hexdigest()
+        else:
+            path = Path(self.permutation_path).expanduser().resolve()
+            if not path.is_file() or path.stat().st_size != self.dataset_size * 8:
+                raise PackedCorpusError("Stored permutation size does not match dataset")
+            self._permutation = np.memmap(path, mode="r", dtype="<u8")
+            actual_hash = sha256_file(path)
+            if (
+                self.permutation_hash_expected is not None
+                and actual_hash != str(self.permutation_hash_expected)
+            ):
+                raise PackedCorpusError("Stored permutation checksum mismatch")
+            self._permutation_hash = actual_hash
         self.last_yielded_cursor = self.cursor
 
     @property
@@ -871,16 +1369,12 @@ class NoPaddingDistributedBatchSampler(Sampler[list[int]]):
 
     @property
     def permutation_hash(self) -> str:
-        digest = hashlib.sha256()
-        digest.update(PERMUTATION_VERSION.encode("ascii"))
-        digest.update(str(self.data_seed).encode("ascii"))
-        digest.update(self._permutation.astype("<u8", copy=False).tobytes())
-        return digest.hexdigest()
+        return self._permutation_hash
 
     def __iter__(self):
         cursor = self.cursor
-        while cursor < self.dataset_size:
-            end = min(self.dataset_size, cursor + self.global_batch_size)
+        while cursor < self.selected_sample_count:
+            end = min(self.selected_sample_count, cursor + self.global_batch_size)
             global_indices = self._permutation[cursor:end]
             base, remainder = divmod(len(global_indices), self.world_size)
             local_start = self.rank * base + min(self.rank, remainder)
@@ -896,24 +1390,25 @@ class NoPaddingDistributedBatchSampler(Sampler[list[int]]):
             yield [int(value) for value in local_indices]
 
     def __len__(self) -> int:
-        remaining = self.dataset_size - self.cursor
+        remaining = self.selected_sample_count - self.cursor
         return (remaining + self.global_batch_size - 1) // self.global_batch_size
 
     def set_cursor(self, cursor: int) -> None:
         cursor = int(cursor)
-        if not 0 <= cursor <= self.dataset_size:
+        if not 0 <= cursor <= self.selected_sample_count:
             raise PackedCorpusError("Sampler cursor is outside the permutation")
-        if cursor != self.dataset_size and cursor % self.global_batch_size:
+        if cursor != self.selected_sample_count and cursor % self.global_batch_size:
             raise PackedCorpusError("Sampler cursor must identify a global-batch boundary")
         self.cursor = cursor
         self.last_yielded_cursor = cursor
 
     def state_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": 1,
-            "permutation_version": PERMUTATION_VERSION,
+            "schema_version": 2,
+            "permutation_version": self.permutation_version,
             "data_seed": self.data_seed,
             "dataset_size": self.dataset_size,
+            "selected_sample_count": self.selected_sample_count,
             "batch_size_per_rank": self.batch_size_per_rank,
             "world_size": self.world_size,
             "cursor": self.last_yielded_cursor,
@@ -927,6 +1422,7 @@ class NoPaddingDistributedBatchSampler(Sampler[list[int]]):
             "permutation_version",
             "data_seed",
             "dataset_size",
+            "selected_sample_count",
             "batch_size_per_rank",
             "world_size",
             "permutation_hash",
@@ -952,7 +1448,7 @@ __all__ = [
     "ALL_CORPUS_ROLES",
     "DEFAULT_CONTEXT_LENGTH",
     "DEFAULT_DATA_SEED",
-    "DEFAULT_TRAINING_TOKEN_BUDGET",
+    "DOCUMENT_HASH_CHAIN_VERSION",
     "NoPaddingDistributedBatchSampler",
     "PACKED_CORPUS_SCHEMA_VERSION",
     "PACKING_VERSION",
@@ -964,6 +1460,8 @@ __all__ = [
     "deterministic_permutation",
     "load_corpus_manifest",
     "partition_permutation_without_padding",
+    "preparation_lock_path",
+    "preparation_work_dir",
     "prepare_packed_corpus",
     "reserve_source_documents",
     "sha256_file",

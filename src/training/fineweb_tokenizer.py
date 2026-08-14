@@ -16,6 +16,7 @@ from src.utils.reproducibility import stable_hash
 
 TOKENIZER_MANIFEST_SCHEMA_VERSION = 1
 TOKENIZER_TRAINING_VERSION = "fineweb_sentencepiece_bpe_v1"
+DEFAULT_TEXT_COLUMN = "text"
 DEFAULT_TOKENIZER_DOCUMENT_COUNT = 5_000_000
 DEFAULT_MAX_CHUNK_BYTES = 4_096
 DEFAULT_VOCAB_SIZE = 256_000
@@ -176,7 +177,7 @@ def load_existing_tokenizer_if_matching(
     source_dataset: str = "HuggingFaceFW/fineweb",
     source_config: str = "sample-10BT",
     source_split: str = "train",
-    text_column: str = "text",
+    text_column: str = DEFAULT_TEXT_COLUMN,
     data_seed: int = 42,
     shuffle_buffer_size: int = 100_000,
     document_count: int = DEFAULT_TOKENIZER_DOCUMENT_COUNT,
@@ -219,6 +220,12 @@ def load_existing_tokenizer_if_matching(
         value: Any = manifest
         for component in path.split("."):
             if not isinstance(value, Mapping) or component not in value:
+                if path == "dataset.text_column":
+                    # Early schema-v1 manifests predate this explicit field.
+                    # Their tokenizer input contract used the CLI's fixed
+                    # default, so absence means "text" without mutating the
+                    # immutable manifest or its authoritative hash.
+                    return DEFAULT_TEXT_COLUMN
                 return None
             value = value[component]
         return value
@@ -361,7 +368,7 @@ def train_fineweb_tokenizer(
     source_config: str = "sample-10BT",
     source_split: str = "train",
     source_fingerprint: str,
-    text_column: str = "text",
+    text_column: str = DEFAULT_TEXT_COLUMN,
     data_seed: int = 42,
     shuffle_buffer_size: int = 100_000,
     document_count: int = DEFAULT_TOKENIZER_DOCUMENT_COUNT,
@@ -477,6 +484,7 @@ def train_fineweb_tokenizer(
 __all__ = [
     "DEFAULT_MAX_CHUNK_BYTES",
     "DEFAULT_TOKENIZER_DOCUMENT_COUNT",
+    "DEFAULT_TEXT_COLUMN",
     "DEFAULT_VOCAB_SIZE",
     "FineWebTokenizerError",
     "SPECIAL_TOKEN_IDS",

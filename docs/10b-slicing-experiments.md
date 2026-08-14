@@ -1,12 +1,20 @@
 # 10B unique-token slicing experiments
 
-Every run below consumes the same immutable FineWeb `sample-10BT` corpus and
-the same immutable 256,000-entry FineWeb SentencePiece tokenizer. Build the
-tokenizer once, then build the packed corpus with it.
+Every run below consumes a deterministic prefix of one immutable, full-source
+FineWeb `sample-100BT` corpus and the same immutable 256,000-entry FineWeb
+SentencePiece tokenizer. Build the tokenizer once, then prepare all of
+`sample-100BT` once. A later 80B run reuses the same artifact and ordering.
+
+The production workflow is:
+
+1. Prepare the complete `sample-100BT` artifact.
+2. Audit that it contains at least 80B optimizer tokens.
+3. Reuse it for the 10B runs and later 80B runs by changing only the run-level
+   `training.token_budget`.
 
 ```bash
 export TOKENIZER=/nfs-stor/$USER/matformer-tokenizers/fineweb-sp-bpe-256k
-export CORPUS=/nfs-stor/$USER/matformer-corpora/fineweb-sample-10bt-sp256k
+export CORPUS=/nfs-stor/$USER/matformer-corpora/fineweb-sample-100bt-sp256k
 
 python scripts/train_fineweb_tokenizer.py \
   --output-dir "$TOKENIZER"
@@ -19,30 +27,47 @@ python scripts/prepare_fineweb_corpus.py \
 python scripts/audit_prepared_corpus.py \
   --prepared-corpus-dir "$CORPUS" \
   --prepared-tokenizer-dir "$TOKENIZER" \
+  --minimum-training-tokens 80000000000 \
   --required-vocab-size 256000
 ```
 
-Tokenizer training streams the seed-42 shuffled source, skips the 1,152
-reserved validation/controller/final documents, and consumes exactly the next
-5,000,000 training-role documents. Its manifest hash is the immutable revision.
-The audit must pass before launch. It verifies all tokenizer and shard
-checksums, tokenizer/corpus provenance, exact vocabulary compatibility, role
-separation, and exactly 10,000,000,000 packed training token IDs. Preparation
-tokenizes without padding or truncation, inserts EOS between source documents,
-and packs contiguous 1,024-token rows.
+Tokenizer training remains a separate immutable input. Corpus preparation
+streams the complete seed-42 shuffled source, reserves the first 1,152
+validation/controller/final documents, and assigns every remaining complete
+packed sequence to optimizer training. The audit must pass before launch. It
+verifies all tokenizer, shard, and stored-order checksums, provenance, exact
+vocabulary compatibility, role separation, and at least 80B packed optimizer
+tokens. The manifest's actual count is authoritative. Preparation tokenizes
+without padding or truncation, inserts EOS between source documents, and packs
+contiguous 1,024-token rows.
 
-Both preparation commands are safe to repeat with the same arguments. If the
+Both preparation commands are safe to repeat with the same arguments. Corpus
+preparation uses a stable hidden work directory and checkpoints each completed
+shard. An interrupted invocation resumes by replaying only uncommitted source
+documents; completed tokenization is retained. If the
 output already exists, the tokenizer command verifies its manifest and every
 tokenizer-file checksum; the corpus command verifies its manifest, tokenizer
 provenance, preparation arguments, and every shard checksum. An exact match
 prints `status: already_prepared` and exits before FineWeb is loaded. A partial,
-corrupt, or differently configured output fails without modifying it. The
-corpus check reads all packed shards, so it can take a few minutes for the 10B
-artifact, but it avoids the much longer tokenization and packing pass.
+corrupt, or differently configured work state fails without modifying it. The
+corpus check reads all packed shards and the order artifact, so it can take a
+few minutes, but it avoids the much longer tokenization and packing pass.
+Successful first-time and resumed builds report `prepared` and
+`resumed_and_prepared`, respectively, together with actual token, document,
+shard, elapsed-time, and throughput statistics.
 `--tokenization-workers` defaults to `1`; increase it for future corpus builds.
 Workers tokenize concurrently through a bounded thread pool while results are
 committed in source order, so the setting affects throughput but not corpus
-identity. It does not alter a preparation process that is already running.
+identity. A preparation lock rejects a second writer for the same output.
+Preparation prints a progress line to stderr every 60 seconds and whenever a
+role or shard completes. Use `--progress-interval-seconds 15` for a faster
+cadence; the final JSON summary remains the only stdout output.
+
+After source exhaustion, preparation writes one PCG64 permutation over every
+optimizer sequence as a little-endian uint64 memory map and publishes the v3
+manifest last. Each run selects the first `training.token_budget / 1024`
+entries. Consequently, the 10B sample order is an exact prefix of the future
+80B sample order; no corpus rebuild or run-specific reshuffle is involved.
 
 The commands below submit exactly one experiment each. The Slurm wrapper derives
 `training.distributed.expected_world_size` from its allocation; the production

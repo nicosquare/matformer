@@ -636,6 +636,19 @@ def train_for_steps(
                                 step=pending_step, now=now
                             )
 
+                    committed_tokens = sum_int(
+                        local_window_content_tokens,
+                        device=device,
+                        context=distributed_context,
+                    )
+                    if (
+                        config.get("dataset", {}).get("mode") == "packed_mmap"
+                        and tokens_seen + committed_tokens > token_budget
+                    ):
+                        raise AssertionError(
+                            "Packed-mmap training would commit tokens beyond "
+                            "training.token_budget"
+                        )
                     gradient_clip_norm = training.get("gradient_clip_norm")
                     if gradient_clip_norm is not None:
                         clip_grad_norm_(model.parameters(), float(gradient_clip_norm))
@@ -650,14 +663,9 @@ def train_for_steps(
                     step = pending_step
 
                     previous_tokens_seen = tokens_seen
-                    committed_tokens = sum_int(
-                        local_window_content_tokens,
-                        device=device,
-                        context=distributed_context,
-                    )
                     content_tokens_seen += committed_tokens
                     if config.get("dataset", {}).get("mode") == "packed_mmap":
-                        tokens_seen = min(tokens_seen + committed_tokens, token_budget)
+                        tokens_seen += committed_tokens
                     else:
                         # Historical raw-tokenized runs retain their nominal packed
                         # budget semantics; production packed-mmap commits exact IDs.
