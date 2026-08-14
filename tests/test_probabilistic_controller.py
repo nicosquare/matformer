@@ -7,6 +7,8 @@ import pytest
 import torch
 
 import src.training.probabilistic_controller as probabilistic_controller
+import src.training.run as training_run
+from src.training.panelgrad import uses_panelgrad
 from src.training.probabilistic_controller import (
     ProbabilisticControllerError,
     build_global_feature_schema,
@@ -27,6 +29,17 @@ FLOAT64 = torch.float64
 
 def _tensor(values):
     return torch.tensor(values, dtype=FLOAT64)
+
+
+def test_thompson_identity_remains_distinct_from_panelgrad(tmp_path):
+    config = resolve_run_config(
+        "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+        output_dir=tmp_path / "probabilistic-adaptive-global-smoke-001",
+    )
+
+    assert config["model"]["adaptive_sampler_strategy"] == "thompson"
+    assert training_run.uses_probabilistic_controller(config) is True
+    assert uses_panelgrad(config) is False
 
 
 def test_global_feature_schema_uses_ordered_orthonormal_sum_to_zero_contrasts():

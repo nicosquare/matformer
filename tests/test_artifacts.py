@@ -2936,6 +2936,7 @@ def test_nonadaptive_checkpoint_round_trip_remains_free_of_controller_state(tmp_
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     assert checkpoint["adaptive_sampler_state"] is None
     assert checkpoint["probabilistic_controller_state"] is None
+    assert checkpoint["panelgrad_state"] is None
     assert checkpoint["adaptive_sampler_strategy"] is None
     assert checkpoint["step"] == 3
     assert checkpoint["tokens_seen"] == 24

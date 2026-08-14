@@ -64,7 +64,7 @@ def _log_dataset_cache_context(dataset_name: str, dataset_split: str) -> None:
 
 
 def uses_controller_panel(config: Mapping[str, Any]) -> bool:
-    """Return whether the selected sampler requires the fixed controller role."""
+    """Return whether the run reserves the shared fixed controller role."""
 
     model = config.get("model", {})
     uses_thompson_controller = (
@@ -76,7 +76,14 @@ def uses_controller_panel(config: Mapping[str, Any]) -> bool:
         model.get("granularity_sampling_mode") == "adaptive_global"
         and model.get("adaptive_sampler_strategy") == "panelgrad"
     )
-    return uses_thompson_controller or uses_panelgrad_controller
+    fixed_comparison_roles = bool(
+        config.get("dataset", {}).get("fixed_four_role_partition", False)
+    )
+    return (
+        uses_thompson_controller
+        or uses_panelgrad_controller
+        or fixed_comparison_roles
+    )
 
 
 def uses_panelgrad_controller_panel(config: Mapping[str, Any]) -> bool:

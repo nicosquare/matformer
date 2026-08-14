@@ -1,0 +1,153 @@
+{
+  "comparison": "panelgrad_vs_uniform_global",
+  "matched_compute_claim": false,
+  "matching_rule": "same model, data-role manifests, root seed, optimizer, scheduler, validation, and exactly three completed optimizer steps",
+  "measurement_cost_reported_separately": true,
+  "runs": {
+    "panelgrad": {
+      "exposure_counts": {
+        "full": 1,
+        "medium": 1,
+        "micro": 1
+      },
+      "final_holdout_metrics": [
+        {
+          "evaluation_target_tokens": 1536,
+          "granularity": "micro",
+          "loss": 3.449277639389038,
+          "perplexity": 31.477645882664465
+        },
+        {
+          "evaluation_target_tokens": 1536,
+          "granularity": "medium",
+          "loss": 3.457465410232544,
+          "perplexity": 31.7364356437131
+        },
+        {
+          "evaluation_target_tokens": 1536,
+          "granularity": "full",
+          "loss": 3.425891160964966,
+          "perplexity": 30.750035876428427
+        }
+      ],
+      "initial_model_hash": "6eb4323dcf03cafda3b79e88402b4dc765fdda30ef8a7e792a8fc47ec76dd31a",
+      "manifests": {
+        "controller_manifest_hash": "5844ffed49c7fb29f6acb3608114dfeec09099bff21a06c7e2da7e6601cc8215",
+        "data_roles_manifest_hash": "d3112c0e819861014b2db9829febe365388e370fe159e19ccebe40d950e1ce65",
+        "final_holdout_manifest_hash": "e802645b631aeca5b19990c7a9640cad1a26e6330b896bde7bbb9f19a84e9e3a",
+        "optimizer_training_manifest_hash": "9e3716327e940536e48023328fedfc6fc3c0080cfbc975988bbc5f625de2c968",
+        "validation_manifest_hash": "c9cba09634d964f705bd12582403e60e50f2f3da81ebafdb80182d499b41faec"
+      },
+      "measurement_cost": {
+        "backward_evaluations": 6,
+        "controller_examples": 768,
+        "controller_target_tokens": 2304,
+        "duration_seconds": 1.786902530817315,
+        "refresh_count": 2
+      },
+      "optimizer_steps": 3,
+      "run_id": "panelgrad-opt-in-smoke-001",
+      "sampling_distribution": {
+        "full": 0.2644823198639274,
+        "medium": 0.3417357031965196,
+        "micro": 0.393781976939553
+      },
+      "target_token_budget": 10240,
+      "training_tokens": 1536,
+      "training_wall_clock_seconds": 3.617527608992532,
+      "validation_metrics": [
+        {
+          "evaluation_target_tokens": 384,
+          "granularity": "micro",
+          "loss": 3.449277639389038,
+          "perplexity": 31.477645882664465
+        },
+        {
+          "evaluation_target_tokens": 384,
+          "granularity": "medium",
+          "loss": 3.457465410232544,
+          "perplexity": 31.7364356437131
+        },
+        {
+          "evaluation_target_tokens": 384,
+          "granularity": "full",
+          "loss": 3.425891160964966,
+          "perplexity": 30.750035876428427
+        }
+      ]
+    },
+    "uniform_global": {
+      "exposure_counts": {
+        "full": 2,
+        "medium": 1
+      },
+      "final_holdout_metrics": [
+        {
+          "evaluation_target_tokens": 1536,
+          "granularity": "micro",
+          "loss": 3.452146530151367,
+          "perplexity": 31.568081473044263
+        },
+        {
+          "evaluation_target_tokens": 1536,
+          "granularity": "medium",
+          "loss": 3.4566030502319336,
+          "perplexity": 31.709079208295183
+        },
+        {
+          "evaluation_target_tokens": 1536,
+          "granularity": "full",
+          "loss": 3.419782876968384,
+          "perplexity": 30.56277841749192
+        }
+      ],
+      "initial_model_hash": "6eb4323dcf03cafda3b79e88402b4dc765fdda30ef8a7e792a8fc47ec76dd31a",
+      "manifests": {
+        "controller_manifest_hash": "5844ffed49c7fb29f6acb3608114dfeec09099bff21a06c7e2da7e6601cc8215",
+        "data_roles_manifest_hash": "d3112c0e819861014b2db9829febe365388e370fe159e19ccebe40d950e1ce65",
+        "final_holdout_manifest_hash": "e802645b631aeca5b19990c7a9640cad1a26e6330b896bde7bbb9f19a84e9e3a",
+        "optimizer_training_manifest_hash": "9e3716327e940536e48023328fedfc6fc3c0080cfbc975988bbc5f625de2c968",
+        "validation_manifest_hash": "c9cba09634d964f705bd12582403e60e50f2f3da81ebafdb80182d499b41faec"
+      },
+      "measurement_cost": {
+        "backward_evaluations": 0,
+        "controller_examples": 0,
+        "controller_target_tokens": 0,
+        "duration_seconds": 0.0,
+        "refresh_count": 0
+      },
+      "optimizer_steps": 3,
+      "run_id": "panelgrad-uniform-baseline-001",
+      "sampling_distribution": {
+        "full": 0.3333333333333333,
+        "medium": 0.3333333333333333,
+        "micro": 0.3333333333333333
+      },
+      "target_token_budget": 10240,
+      "training_tokens": 1536,
+      "training_wall_clock_seconds": 2.7367863699328154,
+      "validation_metrics": [
+        {
+          "evaluation_target_tokens": 384,
+          "granularity": "micro",
+          "loss": 3.452146530151367,
+          "perplexity": 31.568081473044263
+        },
+        {
+          "evaluation_target_tokens": 384,
+          "granularity": "medium",
+          "loss": 3.4566030502319336,
+          "perplexity": 31.709079208295183
+        },
+        {
+          "evaluation_target_tokens": 384,
+          "granularity": "full",
+          "loss": 3.419782876968384,
+          "perplexity": 30.56277841749192
+        }
+      ]
+    }
+  },
+  "schema_version": 1,
+  "selection_rule": "use the final in-memory model after exactly three optimizer steps; evaluate the untouched final holdout once after training"
+}

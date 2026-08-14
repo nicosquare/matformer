@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from src.training.checkpointing import build_initial_continuation_state
 from src.models.adaptive_sampler import (
     VALID_ADAPTIVE_SAMPLER_STRATEGIES,
     AdaptiveSamplerBlockStat,
@@ -51,6 +52,31 @@ def test_legacy_heuristic_thompson_is_not_selectable():
                 "stats": {},
             }
         )
+
+
+@pytest.mark.parametrize(
+    "sampling_mode",
+    ["global", "per_block", "nested-all", "standalone"],
+)
+def test_non_ucb_sampling_modes_do_not_create_adaptive_or_panelgrad_state(
+    tmp_path,
+    sampling_mode,
+):
+    state = build_initial_continuation_state(
+        {
+            "run": {
+                "output_dir": str(tmp_path / sampling_mode),
+                "resolved_run_mode": sampling_mode,
+            },
+            "model": {"granularity_sampling_mode": sampling_mode},
+            "training": {},
+            "evaluation": {},
+        }
+    )
+
+    assert state["adaptive_sampler_state"] is None
+    assert state["probabilistic_controller_state"] is None
+    assert state["panelgrad_state"] is None
 
 
 def _build_sample_state(strategy_name: str, exploration_scale: float, decay_rate: float):

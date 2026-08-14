@@ -1,6 +1,6 @@
 # Quickstart: PanelGrad Sampling
 
-Commands describe the expected workflow after implementation. PanelGrad remains opt-in and does not expand the default pilot queue.
+These commands were verified against the implementation. PanelGrad remains opt-in and does not expand the default pilot queue.
 
 ## 1. Inspect resolved configuration
 
@@ -127,11 +127,26 @@ Existing Thompson, UCB, random global/per-block, nested-all, standalone, checkpo
 
 ## 9. Run the first comparison
 
-Run PanelGrad and uniform global sampling with the same model, data roles, seed, optimizer, scheduler, optimizer-step or target-token budget, and validation settings. Report:
+Preflight both opt-in inputs:
+
+```bash
+python train.py --config configs/opt-in_exps/panelgrad_smoke.yaml --preflight
+python train.py --config configs/opt-in_exps/panelgrad_uniform_baseline.yaml --preflight
+```
+
+Run the deterministic synthetic-data smoke and matched three-step comparison:
+
+```bash
+python -m scripts.run_panelgrad_comparison \
+  --output-root outputs/panelgrad-comparison
+python -m json.tool outputs/panelgrad-comparison/comparison.json
+```
+
+The runner resolves the two opt-in configurations with the same small model, four data-role manifests, root seed, optimizer, scheduler, validation settings, and exactly three completed optimizer steps. It fails if any role-manifest hash differs. Its explicit selection rule uses each final in-memory model after step 3, then evaluates the untouched final holdout once. The resulting artifact reports:
 
 - per-granularity validation/final-holdout results;
-- sampled exposure counts and probabilities;
+- sampled exposure counts and the final sampling probabilities;
 - training steps/tokens and wall time;
-- PanelGrad refresh count, controller backward evaluations, controller tokens, and cumulative measurement duration.
+- PanelGrad refresh count, controller backward evaluations/examples/tokens, and cumulative measurement duration.
 
 Treat this as matched-step or matched-token evidence. Do not call it matched-compute unless the separate measurement work is included in the comparison budget.
