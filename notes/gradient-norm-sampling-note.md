@@ -19,73 +19,73 @@ not assume a held-out reward model or another adaptive controller.
 
 Let the ordered granularities be
 
-\[
+$$
 \mathcal{G} = \{g_1, \ldots, g_K\},
-\]
+$$
 
-from narrowest to widest. Let \(A_g\) be the set of parameters active under a
-global granularity \(g\), so the slicing construction gives
+from narrowest to widest. Let $A_g$ be the set of parameters active under a
+global granularity $g$, so the slicing construction gives
 
-\[
+$$
 A_{g_1} \subset A_{g_2} \subset \cdots \subset A_{g_K}.
-\]
+$$
 
-For one training example or minibatch \(z\), define
+For one training example or minibatch $z$, define
 
-\[
+$$
 L_g(\theta; z)
-\]
+$$
 
-as the loss under granularity \(g\), and
+as the loss under granularity $g$, and
 
-\[
+$$
 d_g = \nabla_{\theta_{A_g}} L_g(\theta; z)
-\]
+$$
 
-as its gradient on the active parameters. When needed, \(d_g\) can be embedded
+as its gradient on the active parameters. When needed, $d_g$ can be embedded
 in the complete supernetwork parameter space by filling inactive coordinates
 with zero.
 
-For each transformer block \(b\), let \(C_b\) denote a fixed shared-core
+For each transformer block $b$, let $C_b$ denote a fixed shared-core
 parameter set. The natural first choice is the FFN slice belonging to the
 narrowest granularity, separated into gate, up, and down projection groups.
-Every global granularity activates exactly the same \(C_b\).
+Every global granularity activates exactly the same $C_b$.
 
-## Why the complete \(L_2\) norm is size-biased
+## Why the complete $L_2$ norm is size-biased
 
 The direct PA&DA-style score would be
 
-\[
+$$
 I_g^{\mathrm{total}} = \lVert d_g \rVert_2.
-\]
+$$
 
 Suppose, only to expose the dimensional effect, that the active gradient
 coordinates have the same second moment:
 
-\[
+$$
 \mathbb{E}[d_{g,i}^2] = \sigma^2.
-\]
+$$
 
-If \(N_g = |A_g|\), then
+If $N_g = |A_g|$, then
 
-\[
+$$
 \mathbb{E}\left[\lVert d_g \rVert_2^2\right]
 = N_g \sigma^2.
-\]
+$$
 
 Consequently, the typical total norm scales approximately as
 
-\[
+$$
 \lVert d_g \rVert_2 \propto \sqrt{N_g}.
-\]
+$$
 
 A wider subnetwork can therefore receive a larger importance score even when
 its typical gradient per active parameter is identical. Normalizing the scores
 across granularities,
 
-\[
+$$
 p_g = \frac{I_g}{\sum_h I_h},
-\]
+$$
 
 does not remove this effect; it only turns the already size-biased scores into
 probabilities.
@@ -96,20 +96,20 @@ probabilities.
 
 The simplest dimensional correction is
 
-\[
+$$
 I_g^{\mathrm{rms}}
 = \frac{\lVert d_g \rVert_2}{\sqrt{N_g}}
 = \sqrt{\frac{1}{N_g}\sum_{i \in A_g} d_{g,i}^2}.
-\]
+$$
 
 Under the equal-coordinate-second-moment example above,
-\(\mathbb{E}[(I_g^{\mathrm{rms}})^2] = \sigma^2\), independent of subnetwork
+$\mathbb{E}[(I_g^{\mathrm{rms}})^2] = \sigma^2$, independent of subnetwork
 size.
 
 Advantages:
 
 - cheap to compute;
-- removes the leading \(\sqrt{N_g}\) dimensional effect;
+- removes the leading $\sqrt{N_g}$ dimensional effect;
 - retains information from the entire active subnetwork.
 
 Limitations:
@@ -126,17 +126,17 @@ and average those group scores rather than concatenate every active parameter.
 
 A dimensionless alternative is
 
-\[
+$$
 I_g^{\mathrm{relative}}
 = \frac{\lVert d_g \rVert_2}
        {\lVert \theta_{A_g} \rVert_2 + \varepsilon}.
-\]
+$$
 
 This approximates the size of the gradient relative to the current parameter
 scale. It is less sensitive to layer scale, but the numerator and denominator
 still cover different supports for different granularities.
 
-Per-coordinate division by \(|\theta_i|\) should be avoided because parameters
+Per-coordinate division by $|\theta_i|$ should be avoided because parameters
 near zero can create unstable scores. Ratios should instead be formed at the
 matrix or parameter-group level.
 
@@ -145,16 +145,16 @@ matrix or parameter-group level.
 To compare all granularities in exactly the same vector space, use only the
 fixed parameter intersection:
 
-\[
+$$
 C = \bigcap_{g \in \mathcal{G}} A_g.
-\]
+$$
 
 The corresponding score is
 
-\[
+$$
 I_g^{\mathrm{core\text{-}rms}}
 = \frac{\lVert \nabla_{\theta_C} L_g \rVert_2}{\sqrt{|C|}}.
-\]
+$$
 
 For MatFormer, a more interpretable implementation is to form the score from
 the narrowest FFN slice in every block rather than from every globally shared
@@ -176,24 +176,24 @@ Limitation:
 ### 4. Shared-core relative-gradient score
 
 The current leading candidate combines common support with relative scaling.
-Let \(M_b\) be the gate, up, and down matrices restricted to the smallest FFN
-slice in block \(b\). Define
+Let $M_b$ be the gate, up, and down matrices restricted to the smallest FFN
+slice in block $b$. Define
 
-\[
+$$
 R_{b,m,g}
 = \frac{\lVert \nabla_{M_{b,m}} L_g \rVert_F}
        {\lVert M_{b,m} \rVert_F + \varepsilon},
-\]
+$$
 
-where \(m \in \{\mathrm{gate},\mathrm{up},\mathrm{down}\}\). Aggregate with
+where $m \in \{\mathrm{gate},\mathrm{up},\mathrm{down}\}$. Aggregate with
 equal weight across blocks and projection groups:
 
-\[
+$$
 I_g^{\mathrm{core\text{-}relative}}
 = \frac{1}{3B}
   \sum_{b=1}^{B}
   \sum_m R_{b,m,g}.
-\]
+$$
 
 Equal group averaging is intentional: concatenating the tensors would allow
 the largest matrix or layer to dominate. This score is dimensionless and uses
@@ -210,13 +210,13 @@ metric.
 Only the selected granularity produces an observed score at a step. Maintain a
 per-granularity exponential moving average:
 
-\[
+$$
 S_{g,t}
 = \begin{cases}
   \beta S_{g,t-1} + (1-\beta) I_{g,t}, & g = G_t, \\
   S_{g,t-1}, & g \ne G_t.
   \end{cases}
-\]
+$$
 
 A balanced warmup should observe every granularity before these estimates are
 used for sampling.
@@ -224,25 +224,25 @@ used for sampling.
 To avoid treating score magnitude as an uncontrolled probability scale, map
 the scores through a temperature-controlled softmax:
 
-\[
+$$
 q_{g,t}
 = \frac{\exp(\log(S_{g,t}+\eta)/T)}
        {\sum_h \exp(\log(S_{h,t}+\eta)/T)}.
-\]
+$$
 
-Equivalently, \(q_g \propto (S_g+\eta)^{1/T}\). Here:
+Equivalently, $q_g \propto (S_g+\eta)^{1/T}$. Here:
 
-- \(T>1\) flattens the distribution;
-- \(T<1\) sharpens it;
-- \(\eta>0\) makes zero or initially small estimates safe.
+- $T>1$ flattens the distribution;
+- $T<1$ sharpens it;
+- $\eta>0$ makes zero or initially small estimates safe.
 
 Mix the learned distribution with a permanent uniform floor:
 
-\[
+$$
 p_{g,t}
 = (1-\epsilon)q_{g,t} + \frac{\epsilon}{K},
 \qquad 0 < \epsilon \le 1.
-\]
+$$
 
 This floor is necessary because unselected arms have stale score estimates and
 outer FFN rings otherwise risk receiving no training.
@@ -250,12 +250,12 @@ outer FFN rings otherwise risk receiving no training.
 ## Optional exposure and compute terms
 
 The gradient score and the coverage of outer parameters are distinct concerns.
-Let ring \(r\) be the incremental parameter set added between two consecutive
-granularities, and define its exposure through step \(t\) as
+Let ring $r$ be the incremental parameter set added between two consecutive
+granularities, and define its exposure through step $t$ as
 
-\[
+$$
 E_{r,t} = \sum_{s=1}^{t} \mathbb{1}[r \subseteq A_{G_s}].
-\]
+$$
 
 Initially, coverage should be protected by balanced warmup and the uniform
 sampling floor rather than folded into the importance metric. If diagnostics
@@ -265,14 +265,14 @@ factor can be tested as a separate ablation.
 If optimization is constrained by wall-clock compute rather than optimizer
 steps or tokens, a cost-aware score is possible:
 
-\[
+$$
 \widetilde{S}_g
 = \frac{S_g}{\operatorname{cost}(g)^\gamma},
 \qquad \gamma \ge 0.
-\]
+$$
 
-- \(\gamma=0\): prioritize gradient signal per optimizer step;
-- \(\gamma=1\): approximately prioritize gradient signal per unit compute;
+- $\gamma=0$: prioritize gradient signal per optimizer step;
+- $\gamma=1$: approximately prioritize gradient signal per unit compute;
 - intermediate values trade off the two.
 
 Cost correction changes the scientific objective and must be explicit in
@@ -284,35 +284,35 @@ This is a separate decision from choosing the importance score.
 
 Suppose the target training objective is the uniform global-granularity loss
 
-\[
+$$
 J(\theta)
 = \frac{1}{K}\sum_{g=1}^{K}
   \mathbb{E}_z[L_g(\theta;z)].
-\]
+$$
 
-If \(G \sim p\) and the selected gradient is used without reweighting, then
+If $G \sim p$ and the selected gradient is used without reweighting, then
 
-\[
+$$
 \mathbb{E}[d_G]
 = \sum_g p_g\,\mathbb{E}[d_g],
-\]
+$$
 
-which generally differs from \(\nabla J\). This is an intentional adaptive
+which generally differs from $\nabla J$. This is an intentional adaptive
 curriculum: high-score granularities affect the learned parameters more often.
 
 If preserving the uniform objective is required, use
 
-\[
+$$
 \widehat{d}
 = \frac{1}{Kp_G}d_G,
-\]
+$$
 
 for which
 
-\[
+$$
 \mathbb{E}[\widehat{d}]
 = \frac{1}{K}\sum_g \mathbb{E}[d_g].
-\]
+$$
 
 The variance-minimizing sampling distribution for this estimator is linked to
 the complete transformed gradient norm, not necessarily to the proposed
@@ -330,14 +330,14 @@ The first pilot should make this distinction explicit rather than calling both
 variants the same method.
 
 If inverse weighting is used, the observed gradient norm is also multiplied by
-\(w_G=1/(Kp_G)\). Because norms are homogeneous,
+$w_G=1/(Kp_G)$. Because norms are homogeneous,
 
-\[
+$$
 \lVert w_G d_G \rVert_2 = w_G\lVert d_G \rVert_2,
-\]
+$$
 
 so the unweighted score can be recovered by dividing the measured norm by
-\(w_G\), provided no clipping has yet occurred.
+$w_G$, provided no clipping has yet occurred.
 
 ## Interaction with existing gradient correction and clipping
 
@@ -369,23 +369,23 @@ sampling draw.
 
 For a per-block action
 
-\[
+$$
 a = (g_1,\ldots,g_B),
-\]
+$$
 
-one could maintain a score \(S_{b,g}\) and sample each block independently.
-However, the observed gradient at block \(b\) depends on the complete profile,
-not only on \(g_b\). Updating \(S_{b,g_b}\) therefore treats a confounded
+one could maintain a score $S_{b,g}$ and sample each block independently.
+However, the observed gradient at block $b$ depends on the complete profile,
+not only on $g_b$. Updating $S_{b,g_b}$ therefore treats a confounded
 profile-dependent observation as local evidence.
 
 There is an additional problem if the target is a uniform distribution over
 profiles. Under independent block sampling,
 
-\[
+$$
 p(a) = \prod_{b=1}^{B}p_{b,g_b},
-\]
+$$
 
-and exact inverse-probability weights involve \(1/p(a)\). This product can be
+and exact inverse-probability weights involve $1/p(a)$. This product can be
 extremely large even when every local probability is reasonable.
 
 The first mathematical and empirical validation should therefore use one
@@ -404,20 +404,20 @@ initially assuming which is best:
 
 Recommended primary sampling signal:
 
-\[
+$$
 I_g = I_g^{\mathrm{core\text{-}relative}}.
-\]
+$$
 
 Recommended probability mapping:
 
-\[
+$$
 p_g
 = (1-\epsilon)
   \operatorname{softmax}_g\left(\frac{\log(S_g+\eta)}{T}\right)
   + \frac{\epsilon}{K}.
-\]
+$$
 
-Initially keep \(\gamma=0\) for no compute penalty. Compare two clearly named
+Initially keep $\gamma=0$ for no compute penalty. Compare two clearly named
 training variants:
 
 - `gradient_priority_global`: ordinary selected loss, intentionally adaptive
