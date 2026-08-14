@@ -35,6 +35,7 @@ def tiny_llama_config(
     intermediate_size=64,
     granularity_prefixes=None,
     granularities=None,
+    mlp_bias=False,
 ):
     config = LlamaConfig(
         vocab_size=32,
@@ -45,6 +46,7 @@ def tiny_llama_config(
         num_key_value_heads=4,
         max_position_embeddings=16,
         tie_word_embeddings=False,
+        mlp_bias=mlp_bias,
     )
     if granularity_prefixes is not None:
         config.granularity_prefixes = granularity_prefixes
@@ -296,6 +298,85 @@ def test_modified_mlp_defaults_to_gradient_membership_correction_enabled():
     mlp = ModifiedLlamaMLP(tiny_llama_config(num_hidden_layers=1))
 
     assert mlp.gradient_membership_correction_enabled is True
+
+
+@pytest.mark.parametrize(
+    "mlp_cls, expected_names",
+    [
+        (
+            ModifiedLlamaMLP,
+            {
+                "gate_proj.weight",
+                "up_proj.weight",
+                "down_proj.weight",
+                "gate_proj.bias",
+                "up_proj.bias",
+            },
+        ),
+        (
+            CatLlamaMLP,
+            {
+                "gate_weight_blocks.0",
+                "gate_weight_blocks.1",
+                "up_weight_blocks.0",
+                "up_weight_blocks.1",
+                "down_weight_blocks.0",
+                "down_weight_blocks.1",
+                "gate_bias_blocks.0",
+                "gate_bias_blocks.1",
+                "up_bias_blocks.0",
+                "up_bias_blocks.1",
+            },
+        ),
+    ],
+)
+def test_controlled_ffn_support_has_exact_coordinates_and_excludes_shared_bias(
+    mlp_cls,
+    expected_names,
+):
+    config = tiny_llama_config(num_hidden_layers=1, mlp_bias=True)
+    mlp = mlp_cls(config)
+
+    support = mlp.controlled_ffn_support("m")
+    descriptors = [entry.descriptor() for entry in support]
+
+    assert {entry["parameter_name"] for entry in descriptors} == expected_names
+    assert all("down_bias" not in entry["parameter_name"] for entry in descriptors)
+    assert all(entry.parameter is not getattr(mlp, "down_bias", None) for entry in support)
+    assert all(
+        entry.parameter is not getattr(getattr(mlp, "down_proj", None), "bias", None)
+        for entry in support
+    )
+    assert mlp.controlled_ffn_parameter_count("m") == 3 * 16 * 16 + 2 * 16
+
+    if mlp_cls is ModifiedLlamaMLP:
+        by_name = {entry.parameter_name: entry for entry in support}
+        assert by_name["gate_proj.weight"].selected_tensor().shape == (16, 16)
+        assert by_name["up_proj.weight"].selected_tensor().shape == (16, 16)
+        assert by_name["down_proj.weight"].selected_tensor().shape == (16, 16)
+
+
+@pytest.mark.parametrize("mlp_cls", [ModifiedLlamaMLP, CatLlamaMLP])
+def test_controlled_ffn_count_is_stable_when_selected_gradients_are_zero(mlp_cls):
+    mlp = mlp_cls(tiny_llama_config(num_hidden_layers=1, mlp_bias=True))
+    expected_count = mlp.controlled_ffn_parameter_count("m")
+
+    for entry in mlp.controlled_ffn_support("m"):
+        entry.parameter.grad = torch.zeros_like(entry.parameter)
+
+    assert mlp.controlled_ffn_parameter_count("m") == expected_count
+
+
+@pytest.mark.parametrize("mlp_cls", [ModifiedLlamaMLP, CatLlamaMLP])
+def test_controlled_ffn_support_rejects_fully_frozen_layout(mlp_cls):
+    mlp = mlp_cls(tiny_llama_config(num_hidden_layers=1, mlp_bias=True))
+    for parameter in mlp.parameters():
+        parameter.requires_grad_(False)
+
+    with pytest.raises(ValueError, match="zero controlled trainable FFN scalars"):
+        mlp.controlled_ffn_support("m")
+    with pytest.raises(ValueError, match="zero controlled trainable FFN scalars"):
+        mlp.controlled_ffn_parameter_count("m")
 
 
 def test_invalid_granularity_is_rejected():
@@ -573,6 +654,68 @@ def test_concat_can_disable_gradient_membership_correction():
         corrected.gate_weight_blocks[1].grad,
         uncorrected.gate_weight_blocks[1].grad * (4 / 3),
     )
+
+
+@pytest.mark.parametrize("mlp_cls", [ModifiedLlamaMLP, CatLlamaMLP])
+def test_membership_correction_suspension_exposes_raw_gradients_and_restores(mlp_cls):
+    torch.manual_seed(0)
+    config = tiny_llama_config(num_hidden_layers=1)
+    corrected = mlp_cls(
+        config,
+        trained_granularities=["s", "m", "l", "xl"],
+        gradient_membership_correction_enabled=True,
+    )
+    raw = mlp_cls(
+        config,
+        trained_granularities=["s", "m", "l", "xl"],
+        gradient_membership_correction_enabled=False,
+    )
+    raw.load_state_dict(corrected.state_dict())
+    corrected.configure_subnetwork("m")
+    raw.configure_subnetwork("m")
+    x = torch.randn(2, 3, config.hidden_size)
+
+    with corrected.suspend_gradient_membership_correction():
+        assert corrected.gradient_membership_correction_suspended is True
+        corrected(x).sum().backward()
+    raw(x).sum().backward()
+
+    corrected_entry = corrected.controlled_ffn_support("m")[0]
+    raw_entry = raw.controlled_ffn_support("m")[0]
+    assert torch.allclose(corrected_entry.parameter.grad, raw_entry.parameter.grad)
+    assert corrected.gradient_membership_correction_suspended is False
+
+    corrected.zero_grad(set_to_none=True)
+    raw.zero_grad(set_to_none=True)
+    corrected(x).sum().backward()
+    raw(x).sum().backward()
+    corrected_entries = corrected.controlled_ffn_support("m")
+    raw_entries = raw.controlled_ffn_support("m")
+    if mlp_cls is ModifiedLlamaMLP:
+        assert torch.allclose(
+            corrected_entries[1].parameter.grad[8:16],
+            raw_entries[1].parameter.grad[8:16] * (4 / 3),
+        )
+        assert torch.allclose(
+            corrected_entries[1].parameter.grad[:8],
+            raw_entries[1].parameter.grad[:8],
+        )
+    else:
+        assert torch.allclose(
+            corrected_entries[1].parameter.grad,
+            raw_entries[1].parameter.grad * (4 / 3),
+        )
+
+
+@pytest.mark.parametrize("mlp_cls", [ModifiedLlamaMLP, CatLlamaMLP])
+def test_membership_correction_suspension_restores_after_failure(mlp_cls):
+    mlp = mlp_cls(tiny_llama_config(num_hidden_layers=1))
+
+    with pytest.raises(RuntimeError, match="measurement failed"):
+        with mlp.suspend_gradient_membership_correction():
+            raise RuntimeError("measurement failed")
+
+    assert mlp.gradient_membership_correction_suspended is False
 
 
 def test_modified_llama_scales_active_prefix_gradients_by_inverse_membership():

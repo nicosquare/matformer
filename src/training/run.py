@@ -112,6 +112,8 @@ def _packed_role_partition(manifest: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def uses_probabilistic_controller(config: Mapping[str, Any]) -> bool:
+    """Return whether this run needs the Thompson-sampling controller."""
+
     model = config.get("model", {})
     return (
         model.get("granularity_sampling_mode")
@@ -120,13 +122,19 @@ def uses_probabilistic_controller(config: Mapping[str, Any]) -> bool:
     )
 
 
-def prepare_probabilistic_data_roles(
+def uses_controller_panel(config: Mapping[str, Any]) -> bool:
+    """Return whether this run needs the shared fixed controller data role."""
+
+    return training_data.uses_controller_panel(config)
+
+
+def prepare_controller_data_roles(
     config: dict[str, Any],
     tokenized_dataset,
     device: torch.device,
     distributed_context=None,
 ) -> tuple[Any, Any, Any, dict[str, Any]]:
-    """Create fixed Bayesian data roles and their runtime dataloaders."""
+    """Create fixed controller data roles and their runtime dataloaders."""
 
     validation = config["evaluation"]["validation"]
     partition = training_data.partition_probabilistic_data_roles(
@@ -937,13 +945,13 @@ def run_training(
                         f"{config['dataset']['data_seed']}",
                         flush=True,
                     )
-            elif uses_probabilistic_controller(config):
+            elif uses_controller_panel(config):
                 (
                     train_dataloader,
                     eval_dataloader,
                     _controller_dataloader,
                     role_partition,
-                ) = prepare_probabilistic_data_roles(
+                ) = prepare_controller_data_roles(
                     config,
                     tokenized_dataset,
                     device,

@@ -63,13 +63,20 @@ def _log_dataset_cache_context(dataset_name: str, dataset_split: str) -> None:
     )
 
 
-def _uses_probabilistic_data_roles(config: Mapping[str, Any]) -> bool:
+def uses_controller_panel(config: Mapping[str, Any]) -> bool:
+    """Return whether the selected sampler requires the fixed controller role."""
+
     model = config.get("model", {})
-    return (
+    uses_thompson_controller = (
         model.get("granularity_sampling_mode")
         in {"adaptive_global", "adaptive_per_block"}
         and model.get("adaptive_sampler_strategy") == "thompson"
     )
+    uses_panelgrad_controller = (
+        model.get("granularity_sampling_mode") == "adaptive_global"
+        and model.get("adaptive_sampler_strategy") == "panelgrad"
+    )
+    return uses_thompson_controller or uses_panelgrad_controller
 
 
 def load_text_dataset(
@@ -192,7 +199,7 @@ def load_and_tokenize_dataset(
 ):
     dataset_config = config["dataset"]
     model_config = config["model"]
-    preserve_source_identity = _uses_probabilistic_data_roles(config)
+    preserve_source_identity = uses_controller_panel(config)
     if preserve_source_identity:
         tokenization_identity = {
             "preprocessing_version": 1,

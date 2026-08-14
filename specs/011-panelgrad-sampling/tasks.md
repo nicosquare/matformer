@@ -28,11 +28,11 @@
 
 **CRITICAL**: Complete this phase before starting any user-story implementation.
 
-- [ ] T003 Add `panelgrad` strategy resolution, the `model.panelgrad` defaults and conflict validation, fixed method provenance, balanced-warmup eligibility, and preflight output in `src/utils/config.py`
-- [ ] T004 [P] Register the dedicated `panelgrad_sampling` seed stream and include its provenance in reproducibility and comparison signatures in `src/utils/reproducibility.py`
-- [ ] T005 [P] Separate the shared controller-panel predicate from the TS-only controller predicate so raw and packed PanelGrad runs reuse the existing four disjoint data roles in `src/training/data.py` and `src/training/run.py`
-- [ ] T006 [P] Add slicing and concat controlled-FFN support descriptors/counts plus a scoped membership-correction suspension that excludes shared down bias and non-FFN parameters in `src/models/ffn.py`
-- [ ] T007 [P] Cover slicing/concat support coordinates, unique scalar counts, shared-bias exclusion, zero-gradient stability, correction restoration, and rejection of frozen layouts with zero controlled trainable scalars in `tests/test_matformer_prefixes.py`
+- [X] T003 Add `panelgrad` strategy resolution, the `model.panelgrad` defaults and conflict validation, fixed method provenance, balanced-warmup eligibility, and preflight output in `src/utils/config.py`
+- [X] T004 [P] Register the dedicated `panelgrad_sampling` seed stream and include its provenance in reproducibility and comparison signatures in `src/utils/reproducibility.py`
+- [X] T005 [P] Separate the shared controller-panel predicate from the TS-only controller predicate so raw and packed PanelGrad runs reuse the existing four disjoint data roles in `src/training/data.py` and `src/training/run.py`
+- [X] T006 [P] Add slicing and concat controlled-FFN support descriptors/counts plus a scoped membership-correction suspension that excludes shared down bias and non-FFN parameters in `src/models/ffn.py`
+- [X] T007 [P] Cover slicing/concat support coordinates, unique scalar counts, shared-bias exclusion, zero-gradient stability, correction restoration, and rejection of frozen layouts with zero controlled trainable scalars in `tests/test_matformer_prefixes.py`
 
 **Checkpoint**: PanelGrad configuration, controller role, RNG identity, and controlled parameter support are explicit and testable.
 

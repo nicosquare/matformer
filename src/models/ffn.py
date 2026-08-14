@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -62,7 +64,88 @@ def build_prefix_membership_segment_metadata(
     )
 
 
-class ModifiedLlamaMLP(LlamaMLP):
+@dataclass(frozen=True)
+class ControlledFFNSupportEntry:
+    """One exact, granularity-controlled slice of an FFN parameter."""
+
+    parameter_family: str
+    parameter_name: str
+    parameter: nn.Parameter
+    selection: tuple[slice, ...]
+
+    @property
+    def scalar_count(self) -> int:
+        shape = self.selected_tensor().shape
+        return int(torch.Size(shape).numel())
+
+    def selected_tensor(self, tensor: torch.Tensor | None = None) -> torch.Tensor:
+        source = self.parameter if tensor is None else tensor
+        return source[self.selection]
+
+    def descriptor(self) -> dict[str, Any]:
+        return {
+            "parameter_family": self.parameter_family,
+            "parameter_name": self.parameter_name,
+            "parameter_shape": list(self.parameter.shape),
+            "selection": [
+                {"start": item.start, "stop": item.stop, "step": item.step}
+                for item in self.selection
+            ],
+            "scalar_count": self.scalar_count,
+            "trainable": bool(self.parameter.requires_grad),
+        }
+
+
+class _ControlledFFNSupportMixin:
+    """Shared correction-suspension and exact-support behavior."""
+
+    _membership_correction_suspension_depth: int
+
+    def _initialize_membership_correction_suspension(self) -> None:
+        self._membership_correction_suspension_depth = 0
+
+    @property
+    def gradient_membership_correction_suspended(self) -> bool:
+        return self._membership_correction_suspension_depth > 0
+
+    @contextmanager
+    def suspend_gradient_membership_correction(self):
+        """Temporarily expose raw gradients without removing registered hooks."""
+
+        self._membership_correction_suspension_depth += 1
+        try:
+            yield self
+        finally:
+            self._membership_correction_suspension_depth -= 1
+
+    def _membership_correction_is_active(self) -> bool:
+        return bool(self.gradient_membership_correction_enabled) and not bool(
+            self.gradient_membership_correction_suspended
+        )
+
+    def controlled_ffn_parameter_count(self, flag: str) -> int:
+        """Count the trainable scalars selected by ``flag`` exactly once."""
+
+        entries = self.controlled_ffn_support(flag)
+        seen_entries: set[tuple[int, tuple[tuple[int | None, ...], ...]]] = set()
+        count = 0
+        for entry in entries:
+            selection_key = tuple(
+                (item.start, item.stop, item.step) for item in entry.selection
+            )
+            key = (id(entry.parameter), selection_key)
+            if key in seen_entries:
+                continue
+            seen_entries.add(key)
+            count += entry.scalar_count
+        if count <= 0:
+            raise ValueError(
+                f"Granularity {flag!r} has zero controlled trainable FFN scalars"
+            )
+        return count
+
+
+class ModifiedLlamaMLP(_ControlledFFNSupportMixin, LlamaMLP):
     def __init__(
         self,
         config,
@@ -101,6 +184,7 @@ class ModifiedLlamaMLP(LlamaMLP):
         self.gradient_membership_correction_enabled = (
             gradient_membership_correction_enabled
         )
+        self._initialize_membership_correction_suspension()
         self.gradient_membership_counts = [
             segment["membership_count"]
             for segment in self.gradient_membership_segment_metadata
@@ -134,16 +218,82 @@ class ModifiedLlamaMLP(LlamaMLP):
             self.up_proj.bias.register_hook(self._scale_bias_grad)
 
     def _scale_bias_grad(self, grad):
+        if not self._membership_correction_is_active():
+            return grad
         scale = self.gradient_membership_correction_scale_vector.to(dtype=grad.dtype)
         return grad * scale
 
     def _scale_gate_or_up_weight_grad(self, grad):
+        if not self._membership_correction_is_active():
+            return grad
         scale = self.gradient_membership_correction_scale_vector.to(dtype=grad.dtype)
         return grad * scale.unsqueeze(1)
 
     def _scale_down_weight_grad(self, grad):
+        if not self._membership_correction_is_active():
+            return grad
         scale = self.gradient_membership_correction_scale_vector.to(dtype=grad.dtype)
         return grad * scale.unsqueeze(0)
+
+    def controlled_ffn_support(
+        self,
+        flag: str,
+    ) -> tuple[ControlledFFNSupportEntry, ...]:
+        """Return the exact trainable slicing support controlled by ``flag``."""
+
+        prefix_width = granularity_prefix_width(
+            self.intermediate_size,
+            flag,
+            granularity_prefixes=self.granularity_prefixes,
+        )
+        entries: list[ControlledFFNSupportEntry] = []
+
+        def include(
+            family: str,
+            name: str,
+            parameter: nn.Parameter | None,
+            selection: tuple[slice, ...],
+        ) -> None:
+            if parameter is not None and parameter.requires_grad:
+                entries.append(
+                    ControlledFFNSupportEntry(family, name, parameter, selection)
+                )
+
+        include(
+            "gate_weight",
+            "gate_proj.weight",
+            self.gate_proj.weight,
+            (slice(0, prefix_width), slice(None)),
+        )
+        include(
+            "up_weight",
+            "up_proj.weight",
+            self.up_proj.weight,
+            (slice(0, prefix_width), slice(None)),
+        )
+        include(
+            "down_weight",
+            "down_proj.weight",
+            self.down_proj.weight,
+            (slice(None), slice(0, prefix_width)),
+        )
+        include(
+            "gate_bias",
+            "gate_proj.bias",
+            self.gate_proj.bias,
+            (slice(0, prefix_width),),
+        )
+        include(
+            "up_bias",
+            "up_proj.bias",
+            self.up_proj.bias,
+            (slice(0, prefix_width),),
+        )
+        if not entries:
+            raise ValueError(
+                f"Granularity {flag!r} has zero controlled trainable FFN scalars"
+            )
+        return tuple(entries)
 
     def configure_subnetwork(self, flag):
         """Configure subnetwork size based on flag."""
@@ -207,7 +357,7 @@ class ModifiedLlamaMLP(LlamaMLP):
         return down_proj
 
 
-class CatLlamaMLP(LlamaMLP):
+class CatLlamaMLP(_ControlledFFNSupportMixin, LlamaMLP):
     def __init__(
         self,
         config,
@@ -274,6 +424,7 @@ class CatLlamaMLP(LlamaMLP):
         self.gradient_membership_correction_enabled = (
             gradient_membership_correction_enabled
         )
+        self._initialize_membership_correction_suspension()
         self.current_granularity = None
         self.current_subset_hd = None
         self.current_subset_blocks = None
@@ -382,7 +533,57 @@ class CatLlamaMLP(LlamaMLP):
                 param = blocks[block_index]
                 if not param.requires_grad:
                     continue
-                param.register_hook(lambda grad, scale=scale: grad * scale)
+                param.register_hook(
+                    lambda grad, scale=scale: self._scale_block_grad(grad, scale)
+                )
+
+    def _scale_block_grad(self, grad, scale):
+        if not self._membership_correction_is_active():
+            return grad
+        return grad * scale
+
+    def controlled_ffn_support(
+        self,
+        flag: str,
+    ) -> tuple[ControlledFFNSupportEntry, ...]:
+        """Return the exact trainable concat blocks controlled by ``flag``."""
+
+        configured_granularities = tuple(
+            entry["name"] for entry in self.ffn_prefix_metadata
+        )
+        block_count = granularity_concat_block_count(
+            flag,
+            granularities=configured_granularities,
+        )
+        entries: list[ControlledFFNSupportEntry] = []
+
+        def include_blocks(
+            family: str,
+            name: str,
+            blocks: nn.ParameterList,
+        ) -> None:
+            for block_index, parameter in enumerate(blocks[:block_count]):
+                if parameter.requires_grad:
+                    selection = tuple(slice(None) for _ in parameter.shape)
+                    entries.append(
+                        ControlledFFNSupportEntry(
+                            family,
+                            f"{name}.{block_index}",
+                            parameter,
+                            selection,
+                        )
+                    )
+
+        include_blocks("gate_weight", "gate_weight_blocks", self.gate_weight_blocks)
+        include_blocks("up_weight", "up_weight_blocks", self.up_weight_blocks)
+        include_blocks("down_weight", "down_weight_blocks", self.down_weight_blocks)
+        include_blocks("gate_bias", "gate_bias_blocks", self.gate_bias_blocks)
+        include_blocks("up_bias", "up_bias_blocks", self.up_bias_blocks)
+        if not entries:
+            raise ValueError(
+                f"Granularity {flag!r} has zero controlled trainable FFN scalars"
+            )
+        return tuple(entries)
 
     def configure_subnetwork(self, flag):
         self.current_granularity = flag
@@ -467,6 +668,7 @@ class CatLlamaMLP(LlamaMLP):
 
 __all__ = [
     "MATFORMER_GRANULARITY_ORDER",
+    "ControlledFFNSupportEntry",
     "ModifiedLlamaMLP",
     "CatLlamaMLP",
     "build_concat_layout_diagnostic",
