@@ -1436,6 +1436,15 @@ def _resolve_model_dimension_and_granularity_metadata(config: dict[str, Any]) ->
                 "label list"
             )
         return
+    if any(
+        not isinstance(granularity, str) or not granularity.strip()
+        for granularity in granularities
+    ):
+        raise ConfigError(
+            "model.granularities must contain only non-empty string labels"
+        )
+    if len(set(granularities)) != len(granularities):
+        raise ConfigError("model.granularities must contain unique labels")
 
     prefixes = model.get("granularity_prefixes")
     if prefixes is None:
@@ -2007,8 +2016,34 @@ def _resolve_panelgrad_configuration(config: dict[str, Any]) -> None:
             "model.panelgrad.ordered_granularities must match model.granularities"
         )
     panelgrad["ordered_granularities"] = ordered_granularities
-    panelgrad["controlled_support_counts"] = "pending"
-    panelgrad["controlled_support_hash"] = "pending"
+    support_counts = panelgrad.get("controlled_support_counts", "pending")
+    if support_counts != "pending":
+        if not isinstance(support_counts, Mapping) or list(support_counts) != (
+            ordered_granularities
+        ):
+            raise ConfigError(
+                "model.panelgrad.controlled_support_counts must follow "
+                "model.granularities"
+            )
+        if any(
+            isinstance(support_counts[label], bool)
+            or not isinstance(support_counts[label], int)
+            or support_counts[label] <= 0
+            for label in ordered_granularities
+        ):
+            raise ConfigError(
+                "model.panelgrad.controlled_support_counts must be positive integers"
+            )
+        support_counts = dict(support_counts)
+    support_hash = panelgrad.get("controlled_support_hash", "pending")
+    if support_hash != "pending" and (
+        not isinstance(support_hash, str) or not support_hash.strip()
+    ):
+        raise ConfigError(
+            "model.panelgrad.controlled_support_hash must be pending or non-empty"
+        )
+    panelgrad["controlled_support_counts"] = support_counts
+    panelgrad["controlled_support_hash"] = support_hash
     panelgrad["sampling_seed_stream"] = "panelgrad_sampling"
     panelgrad["sampling_seed"] = seed_for(config, "panelgrad_sampling")
 

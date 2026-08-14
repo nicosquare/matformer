@@ -193,7 +193,7 @@ def test_canonical_granularity_resolution_preserves_legacy_layout():
                     "full": 1.0,
                 },
             },
-            "strictly nested widths",
+            "unique labels",
         ),
     ],
 )
@@ -2243,4 +2243,66 @@ def test_packed_mmap_rejects_per_run_sampling_and_distributed_ucb(tmp_path, monk
                 "model.granularity_sampling_mode=adaptive_per_block",
                 "model.adaptive_sampler_strategy=ucb",
             ],
+        )
+
+
+def test_panelgrad_resolves_defaults_overrides_and_preflight_contract():
+    resolved = resolve_run_config("tests/fixtures/panelgrad_smoke.yaml")
+    panelgrad = resolved["model"]["panelgrad"]
+
+    assert resolved["model"]["granularity_sampling_mode"] == "adaptive_global"
+    assert resolved["model"]["adaptive_sampler_strategy"] == "panelgrad"
+    assert resolved["run"]["sampling_mode"] == "nested-random"
+    assert resolved["training"]["granularity_sampling"] == "random"
+    assert panelgrad["method_family"] == "panelgrad_gradient_rms"
+    assert panelgrad["scope"] == "global"
+    assert panelgrad["ordered_granularities"] == ["micro", "medium", "full"]
+    assert panelgrad["action_distribution"] == "categorical"
+    assert panelgrad["inverse_probability_weighting"] is False
+    assert panelgrad["compute_correction"] is False
+    assert panelgrad["controller_panel_contract"]["examples"] == 128
+    assert panelgrad["final_holdout_contract"]["evaluate_during_training"] is False
+
+    overridden = resolve_run_config(
+        "tests/fixtures/panelgrad_smoke.yaml",
+        overrides=[
+            "model.panelgrad.refresh_interval_steps=7",
+            "model.panelgrad.eta=0.000001",
+            "model.panelgrad.temperature=2.5",
+            "model.panelgrad.epsilon=0.0",
+        ],
+    )["model"]["panelgrad"]
+    assert overridden["refresh_interval_steps"] == 7
+    assert overridden["eta"] == 1e-6
+    assert overridden["temperature"] == 2.5
+    assert overridden["epsilon"] == 0.0
+
+
+@pytest.mark.parametrize(
+    "override, match",
+    [
+        ("model.granularity_sampling_mode=adaptive_per_block", "requires.*adaptive_global"),
+        ("model.granularity_sampling_mode=global", "requires.*adaptive_global"),
+        ("model.granularities=[]", "non-empty"),
+        ("model.granularities=[micro,micro]", "unique"),
+        ("model.panelgrad.refresh_interval_steps=0", "must be a positive integer"),
+        ("model.panelgrad.eta=0", "eta must be positive"),
+        ("model.panelgrad.temperature=0", "temperature must be positive"),
+        ("model.panelgrad.epsilon=-0.1", "between zero and one"),
+        ("model.panelgrad.epsilon=1.1", "between zero and one"),
+        ("model.panelgrad.scope=per_block", "scope must be 'global'"),
+        ("model.panelgrad.inverse_probability_weighting=true", "must be False"),
+        ("model.panelgrad.compute_correction=true", "must be False"),
+        ("model.panelgrad.ema_decay=0.9", "Unknown model.panelgrad fields"),
+        ("model.panelgrad.exp3_gamma=0.1", "Unknown model.panelgrad fields"),
+        ("model.panelgrad.cost_weight=1.0", "Unknown model.panelgrad fields"),
+        ("model.adaptive_controller.decision_interval_steps=2", "cannot mix Bayesian"),
+        ("model.adaptive_sampler_exploration_scale=1.0", "cannot mix Bayesian or UCB"),
+    ],
+)
+def test_panelgrad_rejects_invalid_or_mixed_policy_configuration(override, match):
+    with pytest.raises(ConfigError, match=match):
+        resolve_run_config(
+            "tests/fixtures/panelgrad_smoke.yaml",
+            overrides=[override],
         )

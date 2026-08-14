@@ -26,6 +26,7 @@ import src.training.data as training_data
 import src.training.distributed as training_distributed
 import src.training.modeling as training_modeling
 import src.training.monitoring as training_monitoring
+import src.training.panelgrad as training_panelgrad
 import src.training.steps as training_steps
 import src.training.warmup as training_warmup
 from src.evaluation.validation import evaluate_controller_objective
@@ -169,10 +170,14 @@ def prepare_controller_data_roles(
             rank,
             world_size,
         )
-        controller_sampler = training_data.DistributedValidationSampler(
-            role_datasets["controller"],
-            rank,
-            world_size,
+        controller_sampler = (
+            None
+            if training_panelgrad.uses_panelgrad(config)
+            else training_data.DistributedValidationSampler(
+                role_datasets["controller"],
+                rank,
+                world_size,
+            )
         )
     else:
         train_sampler = training_data.EpochRandomSampler(
@@ -843,6 +848,8 @@ def run_training(
     parameter_counts_by_granularity = {}
     _controller_dataloader = None
     probabilistic_controller = None
+    panelgrad_controller = None
+    panelgrad_support_identity = None
     controller_events: list[dict[str, Any]] = []
     controller_summary = None
     controller_summary_path = None
@@ -881,6 +888,21 @@ def run_training(
                 attach_parameter_counts_to_config(
                     config,
                     parameter_counts_by_granularity,
+                )
+            if training_panelgrad.uses_panelgrad(config):
+                panelgrad_support_identity = (
+                    training_panelgrad.resolve_controlled_ffn_support(
+                        model,
+                        config["model"]["granularities"],
+                    )
+                )
+                config["model"]["panelgrad"]["controlled_support_counts"] = (
+                    copy.deepcopy(
+                        panelgrad_support_identity["controlled_support_counts"]
+                    )
+                )
+                config["model"]["panelgrad"]["controlled_support_hash"] = str(
+                    panelgrad_support_identity["controlled_support_hash"]
                 )
             model = model.to(device)
 
@@ -1032,6 +1054,14 @@ def run_training(
             controller_events = read_controller_events(
                 output_dir / "controller_metrics.jsonl"
             )
+        elif training_panelgrad.uses_panelgrad(config):
+            if panelgrad_support_identity is None:
+                raise ConfigError("PanelGrad controlled FFN support was not resolved")
+            panelgrad_controller = training_panelgrad.build_panelgrad_controller(
+                config,
+                panelgrad_support_identity,
+            )
+            run_state["panelgrad_state"] = panelgrad_controller.state_dict()
         training_monitoring.emit_run_start_continuation_state(
             heartbeat_writer,
             run_state,
@@ -1234,6 +1264,27 @@ def run_training(
                 run_state=run_state,
             )
 
+        def refresh_panelgrad_if_due(*, step: int, tokens_seen: int) -> None:
+            del tokens_seen
+            if panelgrad_controller is None:
+                return
+            if panelgrad_controller.phase != "refresh_pending":
+                run_state["panelgrad_state"] = panelgrad_controller.state_dict()
+                return
+            measurement = training_panelgrad.measure_panelgrad_gradients(
+                model,
+                _controller_dataloader,
+                config["model"]["panelgrad"]["ordered_granularities"],
+                device=device,
+                config=config,
+                support_identity=panelgrad_support_identity,
+            )
+            panelgrad_controller.install_refresh(
+                measurement,
+                boundary_step=step,
+            )
+            run_state["panelgrad_state"] = panelgrad_controller.state_dict()
+
         if probabilistic_controller is not None and not warmup_budget_exhausted:
             controller_state = probabilistic_controller.state_dict()
             boundary_step = int(run_state.get("last_completed_step", 0))
@@ -1342,6 +1393,8 @@ def run_training(
                     probabilistic_controller=probabilistic_controller,
                     probabilistic_boundary_callback=process_probabilistic_boundary,
                     probabilistic_completion_callback=finish_probabilistic_training,
+                    panelgrad_controller=panelgrad_controller,
+                    panelgrad_refresh_callback=refresh_panelgrad_if_due,
                 )
             )
         metrics_rows = metrics_journal.summary_rows()

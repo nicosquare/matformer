@@ -79,6 +79,14 @@ def uses_controller_panel(config: Mapping[str, Any]) -> bool:
     return uses_thompson_controller or uses_panelgrad_controller
 
 
+def uses_panelgrad_controller_panel(config: Mapping[str, Any]) -> bool:
+    model = config.get("model", {})
+    return (
+        model.get("granularity_sampling_mode") == "adaptive_global"
+        and model.get("adaptive_sampler_strategy") == "panelgrad"
+    )
+
+
 def load_text_dataset(
     dataset_name: str,
     dataset_split: str,
@@ -749,9 +757,11 @@ def build_packed_mmap_dataloaders(
     validation_sampler = DistributedValidationSampler(
         role_datasets["ordinary_validation"], rank, world_size
     ) if world_size > 1 else None
-    controller_sampler = DistributedValidationSampler(
-        role_datasets["controller"], rank, world_size
-    ) if world_size > 1 else None
+    controller_sampler = (
+        DistributedValidationSampler(role_datasets["controller"], rank, world_size)
+        if world_size > 1 and not uses_panelgrad_controller_panel(config)
+        else None
+    )
     validation_loader = build_language_model_dataloader(
         role_datasets["ordinary_validation"],
         batch_size=batch_size,

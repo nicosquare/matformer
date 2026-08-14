@@ -46,17 +46,17 @@
 
 ### Verification for User Story 1
 
-- [ ] T008 [P] [US1] Add valid/default/override and invalid scope, policy-value, empty/duplicate resolved-granularity, and preflight cases, explicitly rejecting Thompson posterior/reset inputs, UCB controls, EMA, EXP3, inverse-probability weighting, cost-aware correction, and per-block PanelGrad in `tests/test_config.py`
-- [ ] T009 [P] [US1] Add unit cases for aggregate-gradient RMS, microbatch invariance, one/all-zero arms, temperature, epsilon endpoints, stable normalization, categorical determinism, state transitions, invalid numerics, and zero controlled support failing before refresh or action selection in `tests/test_panelgrad.py`
-- [ ] T010 [P] [US1] Add lifecycle smoke cases for initial refresh, frozen `p`, per-step resampling, exactly-`H` completed-step boundaries, and equality with the ordinary unweighted global loss/update path without inverse-probability or cost correction in `tests/test_training_smoke.py`
+- [X] T008 [P] [US1] Add valid/default/override and invalid scope, policy-value, empty/duplicate resolved-granularity, and preflight cases, explicitly rejecting Thompson posterior/reset inputs, UCB controls, EMA, EXP3, inverse-probability weighting, cost-aware correction, and per-block PanelGrad in `tests/test_config.py`
+- [X] T009 [P] [US1] Add unit cases for aggregate-gradient RMS, microbatch invariance, one/all-zero arms, temperature, epsilon endpoints, stable normalization, categorical determinism, state transitions, invalid numerics, and zero controlled support failing before refresh or action selection in `tests/test_panelgrad.py`
+- [X] T010 [P] [US1] Add lifecycle smoke cases for initial refresh, frozen `p`, per-step resampling, exactly-`H` completed-step boundaries, and equality with the ordinary unweighted global loss/update path without inverse-probability or cost correction in `tests/test_training_smoke.py`
 
 ### Implementation for User Story 1
 
-- [ ] T011 [US1] Implement PanelGrad configuration/state validation, float64 score and `q`/`p` mathematics, dedicated CPU generator handling, categorical draws, and exposure accounting in `src/training/panelgrad.py`
-- [ ] T012 [US1] Implement one-granularity-at-a-time aggregate target-token-weighted controller-gradient measurement over the exact controlled FFN support in `src/training/panelgrad.py`
-- [ ] T013 [US1] Construct the fixed controller-panel loader and initialize a new PanelGrad controller only for selected PanelGrad runs in `src/training/data.py` and `src/training/run.py`
-- [ ] T014 [US1] Add the named pre-action `refresh-if-due -> sample` block and post-optimizer-commit accounting while reusing the existing global action and training path in `src/training/steps.py`
-- [ ] T015 [US1] Wire refresh execution, selected-action adaptation, controller callbacks, and clean terminal handoff into the main experiment flow in `src/training/run.py`
+- [X] T011 [US1] Implement PanelGrad configuration/state validation, float64 score and `q`/`p` mathematics, dedicated CPU generator handling, categorical draws, and exposure accounting in `src/training/panelgrad.py`
+- [X] T012 [US1] Implement one-granularity-at-a-time aggregate target-token-weighted controller-gradient measurement over the exact controlled FFN support in `src/training/panelgrad.py`
+- [X] T013 [US1] Construct the fixed controller-panel loader and initialize a new PanelGrad controller only for selected PanelGrad runs in `src/training/data.py` and `src/training/run.py`
+- [X] T014 [US1] Add the named pre-action `refresh-if-due -> sample` block and post-optimizer-commit accounting while reusing the existing global action and training path in `src/training/steps.py`
+- [X] T015 [US1] Wire refresh execution, selected-action adaptation, controller callbacks, and clean terminal handoff into the main experiment flow in `src/training/run.py`
 
 **Checkpoint**: PanelGrad is a functional MVP that refreshes a common full panel and samples one complete global granularity per optimizer step.
 

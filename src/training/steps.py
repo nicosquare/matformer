@@ -281,9 +281,12 @@ def _select_optimizer_window_action(
     device: torch.device,
     *,
     optimizer_step: int,
+    tokens_seen: int,
     supports_layer_granularities: bool,
     forced_global_action=None,
     probabilistic_controller=None,
+    panelgrad_controller=None,
+    panelgrad_refresh_callback=None,
     adaptive_sampler_state=None,
     stage_name: str,
 ) -> dict[str, Any]:
@@ -303,6 +306,22 @@ def _select_optimizer_window_action(
         return {"kind": "global", "granularities": [selected]}
     if run_sampling_mode == "nested-all":
         return {"kind": "nested_all", "granularities": list(granularities)}
+    if model_sampling_mode == "adaptive_global" and panelgrad_controller is not None:
+        # PanelGrad policy decision point: refresh if due, then draw one global
+        # action. The ordinary forward/backward path below remains unchanged.
+        if panelgrad_controller.phase == "refresh_pending":
+            if panelgrad_refresh_callback is None:
+                raise ConfigError("PanelGrad refresh callback is required")
+            panelgrad_refresh_callback(
+                step=optimizer_step - 1,
+                tokens_seen=tokens_seen,
+            )
+        selected_action = panelgrad_controller.sample_action()
+        return {
+            "kind": "global",
+            "granularities": [selected_action["global_granularity"]],
+            "panelgrad_probability": selected_action["probability"],
+        }
     if model_sampling_mode == "adaptive_global" and probabilistic_controller is not None:
         selected = probabilistic_global_layer_granularities(
             config, probabilistic_controller
@@ -436,6 +455,8 @@ def train_for_steps(
     probabilistic_controller=None,
     probabilistic_boundary_callback=None,
     probabilistic_completion_callback=None,
+    panelgrad_controller=None,
+    panelgrad_refresh_callback=None,
     forced_global_action=None,
     successful_step_callback=None,
 ) -> list[dict[str, Any]]:
@@ -535,6 +556,11 @@ def train_for_steps(
                     if probabilistic_controller is not None
                     else None
                 )
+                panelgrad_snapshot = (
+                    panelgrad_controller.transaction_snapshot()
+                    if panelgrad_controller is not None
+                    else None
+                )
                 window_sampler_snapshot = training_data.packed_sampler_state(
                     train_dataloader
                 )
@@ -578,9 +604,12 @@ def train_for_steps(
                         granularities,
                         device,
                         optimizer_step=pending_step,
+                        tokens_seen=tokens_seen,
                         supports_layer_granularities=supports_layer_granularities,
                         forced_global_action=forced_global_action,
                         probabilistic_controller=probabilistic_controller,
+                        panelgrad_controller=panelgrad_controller,
+                        panelgrad_refresh_callback=panelgrad_refresh_callback,
                         adaptive_sampler_state=adaptive_sampler_state,
                         stage_name=stage_name,
                     )
@@ -706,6 +735,13 @@ def train_for_steps(
                         run_state["sampler_state"] = sampler_state
                     if probabilistic_controller is not None:
                         probabilistic_controller.record_successful_optimizer_step()
+                    if panelgrad_controller is not None:
+                        panelgrad_controller.commit_pending_action(
+                            completed_step=step
+                        )
+                        run_state["panelgrad_state"] = (
+                            panelgrad_controller.state_dict()
+                        )
 
                     global_losses = {
                         label: sum_float(
@@ -923,6 +959,10 @@ def train_for_steps(
                         if controller_snapshot is not None:
                             probabilistic_controller.restore_transaction_snapshot(
                                 controller_snapshot
+                            )
+                        if panelgrad_snapshot is not None:
+                            panelgrad_controller.restore_transaction_snapshot(
+                                panelgrad_snapshot
                             )
                         run_state.clear()
                         run_state.update(window_state_snapshot)
