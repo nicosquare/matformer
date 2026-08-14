@@ -457,6 +457,7 @@ def train_for_steps(
     probabilistic_completion_callback=None,
     panelgrad_controller=None,
     panelgrad_refresh_callback=None,
+    panelgrad_completion_callback=None,
     forced_global_action=None,
     successful_step_callback=None,
 ) -> list[dict[str, Any]]:
@@ -980,6 +981,8 @@ def train_for_steps(
 
     if stage_name == "training" and probabilistic_completion_callback is not None:
         probabilistic_completion_callback(step=step, tokens_seen=tokens_seen)
+    if stage_name == "training" and panelgrad_completion_callback is not None:
+        panelgrad_completion_callback(step=step, tokens_seen=tokens_seen)
     if stage_name == "training":
         append_final_validation_if_needed(
             metrics_rows,

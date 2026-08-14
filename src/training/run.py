@@ -1081,9 +1081,13 @@ def run_training(
         )
         metrics_rows = []
         def commit_warmup_event(event: Mapping[str, Any]) -> None:
+            if probabilistic_controller is None and panelgrad_controller is not None:
+                panelgrad_controller.record_warmup_event(event)
+                run_state["panelgrad_state"] = panelgrad_controller.state_dict()
+                return
             if probabilistic_controller is None:
                 raise ConfigError(
-                    "Balanced warmup events require the probabilistic controller"
+                    "Balanced warmup events require an adaptive controller"
                 )
             committed_event = None
             if training_distributed.should_write_shared_artifact(distributed_context):
@@ -1285,6 +1289,13 @@ def run_training(
             )
             run_state["panelgrad_state"] = panelgrad_controller.state_dict()
 
+        def finish_panelgrad_training(*, step: int, tokens_seen: int) -> None:
+            del tokens_seen
+            if panelgrad_controller is None:
+                return
+            panelgrad_controller.finish_training(completed_step=step)
+            run_state["panelgrad_state"] = panelgrad_controller.state_dict()
+
         if probabilistic_controller is not None and not warmup_budget_exhausted:
             controller_state = probabilistic_controller.state_dict()
             boundary_step = int(run_state.get("last_completed_step", 0))
@@ -1395,7 +1406,13 @@ def run_training(
                     probabilistic_completion_callback=finish_probabilistic_training,
                     panelgrad_controller=panelgrad_controller,
                     panelgrad_refresh_callback=refresh_panelgrad_if_due,
+                    panelgrad_completion_callback=finish_panelgrad_training,
                 )
+            )
+        elif panelgrad_controller is not None:
+            finish_panelgrad_training(
+                step=int(run_state.get("last_completed_step", 0)),
+                tokens_seen=int(run_state.get("tokens_seen", 0)),
             )
         metrics_rows = metrics_journal.summary_rows()
         extraction_metadata_path = None

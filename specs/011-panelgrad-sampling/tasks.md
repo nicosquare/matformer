@@ -70,16 +70,16 @@
 
 ### Verification for User Story 2
 
-- [ ] T016 [P] [US2] Add PanelGrad activation, four-role disjointness, controller manifest reuse, replicated controller iteration, and final-holdout non-use cases in `tests/test_data_validation.py`
-- [ ] T017 [P] [US2] Add success/failure isolation cases proving unchanged parameters, optimizer, scheduler, mixed-precision scaler, training metrics, training-data cursor, ordinary RNG, model/granularity mode, and correction hooks; empty gradients afterward; stale-distribution rejection; and refresh atomicity in `tests/test_panelgrad.py`
-- [ ] T018 [P] [US2] Add balanced-global warmup transition, no-remaining-budget, failed optimizer attempt, terminal partial/exact interval, and unselected-strategy compatibility cases in `tests/test_training_smoke.py`
+- [X] T016 [P] [US2] Add PanelGrad activation, four-role disjointness, controller manifest reuse, replicated controller iteration, and final-holdout non-use cases in `tests/test_data_validation.py`
+- [X] T017 [P] [US2] Add success/failure isolation cases proving unchanged parameters, optimizer, scheduler, mixed-precision scaler, training metrics, training-data cursor, ordinary RNG, model/granularity mode, and correction hooks; empty gradients afterward; stale-distribution rejection; and refresh atomicity in `tests/test_panelgrad.py`
+- [X] T018 [P] [US2] Add balanced-global warmup transition, no-remaining-budget, failed optimizer attempt, terminal partial/exact interval, and unselected-strategy compatibility cases in `tests/test_training_smoke.py`
 
 ### Implementation for User Story 2
 
-- [ ] T019 [US2] Make the refresh a try/finally transaction that restores model mode, global granularity, correction state, ordinary RNG, and empty gradients, never invokes or mutates optimizer, scheduler, mixed-precision, training-metric, or training-data-cursor state, and atomically installs only a complete measurement in `src/training/panelgrad.py`
-- [ ] T020 [US2] Snapshot and roll back the pending PanelGrad draw and generator state on pre-commit failure, and advance interval/exposure state only after optimizer and scheduler commit in `src/training/steps.py`
-- [ ] T021 [US2] Reuse balanced-global warmup without PanelGrad exposure, TS resets, or acquisition episodes, and force a fresh measurement before the first adaptive action when training continues in `src/utils/config.py`, `src/training/warmup.py`, and `src/training/run.py`
-- [ ] T022 [US2] Enforce controller-only measurement provenance and terminal partial/complete handling with no unused refresh or draw in `src/training/run.py` and `src/training/panelgrad.py`
+- [X] T019 [US2] Make the refresh a try/finally transaction that restores model mode, global granularity, correction state, ordinary RNG, and empty gradients, never invokes or mutates optimizer, scheduler, mixed-precision, training-metric, or training-data-cursor state, and atomically installs only a complete measurement in `src/training/panelgrad.py`
+- [X] T020 [US2] Snapshot and roll back the pending PanelGrad draw and generator state on pre-commit failure, and advance interval/exposure state only after optimizer and scheduler commit in `src/training/steps.py`
+- [X] T021 [US2] Reuse balanced-global warmup without PanelGrad exposure, TS resets, or acquisition episodes, and force a fresh measurement before the first adaptive action when training continues in `src/utils/config.py`, `src/training/warmup.py`, and `src/training/run.py`
+- [X] T022 [US2] Enforce controller-only measurement provenance and terminal partial/complete handling with no unused refresh or draw in `src/training/run.py` and `src/training/panelgrad.py`
 
 **Checkpoint**: PanelGrad decisions are isolated from optimization and final evaluation, including warmup, failure, and terminal boundaries.
 

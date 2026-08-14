@@ -272,6 +272,17 @@ def measure_panelgrad_gradients(
     )
     if support.get("ordered_granularities") != ordered:
         raise PanelGradError("controlled support granularity order mismatch")
+    saved_support_hash = support.get("controlled_support_hash")
+    support_payload = {
+        key: value
+        for key, value in support.items()
+        if key != "controlled_support_hash"
+    }
+    if (
+        not isinstance(saved_support_hash, str)
+        or stable_hash(support_payload) != saved_support_hash
+    ):
+        raise PanelGradError("controlled support hash mismatch")
     mlps = _controlled_mlps(model)
     if not mlps:
         raise PanelGradError("PanelGrad model has no controlled MatFormer FFN layers")
@@ -445,6 +456,16 @@ class PanelGradController:
                 "last_committed_action": None,
                 "last_committed_probability": None,
             },
+            "warmup": {
+                "event_count": 0,
+                "last_event": None,
+            },
+            "terminal": {
+                "status": "continuing",
+                "completed_step": None,
+                "unused_refresh_performed": False,
+                "unused_draw_performed": False,
+            },
         }
 
     @property
@@ -579,6 +600,37 @@ class PanelGradController:
         ):
             raise PanelGradError("PanelGrad interval progress exceeded H")
         return copy.deepcopy(action)
+
+    def record_warmup_event(self, event: Mapping[str, Any]) -> None:
+        """Audit warmup without changing PanelGrad refresh or exposure state."""
+
+        warmup = self._state["warmup"]
+        warmup["event_count"] = int(warmup["event_count"]) + 1
+        warmup["last_event"] = copy.deepcopy(dict(event))
+
+    def finish_training(self, *, completed_step: int) -> dict[str, Any]:
+        """Enter a terminal phase without performing another refresh or draw."""
+
+        sampling = self._state["sampling"]
+        if sampling["pending_action"] is not None:
+            raise PanelGradError("cannot finish with an uncommitted PanelGrad action")
+        refresh = self._state["refresh"]
+        terminal_status = (
+            "terminal_complete"
+            if refresh["phase"] == "refresh_pending"
+            else "terminal_partial"
+        )
+        refresh["phase"] = terminal_status
+        terminal = self._state["terminal"]
+        terminal.update(
+            {
+                "status": terminal_status,
+                "completed_step": int(completed_step),
+                "unused_refresh_performed": False,
+                "unused_draw_performed": False,
+            }
+        )
+        return copy.deepcopy(terminal)
 
 
 def build_panelgrad_controller(

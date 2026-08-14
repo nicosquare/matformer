@@ -1,7 +1,10 @@
 from types import SimpleNamespace
+import copy
+import random
 
 import pytest
 import torch
+import numpy as np
 from transformers import LlamaConfig
 
 from src.models.ffn import ModifiedLlamaMLP
@@ -273,3 +276,126 @@ def test_zero_controlled_support_fails_before_measurement_or_action_selection():
 
     with pytest.raises(PanelGradError, match="zero controlled trainable FFN scalars"):
         resolve_controlled_ffn_support(model, ["small", "full"])
+
+
+def test_measurement_isolates_model_runtime_rng_gradients_and_optimization_state():
+    torch.manual_seed(9)
+    random.seed(10)
+    np.random.seed(11)
+    model = _ToyPanelGradModel()
+    model.train()
+    model.configure_subnetwork("small")
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0)
+    parameter_snapshot = {
+        name: parameter.detach().clone() for name, parameter in model.named_parameters()
+    }
+    optimizer_snapshot = copy.deepcopy(optimizer.state_dict())
+    scheduler_snapshot = copy.deepcopy(scheduler.state_dict())
+    python_state = random.getstate()
+    numpy_state = np.random.get_state()
+    torch_state = torch.get_rng_state().clone()
+    training_cursor = {"epoch": 3, "batch_index": 7}
+
+    measure_panelgrad_gradients(
+        model,
+        _panel_batches(2),
+        ["small", "full"],
+        device="cpu",
+    )
+
+    assert model.training is True
+    assert model.current_granularity == "small"
+    assert model.current_layer_granularities == ["small"]
+    assert training_cursor == {"epoch": 3, "batch_index": 7}
+    assert optimizer.state_dict() == optimizer_snapshot
+    assert scheduler.state_dict() == scheduler_snapshot
+    assert random.getstate() == python_state
+    restored_numpy_state = np.random.get_state()
+    assert restored_numpy_state[0] == numpy_state[0]
+    assert np.array_equal(restored_numpy_state[1], numpy_state[1])
+    assert restored_numpy_state[2:] == numpy_state[2:]
+    assert torch.equal(torch.get_rng_state(), torch_state)
+    for name, parameter in model.named_parameters():
+        assert torch.equal(parameter, parameter_snapshot[name])
+        assert parameter.grad is None
+    assert all(
+        not layer.mlp.gradient_membership_correction_suspended
+        for layer in model.matformer_layers
+    )
+
+
+def test_measurement_failure_restores_runtime_rng_and_leaves_no_gradients():
+    model = _ToyPanelGradModel()
+    model.eval()
+    model.configure_subnetwork("small")
+    original_forward = model.forward
+
+    def failing_forward(*args, **kwargs):
+        if model.current_granularity == "full":
+            raise RuntimeError("controller failure")
+        return original_forward(*args, **kwargs)
+
+    model.forward = failing_forward
+    torch_state = torch.get_rng_state().clone()
+
+    with pytest.raises(RuntimeError, match="controller failure"):
+        measure_panelgrad_gradients(
+            model,
+            _panel_batches(2),
+            ["small", "full"],
+            device="cpu",
+        )
+
+    assert model.training is False
+    assert model.current_granularity == "small"
+    assert model.current_layer_granularities == ["small"]
+    assert torch.equal(torch.get_rng_state(), torch_state)
+    assert all(parameter.grad is None for parameter in model.parameters())
+    assert all(
+        not layer.mlp.gradient_membership_correction_suspended
+        for layer in model.matformer_layers
+    )
+
+
+def test_measurement_rejects_stale_support_identity_before_refresh():
+    model = _ToyPanelGradModel()
+    support = resolve_controlled_ffn_support(model, ["small", "full"])
+    support["controlled_support_counts"]["small"] += 1
+
+    with pytest.raises(PanelGradError, match="support hash mismatch"):
+        measure_panelgrad_gradients(
+            model,
+            _panel_batches(2),
+            ["small", "full"],
+            device="cpu",
+            support_identity=support,
+        )
+
+    assert all(parameter.grad is None for parameter in model.parameters())
+
+
+@pytest.mark.parametrize(
+    "completed_actions, expected_phase",
+    [(1, "terminal_partial"), (2, "terminal_complete")],
+)
+def test_terminal_state_never_performs_an_unused_refresh_or_draw(
+    completed_actions,
+    expected_phase,
+):
+    controller = _controller(interval=2)
+    controller.install_refresh(_measurement(), boundary_step=0)
+    for step in range(1, completed_actions + 1):
+        controller.sample_action()
+        controller.commit_pending_action(completed_step=step)
+    draws_before = controller.state_dict()["sampling"]["sample_count"]
+
+    terminal = controller.finish_training(completed_step=completed_actions)
+    state = controller.state_dict()
+
+    assert state["refresh"]["phase"] == expected_phase
+    assert state["sampling"]["sample_count"] == draws_before
+    assert terminal["unused_refresh_performed"] is False
+    assert terminal["unused_draw_performed"] is False
+    with pytest.raises(PanelGradError, match="complete refresh"):
+        controller.sample_action()

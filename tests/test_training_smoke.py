@@ -3442,3 +3442,146 @@ def test_panelgrad_run_training_resolves_support_refreshes_and_uses_global_rows(
         "medium",
         "full",
     }
+
+
+def test_panelgrad_failed_optimizer_attempt_rolls_back_draw_and_interval(tmp_path):
+    config = resolve_run_config(
+        "tests/fixtures/panelgrad_smoke.yaml",
+        output_dir=tmp_path / "panelgrad-failure" / "panelgrad-smoke-001",
+        overrides=[
+            "training.max_steps=1",
+            "training.eval_interval=0",
+            "evaluation.validation.interval_steps=0",
+            "evaluation.validation.run_at_completion=false",
+            "run.continuation.enabled=false",
+            "outputs.save_checkpoints=false",
+        ],
+    )
+
+    class FailingModel(TinyNestedTrainingModel):
+        def forward(self, *args, **kwargs):
+            raise RuntimeError("optimizer window failed")
+
+    model = FailingModel(
+        loss_scale_by_granularity={"micro": 1.0, "medium": 2.0, "full": 3.0},
+        granularities=config["model"]["granularities"],
+    )
+    optimizer, scheduler = training_steps.build_optimizer_and_scheduler(
+        model, config["training"]
+    )
+    controller = _panelgrad_smoke_controller(config, seed=99)
+    controller.install_refresh(
+        _panelgrad_smoke_measurement(config, [1.0, 2.0, 3.0]),
+        boundary_step=0,
+    )
+    before = controller.transaction_snapshot()
+    expected_action = controller.sample_action()
+    controller.restore_transaction_snapshot(before)
+
+    with pytest.raises(RuntimeError, match="optimizer window failed"):
+        training_steps.train_for_steps(
+            config,
+            model,
+            _tiny_training_batches(),
+            [],
+            optimizer,
+            scheduler,
+            torch.device("cpu"),
+            run_state=training_checkpointing.build_initial_continuation_state(
+                config
+            ),
+            panelgrad_controller=controller,
+            panelgrad_refresh_callback=lambda **_: None,
+        )
+
+    state = controller.state_dict()
+    assert state["sampling"]["sample_count"] == 0
+    assert sum(state["sampling"]["exposure_counts"].values()) == 0
+    assert state["refresh"]["completed_steps_since_refresh"] == 0
+    assert controller.sample_action() == expected_action
+
+
+@pytest.mark.parametrize(
+    "max_steps, expect_adaptive_step",
+    [(13, True), (12, False)],
+)
+def test_panelgrad_balanced_warmup_has_no_exposure_and_refreshes_only_if_training_continues(
+    tmp_path,
+    max_steps,
+    expect_adaptive_step,
+):
+    import src.training.warmup as training_warmup
+
+    config = resolve_run_config(
+        "tests/fixtures/panelgrad_smoke.yaml",
+        output_dir=tmp_path / f"warmup-{max_steps}" / "panelgrad-smoke-001",
+        overrides=[
+            f"training.max_steps={max_steps}",
+            "training.pre_nested_warmup.enabled=true",
+            "training.pre_nested_warmup.duration=12",
+            "training.pre_nested_warmup.unit=steps",
+            "training.pre_nested_warmup.policy=balanced_global",
+            "training.pre_nested_warmup.action_interval_steps=2",
+            "training.eval_interval=0",
+            "evaluation.validation.interval_steps=0",
+            "evaluation.validation.run_at_completion=false",
+            "run.continuation.enabled=false",
+            "outputs.save_checkpoints=false",
+        ],
+    )
+    model = TinyNestedTrainingModel(
+        loss_scale_by_granularity={"micro": 1.0, "medium": 2.0, "full": 3.0},
+        granularities=config["model"]["granularities"],
+    )
+    optimizer, scheduler = training_steps.build_optimizer_and_scheduler(
+        model, config["training"]
+    )
+    controller = _panelgrad_smoke_controller(config, seed=23)
+    run_state = training_checkpointing.build_initial_continuation_state(config)
+    training_warmup.run_pre_nested_warmup_phase(
+        config,
+        model,
+        _tiny_training_batches(20),
+        [],
+        optimizer,
+        scheduler,
+        torch.device("cpu"),
+        run_state=run_state,
+        warmup_event_callback=controller.record_warmup_event,
+    )
+
+    after_warmup = controller.state_dict()
+    assert after_warmup["sampling"]["sample_count"] == 0
+    assert sum(after_warmup["sampling"]["exposure_counts"].values()) == 0
+    assert after_warmup["refresh"]["phase"] == "refresh_pending"
+    assert after_warmup["warmup"]["event_count"] > 0
+
+    refresh_boundaries = []
+    if expect_adaptive_step:
+        def refresh(*, step, tokens_seen):
+            del tokens_seen
+            refresh_boundaries.append(step)
+            controller.install_refresh(
+                _panelgrad_smoke_measurement(config, [1.0, 2.0, 3.0]),
+                boundary_step=step,
+            )
+
+        training_steps.train_for_steps(
+            config,
+            model,
+            _tiny_training_batches(20),
+            [],
+            optimizer,
+            scheduler,
+            torch.device("cpu"),
+            run_state=run_state,
+            panelgrad_controller=controller,
+            panelgrad_refresh_callback=refresh,
+            panelgrad_completion_callback=lambda **kwargs: controller.finish_training(
+                completed_step=kwargs["step"]
+            ),
+        )
+
+    state = controller.state_dict()
+    assert refresh_boundaries == ([12] if expect_adaptive_step else [])
+    assert state["sampling"]["sample_count"] == (1 if expect_adaptive_step else 0)
