@@ -49,6 +49,7 @@ __all__ = [
 
 
 BAYESIAN_CONTROLLER_METHOD_FAMILY = "bayesian_gaussian_linear_thompson"
+PANELGRAD_METHOD_FAMILY = "panelgrad_gradient_rms"
 
 
 def resolve_plot_style(style_name: str) -> dict[str, Any]:
@@ -254,6 +255,8 @@ def display_sampling_label_for_curve(sampling_label: str | None) -> str | None:
         return "probabilistic global thompson acquisition-only"
     if sampling_label == "probabilistic_per_block_thompson":
         return "probabilistic per-block thompson"
+    if sampling_label == "panelgrad_global":
+        return "PanelGrad global"
     return sampling_label
 
 
@@ -285,6 +288,13 @@ def scaling_curve_sampling_label(row: dict[str, Any]) -> str | None:
         and strategy == "thompson"
         and scope in {"global", "per_block"}
     )
+    if (
+        str(method_family or "").strip().lower() == PANELGRAD_METHOD_FAMILY
+        and method_version not in (None, "")
+        and strategy == "panelgrad"
+        and scope == "global"
+    ):
+        return "panelgrad_global"
     if has_bayesian_provenance:
         reset_enabled = str(row.get("controller_reset_enabled", "")).strip().lower()
         if scope == "global" and reset_enabled in {"1", "true", "yes"}:

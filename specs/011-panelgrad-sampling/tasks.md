@@ -93,20 +93,20 @@
 
 ### Verification for User Story 3
 
-- [ ] T023 [P] [US3] Add uninterrupted-versus-resumed cases inside an interval, exactly at a refresh boundary, after warmup, and at terminal state plus malformed/config/support/role/RNG/journal mismatch rejection in `tests/test_panelgrad_resume.py`
-- [ ] T024 [P] [US3] Add single-process-versus-FSDP equivalence cases for `N_g`, gradient norm, RMS, `q`, and `p`; verify counts are not world-size multiplied, replicated losses use `n_b/N` without a world-size multiplier, backward counts match, per-layer support is exact, actions synchronize from rank zero, and only rank zero writes artifacts in `tests/test_distributed.py`
-- [ ] T025 [P] [US3] Add checkpoint and artifact cases for every PanelGrad phase, transactional refresh/failure events, compact action rows, summary hashes, exposure totals, terminal state, and separate measurement cost in `tests/test_artifacts.py`
-- [ ] T026 [P] [US3] Add explicit PanelGrad method classification, provenance parsing, final vectors, exposure summaries, and non-PanelGrad reporting compatibility cases in `tests/test_reporting.py`
+- [X] T023 [P] [US3] Add uninterrupted-versus-resumed cases inside an interval, exactly at a refresh boundary, after warmup, and at terminal state plus malformed/config/support/role/RNG/journal mismatch rejection in `tests/test_panelgrad_resume.py`
+- [X] T024 [P] [US3] Add single-process-versus-FSDP equivalence cases for `N_g`, gradient norm, RMS, `q`, and `p`; verify counts are not world-size multiplied, replicated losses use `n_b/N` without a world-size multiplier, backward counts match, per-layer support is exact, actions synchronize from rank zero, and only rank zero writes artifacts in `tests/test_distributed.py`
+- [X] T025 [P] [US3] Add checkpoint and artifact cases for every PanelGrad phase, transactional refresh/failure events, compact action rows, summary hashes, exposure totals, terminal state, and separate measurement cost in `tests/test_artifacts.py`
+- [X] T026 [P] [US3] Add explicit PanelGrad method classification, provenance parsing, final vectors, exposure summaries, and non-PanelGrad reporting compatibility cases in `tests/test_reporting.py`
 
 ### Implementation for User Story 3
 
-- [ ] T027 [P] [US3] Add strict versioned `panelgrad_state` validation and explicit checkpoint save/load fields for policy, support, role hashes, refresh phase, probabilities, RNG, exposures, journal commit state, and failure provenance in `src/training/checkpointing.py`
-- [ ] T028 [P] [US3] Resolve `N_g` before FSDP wrapping without all-reducing it, use replicated `n_b/N` loss scaling without a world-size multiplier, summon one wrapped decoder layer at a time with gradients, accumulate exact support squares in float64, reproduce single-process RMS within tolerance, and reject unsupported settings in `src/training/panelgrad.py` and `src/training/distributed.py`
-- [ ] T029 [US3] Make rank zero authoritative for PanelGrad state and categorical draws, broadcast the committed state/action, and validate cross-rank hashes without changing existing samplers in `src/training/steps.py` and `src/training/run.py`
-- [ ] T030 [P] [US3] Add PanelGrad compact training columns, refresh/failure/terminal event validation, and controller-summary aggregation with measurement-cost totals in `src/utils/metrics.py`
-- [ ] T031 [US3] Integrate transactional rank-zero controller journal commits, rollback reconciliation, controller/run summaries, provenance hashes, and separate refresh cost into `src/training/run.py`
-- [ ] T032 [US3] Restore and reconcile PanelGrad checkpoint, named generator, boundary, exposure, warmup, controller manifest, and journal state before further action selection in `src/training/run.py` and `src/training/checkpointing.py`
-- [ ] T033 [P] [US3] Classify and parse PanelGrad explicitly, expose its distributions/exposures/cost without treating it as TS or UCB, and preserve existing report labels in `src/evaluation/reporting.py`, `src/evaluation/reporting_io.py`, and `src/evaluation/reporting_impl.py`
+- [X] T027 [P] [US3] Add strict versioned `panelgrad_state` validation and explicit checkpoint save/load fields for policy, support, role hashes, refresh phase, probabilities, RNG, exposures, journal commit state, and failure provenance in `src/training/checkpointing.py`
+- [X] T028 [P] [US3] Resolve `N_g` before FSDP wrapping without all-reducing it, use replicated `n_b/N` loss scaling without a world-size multiplier, summon one wrapped decoder layer at a time with gradients, accumulate exact support squares in float64, reproduce single-process RMS within tolerance, and reject unsupported settings in `src/training/panelgrad.py` and `src/training/distributed.py`
+- [X] T029 [US3] Make rank zero authoritative for PanelGrad state and categorical draws, broadcast the committed state/action, and validate cross-rank hashes without changing existing samplers in `src/training/steps.py` and `src/training/run.py`
+- [X] T030 [P] [US3] Add PanelGrad compact training columns, refresh/failure/terminal event validation, and controller-summary aggregation with measurement-cost totals in `src/utils/metrics.py`
+- [X] T031 [US3] Integrate transactional rank-zero controller journal commits, rollback reconciliation, controller/run summaries, provenance hashes, and separate refresh cost into `src/training/run.py`
+- [X] T032 [US3] Restore and reconcile PanelGrad checkpoint, named generator, boundary, exposure, warmup, controller manifest, and journal state before further action selection in `src/training/run.py` and `src/training/checkpointing.py`
+- [X] T033 [P] [US3] Classify and parse PanelGrad explicitly, expose its distributions/exposures/cost without treating it as TS or UCB, and preserve existing report labels in `src/evaluation/reporting.py`, `src/evaluation/reporting_io.py`, and `src/evaluation/reporting_impl.py`
 
 **Checkpoint**: PanelGrad runs are exactly resumable under equivalent conditions and fully auditable from checkpoints and structured artifacts.
 

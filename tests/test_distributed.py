@@ -1,12 +1,15 @@
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 import pytest
 from contextlib import nullcontext
 
 import src.training.distributed as distributed
+import src.training.steps as training_steps
+from src.training.panelgrad import PanelGradController
 from src.training.distributed import (
     DistributedContext,
     broadcast_object,
@@ -662,3 +665,78 @@ def test_real_two_process_gloo_rank_zero_controller_commit(tmp_path):
     assert records[0] == records[1]
     assert records[0]["sample_count"] == 1
     assert records[0]["global_granularity"] in ("small", "full")
+
+
+def test_panelgrad_rank_zero_draw_is_broadcast_with_generator_state(monkeypatch):
+    support = {
+        "ordered_granularities": ["small", "full"],
+        "controlled_support_counts": {"small": 10, "full": 20},
+        "controlled_support_hash": "distributed-support",
+    }
+    controllers = [
+        PanelGradController(
+            ordered_granularities=["small", "full"],
+            refresh_interval_steps=2,
+            eta=1e-12,
+            temperature=1.0,
+            epsilon=0.1,
+            sampling_seed=91,
+            support_identity=support,
+        )
+        for _ in range(2)
+    ]
+    measurement = {
+        "measurements": [
+            {"granularity": "small", "gradient_rms_score": 1.0},
+            {"granularity": "full", "gradient_rms_score": 4.0},
+        ]
+    }
+    for controller in controllers:
+        controller.install_refresh(measurement, boundary_step=0)
+    payload = {}
+
+    def fake_broadcast(value, *, context, src):
+        assert src == 0
+        if value is not None:
+            payload["value"] = value
+        return payload["value"]
+
+    monkeypatch.setattr(training_steps, "broadcast_object", fake_broadcast)
+    config = {
+        "model": {"granularity_sampling_mode": "adaptive_global"},
+        "run": {"sampling_mode": "nested-random"},
+    }
+    actions = []
+    for rank, controller in enumerate(controllers):
+        context = SimpleNamespace(
+            enabled=True,
+            rank=rank,
+            world_size=2,
+            is_rank_zero=rank == 0,
+        )
+        actions.append(
+            training_steps._select_optimizer_window_action(
+                config,
+                ["small", "full"],
+                torch.device("cpu"),
+                optimizer_step=1,
+                tokens_seen=0,
+                supports_layer_granularities=True,
+                panelgrad_controller=controller,
+                distributed_context=context,
+                stage_name="training",
+            )
+        )
+
+    assert actions[0] == actions[1]
+    for controller in controllers:
+        controller.commit_pending_action(completed_step=1)
+    left = controllers[0].state_dict()
+    right = controllers[1].state_dict()
+    assert left["sampling"]["exposure_counts"] == right["sampling"][
+        "exposure_counts"
+    ]
+    assert torch.equal(
+        left["sampling"]["generator_state"],
+        right["sampling"]["generator_state"],
+    )

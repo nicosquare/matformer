@@ -1057,11 +1057,24 @@ def run_training(
         elif training_panelgrad.uses_panelgrad(config):
             if panelgrad_support_identity is None:
                 raise ConfigError("PanelGrad controlled FFN support was not resolved")
-            panelgrad_controller = training_panelgrad.build_panelgrad_controller(
-                config,
-                panelgrad_support_identity,
-            )
+            saved_panelgrad_state = run_state.get("panelgrad_state")
+            if saved_panelgrad_state is None:
+                panelgrad_controller = training_panelgrad.build_panelgrad_controller(
+                    config,
+                    panelgrad_support_identity,
+                )
+            else:
+                panelgrad_controller = (
+                    training_panelgrad.restore_panelgrad_controller(
+                        config,
+                        panelgrad_support_identity,
+                        saved_panelgrad_state,
+                    )
+                )
             run_state["panelgrad_state"] = panelgrad_controller.state_dict()
+            controller_events = read_controller_events(
+                output_dir / "controller_metrics.jsonl"
+            )
         training_monitoring.emit_run_start_continuation_state(
             heartbeat_writer,
             run_state,
@@ -1080,10 +1093,29 @@ def run_training(
             ),
         )
         metrics_rows = []
+        def commit_panelgrad_event(event: Mapping[str, Any]) -> None:
+            if not training_distributed.should_write_shared_artifact(
+                distributed_context
+            ):
+                return
+            commit = append_controller_events(
+                output_dir / "controller_metrics.jsonl",
+                [event],
+                distributed_context=distributed_context,
+                artifact_io=config,
+                heartbeat_writer=heartbeat_writer,
+                artifact_state=run_state,
+            )
+            if panelgrad_controller is not None:
+                panelgrad_controller.record_journal_commit(commit)
+                run_state["panelgrad_state"] = panelgrad_controller.state_dict()
+            controller_events.append(copy.deepcopy(dict(event)))
+
         def commit_warmup_event(event: Mapping[str, Any]) -> None:
             if probabilistic_controller is None and panelgrad_controller is not None:
                 panelgrad_controller.record_warmup_event(event)
                 run_state["panelgrad_state"] = panelgrad_controller.state_dict()
+                commit_panelgrad_event(event)
                 return
             if probabilistic_controller is None:
                 raise ConfigError(
@@ -1275,19 +1307,78 @@ def run_training(
             if panelgrad_controller.phase != "refresh_pending":
                 run_state["panelgrad_state"] = panelgrad_controller.state_dict()
                 return
-            measurement = training_panelgrad.measure_panelgrad_gradients(
-                model,
-                _controller_dataloader,
-                config["model"]["panelgrad"]["ordered_granularities"],
-                device=device,
-                config=config,
-                support_identity=panelgrad_support_identity,
-            )
-            panelgrad_controller.install_refresh(
-                measurement,
-                boundary_step=step,
-            )
+            try:
+                measurement = training_panelgrad.measure_panelgrad_gradients(
+                    model,
+                    _controller_dataloader,
+                    config["model"]["panelgrad"]["ordered_granularities"],
+                    device=device,
+                    config=config,
+                    support_identity=panelgrad_support_identity,
+                )
+                refresh = panelgrad_controller.install_refresh(
+                    measurement,
+                    boundary_step=step,
+                )
+                if bool(getattr(distributed_context, "enabled", False)):
+                    authoritative_state = (
+                        panelgrad_controller.state_dict()
+                        if distributed_context.is_rank_zero
+                        else None
+                    )
+                    authoritative_state = training_distributed.broadcast_object(
+                        authoritative_state,
+                        context=distributed_context,
+                        src=0,
+                    )
+                    if not distributed_context.is_rank_zero:
+                        panelgrad_controller.restore_transaction_snapshot(
+                            authoritative_state
+                        )
+                        refresh = panelgrad_controller.state_dict()["refresh"]
+            except Exception as error:
+                state = panelgrad_controller.state_dict()
+                commit_panelgrad_event(
+                    {
+                        "schema_version": 1,
+                        "event_type": "panelgrad_refresh_failed",
+                        "method_family": "panelgrad_gradient_rms",
+                        "method_version": 1,
+                        "boundary_step": int(step),
+                        "window_index": int(
+                            state["refresh"]["refresh_index"] + 1
+                        ),
+                        "error_type": type(error).__name__,
+                        "error": str(error),
+                        "new_distribution_installed": False,
+                        "new_action_selected": False,
+                    }
+                )
+                raise
             run_state["panelgrad_state"] = panelgrad_controller.state_dict()
+            commit_panelgrad_event(
+                {
+                    "schema_version": 1,
+                    "event_type": "panelgrad_refresh_completed",
+                    "method_family": "panelgrad_gradient_rms",
+                    "method_version": 1,
+                    "boundary_step": int(step),
+                    "window_index": int(refresh["refresh_index"]),
+                    "measurements": refresh["measurements"],
+                    "q": refresh["q"],
+                    "p": refresh["p"],
+                    "entropy": refresh["entropy"],
+                    "min_probability": refresh["min_probability"],
+                    "max_probability": refresh["max_probability"],
+                    **(refresh.get("cost") or {}),
+                    "controller_manifest_hash": config.get(
+                        "controller_manifest_hash"
+                    ),
+                    "controlled_support_hash": config["model"]["panelgrad"].get(
+                        "controlled_support_hash"
+                    ),
+                }
+            )
 
         def finish_panelgrad_training(*, step: int, tokens_seen: int) -> None:
             del tokens_seen
@@ -1295,6 +1386,22 @@ def run_training(
                 return
             panelgrad_controller.finish_training(completed_step=step)
             run_state["panelgrad_state"] = panelgrad_controller.state_dict()
+            terminal = panelgrad_controller.state_dict()["terminal"]
+            commit_panelgrad_event(
+                {
+                    "schema_version": 1,
+                    "event_type": f"panelgrad_{terminal['status']}",
+                    "method_family": "panelgrad_gradient_rms",
+                    "method_version": 1,
+                    "boundary_step": int(step),
+                    "window_index": int(
+                        panelgrad_controller.state_dict()["refresh"][
+                            "refresh_index"
+                        ]
+                    ),
+                    **terminal,
+                }
+            )
 
         if probabilistic_controller is not None and not warmup_budget_exhausted:
             controller_state = probabilistic_controller.state_dict()
@@ -1471,9 +1578,10 @@ def run_training(
                         scaling_rows,
                         distributed_context=distributed_context,
                     )
-                if probabilistic_controller is not None:
+                active_controller = probabilistic_controller or panelgrad_controller
+                if active_controller is not None:
                     controller_summary = build_controller_summary(
-                        controller_state=probabilistic_controller.state_dict(),
+                        controller_state=active_controller.state_dict(),
                         controller_events=controller_events,
                         controller_metrics_path=(
                             output_dir / "controller_metrics.jsonl"
@@ -1579,7 +1687,7 @@ def run_training(
             "controller_summary": controller_summary,
             "controller_metrics_path": (
                 str(output_dir / "controller_metrics.jsonl")
-                if probabilistic_controller is not None
+                if (probabilistic_controller is not None or panelgrad_controller is not None)
                 else None
             ),
             "controller_summary_path": (
@@ -1703,14 +1811,15 @@ def run_training(
                 heartbeat_writer,
                 "artifact_writing",
             ):
+                active_controller = probabilistic_controller or panelgrad_controller
                 if (
-                    probabilistic_controller is not None
+                    active_controller is not None
                     and training_distributed.should_write_shared_artifact(
                         distributed_context
                     )
                 ):
                     controller_summary = build_controller_summary(
-                        controller_state=probabilistic_controller.state_dict(),
+                        controller_state=active_controller.state_dict(),
                         controller_events=controller_events,
                         controller_metrics_path=(
                             output_dir / "controller_metrics.jsonl"
@@ -1756,7 +1865,7 @@ def run_training(
                     "controller_summary": controller_summary,
                     "controller_metrics_path": (
                         str(output_dir / "controller_metrics.jsonl")
-                        if probabilistic_controller is not None
+                        if (probabilistic_controller is not None or panelgrad_controller is not None)
                         else None
                     ),
                     "controller_summary_path": (

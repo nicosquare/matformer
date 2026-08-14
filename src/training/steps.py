@@ -49,6 +49,7 @@ from src.training.checkpointing import (
 )
 from src.training.distributed import (
     autocast_context,
+    broadcast_object,
     sum_float,
     sum_int,
 )
@@ -287,6 +288,7 @@ def _select_optimizer_window_action(
     probabilistic_controller=None,
     panelgrad_controller=None,
     panelgrad_refresh_callback=None,
+    distributed_context=None,
     adaptive_sampler_state=None,
     stage_name: str,
 ) -> dict[str, Any]:
@@ -316,7 +318,20 @@ def _select_optimizer_window_action(
                 step=optimizer_step - 1,
                 tokens_seen=tokens_seen,
             )
-        selected_action = panelgrad_controller.sample_action()
+        if bool(getattr(distributed_context, "enabled", False)):
+            payload = None
+            if bool(getattr(distributed_context, "is_rank_zero", False)):
+                selected_action = panelgrad_controller.sample_action()
+                payload = {
+                    "action": selected_action,
+                    "state": panelgrad_controller.state_dict(),
+                }
+            payload = broadcast_object(payload, context=distributed_context, src=0)
+            if not bool(getattr(distributed_context, "is_rank_zero", False)):
+                panelgrad_controller.restore_transaction_snapshot(payload["state"])
+            selected_action = payload["action"]
+        else:
+            selected_action = panelgrad_controller.sample_action()
         return {
             "kind": "global",
             "granularities": [selected_action["global_granularity"]],
@@ -611,6 +626,7 @@ def train_for_steps(
                         probabilistic_controller=probabilistic_controller,
                         panelgrad_controller=panelgrad_controller,
                         panelgrad_refresh_callback=panelgrad_refresh_callback,
+                        distributed_context=distributed_context,
                         adaptive_sampler_state=adaptive_sampler_state,
                         stage_name=stage_name,
                     )
@@ -1033,6 +1049,9 @@ def _runtime_sampler_artifact_fields(
                 run_state.get("latest_controller_event"),
             )
         )
+    panelgrad_state = run_state.get("panelgrad_state")
+    if isinstance(panelgrad_state, Mapping):
+        fields.update(build_compact_controller_metric_fields(panelgrad_state))
     return fields
 
 

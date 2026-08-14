@@ -3,7 +3,16 @@ from pathlib import Path
 
 import pytest
 
-from src.evaluation.reporting import generate_figures
+from src.evaluation.reporting import (
+    display_sampling_label_for_curve,
+    generate_figures,
+    scaling_curve_sampling_label,
+)
+from src.evaluation.reporting_io import (
+    controller_method_family_from_saved_config,
+    controller_method_version_from_saved_config,
+    controller_scope_from_saved_config,
+)
 from src.utils.metrics import write_metrics_csv, write_scaling_results_csv
 from src.utils.monitoring import group_loss_rows_by_series
 
@@ -1946,3 +1955,43 @@ def test_completed_global_run_generates_saturation_figures_and_ranking(tmp_path)
         corrections=["none"],
     )
     assert filtered_paths == []
+
+
+def test_panelgrad_has_explicit_reporting_identity_and_saved_provenance():
+    config = {
+        "model": {
+            "adaptive_sampler_strategy": "panelgrad",
+            "panelgrad": {
+                "method_family": "panelgrad_gradient_rms",
+                "method_version": 1,
+                "scope": "global",
+            },
+        }
+    }
+    row = {
+        "sampling_mode": "nested-random",
+        "resolved_sampling_mode": "adaptive_global",
+        "adaptive_sampler_strategy": "panelgrad",
+        "controller_method_family": "panelgrad_gradient_rms",
+        "controller_method_version": 1,
+        "controller_scope": "global",
+    }
+
+    assert scaling_curve_sampling_label(row) == "panelgrad_global"
+    assert display_sampling_label_for_curve("panelgrad_global") == "PanelGrad global"
+    assert controller_method_family_from_saved_config(config) == (
+        "panelgrad_gradient_rms"
+    )
+    assert controller_method_version_from_saved_config(config) == 1
+    assert controller_scope_from_saved_config(config) == "global"
+
+
+def test_non_panelgrad_reporting_labels_remain_unchanged():
+    assert scaling_curve_sampling_label(
+        {
+            "sampling_mode": "nested-random",
+            "resolved_sampling_mode": "adaptive_per_block",
+            "adaptive_sampler_strategy": "ucb",
+        }
+    ) == "adaptive_per_block_ucb"
+    assert display_sampling_label_for_curve("global") is None

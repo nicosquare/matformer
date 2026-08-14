@@ -760,7 +760,11 @@ def _adaptive_controller_from_saved_config(
     model = config.get("model")
     if not isinstance(model, dict):
         return None
-    controller = model.get("adaptive_controller")
+    controller = (
+        model.get("panelgrad")
+        if model.get("adaptive_sampler_strategy") == "panelgrad"
+        else model.get("adaptive_controller")
+    )
     return controller if isinstance(controller, dict) else None
 
 

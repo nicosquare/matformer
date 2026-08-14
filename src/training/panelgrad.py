@@ -253,6 +253,59 @@ def _materialize_controller_panel(dataloader) -> tuple[list[dict[str, Any]], int
     return batches, target_count, example_count
 
 
+def _controlled_gradient_squared_norm(
+    model,
+    granularity: str,
+    *,
+    device: torch.device | str,
+) -> tuple[torch.Tensor, int]:
+    """Extract exact support gradients, summoning one FSDP layer at a time."""
+
+    try:
+        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+    except ImportError:  # pragma: no cover - unavailable in minimal torch builds
+        FSDP = None
+
+    squared_norm = torch.zeros((), dtype=torch.float64, device=device)
+    measured_count = 0
+    seen: set[tuple[int, tuple[tuple[int | None, ...], ...]]] = set()
+
+    def accumulate(mlps):
+        nonlocal squared_norm, measured_count
+        for _, mlp in mlps:
+            for entry in mlp.controlled_ffn_support(granularity):
+                key = _support_entry_key(entry)
+                if key in seen:
+                    continue
+                seen.add(key)
+                measured_count += entry.scalar_count
+                if entry.parameter.grad is not None:
+                    gradient = entry.selected_tensor(entry.parameter.grad)
+                    squared_norm += torch.sum(gradient.double().square())
+
+    if FSDP is not None and isinstance(model, FSDP):
+        layer_wrappers = [
+            module
+            for module in model.modules()
+            if isinstance(module, FSDP) and module is not model
+        ]
+        if not layer_wrappers:
+            raise PanelGradError(
+                "distributed PanelGrad requires per-decoder-layer FSDP wrapping"
+            )
+        for wrapper in layer_wrappers:
+            with FSDP.summon_full_params(
+                wrapper,
+                recurse=False,
+                writeback=False,
+                with_grads=True,
+            ):
+                accumulate(_controlled_mlps(wrapper))
+    else:
+        accumulate(_controlled_mlps(model))
+    return squared_norm, measured_count
+
+
 def measure_panelgrad_gradients(
     model,
     dataloader,
@@ -325,21 +378,11 @@ def measure_panelgrad_gradients(
                     loss_numerator += float(loss.detach().double()) * valid_targets
                     (loss * (valid_targets / target_count)).backward()
 
-                squared_norm = torch.zeros((), dtype=torch.float64, device=device)
-                seen: set[
-                    tuple[int, tuple[tuple[int | None, ...], ...]]
-                ] = set()
-                measured_count = 0
-                for _, mlp in mlps:
-                    for entry in mlp.controlled_ffn_support(granularity):
-                        key = _support_entry_key(entry)
-                        if key in seen:
-                            continue
-                        seen.add(key)
-                        measured_count += entry.scalar_count
-                        if entry.parameter.grad is not None:
-                            gradient = entry.selected_tensor(entry.parameter.grad)
-                            squared_norm += torch.sum(gradient.double().square())
+                squared_norm, measured_count = _controlled_gradient_squared_norm(
+                    model,
+                    granularity,
+                    device=device,
+                )
                 expected_count = int(
                     support["controlled_support_counts"][granularity]
                 )
@@ -466,6 +509,18 @@ class PanelGradController:
                 "unused_refresh_performed": False,
                 "unused_draw_performed": False,
             },
+            "journal": {
+                "path": "controller_metrics.jsonl",
+                "event_count": 0,
+                "last_committed_offset": None,
+                "last_committed_hash": None,
+            },
+            "resume": {
+                "resume_count": 0,
+                "source_checkpoint": None,
+                "compatibility_status": "fresh",
+            },
+            "failure": None,
         }
 
     @property
@@ -608,6 +663,18 @@ class PanelGradController:
         warmup["event_count"] = int(warmup["event_count"]) + 1
         warmup["last_event"] = copy.deepcopy(dict(event))
 
+    def record_journal_commit(self, commit: Mapping[str, Any] | None) -> None:
+        if not isinstance(commit, Mapping):
+            return
+        journal = self._state["journal"]
+        journal["event_count"] = int(journal["event_count"]) + 1
+        if commit.get("path") is not None:
+            journal["path"] = str(commit["path"])
+        journal["last_committed_offset"] = commit.get("last_committed_offset")
+        journal["last_committed_hash"] = commit.get(
+            "event_hash", commit.get("last_committed_hash")
+        )
+
     def finish_training(self, *, completed_step: int) -> dict[str, Any]:
         """Enter a terminal phase without performing another refresh or draw."""
 
@@ -658,6 +725,133 @@ def build_panelgrad_controller(
     )
 
 
+def validate_panelgrad_state(
+    state: Mapping[str, Any] | None,
+    *,
+    config: Mapping[str, Any],
+    support_identity: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Validate the versioned PanelGrad state before save or resume."""
+
+    if not isinstance(state, Mapping):
+        raise PanelGradError("checkpoint is missing panelgrad_state")
+    result = copy.deepcopy(dict(state))
+    panelgrad = config["model"]["panelgrad"]
+    expected = {
+        "schema_version": PANELGRAD_STATE_SCHEMA_VERSION,
+        "method_family": PANELGRAD_METHOD_FAMILY,
+        "method_version": PANELGRAD_METHOD_VERSION,
+        "scope": "global",
+        "ordered_granularities": list(panelgrad["ordered_granularities"]),
+    }
+    mismatches = {
+        field: (result.get(field), value)
+        for field, value in expected.items()
+        if result.get(field) != value
+    }
+    if mismatches:
+        raise PanelGradError(f"panelgrad_state identity mismatch: {mismatches}")
+    expected_policy = {
+        "refresh_interval_steps": int(panelgrad["refresh_interval_steps"]),
+        "eta": float(panelgrad["eta"]),
+        "temperature": float(panelgrad["temperature"]),
+        "epsilon": float(panelgrad["epsilon"]),
+        "relative_tolerance": float(panelgrad["relative_tolerance"]),
+        "absolute_tolerance": float(panelgrad["absolute_tolerance"]),
+    }
+    if result.get("policy") != expected_policy:
+        raise PanelGradError("panelgrad_state policy mismatch")
+    expected_support = support_identity or {
+        "controlled_support_counts": panelgrad["controlled_support_counts"],
+        "controlled_support_hash": panelgrad["controlled_support_hash"],
+    }
+    saved_support = result.get("support", {})
+    for field in ("controlled_support_counts", "controlled_support_hash"):
+        if saved_support.get(field) != expected_support.get(field):
+            raise PanelGradError(f"panelgrad_state {field} mismatch")
+    refresh = result.get("refresh")
+    sampling = result.get("sampling")
+    if not isinstance(refresh, Mapping) or refresh.get("phase") not in {
+        "refresh_pending",
+        "active_interval",
+        "terminal_partial",
+        "terminal_complete",
+        "failed",
+    }:
+        raise PanelGradError("panelgrad_state refresh phase is invalid")
+    if not isinstance(sampling, Mapping) or not torch.is_tensor(
+        sampling.get("generator_state")
+    ):
+        raise PanelGradError("panelgrad_state sampling generator is invalid")
+    ordered = expected["ordered_granularities"]
+    exposures = sampling.get("exposure_counts")
+    if not isinstance(exposures, Mapping) or list(exposures) != ordered or any(
+        isinstance(exposures[label], bool)
+        or not isinstance(exposures[label], int)
+        or exposures[label] < 0
+        for label in ordered
+    ):
+        raise PanelGradError("panelgrad_state exposure counts are invalid")
+    if int(sampling.get("sample_count", -1)) != sum(exposures.values()):
+        raise PanelGradError("panelgrad_state sample and exposure counts disagree")
+    if sampling.get("pending_action") is not None:
+        raise PanelGradError("checkpoint cannot contain an uncommitted PanelGrad action")
+    if refresh.get("p") is not None:
+        expected_probability = build_probability_snapshot(
+            refresh["scores"],
+            eta=expected_policy["eta"],
+            temperature=expected_policy["temperature"],
+            epsilon=expected_policy["epsilon"],
+        )
+        p = torch.tensor(refresh["p"], dtype=torch.float64)
+        if len(p) != len(ordered) or not math.isclose(
+            float(p.sum()), 1.0, rel_tol=1e-6, abs_tol=1e-8
+        ):
+            raise PanelGradError("panelgrad_state p is invalid")
+        if not torch.allclose(
+            p,
+            torch.tensor(expected_probability["p"], dtype=torch.float64),
+            rtol=expected_policy["relative_tolerance"],
+            atol=expected_policy["absolute_tolerance"],
+        ):
+            raise PanelGradError("panelgrad_state p does not match saved scores")
+    expected_manifests = {
+        field: config.get(field)
+        for field in (
+            "data_roles_manifest_hash",
+            "optimizer_training_manifest_hash",
+            "controller_manifest_hash",
+            "validation_manifest_hash",
+            "final_holdout_manifest_hash",
+        )
+    }
+    if result.get("manifest_hashes") != expected_manifests:
+        raise PanelGradError("panelgrad_state data-role manifest mismatch")
+    journal = result.get("journal")
+    if not isinstance(journal, Mapping) or int(journal.get("event_count", -1)) < 0:
+        raise PanelGradError("panelgrad_state journal provenance is invalid")
+    return result
+
+
+def restore_panelgrad_controller(
+    config: Mapping[str, Any],
+    support_identity: Mapping[str, Any],
+    state: Mapping[str, Any] | None,
+) -> PanelGradController:
+    validated = validate_panelgrad_state(
+        state,
+        config=config,
+        support_identity=support_identity,
+    )
+    controller = build_panelgrad_controller(config, support_identity)
+    controller.restore_transaction_snapshot(validated)
+    controller._state["resume"]["resume_count"] = (
+        int(controller._state["resume"]["resume_count"]) + 1
+    )
+    controller._state["resume"]["compatibility_status"] = "resumed"
+    return controller
+
+
 __all__ = [
     "CONTROLLED_SUPPORT_SCHEMA_VERSION",
     "PANELGRAD_METHOD_FAMILY",
@@ -670,5 +864,7 @@ __all__ = [
     "gradient_rms_from_squared_norm",
     "measure_panelgrad_gradients",
     "resolve_controlled_ffn_support",
+    "restore_panelgrad_controller",
     "uses_panelgrad",
+    "validate_panelgrad_state",
 ]

@@ -102,6 +102,7 @@ SCALING_SAMPLING_MARKERS = {
 }
 
 BAYESIAN_CONTROLLER_METHOD_FAMILY = "bayesian_gaussian_linear_thompson"
+PANELGRAD_METHOD_FAMILY = "panelgrad_gradient_rms"
 
 PLOT_STYLE_BASE = {
     "figure_title_fontsize": 17,
@@ -786,7 +787,11 @@ def _adaptive_controller_from_saved_config(
     model = config.get("model")
     if not isinstance(model, dict):
         return None
-    controller = model.get("adaptive_controller")
+    controller = (
+        model.get("panelgrad")
+        if model.get("adaptive_sampler_strategy") == "panelgrad"
+        else model.get("adaptive_controller")
+    )
     return controller if isinstance(controller, dict) else None
 
 
@@ -4103,6 +4108,13 @@ def _probabilistic_sampling_label(row: dict[str, str]) -> str | None:
     strategy = adaptive_sampler_strategy_for_row(row)
     scope = str(row.get("controller_scope") or "").strip().lower()
     if (
+        method_family == PANELGRAD_METHOD_FAMILY
+        and method_version not in (None, "")
+        and strategy == "panelgrad"
+        and scope == "global"
+    ):
+        return "panelgrad_global"
+    if (
         method_family != BAYESIAN_CONTROLLER_METHOD_FAMILY
         or method_version in (None, "")
         or strategy != "thompson"
@@ -4202,6 +4214,8 @@ def display_sampling_label_for_curve(sampling_label: str | None) -> str | None:
         return "probabilistic global thompson acquisition-only"
     if sampling_label == "probabilistic_per_block_thompson":
         return "probabilistic per-block thompson"
+    if sampling_label == "panelgrad_global":
+        return "PanelGrad global"
     return sampling_label
 
 
