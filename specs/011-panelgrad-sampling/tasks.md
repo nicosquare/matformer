@@ -17,8 +17,8 @@
 
 **Purpose**: Add explicit, opt-in inputs for developing and exercising PanelGrad without changing default experiment queues.
 
-- [ ] T001 [P] Create a minimal deterministic PanelGrad test fixture with multiple global granularities and a short refresh interval in `tests/fixtures/panelgrad_smoke.yaml`
-- [ ] T002 [P] Add the explicit opt-in PanelGrad smoke experiment, without adding it to default pilot queues, in `configs/opt-in_exps/panelgrad_smoke.yaml`
+- [X] T001 [P] Create a minimal deterministic PanelGrad test fixture with multiple global granularities and a short refresh interval in `tests/fixtures/panelgrad_smoke.yaml`
+- [X] T002 [P] Add the explicit opt-in PanelGrad smoke experiment, without adding it to default pilot queues, in `configs/opt-in_exps/panelgrad_smoke.yaml`
 
 ---
 
