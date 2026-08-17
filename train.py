@@ -103,6 +103,19 @@ def main(argv: list[str] | None = None) -> None:
                     "granularity_prefixes": resolved["model"].get(
                         "granularity_prefixes"
                     ),
+                    "resolved_sampling_mode": resolved["model"].get(
+                        "resolved_sampling_mode"
+                    ),
+                    "adaptive_sampler_strategy": resolved["model"].get(
+                        "adaptive_sampler_strategy"
+                    ),
+                    "panelgrad": resolved["model"].get("panelgrad"),
+                    "adaptive_controller_role": resolved["evaluation"].get(
+                        "adaptive_controller"
+                    ),
+                    "final_holdout_role": resolved["evaluation"].get(
+                        "final_holdout"
+                    ),
                     "validation": resolved["evaluation"]["validation"],
                     "comparison_control_inputs": control_inputs,
                 },

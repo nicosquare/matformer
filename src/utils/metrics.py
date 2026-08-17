@@ -74,6 +74,12 @@ METRICS_COLUMNS = [
     "controller_strategy",
     "controller_scope",
     "controller_action",
+    "controller_sampled_probability",
+    "controller_exposure_counts",
+    "controller_phase",
+    "controller_entropy",
+    "controller_min_probability",
+    "controller_max_probability",
     "controller_window_index",
     "controller_window_progress",
     "controller_boundary_step",
@@ -1737,6 +1743,10 @@ CONTROLLER_EVENT_TYPES = {
     "posterior_preserved",
     "acquisition_progress",
     "acquisition_completed",
+    "panelgrad_refresh_completed",
+    "panelgrad_refresh_failed",
+    "panelgrad_terminal_partial",
+    "panelgrad_terminal_complete",
 }
 
 
@@ -1823,6 +1833,63 @@ def build_controller_summary(
     events = [_controller_json_value(event) for event in controller_events]
     for event in events:
         _validate_controller_event(event)
+    if state.get("method_family") == "panelgrad_gradient_rms":
+        refresh = state.get("refresh", {})
+        sampling = state.get("sampling", {})
+        completed = [
+            event
+            for event in events
+            if event.get("event_type") == "panelgrad_refresh_completed"
+        ]
+        total_duration = sum(
+            float(event.get("duration_seconds", 0.0)) for event in completed
+        )
+        epsilon_history = [
+            {
+                "refresh_index": event.get("window_index"),
+                "active_epsilon": event.get("active_epsilon"),
+                "epsilon_schedule_step": event.get("epsilon_schedule_step"),
+            }
+            for event in completed
+        ]
+        journal_path = Path(controller_metrics_path)
+        return {
+            "schema_version": state.get("schema_version"),
+            "method_family": state.get("method_family"),
+            "method_version": state.get("method_version"),
+            "strategy": "panelgrad",
+            "scope": state.get("scope"),
+            "ordered_granularities": state.get("ordered_granularities"),
+            "policy": state.get("policy"),
+            "epsilon_schedule": state.get("policy", {}).get(
+                "epsilon_schedule"
+            ),
+            "support": state.get("support"),
+            "manifest_hashes": state.get("manifest_hashes"),
+            "refresh_count": len(completed),
+            "final_scores": refresh.get("scores"),
+            "final_q": refresh.get("q"),
+            "final_p": refresh.get("p"),
+            "final_entropy": refresh.get("entropy"),
+            "active_epsilon": refresh.get("active_epsilon"),
+            "epsilon_schedule_step": refresh.get("epsilon_schedule_step"),
+            "epsilon_history": epsilon_history,
+            "exposure_counts": sampling.get("exposure_counts"),
+            "sample_count": sampling.get("sample_count"),
+            "terminal": state.get("terminal"),
+            "warmup": state.get("warmup"),
+            "cumulative_measurement_duration_seconds": total_duration,
+            "cumulative_backward_evaluations": sum(
+                int(event.get("backward_evaluation_count", 0))
+                for event in completed
+            ),
+            "controller_metrics_path": str(journal_path),
+            "controller_metrics_hash": (
+                hashlib.sha256(journal_path.read_bytes()).hexdigest()
+                if journal_path.exists()
+                else None
+            ),
+        }
     journal_path = Path(controller_metrics_path)
     completed = [
         event for event in events if event["event_type"] == "completed_window"
@@ -2227,6 +2294,39 @@ def build_compact_controller_metric_fields(
 ) -> dict[str, Any]:
     if not isinstance(controller_state, Mapping):
         return {}
+    if controller_state.get("method_family") == "panelgrad_gradient_rms":
+        refresh = controller_state.get("refresh", {})
+        sampling = controller_state.get("sampling", {})
+        return {
+            "controller_method_family": controller_state.get("method_family"),
+            "controller_method_version": controller_state.get("method_version"),
+            "controller_strategy": "panelgrad",
+            "controller_scope": "global",
+            "controller_action": sampling.get("last_committed_action"),
+            "controller_sampled_probability": sampling.get(
+                "last_committed_probability"
+            ),
+            "controller_exposure_counts": json_artifact_value(
+                sampling.get("exposure_counts", {})
+            ),
+            "controller_window_index": refresh.get("refresh_index"),
+            "controller_window_progress": refresh.get(
+                "completed_steps_since_refresh"
+            ),
+            "controller_boundary_step": refresh.get("last_boundary_step"),
+            "controller_phase": refresh.get("phase"),
+            "controller_entropy": refresh.get("entropy"),
+            "controller_min_probability": refresh.get("min_probability"),
+            "controller_max_probability": refresh.get("max_probability"),
+            "controller_manifest_hash": controller_state.get(
+                "manifest_hashes", {}
+            ).get("controller_manifest_hash"),
+            "final_holdout_manifest_hash": controller_state.get(
+                "manifest_hashes", {}
+            ).get("final_holdout_manifest_hash"),
+            "controller_metrics_path": "controller_metrics.jsonl",
+            "controller_summary_path": "controller_summary.json",
+        }
     window = controller_state.get("window", {})
     manifests = controller_state.get("manifest_hashes", {})
     action = window.get("current_action")
@@ -2354,6 +2454,22 @@ def _validate_controller_event(event: Mapping[str, Any]) -> None:
         raise ArtifactError(
             f"Controller {event_type} event missing required fields: {missing}"
         )
+    if str(event_type).startswith("panelgrad_"):
+        if event.get("method_family") != "panelgrad_gradient_rms":
+            raise ArtifactError("PanelGrad event method family is invalid")
+        if event_type == "panelgrad_refresh_completed":
+            for field in ("measurements", "q", "p", "entropy"):
+                if field not in event:
+                    raise ArtifactError(
+                        f"PanelGrad refresh event missing {field}"
+                    )
+        if event_type == "panelgrad_refresh_failed" and event.get(
+            "new_distribution_installed"
+        ) is not False:
+            raise ArtifactError(
+                "PanelGrad failure must not install a new distribution"
+            )
+        return
     if event_type == "initial_boundary" and "reward" in event:
         raise ArtifactError("initial boundary event must not contain reward")
     if event_type == "controller_failure":
@@ -2642,6 +2758,12 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "controller_strategy": None,
         "controller_scope": None,
         "controller_action": None,
+        "controller_sampled_probability": None,
+        "controller_exposure_counts": None,
+        "controller_phase": None,
+        "controller_entropy": None,
+        "controller_min_probability": None,
+        "controller_max_probability": None,
         "controller_window_index": None,
         "controller_window_progress": None,
         "controller_boundary_step": None,

@@ -1,0 +1,118 @@
+# Deterministic debug fixture for the global PanelGrad sampling policy.
+run:
+  run_id: panelgrad-smoke-001
+  phase_id: panelgrad_sampling
+  model_family: nested
+  model_size_label: debug
+  sampling_mode: nested-random
+  seed: 42
+  reproducibility:
+    mode: strict
+    seed_stream_version: 1
+    data_split_version: 1
+  output_root: outputs
+  continuation:
+    enabled: true
+    latest_checkpoint_save_interval_steps: 1
+    latest_checkpoint_save_on_validation: true
+    latest_checkpoint_save_on_completion: true
+
+model:
+  base_model_name: debug-llama
+  granularity_mode: explicit
+  granularity_sampling_mode: adaptive_global
+  adaptive_sampler_strategy: panelgrad
+  panelgrad:
+    refresh_interval_steps: 2
+    eta: 1.0e-12
+    temperature: 1.0
+    epsilon: 0.1
+  variant: slicing
+  correction_mode: gmc
+  tokenizer_name: hf-internal-testing/llama-tokenizer
+  d_model: 128
+  num_layers: 2
+  num_attention_heads: 4
+  context_length: 64
+  vocab_size: 32000
+  granularities: [micro, medium, full]
+  granularity_prefixes:
+    micro: 0.25
+    medium: 0.5
+    full: 1.0
+
+training:
+  token_budget: 10240
+  max_steps: 5
+  batch_size_per_process: 2
+  learning_rate: 0.0003
+  warmup_steps: 0
+  pre_nested_warmup:
+    enabled: false
+    duration: 0
+    unit: steps
+  gradient_clip_norm: 1.0
+  optimizer:
+    preset: adam
+  scheduler:
+    name: cosine
+  eval_interval: 2
+  eval_batches: 4
+  mixed_precision: none
+  activation_checkpointing: false
+  granularity_sampling: random
+  preprocess_num_proc: 1
+  dataloader_num_workers: 0
+
+dataset:
+  dataset_name: roneneldan/TinyStories
+  dataset_split: train
+  dataset_phase: debug
+  # Leaves room for ordinary validation, controller, final holdout, and training.
+  sample_limit: 768
+  preprocessing_notes: truncate_or_pad_to_context_length_64_panelgrad_smoke
+
+outputs:
+  save_config: true
+  save_metrics_csv: true
+  save_run_summary_json: true
+  save_checkpoints: true
+  make_plots: false
+
+monitoring:
+  enabled: false
+  backend: wandb
+  project: panelgrad_sampling
+  job_type: train
+  tags: [debug, panelgrad, adaptive-global]
+  notes: deterministic global PanelGrad smoke fixture
+  log_loss_by_granularity: true
+  log_validation_loss: true
+  log_stage_events: true
+
+evaluation:
+  validation:
+    enabled: true
+    interval_steps: 2
+    run_at_completion: true
+    holdout:
+      source: configured_dataset_split
+      examples: 8
+    trailing_summary_evaluations: 2
+  adaptive_controller:
+    enabled: true
+    source: configured_dataset_split
+    examples: 128
+    objective_weights: uniform
+    fixed_manifest: true
+  final_holdout:
+    enabled: true
+    source: configured_dataset_split
+    examples: 512
+    fixed_manifest: true
+    evaluate_during_training: false
+  test:
+    enabled: false
+  downstream_suite: []
+  consistency: false
+  speculative: false

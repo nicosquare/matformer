@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
+import math
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,15 +22,24 @@ __all__ = [
     "controller_scope_from_saved_config",
     "ControllerGranularityTimeline",
     "ControllerSelectionWindow",
+    "GlobalSamplingAction",
+    "GlobalSamplingHistory",
+    "PanelGradAction",
+    "PanelGradHistory",
+    "PanelGradRefresh",
     "config_path_for_scaling_row",
     "correction_mode_from_saved_config",
     "enrich_metrics_metadata_from_run_config",
     "enrich_scaling_metadata_from_run_config",
     "granularity_sampling_mode_from_saved_config",
     "iter_controller_granularity_timelines",
+    "iter_global_sampling_histories",
+    "iter_panelgrad_histories",
     "iter_csv_artifact_rows",
     "membership_correction_from_saved_config",
     "model_variant_from_saved_config",
+    "panelgrad_history_as_timeline",
+    "global_sampling_history_as_timeline",
     "read_csv_artifacts",
     "read_csv_artifacts_filtered",
     "recompute_parameter_counts",
@@ -41,6 +52,7 @@ __all__ = [
 
 
 BAYESIAN_CONTROLLER_METHOD_FAMILY = "bayesian_gaussian_linear_thompson"
+PANELGRAD_METHOD_FAMILY = "panelgrad_gradient_rms"
 
 
 @dataclass(frozen=True)
@@ -74,6 +86,86 @@ class ControllerGranularityTimeline:
     journal_path: Path
 
 
+@dataclass(frozen=True)
+class GlobalSamplingAction:
+    """One complete global granularity trained for one committed step."""
+
+    step: int
+    start_tokens: int
+    end_tokens: int
+    granularity: str
+    decision_index: int
+    sampled_probability: float | None
+
+
+@dataclass(frozen=True)
+class GlobalSamplingHistory:
+    """Canonical per-step history shared by all global sampling policies."""
+
+    run_id: str
+    policy_identity: str
+    policy_label: str
+    ordered_granularities: tuple[str, ...]
+    token_budget: int
+    actions: tuple[GlobalSamplingAction, ...]
+    decision_count: int
+    comparison_key: str
+    model_variant: str | None
+    correction_mode: str | None
+    membership_correction: bool | None
+    seed: int | None
+    config_path: Path
+    metrics_path: Path
+
+
+@dataclass(frozen=True)
+class PanelGradAction:
+    """One committed PanelGrad categorical action."""
+
+    step: int
+    start_tokens: int
+    end_tokens: int
+    granularity: str
+    sampled_probability: float
+
+
+@dataclass(frozen=True)
+class PanelGradRefresh:
+    """Compact diagnostics from one complete full-panel refresh."""
+
+    refresh_index: int
+    boundary_step: int
+    boundary_tokens: int
+    gradient_rms_scores: tuple[float, ...]
+    q: tuple[float, ...]
+    p: tuple[float, ...]
+    entropy: float
+    min_probability: float
+    max_probability: float
+    active_epsilon: float
+    epsilon_schedule_step: int
+    duration_seconds: float
+    backward_evaluations: int
+    controller_target_tokens: int
+
+
+@dataclass(frozen=True)
+class PanelGradHistory:
+    """Plot-ready PanelGrad actions and refresh diagnostics."""
+
+    run_id: str
+    ordered_granularities: tuple[str, ...]
+    token_budget: int
+    actions: tuple[PanelGradAction, ...]
+    refreshes: tuple[PanelGradRefresh, ...]
+    model_variant: str | None
+    correction_mode: str | None
+    membership_correction: bool | None
+    config_path: Path
+    metrics_path: Path
+    journal_path: Path
+
+
 def read_csv_artifacts(input_root: Path, filename: str) -> list[dict[str, str]]:
     return read_csv_artifacts_filtered(input_root, filename, row_filter=None)
 
@@ -86,6 +178,225 @@ def iter_csv_artifact_rows(path: str | Path) -> Iterator[dict[str, str]]:
         for row in csv.DictReader(csv_file):
             row["_source_csv"] = str(path)
             yield row
+
+
+def iter_global_sampling_histories(
+    input_root: str | Path,
+) -> Iterator[GlobalSamplingHistory]:
+    """Stream canonical per-step histories for comparable global policies."""
+
+    input_root = Path(input_root)
+    for metrics_path in sorted(input_root.rglob("metrics.csv")):
+        config_path = metrics_path.parent / "config.json"
+        if not config_path.is_file():
+            continue
+        try:
+            with config_path.open("r", encoding="utf-8") as config_file:
+                config = json.load(config_file)
+            history = _read_global_sampling_history(
+                config=config,
+                config_path=config_path,
+                metrics_path=metrics_path,
+            )
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
+            warnings.warn(
+                f"Skipping global sampling history {metrics_path}: {error}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            continue
+        if history is not None and history.actions:
+            yield history
+
+
+def _read_global_sampling_history(
+    *,
+    config: Mapping[str, Any],
+    config_path: Path,
+    metrics_path: Path,
+) -> GlobalSamplingHistory | None:
+    model = _required_mapping(config.get("model"), "config.model")
+    run = _required_mapping(config.get("run"), "config.run")
+    training = _required_mapping(config.get("training"), "config.training")
+    if str(run.get("sampling_mode") or "").strip().lower() != "nested-random":
+        return None
+
+    sampling_mode = str(model.get("granularity_sampling_mode") or "global").lower()
+    strategy = str(model.get("adaptive_sampler_strategy") or "").lower()
+    if sampling_mode == "global":
+        policy_identity, policy_label = "uniform_global", "Uniform global"
+    elif sampling_mode == "adaptive_global" and strategy == "panelgrad":
+        panelgrad = model.get("panelgrad")
+        if not isinstance(panelgrad, Mapping) or str(
+            panelgrad.get("method_family") or ""
+        ).lower() != PANELGRAD_METHOD_FAMILY:
+            return None
+        policy_identity = "panelgrad_global"
+        policy_label = _panelgrad_policy_label(panelgrad)
+    elif sampling_mode == "adaptive_global" and strategy == "thompson":
+        controller = model.get("adaptive_controller")
+        if (
+            not isinstance(controller, Mapping)
+            or str(controller.get("method_family") or "").lower()
+            != BAYESIAN_CONTROLLER_METHOD_FAMILY
+            or str(controller.get("scope") or "").lower() != "global"
+        ):
+            return None
+        policy_identity, policy_label = "thompson_global", "Thompson global"
+    else:
+        return None
+
+    run_id = str(run.get("run_id") or config_path.parent.name).strip()
+    if not run_id:
+        raise ValueError("config.run.run_id must be nonempty")
+    granularities = model.get("granularities")
+    if not isinstance(granularities, list) or not granularities:
+        raise ValueError("config.model.granularities must be a nonempty list")
+    ordered_granularities = tuple(str(label) for label in granularities)
+    if len(set(ordered_granularities)) != len(ordered_granularities):
+        raise ValueError("config.model.granularities contains duplicates")
+    token_budget = _positive_int(
+        training.get("token_budget"), "config.training.token_budget"
+    )
+    thompson_interval = None
+    if policy_identity == "thompson_global":
+        thompson_interval = _positive_int(
+            model["adaptive_controller"].get("decision_interval_steps"),
+            "config.model.adaptive_controller.decision_interval_steps",
+        )
+
+    actions: list[GlobalSamplingAction] = []
+    previous_step = 0
+    previous_tokens = 0
+    decision_indices: set[int] = set()
+    for row in iter_csv_artifact_rows(metrics_path):
+        if str(row.get("split") or "") != "train":
+            continue
+        step = _csv_positive_int(row.get("step"), "metrics.csv step")
+        if step != previous_step + 1:
+            raise ValueError(
+                "global training rows must contain exactly one contiguous row per step"
+            )
+        end_tokens = _csv_nonnegative_int(
+            row.get("tokens_seen"), f"metrics.csv step {step} tokens_seen"
+        )
+        if end_tokens <= previous_tokens:
+            raise ValueError("global training tokens must increase at every step")
+        trained = str(row.get("granularity") or "").strip()
+        recorded_action = str(row.get("controller_action") or "").strip()
+        if (
+            policy_identity == "panelgrad_global"
+            and recorded_action
+            and recorded_action != trained
+        ):
+            raise ValueError(
+                f"metrics.csv step {step} controller action disagrees with granularity"
+            )
+        # `granularity` is the action that actually ran. Thompson updates its
+        # compact controller state at a boundary before writing that step's
+        # metrics, so `controller_action` can already name the next window.
+        action = trained
+        if action not in ordered_granularities:
+            raise ValueError(
+                f"metrics.csv step {step} has unknown global action {action!r}"
+            )
+
+        if policy_identity == "thompson_global":
+            decision_index = (step - 1) // int(thompson_interval)
+        else:
+            decision_index = step - 1
+        decision_indices.add(decision_index)
+        probability_raw = row.get("controller_sampled_probability")
+        sampled_probability = None
+        if probability_raw not in (None, ""):
+            sampled_probability = _finite_float(
+                probability_raw,
+                f"metrics.csv step {step} sampled probability",
+            )
+            if not 0.0 <= sampled_probability <= 1.0:
+                raise ValueError("sampled probability must be in [0, 1]")
+        actions.append(
+            GlobalSamplingAction(
+                step=step,
+                start_tokens=previous_tokens,
+                end_tokens=min(end_tokens, token_budget),
+                granularity=action,
+                decision_index=decision_index,
+                sampled_probability=sampled_probability,
+            )
+        )
+        previous_step = step
+        previous_tokens = min(end_tokens, token_budget)
+
+    comparison_payload = {
+        "variant": model_variant_from_saved_config(dict(config)),
+        "correction_mode": correction_mode_from_saved_config(dict(config)),
+        "membership_correction": membership_correction_from_saved_config(dict(config)),
+        "granularities": list(ordered_granularities),
+        "context_length": model.get("context_length"),
+        "token_budget": token_budget,
+        "expected_tokens_per_step": training.get("expected_tokens_per_step"),
+        "optimizer": training.get("optimizer"),
+        "resolved_learning_rate": training.get("resolved_learning_rate"),
+        "scheduler": training.get("scheduler"),
+        "batch_size_per_process": training.get("batch_size_per_process"),
+        "gradient_accumulation_steps": int(
+            training.get("gradient_accumulation_steps") or 1
+        ),
+    }
+    comparison_key = hashlib.sha256(
+        json.dumps(comparison_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    seed_raw = run.get("seed")
+    seed = None if seed_raw in (None, "") else int(seed_raw)
+    return GlobalSamplingHistory(
+        run_id=run_id,
+        policy_identity=policy_identity,
+        policy_label=policy_label,
+        ordered_granularities=ordered_granularities,
+        token_budget=token_budget,
+        actions=tuple(actions),
+        decision_count=len(decision_indices),
+        comparison_key=comparison_key,
+        model_variant=model_variant_from_saved_config(dict(config)),
+        correction_mode=correction_mode_from_saved_config(dict(config)),
+        membership_correction=membership_correction_from_saved_config(dict(config)),
+        seed=seed,
+        config_path=config_path,
+        metrics_path=metrics_path,
+    )
+
+
+def global_sampling_history_as_timeline(
+    history: GlobalSamplingHistory,
+) -> ControllerGranularityTimeline:
+    """Adapt canonical committed actions to the categorical timeline renderer."""
+
+    return ControllerGranularityTimeline(
+        run_id=history.run_id,
+        scope="global",
+        ordered_granularities=history.ordered_granularities,
+        block_count=1,
+        row_labels=("all blocks",),
+        token_budget=history.token_budget,
+        windows=tuple(
+            ControllerSelectionWindow(
+                window_index=action.step - 1,
+                start_step=action.step,
+                end_step=action.step,
+                start_tokens=action.start_tokens,
+                end_tokens=action.end_tokens,
+                block_granularities=(action.granularity,),
+                terminal_incomplete=False,
+            )
+            for action in history.actions
+        ),
+        model_variant=history.model_variant,
+        correction_mode=history.correction_mode,
+        membership_correction=history.membership_correction,
+        config_path=history.config_path,
+        journal_path=history.metrics_path,
+    )
 
 
 def read_csv_artifacts_filtered(
@@ -147,6 +458,297 @@ def iter_controller_granularity_timelines(
             yield timeline
 
 
+def iter_panelgrad_histories(
+    input_root: str | Path,
+) -> Iterator[PanelGradHistory]:
+    """Stream PanelGrad action rows and refresh events into compact histories."""
+
+    input_root = Path(input_root)
+    for journal_path in sorted(input_root.rglob("controller_metrics.jsonl")):
+        config_path = journal_path.parent / "config.json"
+        metrics_path = journal_path.parent / "metrics.csv"
+        if not config_path.is_file():
+            warnings.warn(
+                f"Skipping PanelGrad history {journal_path}: config.json is missing",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            continue
+        try:
+            with config_path.open("r", encoding="utf-8") as config_file:
+                config = json.load(config_file)
+            history = _read_panelgrad_history(
+                config=config,
+                config_path=config_path,
+                metrics_path=metrics_path,
+                journal_path=journal_path,
+            )
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+            KeyError,
+            json.JSONDecodeError,
+        ) as error:
+            warnings.warn(
+                f"Skipping PanelGrad history {journal_path}: {error}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            continue
+        if history is not None and (history.actions or history.refreshes):
+            yield history
+
+
+def panelgrad_history_as_timeline(
+    history: PanelGradHistory,
+) -> ControllerGranularityTimeline:
+    """Adapt committed PanelGrad actions to the shared global timeline plots."""
+
+    windows = tuple(
+        ControllerSelectionWindow(
+            window_index=action.step,
+            start_step=action.step - 1,
+            end_step=action.step,
+            start_tokens=action.start_tokens,
+            end_tokens=action.end_tokens,
+            block_granularities=(action.granularity,),
+            terminal_incomplete=False,
+        )
+        for action in history.actions
+    )
+    return ControllerGranularityTimeline(
+        run_id=history.run_id,
+        scope="global",
+        ordered_granularities=history.ordered_granularities,
+        block_count=1,
+        row_labels=("all blocks",),
+        token_budget=history.token_budget,
+        windows=windows,
+        model_variant=history.model_variant,
+        correction_mode=history.correction_mode,
+        membership_correction=history.membership_correction,
+        config_path=history.config_path,
+        journal_path=history.journal_path,
+    )
+
+
+def _read_panelgrad_history(
+    *,
+    config: Mapping[str, Any],
+    config_path: Path,
+    metrics_path: Path,
+    journal_path: Path,
+) -> PanelGradHistory | None:
+    model = _required_mapping(config.get("model"), "config.model")
+    policy = model.get("panelgrad")
+    if not isinstance(policy, Mapping):
+        return None
+    method_family = str(policy.get("method_family") or "").strip().lower()
+    strategy = str(model.get("adaptive_sampler_strategy") or "").strip().lower()
+    scope = str(policy.get("scope") or "").strip().lower()
+    if not (
+        method_family == PANELGRAD_METHOD_FAMILY
+        and policy.get("method_version") not in (None, "")
+        and strategy == "panelgrad"
+        and scope == "global"
+    ):
+        return None
+
+    run = _required_mapping(config.get("run"), "config.run")
+    run_id = str(run.get("run_id") or "").strip()
+    if not run_id:
+        raise ValueError("config.run.run_id must be nonempty")
+    training = _required_mapping(config.get("training"), "config.training")
+    expected_tokens_per_step = _positive_int(
+        training.get("expected_tokens_per_step"),
+        "config.training.expected_tokens_per_step",
+    )
+    token_budget = _positive_int(
+        training.get("token_budget"),
+        "config.training.token_budget",
+    )
+    granularities = policy.get("ordered_granularities")
+    if granularities in (None, ""):
+        granularities = model.get("granularities")
+    if not isinstance(granularities, list) or not granularities:
+        raise ValueError("config.model.panelgrad.ordered_granularities must be nonempty")
+    ordered_granularities = tuple(str(label) for label in granularities)
+    if any(not label for label in ordered_granularities):
+        raise ValueError("PanelGrad granularities contain an empty label")
+    if len(set(ordered_granularities)) != len(ordered_granularities):
+        raise ValueError("PanelGrad granularities contain duplicates")
+
+    if not metrics_path.is_file():
+        raise ValueError("metrics.csv is missing")
+    actions: list[PanelGradAction] = []
+    previous_training_tokens = 0
+    previous_step = 0
+    for row in iter_csv_artifact_rows(metrics_path):
+        if str(row.get("split") or "") != "train":
+            continue
+        step = _csv_positive_int(row.get("step"), "metrics.csv step")
+        end_tokens = _csv_nonnegative_int(
+            row.get("tokens_seen"),
+            f"metrics.csv step {step} tokens_seen",
+        )
+        if step <= previous_step or end_tokens < previous_training_tokens:
+            raise ValueError("PanelGrad training rows are not strictly ordered")
+        sampled_probability_raw = row.get("controller_sampled_probability")
+        if sampled_probability_raw not in (None, ""):
+            granularity = str(
+                row.get("controller_action") or row.get("granularity") or ""
+            ).strip()
+            if granularity not in ordered_granularities:
+                raise ValueError(
+                    f"metrics.csv step {step} has unknown PanelGrad action {granularity!r}"
+                )
+            sampled_probability = _finite_float(
+                sampled_probability_raw,
+                f"metrics.csv step {step} sampled probability",
+            )
+            if sampled_probability < 0.0 or sampled_probability > 1.0:
+                raise ValueError("PanelGrad sampled probability must be in [0, 1]")
+            actions.append(
+                PanelGradAction(
+                    step=step,
+                    start_tokens=previous_training_tokens,
+                    end_tokens=min(end_tokens, token_budget),
+                    granularity=granularity,
+                    sampled_probability=sampled_probability,
+                )
+            )
+        previous_step = step
+        previous_training_tokens = min(end_tokens, token_budget)
+
+    refreshes: list[PanelGradRefresh] = []
+    epsilon_schedule_identity = _panelgrad_epsilon_schedule_identity(policy)
+    with journal_path.open("r", encoding="utf-8") as journal_file:
+        for line_number, line in enumerate(journal_file, start=1):
+            if not line.strip():
+                continue
+            event = json.loads(line)
+            if not isinstance(event, Mapping):
+                raise ValueError(f"journal line {line_number} is not a JSON object")
+            if event.get("event_type") != "panelgrad_refresh_completed":
+                continue
+            refreshes.append(
+                _normalize_panelgrad_refresh(
+                    event,
+                    line_number=line_number,
+                    ordered_granularities=ordered_granularities,
+                    expected_tokens_per_step=expected_tokens_per_step,
+                    token_budget=token_budget,
+                    fallback_epsilon=float(epsilon_schedule_identity["start"]),
+                )
+            )
+    refreshes.sort(key=lambda refresh: (refresh.boundary_step, refresh.refresh_index))
+
+    return PanelGradHistory(
+        run_id=run_id,
+        ordered_granularities=ordered_granularities,
+        token_budget=token_budget,
+        actions=tuple(actions),
+        refreshes=tuple(refreshes),
+        model_variant=model_variant_from_saved_config(dict(config)),
+        correction_mode=correction_mode_from_saved_config(dict(config)),
+        membership_correction=membership_correction_from_saved_config(dict(config)),
+        config_path=config_path,
+        metrics_path=metrics_path,
+        journal_path=journal_path,
+    )
+
+
+def _normalize_panelgrad_refresh(
+    event: Mapping[str, Any],
+    *,
+    line_number: int,
+    ordered_granularities: tuple[str, ...],
+    expected_tokens_per_step: int,
+    token_budget: int,
+    fallback_epsilon: float,
+) -> PanelGradRefresh:
+    prefix = f"journal line {line_number}"
+    refresh_index = _nonnegative_int(event.get("window_index"), f"{prefix} window_index")
+    boundary_step = _nonnegative_int(event.get("boundary_step"), f"{prefix} boundary_step")
+    p = _probability_vector(event.get("p"), f"{prefix} p", len(ordered_granularities))
+    q = _probability_vector(event.get("q"), f"{prefix} q", len(ordered_granularities))
+    measurements = event.get("measurements")
+    if not isinstance(measurements, list):
+        raise ValueError(f"{prefix} measurements must be a list")
+    score_by_granularity = {}
+    for measurement in measurements:
+        if not isinstance(measurement, Mapping):
+            raise ValueError(f"{prefix} measurement must be a mapping")
+        label = str(measurement.get("granularity") or "")
+        if label in score_by_granularity:
+            raise ValueError(f"{prefix} repeats measurement for {label!r}")
+        score_by_granularity[label] = _finite_float(
+            measurement.get("gradient_rms_score"),
+            f"{prefix} {label} gradient_rms_score",
+        )
+    if set(score_by_granularity) != set(ordered_granularities):
+        raise ValueError(f"{prefix} measurements do not cover every granularity")
+    duration_seconds = _finite_float(
+        event.get("duration_seconds"), f"{prefix} duration_seconds"
+    )
+    if duration_seconds < 0.0:
+        raise ValueError(f"{prefix} duration_seconds must be nonnegative")
+    backward_evaluations = _nonnegative_int(
+        event.get("backward_evaluation_count"),
+        f"{prefix} backward_evaluation_count",
+    )
+    controller_target_count = _nonnegative_int(
+        event.get("controller_target_count"),
+        f"{prefix} controller_target_count",
+    )
+    active_epsilon = _finite_float(
+        event.get("active_epsilon", fallback_epsilon),
+        f"{prefix} active_epsilon",
+    )
+    if not 0.0 <= active_epsilon <= 1.0:
+        raise ValueError(f"{prefix} active_epsilon must be in [0, 1]")
+    return PanelGradRefresh(
+        refresh_index=refresh_index,
+        boundary_step=boundary_step,
+        boundary_tokens=min(boundary_step * expected_tokens_per_step, token_budget),
+        gradient_rms_scores=tuple(
+            score_by_granularity[label] for label in ordered_granularities
+        ),
+        q=q,
+        p=p,
+        entropy=_finite_float(event.get("entropy"), f"{prefix} entropy"),
+        min_probability=_finite_float(
+            event.get("min_probability"), f"{prefix} min_probability"
+        ),
+        max_probability=_finite_float(
+            event.get("max_probability"), f"{prefix} max_probability"
+        ),
+        active_epsilon=active_epsilon,
+        epsilon_schedule_step=_nonnegative_int(
+            event.get("epsilon_schedule_step", boundary_step),
+            f"{prefix} epsilon_schedule_step",
+        ),
+        duration_seconds=duration_seconds,
+        backward_evaluations=backward_evaluations,
+        controller_target_tokens=controller_target_count * backward_evaluations,
+    )
+
+
+def _probability_vector(value: Any, field_name: str, expected_size: int) -> tuple[float, ...]:
+    if not isinstance(value, list) or len(value) != expected_size:
+        raise ValueError(f"{field_name} must contain {expected_size} values")
+    values = tuple(
+        _finite_float(item, f"{field_name}[{index}]")
+        for index, item in enumerate(value)
+    )
+    if any(item < 0.0 or item > 1.0 for item in values):
+        raise ValueError(f"{field_name} values must be in [0, 1]")
+    if not math.isclose(sum(values), 1.0, rel_tol=1e-6, abs_tol=1e-8):
+        raise ValueError(f"{field_name} must sum to one")
+    return values
+
+
 def _read_controller_granularity_timeline(
     *,
     config: Mapping[str, Any],
@@ -154,10 +756,9 @@ def _read_controller_granularity_timeline(
     journal_path: Path,
 ) -> ControllerGranularityTimeline | None:
     model = _required_mapping(config.get("model"), "config.model")
-    controller = _required_mapping(
-        model.get("adaptive_controller"),
-        "config.model.adaptive_controller",
-    )
+    controller = model.get("adaptive_controller")
+    if not isinstance(controller, Mapping):
+        return None
     method_family = str(controller.get("method_family") or "").strip().lower()
     strategy = str(model.get("adaptive_sampler_strategy") or "").strip().lower()
     scope = str(controller.get("scope") or "").strip().lower()
@@ -389,6 +990,37 @@ def _nonnegative_int(value: Any, field_name: str) -> int:
     return value
 
 
+def _csv_positive_int(value: Any, field_name: str) -> int:
+    integer = _csv_nonnegative_int(value, field_name)
+    if integer <= 0:
+        raise ValueError(f"{field_name} must be positive")
+    return integer
+
+
+def _csv_nonnegative_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a nonnegative integer")
+    try:
+        integer = int(str(value))
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{field_name} must be a nonnegative integer") from error
+    if integer < 0 or str(value).strip() not in {str(integer), f"{integer}.0"}:
+        raise ValueError(f"{field_name} must be a nonnegative integer")
+    return integer
+
+
+def _finite_float(value: Any, field_name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be finite")
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{field_name} must be finite") from error
+    if not math.isfinite(number):
+        raise ValueError(f"{field_name} must be finite")
+    return number
+
+
 def validation_split_filter(row: dict[str, str]) -> bool:
     return str(row.get("split") or "") == "validation"
 
@@ -397,7 +1029,7 @@ def refresh_scaling_parameter_counts(
     input_root: Path,
     rows: list[dict[str, str]],
 ) -> list[dict[str, str]]:
-    count_cache: dict[Path, dict[str, dict[str, Any]]] = {}
+    count_cache: dict[Path, dict[str, dict[str, Any]] | None] = {}
     refreshed_rows = []
 
     for row in rows:
@@ -406,8 +1038,25 @@ def refresh_scaling_parameter_counts(
         granularity = str(row.get("granularity") or "")
         if config_path is not None and granularity:
             if config_path not in count_cache:
-                count_cache[config_path] = recompute_parameter_counts(config_path)
-            counts = count_cache[config_path].get(granularity)
+                try:
+                    count_cache[config_path] = recompute_parameter_counts(config_path)
+                except Exception as error:
+                    # Count refresh is a reporting enhancement. Historical configs
+                    # may predate required model-construction fields, so preserve
+                    # their stored scaling counts instead of blocking all figures.
+                    warnings.warn(
+                        f"Could not refresh parameter counts from {config_path}; "
+                        f"using scaling_results.csv values: {error}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    count_cache[config_path] = None
+            refreshed_counts = count_cache[config_path]
+            counts = (
+                refreshed_counts.get(granularity)
+                if refreshed_counts is not None
+                else None
+            )
             if counts is not None:
                 for field_name in PARAMETER_COUNT_FIELDS:
                     refreshed_row[field_name] = counts.get(field_name)
@@ -760,7 +1409,11 @@ def _adaptive_controller_from_saved_config(
     model = config.get("model")
     if not isinstance(model, dict):
         return None
-    controller = model.get("adaptive_controller")
+    controller = (
+        model.get("panelgrad")
+        if model.get("adaptive_sampler_strategy") == "panelgrad"
+        else model.get("adaptive_controller")
+    )
     return controller if isinstance(controller, dict) else None
 
 
@@ -855,6 +1508,7 @@ def controller_contract_provenance_from_saved_config(
     optimizer = optimizer if isinstance(optimizer, dict) else {}
     scheduler = _first_config_value(config, ("training", "scheduler"))
     scheduler = scheduler if isinstance(scheduler, dict) else {}
+    panelgrad_schedule = _panelgrad_epsilon_schedule_identity(controller)
 
     return {
         "run_seed": _first_config_value(
@@ -881,6 +1535,18 @@ def controller_contract_provenance_from_saved_config(
         "controller_compute_weight": controller.get("compute_weight"),
         "controller_feature_schema_hash": _mapping_value(
             controller, "feature_schema", "schema_hash"
+        ),
+        "panelgrad_refresh_interval_steps": controller.get(
+            "refresh_interval_steps"
+        ),
+        "panelgrad_eta": controller.get("eta"),
+        "panelgrad_temperature": controller.get("temperature"),
+        "panelgrad_epsilon": controller.get("epsilon"),
+        "panelgrad_epsilon_schedule_type": panelgrad_schedule.get("type"),
+        "panelgrad_epsilon_schedule_start": panelgrad_schedule.get("start"),
+        "panelgrad_epsilon_schedule_end": panelgrad_schedule.get("end"),
+        "panelgrad_epsilon_schedule_duration_steps": (
+            panelgrad_schedule.get("duration_steps")
         ),
         "controller_reset_interval_steps": _controller_reset_value(
             config, "interval_steps"
@@ -922,6 +1588,68 @@ def controller_contract_provenance_from_saved_config(
         "training_dataset_config_name": comparison.get("dataset_config_name"),
         "training_dataset_split": comparison.get("dataset_split"),
         "training_tokenizer_name": comparison.get("tokenizer_name"),
+    }
+
+
+def _panelgrad_policy_label(policy: Mapping[str, Any]) -> str:
+    """Render the scientific knobs that distinguish PanelGrad policies."""
+
+    schedule = _panelgrad_epsilon_schedule_identity(policy)
+    labels = [("T", policy.get("temperature"))]
+    if schedule["type"] == "linear":
+        labels.extend(
+            (
+                ("ε type", schedule["type"]),
+                ("ε start", schedule["start"]),
+                ("ε end", schedule["end"]),
+                ("ε steps", schedule["duration_steps"]),
+            )
+        )
+    elif "epsilon" in policy or "epsilon_schedule" in policy:
+        labels.append(("ε", schedule["start"]))
+    labels.extend(
+        (
+            ("H", policy.get("refresh_interval_steps")),
+            ("η", policy.get("eta")),
+        )
+    )
+    parts = []
+    for name, value in labels:
+        if value in (None, ""):
+            continue
+        if isinstance(value, float):
+            rendered = f"{value:g}"
+        else:
+            rendered = str(value)
+        parts.append(f"{name}={rendered}")
+    return "PanelGrad" if not parts else f"PanelGrad ({', '.join(parts)})"
+
+
+def _panelgrad_epsilon_schedule_identity(
+    policy: Mapping[str, Any],
+) -> dict[str, Any]:
+    is_panelgrad = (
+        str(policy.get("method_family") or "").strip().lower()
+        == PANELGRAD_METHOD_FAMILY
+        or "epsilon" in policy
+        or "epsilon_schedule" in policy
+    )
+    if not is_panelgrad:
+        return {"type": None, "start": None, "end": None, "duration_steps": None}
+    schedule = policy.get("epsilon_schedule")
+    if isinstance(schedule, Mapping) and schedule.get("type") == "linear":
+        return {
+            "type": "linear",
+            "start": schedule.get("start"),
+            "end": schedule.get("end"),
+            "duration_steps": schedule.get("duration_steps"),
+        }
+    epsilon = policy.get("epsilon", 0.1)
+    return {
+        "type": "fixed",
+        "start": epsilon,
+        "end": epsilon,
+        "duration_steps": None,
     }
 
 

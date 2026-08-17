@@ -6,6 +6,7 @@ import torch
 from datasets import Dataset
 
 import src.training.data as training_data
+import src.training.run as training_run
 from src.evaluation.validation import (
     evaluate_validation_per_granularity,
     perplexity_from_loss,
@@ -21,6 +22,7 @@ from src.training.data import (
     tokenize_text_dataset,
 )
 from src.utils.reproducibility import stable_hash
+from src.utils.config import resolve_run_config
 
 
 class TinyTokenizer:
@@ -300,6 +302,48 @@ def test_probabilistic_four_role_partition_rejects_insufficient_usable_data():
 
     with pytest.raises(DataError, match="649 usable examples"):
         _partition_probabilistic_roles(dataset)
+
+
+def test_panelgrad_activates_shared_roles_without_activating_thompson_controller():
+    config = resolve_run_config("tests/fixtures/panelgrad_smoke.yaml")
+
+    assert training_data.uses_controller_panel(config) is True
+    assert training_data.uses_panelgrad_controller_panel(config) is True
+    assert training_run.uses_controller_panel(config) is True
+    assert training_run.uses_probabilistic_controller(config) is False
+
+
+def test_panelgrad_raw_controller_loader_is_replicated_and_final_holdout_is_not_loaded():
+    config = resolve_run_config("tests/fixtures/panelgrad_smoke.yaml")
+    dataset = _role_partition_dataset(660)
+    distributed = SimpleNamespace(enabled=True, rank=1, world_size=2)
+
+    _, _, controller_loader, partition = training_run.prepare_controller_data_roles(
+        config,
+        dataset,
+        torch.device("cpu"),
+        distributed_context=distributed,
+    )
+
+    assert controller_loader.sampler.__class__.__name__ == "SequentialSampler"
+    assert len(controller_loader.dataset) == 128
+    assert set(partition["datasets"]) == {
+        "optimizer_training",
+        "controller",
+        "ordinary_validation",
+        "final_holdout",
+    }
+    assert controller_loader.dataset is partition["datasets"]["controller"]
+    assert controller_loader.dataset is not partition["datasets"]["final_holdout"]
+    assert partition["parent_manifest"]["final_holdout_manifest_hash"] == (
+        partition["role_manifests"]["final_holdout"]["manifest_hash"]
+    )
+    assert all(
+        count == 0
+        for count in partition["parent_manifest"][
+            "pairwise_intersection_counts"
+        ].values()
+    )
 
 
 def test_probabilistic_role_overlap_is_rejected_before_consumption():

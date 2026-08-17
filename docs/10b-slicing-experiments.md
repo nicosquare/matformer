@@ -58,10 +58,16 @@ shard, elapsed-time, and throughput statistics.
 `--tokenization-workers` defaults to `1`; increase it for future corpus builds.
 Workers tokenize concurrently through a bounded thread pool while results are
 committed in source order, so the setting affects throughput but not corpus
-identity. A preparation lock rejects a second writer for the same output.
+identity. The same value now defaults `--source-read-workers`, which reads
+independent streaming source shards concurrently and merges them back in the
+exact source order before applying the seed-pinned shuffle. Set
+`--source-read-workers` explicitly when source reading and tokenization need
+different concurrency. A preparation lock rejects a second writer for the same output.
 Preparation prints a progress line to stderr every 60 seconds and whenever a
 role or shard completes. Use `--progress-interval-seconds 15` for a faster
-cadence; the final JSON summary remains the only stdout output.
+cadence; the final JSON summary remains the only stdout output. On resume, the
+required deterministic source replay reports its completed/target documents,
+percentage, throughput, ETA, and active source-reader count at the same cadence.
 
 After source exhaustion, preparation writes one PCG64 permutation over every
 optimizer sequence as a little-endian uint64 memory map and publishes the v3
@@ -76,8 +82,8 @@ fan out experiments.
 
 ```bash
 export OUT=/nfs-stor/$USER/matformer-10b-runs
-export BASE=configs/opt-in_exps/slicing_10b_base.yaml
-export BAYES=configs/opt-in_exps/slicing_10b_bayesian.yaml
+export BASE=configs/production/slicing_10b_base.yaml
+export BAYES=configs/production/slicing_10b_bayesian.yaml
 COMMON="--output-root $OUT --override dataset.prepared_corpus_dir=$CORPUS --override model.tokenizer_dir=$TOKENIZER"
 ```
 

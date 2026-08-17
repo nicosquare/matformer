@@ -21,6 +21,7 @@ from src.training.packed_corpus import (
     PackedMMapDataset,
     _ordered_tokenize_documents,
     audit_packed_corpus,
+    iter_streaming_documents_with_ordered_prefetch,
     load_existing_corpus_if_matching,
     load_corpus_manifest,
     partition_permutation_without_padding,
@@ -110,6 +111,7 @@ def prepare_small(
     *,
     output_name="corpus",
     tokenization_workers=1,
+    source_read_workers=1,
     tokenizer=None,
     context_length=4,
     document_count=1176,
@@ -128,6 +130,7 @@ def prepare_small(
         context_length=context_length,
         shard_token_capacity=16,
         tokenization_workers=tokenization_workers,
+        source_read_workers=source_read_workers,
         progress_callback=progress_callback,
         progress_interval_seconds=progress_interval_seconds,
     )
@@ -269,11 +272,27 @@ def test_parallel_and_resumed_preparations_are_byte_identical(tmp_path):
         )
         progress = json.loads(progress_path.read_text(encoding="utf-8"))
         assert progress["committed_shuffled_document_count"] == fail_on_call - 1
+        resume_events = []
         resumed = prepare_small(
-            tmp_path, output_name=output_name, tokenization_workers=3
+            tmp_path,
+            output_name=output_name,
+            tokenization_workers=3,
+            source_read_workers=3,
+            progress_callback=lambda event: resume_events.append(dict(event)),
+            progress_interval_seconds=1e-9,
         )
         assert resumed == serial
         assert tree_bytes(tmp_path / output_name) == tree_bytes(tmp_path / "serial")
+        replay_events = [
+            event
+            for event in resume_events
+            if event["event"].startswith("resume_replay")
+        ]
+        assert replay_events
+        assert replay_events[-1]["event"] == "resume_replay_completed"
+        assert replay_events[-1]["replayed_document_count"] == fail_on_call - 1
+        assert replay_events[-1]["replay_target_document_count"] == fail_on_call - 1
+        assert replay_events[-1]["source_read_workers"] == 3
 
 
 def test_interrupted_permutation_restarts_without_retokenizing(
@@ -375,6 +394,97 @@ def test_ordered_tokenization_workers_run_concurrently_without_reordering():
     assert tokenizer.max_active > 1
 
 
+def test_ordered_source_prefetch_matches_huggingface_shuffle_exactly():
+    from datasets import Dataset
+
+    base = Dataset.from_dict(
+        {
+            "id": list(range(1000)),
+            "text": [str(index) for index in range(1000)],
+        }
+    )
+    serial_dataset = base.to_iterable_dataset(num_shards=17).shuffle(
+        seed=42, buffer_size=31
+    )
+    parallel_dataset = base.to_iterable_dataset(num_shards=17).shuffle(
+        seed=42, buffer_size=31
+    )
+
+    serial = [document["id"] for document in serial_dataset]
+    parallel = [
+        document["id"]
+        for document in iter_streaming_documents_with_ordered_prefetch(
+            parallel_dataset,
+            workers=8,
+        )
+    ]
+
+    assert parallel == serial
+
+
+def test_ordered_source_prefetch_reads_multiple_shards_concurrently():
+    class Probe:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.active = 0
+            self.max_active = 0
+
+    probe = Probe()
+
+    class Shard:
+        def __init__(self, index):
+            self.index = index
+
+        def __iter__(self):
+            with probe.lock:
+                probe.active += 1
+                probe.max_active = max(probe.max_active, probe.active)
+            try:
+                time.sleep(0.02)
+                yield self.index, {"id": self.index}
+            finally:
+                with probe.lock:
+                    probe.active -= 1
+
+    class Child:
+        num_shards = 12
+
+        def shard_data_sources(self, num_shards, index, contiguous=True):
+            assert num_shards == self.num_shards
+            assert contiguous is True
+            return Shard(index)
+
+    class Prepared:
+        ex_iterable = Child()
+        buffer_size = 1
+        generator = np.random.default_rng(42)
+
+        def __iter__(self):
+            yield from self.ex_iterable
+
+        @staticmethod
+        def _iter_random_indices(rng, buffer_size):
+            while True:
+                yield int(rng.integers(0, buffer_size))
+
+    class StreamingDataset:
+        def _prepare_ex_iterable_for_iteration(self):
+            return Prepared()
+
+        def __iter__(self):
+            raise AssertionError("parallel source prefetch unexpectedly fell back")
+
+    documents_read = list(
+        iter_streaming_documents_with_ordered_prefetch(
+            StreamingDataset(),
+            workers=4,
+        )
+    )
+
+    assert [document["id"] for document in documents_read] == list(range(12))
+    assert probe.max_active > 1
+
+
 def test_existing_corpus_reuse_verifies_shard_and_order_checksums(tmp_path):
     prepare_small(tmp_path)
     corpus_dir = tmp_path / "corpus"
@@ -427,6 +537,8 @@ def test_existing_corpus_cli_exits_before_loading_source_or_tokenizer(
     assert summary["status"] == "already_prepared"
     assert summary["corpus_hash"] == created["corpus_hash"]
     assert summary["training_token_count"] == 72
+    assert summary["tokenization_workers"] == 8
+    assert summary["source_read_workers"] == 8
 
 
 def test_schema_v2_is_rejected_with_rebuild_message(tmp_path):

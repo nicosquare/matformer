@@ -48,6 +48,11 @@ from src.training.probabilistic_controller import (
     encode_additive_action,
     validate_gaussian_belief,
 )
+from src.training.panelgrad import (
+    PanelGradError,
+    uses_panelgrad,
+    validate_panelgrad_state,
+)
 from src.utils.config import (
     BAYESIAN_CONTROLLER_METHOD_FAMILY,
     BAYESIAN_CONTROLLER_METHOD_VERSION,
@@ -1219,6 +1224,17 @@ def _save_model_checkpoint_rank_zero(
                 checkpoint_path=output_path,
             )
         )
+    panelgrad_state = run_state.get("panelgrad_state")
+    if uses_panelgrad(config):
+        try:
+            panelgrad_state = validate_panelgrad_state(
+                panelgrad_state,
+                config=config,
+            )
+        except PanelGradError as error:
+            raise ConfigError(str(error)) from error
+    else:
+        panelgrad_state = None
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -1318,6 +1334,7 @@ def _save_model_checkpoint_rank_zero(
             ),
             "adaptive_sampler_state": run_state.get("adaptive_sampler_state"),
             "probabilistic_controller_state": probabilistic_controller_state,
+            "panelgrad_state": panelgrad_state,
             "adaptive_sampler_previous_loss": run_state.get(
                 "adaptive_sampler_previous_loss"
             ),
@@ -1500,6 +1517,13 @@ def save_model_checkpoint(
         if len(set(controller_hashes)) != 1:
             raise ConfigError(
                 "Bayesian controller state hashes differ across ranks at checkpoint"
+            )
+    if uses_panelgrad(config):
+        local_hash = _controller_state_hash(run_state.get("panelgrad_state"))
+        panelgrad_hashes = gather_objects(local_hash, context=distributed_context)
+        if len(set(panelgrad_hashes)) != 1:
+            raise ConfigError(
+                "PanelGrad state hashes differ across ranks at checkpoint"
             )
 
     status: dict[str, Any] | None = None
@@ -1834,6 +1858,7 @@ def build_initial_continuation_state(config: dict[str, Any]) -> dict[str, Any]:
         ),
         "adaptive_sampler_state": _build_initial_adaptive_sampler_state(config),
         "probabilistic_controller_state": None,
+        "panelgrad_state": None,
         "adaptive_sampler_previous_loss": None,
         "adaptive_sampler_previous_pattern": None,
         "adaptive_reward_summary": None,
@@ -2257,6 +2282,7 @@ def load_checkpoint_state(
                 else None
             ),
             "probabilistic_controller_state": None,
+            "panelgrad_state": None,
         }
         if output_dir is not None:
             state["output_dir"] = str(output_dir)
@@ -2330,6 +2356,17 @@ def load_checkpoint_state(
                 checkpoint_path=checkpoint_path,
             )
         )
+    panelgrad_state = checkpoint.get("panelgrad_state")
+    if config is not None and uses_panelgrad(config):
+        try:
+            panelgrad_state = validate_panelgrad_state(
+                panelgrad_state,
+                config=config,
+            )
+        except PanelGradError as error:
+            raise ConfigError(str(error)) from error
+    elif config is not None:
+        panelgrad_state = None
     if config is not None and config.get("dataset", {}).get("mode") == "packed_mmap":
         expected_data_hashes = {
             "corpus_hash": config.get("corpus_hash"),
@@ -2430,6 +2467,7 @@ def load_checkpoint_state(
         ),
         "adaptive_sampler_state": checkpoint.get("adaptive_sampler_state"),
         "probabilistic_controller_state": probabilistic_controller_state,
+        "panelgrad_state": panelgrad_state,
         "adaptive_sampler_previous_loss": checkpoint.get(
             "adaptive_sampler_previous_loss"
         ),

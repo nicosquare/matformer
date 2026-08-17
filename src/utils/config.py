@@ -39,7 +39,7 @@ VALID_MODEL_GRANULARITY_SAMPLING_MODES = {
     "adaptive_global",
     "adaptive_per_block",
 }
-VALID_ADAPTIVE_SAMPLER_STRATEGIES = {"thompson", "ucb"}
+VALID_ADAPTIVE_SAMPLER_STRATEGIES = {"panelgrad", "thompson", "ucb"}
 PROBABILISTIC_ADAPTIVE_SAMPLING_MODES = {
     "adaptive_global",
     "adaptive_per_block",
@@ -47,6 +47,10 @@ PROBABILISTIC_ADAPTIVE_SAMPLING_MODES = {
 BAYESIAN_CONTROLLER_METHOD_FAMILY = "bayesian_gaussian_linear_thompson"
 BAYESIAN_CONTROLLER_METHOD_VERSION = 1
 BAYESIAN_COVARIANCE_TOLERANCE = 1e-10
+PANELGRAD_METHOD_FAMILY = "panelgrad_gradient_rms"
+PANELGRAD_METHOD_VERSION = 1
+PANELGRAD_RELATIVE_TOLERANCE = 1e-6
+PANELGRAD_ABSOLUTE_TOLERANCE = 1e-8
 VALID_LEARNING_RATE_SCALE_RULES = {"none", "linear", "sqrt"}
 VALID_OPTIMIZER_NAMES = {"adamw", "sgd"}
 VALID_COMPLETION_LABELS = {"debug", "run"}
@@ -837,6 +841,8 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         )
         if strategy == "thompson":
             _validate_resolved_bayesian_adaptive_configuration(config)
+        elif strategy == "panelgrad":
+            _validate_resolved_panelgrad_configuration(config)
         else:
             if granularity_sampling_mode != "adaptive_per_block":
                 raise ConfigError(
@@ -1064,13 +1070,19 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             f"{sorted(VALID_PRE_NESTED_WARMUP_POLICIES)}"
         )
     if warmup_policy == "balanced_global":
-        if model.get("granularity_sampling_mode") not in (
-            "adaptive_global",
-            "adaptive_per_block",
-        ) or model.get("adaptive_sampler_strategy") != "thompson":
+        sampling_mode = model.get("granularity_sampling_mode")
+        strategy = model.get("adaptive_sampler_strategy")
+        valid_thompson_warmup = (
+            strategy == "thompson"
+            and sampling_mode in ("adaptive_global", "adaptive_per_block")
+        )
+        valid_panelgrad_warmup = (
+            strategy == "panelgrad" and sampling_mode == "adaptive_global"
+        )
+        if not (valid_thompson_warmup or valid_panelgrad_warmup):
             raise ConfigError(
                 "training.pre_nested_warmup.policy=balanced_global requires a "
-                "probabilistic adaptive_global or adaptive_per_block run"
+                "probabilistic Thompson adaptive run or adaptive_global + panelgrad"
             )
         if warmup_unit != "steps":
             raise ConfigError(
@@ -1164,6 +1176,24 @@ def _validate_distributed_and_prepared_corpus_contract(
         raise ConfigError(
             "adaptive_per_block + ucb is unsupported when world size exceeds one"
         )
+    if (
+        expected_world_size > 1
+        and model.get("granularity_sampling_mode") == "adaptive_global"
+        and model.get("adaptive_sampler_strategy") == "panelgrad"
+    ):
+        fsdp = distributed.get("fsdp", {})
+        if not isinstance(fsdp, Mapping):
+            raise ConfigError(
+                "distributed PanelGrad requires training.distributed.fsdp mapping"
+            )
+        if fsdp.get("use_orig_params", True) is not True:
+            raise ConfigError(
+                "distributed PanelGrad requires fsdp.use_orig_params=true"
+            )
+        if bool(fsdp.get("cpu_offload", False)):
+            raise ConfigError(
+                "distributed PanelGrad does not support FSDP CPU offload"
+            )
 
     mode = dataset.get("mode", "raw_tokenized")
     if mode != "packed_mmap":
@@ -1406,6 +1436,15 @@ def _resolve_model_dimension_and_granularity_metadata(config: dict[str, Any]) ->
                 "label list"
             )
         return
+    if any(
+        not isinstance(granularity, str) or not granularity.strip()
+        for granularity in granularities
+    ):
+        raise ConfigError(
+            "model.granularities must contain only non-empty string labels"
+        )
+    if len(set(granularities)) != len(granularities):
+        raise ConfigError("model.granularities must contain unique labels")
 
     prefixes = model.get("granularity_prefixes")
     if prefixes is None:
@@ -1824,6 +1863,7 @@ def _resolve_adaptive_sampler_defaults(config: dict[str, Any]) -> None:
             "adaptive_sampler_decay_rate",
             "adaptive_sampler_reward_penalty_weight",
             "adaptive_controller",
+            "panelgrad",
         )
     )
     if (
@@ -1832,9 +1872,25 @@ def _resolve_adaptive_sampler_defaults(config: dict[str, Any]) -> None:
     ):
         return
 
-    strategy = model.get("adaptive_sampler_strategy", "thompson")
+    default_strategy = "panelgrad" if "panelgrad" in model else "thompson"
+    strategy = model.get("adaptive_sampler_strategy", default_strategy)
     strategy = _normalize_adaptive_sampler_strategy(strategy)
     model["adaptive_sampler_strategy"] = strategy
+
+    if strategy == "panelgrad":
+        if sampling_mode != "adaptive_global":
+            raise ConfigError(
+                "model.adaptive_sampler_strategy=panelgrad requires "
+                "model.granularity_sampling_mode=adaptive_global"
+            )
+        _resolve_panelgrad_configuration(config)
+        return
+
+    if "panelgrad" in model:
+        raise ConfigError(
+            "model.panelgrad is valid only when "
+            "model.adaptive_sampler_strategy=panelgrad"
+        )
 
     if sampling_mode == "adaptive_global" and strategy == "ucb":
         raise ConfigError(
@@ -1847,6 +1903,224 @@ def _resolve_adaptive_sampler_defaults(config: dict[str, Any]) -> None:
         return
 
     _resolve_legacy_adaptive_sampler_defaults(model, strategy)
+
+
+def _resolve_panelgrad_configuration(config: dict[str, Any]) -> None:
+    model = config["model"]
+    evaluation = config.setdefault("evaluation", {})
+    raw_panelgrad = model.get("panelgrad", {})
+    if not isinstance(raw_panelgrad, Mapping):
+        raise ConfigError("model.panelgrad must be a mapping")
+    panelgrad = copy.deepcopy(dict(raw_panelgrad))
+
+    allowed_fields = {
+        "refresh_interval_steps",
+        "eta",
+        "temperature",
+        "epsilon",
+        "epsilon_schedule",
+        "method_family",
+        "method_version",
+        "scope",
+        "score",
+        "support",
+        "probability_mapping",
+        "action_distribution",
+        "relative_tolerance",
+        "absolute_tolerance",
+        "inverse_probability_weighting",
+        "compute_correction",
+        "ordered_granularities",
+        "controlled_support_counts",
+        "controlled_support_hash",
+        "controller_panel_contract",
+        "final_holdout_contract",
+        "sampling_seed_stream",
+        "sampling_seed",
+    }
+    unknown_fields = sorted(set(panelgrad) - allowed_fields)
+    if unknown_fields:
+        raise ConfigError(f"Unknown model.panelgrad fields: {unknown_fields}")
+
+    incompatible_model_fields = sorted(
+        field_name
+        for field_name in (
+            "adaptive_controller",
+            "adaptive_sampler_exploration_scale",
+            "adaptive_sampler_decay_rate",
+            "adaptive_sampler_reward_penalty_weight",
+        )
+        if field_name in model
+    )
+    if incompatible_model_fields:
+        raise ConfigError(
+            "PanelGrad cannot mix Bayesian or UCB configuration fields: "
+            f"{incompatible_model_fields}"
+        )
+
+    granularities = model.get("granularities")
+    if not isinstance(granularities, list) or not granularities:
+        raise ConfigError(
+            "PanelGrad requires model.granularities to be a non-empty list"
+        )
+    if len(set(granularities)) != len(granularities):
+        raise ConfigError("PanelGrad requires unique model.granularities")
+
+    panelgrad["refresh_interval_steps"] = _strict_positive_int(
+        panelgrad.get("refresh_interval_steps", 50),
+        "model.panelgrad.refresh_interval_steps",
+    )
+    eta = _finite_float(panelgrad.get("eta", 1e-12), "model.panelgrad.eta")
+    if eta <= 0.0:
+        raise ConfigError("model.panelgrad.eta must be positive")
+    panelgrad["eta"] = eta
+    temperature = _finite_float(
+        panelgrad.get("temperature", 1.0),
+        "model.panelgrad.temperature",
+    )
+    if temperature <= 0.0:
+        raise ConfigError("model.panelgrad.temperature must be positive")
+    panelgrad["temperature"] = temperature
+    has_epsilon = "epsilon" in panelgrad
+    has_epsilon_schedule = "epsilon_schedule" in panelgrad
+    if has_epsilon and has_epsilon_schedule:
+        raise ConfigError(
+            "model.panelgrad accepts either epsilon or epsilon_schedule, not both"
+        )
+    if has_epsilon_schedule:
+        raw_schedule = panelgrad["epsilon_schedule"]
+        if not isinstance(raw_schedule, Mapping):
+            raise ConfigError("model.panelgrad.epsilon_schedule must be a mapping")
+        schedule = copy.deepcopy(dict(raw_schedule))
+        unknown_schedule_fields = sorted(
+            set(schedule) - {"type", "start", "end", "duration_steps"}
+        )
+        if unknown_schedule_fields:
+            raise ConfigError(
+                "Unknown model.panelgrad.epsilon_schedule fields: "
+                f"{unknown_schedule_fields}"
+            )
+        schedule_type = schedule.get("type")
+        if schedule_type != "linear":
+            raise ConfigError(
+                "model.panelgrad.epsilon_schedule.type must be 'linear'"
+            )
+        for endpoint in ("start", "end"):
+            value = _finite_float(
+                schedule.get(endpoint),
+                f"model.panelgrad.epsilon_schedule.{endpoint}",
+            )
+            if value < 0.0 or value > 1.0:
+                raise ConfigError(
+                    f"model.panelgrad.epsilon_schedule.{endpoint} must be "
+                    "between zero and one"
+                )
+            schedule[endpoint] = value
+        schedule["duration_steps"] = _strict_positive_int(
+            schedule.get("duration_steps"),
+            "model.panelgrad.epsilon_schedule.duration_steps",
+        )
+        panelgrad["epsilon_schedule"] = schedule
+    else:
+        epsilon = _finite_float(
+            panelgrad.get("epsilon", 0.1),
+            "model.panelgrad.epsilon",
+        )
+        if epsilon < 0.0 or epsilon > 1.0:
+            raise ConfigError("model.panelgrad.epsilon must be between zero and one")
+        panelgrad["epsilon"] = epsilon
+
+    fixed_fields = {
+        "method_family": PANELGRAD_METHOD_FAMILY,
+        "method_version": PANELGRAD_METHOD_VERSION,
+        "scope": "global",
+        "score": "raw_aggregate_controller_gradient_rms",
+        "support": "granularity_controlled_ffn",
+        "probability_mapping": "powered_score_uniform_mixture",
+        "action_distribution": "categorical",
+        "relative_tolerance": PANELGRAD_RELATIVE_TOLERANCE,
+        "absolute_tolerance": PANELGRAD_ABSOLUTE_TOLERANCE,
+        "inverse_probability_weighting": False,
+        "compute_correction": False,
+    }
+    for field_name, expected_value in fixed_fields.items():
+        if field_name in panelgrad and panelgrad[field_name] != expected_value:
+            raise ConfigError(
+                f"model.panelgrad.{field_name} must be {expected_value!r}"
+            )
+        panelgrad[field_name] = expected_value
+
+    ordered_granularities = list(granularities)
+    if "ordered_granularities" in panelgrad and panelgrad[
+        "ordered_granularities"
+    ] != ordered_granularities:
+        raise ConfigError(
+            "model.panelgrad.ordered_granularities must match model.granularities"
+        )
+    panelgrad["ordered_granularities"] = ordered_granularities
+    support_counts = panelgrad.get("controlled_support_counts", "pending")
+    if support_counts != "pending":
+        if not isinstance(support_counts, Mapping) or list(support_counts) != (
+            ordered_granularities
+        ):
+            raise ConfigError(
+                "model.panelgrad.controlled_support_counts must follow "
+                "model.granularities"
+            )
+        if any(
+            isinstance(support_counts[label], bool)
+            or not isinstance(support_counts[label], int)
+            or support_counts[label] <= 0
+            for label in ordered_granularities
+        ):
+            raise ConfigError(
+                "model.panelgrad.controlled_support_counts must be positive integers"
+            )
+        support_counts = dict(support_counts)
+    support_hash = panelgrad.get("controlled_support_hash", "pending")
+    if support_hash != "pending" and (
+        not isinstance(support_hash, str) or not support_hash.strip()
+    ):
+        raise ConfigError(
+            "model.panelgrad.controlled_support_hash must be pending or non-empty"
+        )
+    panelgrad["controlled_support_counts"] = support_counts
+    panelgrad["controlled_support_hash"] = support_hash
+    panelgrad["sampling_seed_stream"] = "panelgrad_sampling"
+    panelgrad["sampling_seed"] = seed_for(config, "panelgrad_sampling")
+
+    controller_role = _resolve_fixed_controller_data_role(
+        evaluation,
+        "adaptive_controller",
+        {
+            "enabled": True,
+            "source": "configured_dataset_split",
+            "examples": 128,
+            "objective_weights": "uniform",
+            "fixed_manifest": True,
+        },
+        method_name="PanelGrad",
+    )
+    final_holdout_role = _resolve_fixed_controller_data_role(
+        evaluation,
+        "final_holdout",
+        {
+            "enabled": True,
+            "source": "configured_dataset_split",
+            "examples": 512,
+            "fixed_manifest": True,
+            "evaluate_during_training": False,
+        },
+        method_name="PanelGrad",
+    )
+    controller_role.setdefault("manifest_hash", "pending")
+    final_holdout_role.setdefault("manifest_hash", "pending")
+    panelgrad["controller_panel_contract"] = copy.deepcopy(controller_role)
+    panelgrad["final_holdout_contract"] = copy.deepcopy(final_holdout_role)
+
+    model["panelgrad"] = panelgrad
+    evaluation["adaptive_controller"] = controller_role
+    evaluation["final_holdout"] = final_holdout_role
 
 
 def _resolve_legacy_adaptive_sampler_defaults(
@@ -2011,7 +2285,7 @@ def _resolve_bayesian_adaptive_configuration(config: dict[str, Any]) -> None:
         ordered_granularities=list(granularities),
     )
 
-    controller_role = _resolve_fixed_bayesian_data_role(
+    controller_role = _resolve_fixed_controller_data_role(
         evaluation,
         "adaptive_controller",
         {
@@ -2022,7 +2296,7 @@ def _resolve_bayesian_adaptive_configuration(config: dict[str, Any]) -> None:
             "fixed_manifest": True,
         },
     )
-    final_holdout_role = _resolve_fixed_bayesian_data_role(
+    final_holdout_role = _resolve_fixed_controller_data_role(
         evaluation,
         "final_holdout",
         {
@@ -2201,15 +2475,17 @@ def _resolve_bayesian_controller_preset(
     return resolved_controller
 
 
-def _resolve_fixed_bayesian_data_role(
+def _resolve_fixed_controller_data_role(
     evaluation: dict[str, Any],
     section_name: str,
     expected_fields: Mapping[str, Any],
+    *,
+    method_name: str = "Bayesian Thompson",
 ) -> dict[str, Any]:
     section = evaluation.get(section_name)
     if not isinstance(section, Mapping):
         raise ConfigError(
-            "Thompson migration requires an explicit Bayesian data-role mapping "
+            f"{method_name} requires an explicit controller data-role mapping "
             f"at evaluation.{section_name}"
         )
     resolved = copy.deepcopy(dict(section))
@@ -2218,7 +2494,7 @@ def _resolve_fixed_bayesian_data_role(
     ]
     if missing_fields:
         raise ConfigError(
-            "Thompson migration requires explicit Bayesian data-role fields at "
+            f"{method_name} requires explicit controller data-role fields at "
             f"evaluation.{section_name}: {missing_fields}"
         )
     for field_name, expected_value in expected_fields.items():
@@ -2363,6 +2639,28 @@ def _validate_resolved_bayesian_adaptive_configuration(
         if evaluation.get(section_name) != expected_evaluation.get(section_name):
             raise ConfigError(
                 f"evaluation.{section_name} does not match the resolved Bayesian contract"
+            )
+
+
+def _validate_resolved_panelgrad_configuration(
+    config: Mapping[str, Any],
+) -> None:
+    expected = copy.deepcopy(dict(config))
+    _resolve_panelgrad_configuration(expected)
+
+    model = config.get("model", {})
+    evaluation = config.get("evaluation", {})
+    expected_model = expected["model"]
+    expected_evaluation = expected["evaluation"]
+    if model.get("panelgrad") != expected_model.get("panelgrad"):
+        raise ConfigError(
+            "model.panelgrad does not match the resolved PanelGrad contract"
+        )
+    for section_name in ("adaptive_controller", "final_holdout"):
+        if evaluation.get(section_name) != expected_evaluation.get(section_name):
+            raise ConfigError(
+                f"evaluation.{section_name} does not match the resolved "
+                "PanelGrad contract"
             )
 
 
@@ -3376,10 +3674,20 @@ def _resolve_pre_nested_warmup_defaults(config: dict[str, Any]) -> None:
     warmup["policy"] = policy
 
     if policy == "balanced_global" and warmup["enabled"]:
-        controller = config.get("model", {}).get("adaptive_controller", {})
+        model = config.get("model", {})
+        strategy = model.get("adaptive_sampler_strategy")
+        interval_source = (
+            model.get("panelgrad", {})
+            if strategy == "panelgrad"
+            else model.get("adaptive_controller", {})
+        )
         default_interval = (
-            controller.get("decision_interval_steps")
-            if isinstance(controller, Mapping)
+            interval_source.get(
+                "refresh_interval_steps"
+                if strategy == "panelgrad"
+                else "decision_interval_steps"
+            )
+            if isinstance(interval_source, Mapping)
             else None
         )
         raw_interval = warmup.get("action_interval_steps", default_interval)

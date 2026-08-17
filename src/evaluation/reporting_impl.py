@@ -51,6 +51,8 @@ SIZE_PLOT_PANELS_WITH_SAMPLING = [
     ("nested-random", "concat", "per_block"),
     ("nested-random", "slicing", "probabilistic_global_thompson"),
     ("nested-random", "concat", "probabilistic_global_thompson"),
+    ("nested-random", "slicing", "panelgrad_global"),
+    ("nested-random", "concat", "panelgrad_global"),
     ("nested-random", "slicing", "probabilistic_per_block_thompson"),
     ("nested-random", "concat", "probabilistic_per_block_thompson"),
     ("nested-random", "slicing", "adaptive_per_block_ucb"),
@@ -64,6 +66,7 @@ SCALING_GROUP_COLORS = {
     "nested-random / slicing / probabilistic_global_thompson": "tab:blue",
     "nested-random / slicing / probabilistic_global_thompson_reset": "tab:purple",
     "nested-random / slicing / probabilistic_global_thompson_acquisition_only": "tab:green",
+    "nested-random / slicing / panelgrad_global": "tab:purple",
     "nested-random / slicing / probabilistic_per_block_thompson": "tab:cyan",
     "nested-random / slicing / adaptive_per_block_ucb": "tab:olive",
     "nested-random / concat / global": "tab:orange",
@@ -71,6 +74,7 @@ SCALING_GROUP_COLORS = {
     "nested-random / concat / probabilistic_global_thompson": "tab:orange",
     "nested-random / concat / probabilistic_global_thompson_reset": "tab:brown",
     "nested-random / concat / probabilistic_global_thompson_acquisition_only": "tab:olive",
+    "nested-random / concat / panelgrad_global": "tab:brown",
     "nested-random / concat / probabilistic_per_block_thompson": "tab:red",
     "nested-random / concat / adaptive_per_block_ucb": "tab:pink",
     "nested-all / slicing": "tab:purple",
@@ -88,6 +92,7 @@ SCALING_SAMPLING_TONES = {
     "probabilistic_global_thompson": 0.16,
     "probabilistic_global_thompson_reset": 0.24,
     "probabilistic_global_thompson_acquisition_only": 0.20,
+    "panelgrad_global": 0.42,
     "probabilistic_per_block_thompson": 0.34,
     "adaptive_per_block_ucb": 0.55,
 }
@@ -97,11 +102,13 @@ SCALING_SAMPLING_MARKERS = {
     "probabilistic_global_thompson": "*",
     "probabilistic_global_thompson_reset": "P",
     "probabilistic_global_thompson_acquisition_only": "h",
+    "panelgrad_global": "d",
     "probabilistic_per_block_thompson": "v",
     "adaptive_per_block_ucb": "X",
 }
 
 BAYESIAN_CONTROLLER_METHOD_FAMILY = "bayesian_gaussian_linear_thompson"
+PANELGRAD_METHOD_FAMILY = "panelgrad_gradient_rms"
 
 PLOT_STYLE_BASE = {
     "figure_title_fontsize": 17,
@@ -141,6 +148,8 @@ PLOT_STYLE_PRESETS = {
             "nested-random / concat / global": "nested-random / concat / global",
             "nested-random / slicing / per_block": "nested-random / slicing / per_block",
             "nested-random / concat / per_block": "nested-random / concat / per_block",
+            "nested-random / slicing / panelgrad_global": "nested-random / slicing / PanelGrad global",
+            "nested-random / concat / panelgrad_global": "nested-random / concat / PanelGrad global",
             "nested-random / slicing / adaptive_per_block_ucb": "nested-random / slicing / adaptive_per_block_ucb",
             "nested-random / concat / adaptive_per_block_ucb": "nested-random / concat / adaptive_per_block_ucb",
         },
@@ -149,6 +158,8 @@ PLOT_STYLE_PRESETS = {
             "nested-random / concat / global": "tab:orange",
             "nested-random / slicing / per_block": "tab:cyan",
             "nested-random / concat / per_block": "tab:red",
+            "nested-random / slicing / panelgrad_global": "tab:purple",
+            "nested-random / concat / panelgrad_global": "tab:brown",
             "nested-random / slicing / adaptive_per_block_ucb": "tab:olive",
             "nested-random / concat / adaptive_per_block_ucb": "tab:pink",
             "standalone": STANDALONE_REFERENCE_COLOR,
@@ -167,6 +178,8 @@ PLOT_STYLE_PRESETS = {
             "standalone": "Individual",
             "nested-random / slicing / none / global": "Slicing",
             "nested-random / concat / none / global": "Concat",
+            "nested-random / slicing / none / panelgrad_global": "Slicing / PanelGrad",
+            "nested-random / concat / none / panelgrad_global": "Concat / PanelGrad",
             "nested-random / concat / lmc": "Concat/LMC",
             "nested-random / concat / gmc": "Concat/GMC",
             "nested-all / slicing / none / global": "Slicing",
@@ -178,6 +191,8 @@ PLOT_STYLE_PRESETS = {
             "standalone": STANDALONE_REFERENCE_COLOR,
             "nested-random / slicing / none / global": "tab:red",
             "nested-random / concat / none / global": "tab:blue",
+            "nested-random / slicing / none / panelgrad_global": "tab:purple",
+            "nested-random / concat / none / panelgrad_global": "tab:brown",
             "nested-random / concat / lmc": "tab:purple",
             "nested-random / concat / gmc": "tab:green",
             "nested-all / slicing / none / global": "tab:red",
@@ -229,6 +244,8 @@ PPL_VS_SIZE_SPLIT_FIGURE_SPEC = {
             "standalone",
             "nested-random / slicing / none / global",
             "nested-random / concat / none / global",
+            "nested-random / slicing / none / panelgrad_global",
+            "nested-random / concat / none / panelgrad_global",
             "nested-random / concat / lmc",
             "nested-random / concat / gmc",
         ],
@@ -259,6 +276,8 @@ def main(argv: list[str] | None = None) -> None:
         ),
         variants=args.variants,
         corrections=args.corrections,
+        sampling_bin_steps=args.sampling_bin_steps,
+        sampling_zoom_steps=args.sampling_zoom_steps,
     )
     for path in figure_paths:
         print(path)
@@ -310,6 +329,8 @@ def parse_args(argv: list[str] | None = None):
         choices=("none", "gmc", "lmc"),
         help="Only include this correction mode; use 'none' for uncorrected runs.",
     )
+    parser.add_argument("--sampling-bin-steps", type=int, default=50)
+    parser.add_argument("--sampling-zoom-steps", type=int, default=250)
     return parser.parse_args(argv)
 
 
@@ -322,6 +343,8 @@ def generate_figures(
     include_incomplete_validation_traces: bool = False,
     variants: list[str] | tuple[str, ...] | None = None,
     corrections: list[str] | tuple[str, ...] | None = None,
+    sampling_bin_steps: int = 50,
+    sampling_zoom_steps: int = 250,
 ) -> list[Path]:
     input_root = Path(input_root)
     output_dir = Path(output_dir)
@@ -503,14 +526,31 @@ def generate_figures(
     )
 
     from src.evaluation.reporting import (
+        controller_selection_frequency_filename,
         controller_selection_share_filename,
         controller_timeline_filename,
+        generate_global_sampling_policy_figures,
+        plot_granularity_selection_frequency_over_tokens,
         plot_selected_granularity_over_tokens,
         plot_selected_granularity_share_over_tokens,
     )
     from src.evaluation.reporting_io import iter_controller_granularity_timelines
 
+    figure_paths.extend(
+        generate_global_sampling_policy_figures(
+            input_root,
+            output_dir,
+            dpi=dpi,
+            variants=variants,
+            corrections=corrections,
+            sampling_bin_steps=sampling_bin_steps,
+            sampling_zoom_steps=sampling_zoom_steps,
+        )
+    )
+
     for timeline in iter_controller_granularity_timelines(input_root):
+        if timeline.scope == "global":
+            continue
         timeline_rows = filter_plot_rows(
             [
                 {
@@ -535,6 +575,13 @@ def generate_figures(
             plot_selected_granularity_share_over_tokens(
                 timeline,
                 output_dir / controller_selection_share_filename(timeline.run_id),
+                dpi=dpi,
+            )
+        )
+        figure_paths.append(
+            plot_granularity_selection_frequency_over_tokens(
+                timeline,
+                output_dir / controller_selection_frequency_filename(timeline.run_id),
                 dpi=dpi,
             )
         )
@@ -786,7 +833,11 @@ def _adaptive_controller_from_saved_config(
     model = config.get("model")
     if not isinstance(model, dict):
         return None
-    controller = model.get("adaptive_controller")
+    controller = (
+        model.get("panelgrad")
+        if model.get("adaptive_sampler_strategy") == "panelgrad"
+        else model.get("adaptive_controller")
+    )
     return controller if isinstance(controller, dict) else None
 
 
@@ -1287,6 +1338,7 @@ def size_plot_panel_title(
         "probabilistic_global_thompson": "Bayesian global TS",
         "probabilistic_per_block_thompson": "Bayesian per-block TS",
         "adaptive_per_block_ucb": "Per-block UCB",
+        "panelgrad_global": "PanelGrad global",
     }
     if sampling_label is not None:
         parts.append(
@@ -1369,9 +1421,13 @@ def _size_plot_group_sort_key(rows: list[dict[str, Any]]) -> tuple[Any, ...]:
     row = rows[0]
     reset_rank = {"no_reset": 0, "full_prior": 1, "acquisition_only": 2}
     q_value = to_float_or_none(row.get("controller_process_noise_covariance"))
+    panelgrad_temperature = to_float_or_none(row.get("panelgrad_temperature"))
     return (
         reset_rank.get(_reset_mode_key(row), 9),
         q_value if q_value is not None else math.inf,
+        panelgrad_temperature
+        if panelgrad_temperature is not None
+        else math.inf,
         size_plot_experiment_contract(row),
     )
 
@@ -1414,6 +1470,14 @@ def _minimal_peer_differentiators(
 
     selected = {contract: [] for contract, _ in items}
     candidate_fields = (
+        "panelgrad_temperature",
+        "panelgrad_epsilon_schedule_type",
+        "panelgrad_epsilon_schedule_start",
+        "panelgrad_epsilon_schedule_end",
+        "panelgrad_epsilon_schedule_duration_steps",
+        "panelgrad_epsilon",
+        "panelgrad_refresh_interval_steps",
+        "panelgrad_eta",
         "controller_process_noise_covariance",
         "correction",
         "controller_decision_interval_steps",
@@ -1542,6 +1606,14 @@ def compact_size_curve_labels(
                     parts.append(f"K={_format_scientific(interval)}")
 
         field_labels = {
+            "panelgrad_temperature": "T",
+            "panelgrad_epsilon": "ε",
+            "panelgrad_epsilon_schedule_type": "ε schedule",
+            "panelgrad_epsilon_schedule_start": "ε start",
+            "panelgrad_epsilon_schedule_end": "ε end",
+            "panelgrad_epsilon_schedule_duration_steps": "ε steps",
+            "panelgrad_refresh_interval_steps": "H",
+            "panelgrad_eta": "η",
             "controller_process_noise_covariance": "Q",
             "controller_decision_interval_steps": "h",
             "controller_observation_noise_variance": "R",
@@ -3677,6 +3749,14 @@ SIZE_PLOT_CONTRACT_FIELDS = (
     "controller_feature_schema_hash",
     "controller_reset_enabled",
     "controller_reset_policy",
+    "panelgrad_refresh_interval_steps",
+    "panelgrad_eta",
+    "panelgrad_temperature",
+    "panelgrad_epsilon",
+    "panelgrad_epsilon_schedule_type",
+    "panelgrad_epsilon_schedule_start",
+    "panelgrad_epsilon_schedule_end",
+    "panelgrad_epsilon_schedule_duration_steps",
     "controller_reset_interval_steps",
     "controller_acquisition_policy",
     "controller_acquisition_passes",
@@ -4103,6 +4183,13 @@ def _probabilistic_sampling_label(row: dict[str, str]) -> str | None:
     strategy = adaptive_sampler_strategy_for_row(row)
     scope = str(row.get("controller_scope") or "").strip().lower()
     if (
+        method_family == PANELGRAD_METHOD_FAMILY
+        and method_version not in (None, "")
+        and strategy == "panelgrad"
+        and scope == "global"
+    ):
+        return "panelgrad_global"
+    if (
         method_family != BAYESIAN_CONTROLLER_METHOD_FAMILY
         or method_version in (None, "")
         or strategy != "thompson"
@@ -4202,6 +4289,8 @@ def display_sampling_label_for_curve(sampling_label: str | None) -> str | None:
         return "probabilistic global thompson acquisition-only"
     if sampling_label == "probabilistic_per_block_thompson":
         return "probabilistic per-block thompson"
+    if sampling_label == "panelgrad_global":
+        return "PanelGrad global"
     return sampling_label
 
 

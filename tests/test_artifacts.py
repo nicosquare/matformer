@@ -1,4 +1,5 @@
 import csv
+import copy
 import json
 from types import SimpleNamespace
 
@@ -36,6 +37,9 @@ from src.utils.metrics import (
     build_run_summary,
     build_consistency_result_rows,
     build_scaling_result_rows,
+    append_controller_events,
+    build_compact_controller_metric_fields,
+    build_controller_summary,
     write_config_artifact,
     write_consistency_results_csv,
     write_failed_run_summary,
@@ -45,8 +49,9 @@ from src.utils.metrics import (
     write_task_results_csv,
 )
 from src.training.run import run_training
+from src.training.panelgrad import PanelGradController
 from src.training.steps import build_training_metric_row
-from src.utils.reproducibility import derive_seed
+from src.utils.reproducibility import configure_strict_determinism, derive_seed
 
 
 class TinyExtractionModel(torch.nn.Module):
@@ -100,7 +105,6 @@ def test_write_config_metrics_and_run_summary(tmp_path):
         run_id="debug-nested-001",
         output_dir=output_dir,
     )
-
     config_path = write_config_artifact(config)
     metrics_path = write_metrics_csv(
         output_dir,
@@ -2932,6 +2936,7 @@ def test_nonadaptive_checkpoint_round_trip_remains_free_of_controller_state(tmp_
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     assert checkpoint["adaptive_sampler_state"] is None
     assert checkpoint["probabilistic_controller_state"] is None
+    assert checkpoint["panelgrad_state"] is None
     assert checkpoint["adaptive_sampler_strategy"] is None
     assert checkpoint["step"] == 3
     assert checkpoint["tokens_seen"] == 24
@@ -2951,8 +2956,206 @@ def test_nonadaptive_checkpoint_round_trip_remains_free_of_controller_state(tmp_
     assert restored_state["resume_count"] == 1
     assert restored_state["adaptive_sampler_state"] is None
     assert restored_state["probabilistic_controller_state"] is None
+    assert restored_state["panelgrad_state"] is None
     for parameter, restored_parameter in zip(
         model.parameters(),
         restored_model.parameters(),
     ):
         assert torch.equal(parameter, restored_parameter)
+
+
+def test_panelgrad_refresh_terminal_summary_and_compact_fields_are_auditable(tmp_path):
+    labels = ["small", "full"]
+    controller = PanelGradController(
+        ordered_granularities=labels,
+        refresh_interval_steps=2,
+        eta=1e-12,
+        temperature=1.0,
+        epsilon=0.1,
+        sampling_seed=17,
+        support_identity={
+            "ordered_granularities": labels,
+            "controlled_support_counts": {"small": 10, "full": 20},
+            "controlled_support_hash": "support-hash",
+        },
+    )
+    measurement = {
+        "measurements": [
+            {
+                "granularity": "small",
+                "controlled_parameter_count": 10,
+                "gradient_rms_score": 1.0,
+            },
+            {
+                "granularity": "full",
+                "controlled_parameter_count": 20,
+                "gradient_rms_score": 2.0,
+            },
+        ],
+        "duration_seconds": 0.25,
+        "backward_evaluation_count": 4,
+    }
+    refresh = controller.install_refresh(measurement, boundary_step=0)
+    action = controller.sample_action()
+    controller.commit_pending_action(completed_step=1)
+    controller.finish_training(completed_step=1)
+    events = [
+        {
+            "schema_version": 1,
+            "event_type": "panelgrad_refresh_completed",
+            "method_family": "panelgrad_gradient_rms",
+            "method_version": 1,
+            "boundary_step": 0,
+            "window_index": 0,
+            "measurements": refresh["measurements"],
+            "q": refresh["q"],
+            "p": refresh["p"],
+            "entropy": refresh["entropy"],
+            "active_epsilon": refresh["active_epsilon"],
+            "epsilon_schedule_step": refresh["epsilon_schedule_step"],
+            "duration_seconds": 0.25,
+            "backward_evaluation_count": 4,
+        },
+        {
+            "schema_version": 1,
+            "event_type": "panelgrad_terminal_partial",
+            "method_family": "panelgrad_gradient_rms",
+            "method_version": 1,
+            "boundary_step": 1,
+            "window_index": 0,
+        },
+    ]
+    path = tmp_path / "controller_metrics.jsonl"
+    append_controller_events(path, events)
+
+    summary = build_controller_summary(
+        controller_state=controller.state_dict(),
+        controller_events=events,
+        controller_metrics_path=path,
+    )
+    compact = build_compact_controller_metric_fields(controller.state_dict())
+
+    assert summary["refresh_count"] == 1
+    assert summary["final_p"] == refresh["p"]
+    assert summary["active_epsilon"] == pytest.approx(0.1)
+    assert summary["epsilon_schedule_step"] == 0
+    assert summary["epsilon_schedule"]["type"] == "fixed"
+    assert summary["epsilon_history"] == [
+        {
+            "refresh_index": 0,
+            "active_epsilon": 0.1,
+            "epsilon_schedule_step": 0,
+        }
+    ]
+    assert summary["exposure_counts"][action["global_granularity"]] == 1
+    assert summary["cumulative_measurement_duration_seconds"] == 0.25
+    assert summary["cumulative_backward_evaluations"] == 4
+    assert summary["controller_metrics_hash"]
+    assert compact["controller_strategy"] == "panelgrad"
+    assert compact["controller_sampled_probability"] == action["probability"]
+    assert compact["controller_phase"] == "terminal_partial"
+    assert "active_epsilon" not in compact
+
+
+def test_panelgrad_checkpoint_round_trips_versioned_policy_and_rng_state(tmp_path):
+    import src.training.checkpointing as training_checkpointing
+
+    output_dir = tmp_path / "panelgrad-checkpoint" / "panelgrad-smoke-001"
+    config = resolve_run_config(
+        "tests/fixtures/panelgrad_smoke.yaml",
+        output_dir=output_dir,
+    )
+    configure_strict_determinism(config)
+    labels = list(config["model"]["granularities"])
+    support = {
+        "ordered_granularities": labels,
+        "controlled_support_counts": {label: 10 for label in labels},
+        "controlled_support_hash": "checkpoint-support-hash",
+    }
+    config["model"]["panelgrad"]["controlled_support_counts"] = copy.deepcopy(
+        support["controlled_support_counts"]
+    )
+    config["model"]["panelgrad"]["controlled_support_hash"] = support[
+        "controlled_support_hash"
+    ]
+    for field in (
+        "data_roles_manifest_hash",
+        "optimizer_training_manifest_hash",
+        "controller_manifest_hash",
+        "validation_manifest_hash",
+        "final_holdout_manifest_hash",
+    ):
+        config[field] = f"{field}-value"
+    controller = PanelGradController(
+        ordered_granularities=labels,
+        refresh_interval_steps=2,
+        eta=1e-12,
+        temperature=1.0,
+        epsilon=0.1,
+        sampling_seed=config["model"]["panelgrad"]["sampling_seed"],
+        support_identity=support,
+        manifest_hashes={
+            field: config[field]
+            for field in (
+                "data_roles_manifest_hash",
+                "optimizer_training_manifest_hash",
+                "controller_manifest_hash",
+                "validation_manifest_hash",
+                "final_holdout_manifest_hash",
+            )
+        },
+    )
+    measurement = {
+        "measurements": [
+            {
+                "granularity": label,
+                "controlled_parameter_count": 10,
+                "gradient_rms_score": float(index + 1),
+            }
+            for index, label in enumerate(labels)
+        ]
+    }
+    controller.install_refresh(measurement, boundary_step=0)
+    controller.sample_action()
+    controller.commit_pending_action(completed_step=1)
+    run_state = training_checkpointing.build_initial_continuation_state(config)
+    run_state.update(step=1, last_completed_step=1)
+    run_state["panelgrad_state"] = controller.state_dict()
+    model = torch.nn.Linear(2, 1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    checkpoint_path = output_dir / "checkpoints" / "latest.pt"
+    training_checkpointing.save_model_checkpoint(
+        config,
+        model,
+        optimizer,
+        scheduler=None,
+        output_path=checkpoint_path,
+        checkpoint_fields={
+            "checkpoint_status": "latest",
+            "checkpoint_metric": None,
+            "checkpoint_metric_value": None,
+            "checkpoint_selection_step": 1,
+        },
+        run_state=run_state,
+    )
+    restored_model = torch.nn.Linear(2, 1)
+    restored_optimizer = torch.optim.SGD(restored_model.parameters(), lr=0.01)
+
+    restored = training_checkpointing.load_checkpoint_state(
+        checkpoint_path,
+        restored_model,
+        restored_optimizer,
+        scheduler=None,
+        config=config,
+    )
+
+    assert restored["panelgrad_state"]["refresh"]["p"] == (
+        controller.state_dict()["refresh"]["p"]
+    )
+    assert restored["panelgrad_state"]["sampling"]["exposure_counts"] == (
+        controller.state_dict()["sampling"]["exposure_counts"]
+    )
+    assert torch.equal(
+        restored["panelgrad_state"]["sampling"]["generator_state"],
+        controller.state_dict()["sampling"]["generator_state"],
+    )

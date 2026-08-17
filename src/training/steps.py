@@ -49,6 +49,7 @@ from src.training.checkpointing import (
 )
 from src.training.distributed import (
     autocast_context,
+    broadcast_object,
     sum_float,
     sum_int,
 )
@@ -281,9 +282,13 @@ def _select_optimizer_window_action(
     device: torch.device,
     *,
     optimizer_step: int,
+    tokens_seen: int,
     supports_layer_granularities: bool,
     forced_global_action=None,
     probabilistic_controller=None,
+    panelgrad_controller=None,
+    panelgrad_refresh_callback=None,
+    distributed_context=None,
     adaptive_sampler_state=None,
     stage_name: str,
 ) -> dict[str, Any]:
@@ -303,6 +308,35 @@ def _select_optimizer_window_action(
         return {"kind": "global", "granularities": [selected]}
     if run_sampling_mode == "nested-all":
         return {"kind": "nested_all", "granularities": list(granularities)}
+    if model_sampling_mode == "adaptive_global" and panelgrad_controller is not None:
+        # PanelGrad policy decision point: refresh if due, then draw one global
+        # action. The ordinary forward/backward path below remains unchanged.
+        if panelgrad_controller.phase == "refresh_pending":
+            if panelgrad_refresh_callback is None:
+                raise ConfigError("PanelGrad refresh callback is required")
+            panelgrad_refresh_callback(
+                step=optimizer_step - 1,
+                tokens_seen=tokens_seen,
+            )
+        if bool(getattr(distributed_context, "enabled", False)):
+            payload = None
+            if bool(getattr(distributed_context, "is_rank_zero", False)):
+                selected_action = panelgrad_controller.sample_action()
+                payload = {
+                    "action": selected_action,
+                    "state": panelgrad_controller.state_dict(),
+                }
+            payload = broadcast_object(payload, context=distributed_context, src=0)
+            if not bool(getattr(distributed_context, "is_rank_zero", False)):
+                panelgrad_controller.restore_transaction_snapshot(payload["state"])
+            selected_action = payload["action"]
+        else:
+            selected_action = panelgrad_controller.sample_action()
+        return {
+            "kind": "global",
+            "granularities": [selected_action["global_granularity"]],
+            "panelgrad_probability": selected_action["probability"],
+        }
     if model_sampling_mode == "adaptive_global" and probabilistic_controller is not None:
         selected = probabilistic_global_layer_granularities(
             config, probabilistic_controller
@@ -345,6 +379,31 @@ def _select_optimizer_window_action(
             config, granularities, device
         ),
     }
+
+
+def _training_action_heartbeat_fields(action: Mapping[str, Any]) -> dict[str, Any]:
+    """Build one compact action description shared by all sampling modes."""
+
+    kind = str(action.get("kind") or "unknown")
+    granularities = [str(label) for label in action.get("granularities", [])]
+    fields: dict[str, Any] = {"selection_kind": kind}
+    if kind == "global" and len(granularities) == 1:
+        fields["selected_granularity"] = granularities[0]
+    elif kind == "nested_all":
+        fields["selected_granularity"] = "all"
+        fields["selected_granularities"] = granularities
+    elif granularities:
+        counts = {
+            label: granularities.count(label)
+            for label in dict.fromkeys(granularities)
+        }
+        fields["selected_granularity"] = "per_block"
+        fields["selected_granularity_counts"] = counts
+    if action.get("panelgrad_probability") is not None:
+        fields["controller_sampled_probability"] = float(
+            action["panelgrad_probability"]
+        )
+    return fields
 
 
 def _backward_context(model, *, synchronize: bool):
@@ -436,6 +495,9 @@ def train_for_steps(
     probabilistic_controller=None,
     probabilistic_boundary_callback=None,
     probabilistic_completion_callback=None,
+    panelgrad_controller=None,
+    panelgrad_refresh_callback=None,
+    panelgrad_completion_callback=None,
     forced_global_action=None,
     successful_step_callback=None,
 ) -> list[dict[str, Any]]:
@@ -464,6 +526,12 @@ def train_for_steps(
     content_tokens_seen = int(run_state.get("content_tokens_seen", 0))
     heartbeat_writer = heartbeat_writer or NoopHeartbeatWriter()
     heartbeat_cadence = build_heartbeat_cadence(config)
+    # The stage-start event is the cadence baseline. This keeps ordinary fast
+    # steps on committed boundaries (10, 20, ...) instead of consuming the
+    # cadence on the first in-flight microbatch (1, 11, ...).
+    heartbeat_cadence.mark_emitted(step=step, now=start_time)
+    latest_committed_loss: float | None = None
+    latest_committed_loss_step: int | None = None
     checkpoint_state = checkpoint_state if checkpoint_state is not None else {}
     latest_checkpoint_path = Path(
         run_state.get("latest_checkpoint_path")
@@ -535,9 +603,15 @@ def train_for_steps(
                     if probabilistic_controller is not None
                     else None
                 )
+                panelgrad_snapshot = (
+                    panelgrad_controller.transaction_snapshot()
+                    if panelgrad_controller is not None
+                    else None
+                )
                 window_sampler_snapshot = training_data.packed_sampler_state(
                     train_dataloader
                 )
+                in_flight_heartbeat_emitted = False
                 window: list[tuple[int, dict[str, torch.Tensor]]] = []
                 while len(window) < accumulation_steps:
                     try:
@@ -578,9 +652,13 @@ def train_for_steps(
                         granularities,
                         device,
                         optimizer_step=pending_step,
+                        tokens_seen=tokens_seen,
                         supports_layer_granularities=supports_layer_granularities,
                         forced_global_action=forced_global_action,
                         probabilistic_controller=probabilistic_controller,
+                        panelgrad_controller=panelgrad_controller,
+                        panelgrad_refresh_callback=panelgrad_refresh_callback,
+                        distributed_context=distributed_context,
                         adaptive_sampler_state=adaptive_sampler_state,
                         stage_name=stage_name,
                     )
@@ -623,10 +701,14 @@ def train_for_steps(
                                     step=pending_step,
                                     tokens_seen=tokens_seen,
                                     content_tokens_seen=content_tokens_seen,
+                                    latest_loss=latest_committed_loss,
                                     peak_gpu_memory_bytes=current_peak_memory_bytes(
                                         device
                                     ),
                                 ),
+                                progress_state="optimizer_window_in_progress",
+                                latest_loss_step=latest_committed_loss_step,
+                                **_training_action_heartbeat_fields(action),
                                 pending_optimizer_step=pending_step,
                                 pending_microstep=microstep_index,
                                 optimizer_window_microsteps=len(prepared_window),
@@ -635,6 +717,7 @@ def train_for_steps(
                             heartbeat_cadence.mark_emitted(
                                 step=pending_step, now=now
                             )
+                            in_flight_heartbeat_emitted = True
 
                     committed_tokens = sum_int(
                         local_window_content_tokens,
@@ -706,6 +789,13 @@ def train_for_steps(
                         run_state["sampler_state"] = sampler_state
                     if probabilistic_controller is not None:
                         probabilistic_controller.record_successful_optimizer_step()
+                    if panelgrad_controller is not None:
+                        panelgrad_controller.commit_pending_action(
+                            completed_step=step
+                        )
+                        run_state["panelgrad_state"] = (
+                            panelgrad_controller.state_dict()
+                        )
 
                     global_losses = {
                         label: sum_float(
@@ -717,6 +807,8 @@ def train_for_steps(
                         for label, numerator in local_loss_numerators.items()
                     }
                     latest_loss = sum(global_losses.values()) / len(global_losses)
+                    latest_committed_loss = latest_loss
+                    latest_committed_loss_step = step
                     if successful_step_callback is not None:
                         successful_step_callback(step=step, tokens_seen=tokens_seen)
                     if probabilistic_boundary_callback is not None:
@@ -800,6 +892,12 @@ def train_for_steps(
                         tokens_per_second=tokens_per_second,
                         peak_gpu_memory_bytes=peak_memory_bytes,
                         stage_name=stage_name,
+                        force=in_flight_heartbeat_emitted,
+                        extra_fields={
+                            "progress_state": "optimizer_step_committed",
+                            "latest_loss_step": step,
+                            **_training_action_heartbeat_fields(action),
+                        },
                     )
                     if (
                         metrics_journal is not None
@@ -924,6 +1022,10 @@ def train_for_steps(
                             probabilistic_controller.restore_transaction_snapshot(
                                 controller_snapshot
                             )
+                        if panelgrad_snapshot is not None:
+                            panelgrad_controller.restore_transaction_snapshot(
+                                panelgrad_snapshot
+                            )
                         run_state.clear()
                         run_state.update(window_state_snapshot)
                         if window_sampler_snapshot is not None:
@@ -940,6 +1042,8 @@ def train_for_steps(
 
     if stage_name == "training" and probabilistic_completion_callback is not None:
         probabilistic_completion_callback(step=step, tokens_seen=tokens_seen)
+    if stage_name == "training" and panelgrad_completion_callback is not None:
+        panelgrad_completion_callback(step=step, tokens_seen=tokens_seen)
     if stage_name == "training":
         append_final_validation_if_needed(
             metrics_rows,
@@ -990,6 +1094,9 @@ def _runtime_sampler_artifact_fields(
                 run_state.get("latest_controller_event"),
             )
         )
+    panelgrad_state = run_state.get("panelgrad_state")
+    if isinstance(panelgrad_state, Mapping):
+        fields.update(build_compact_controller_metric_fields(panelgrad_state))
     return fields
 
 

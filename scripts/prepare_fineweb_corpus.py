@@ -14,6 +14,7 @@ from datasets import load_dataset
 from transformers import AutoTokenizer
 
 from src.training.packed_corpus import (
+    iter_streaming_documents_with_ordered_prefetch,
     load_existing_corpus_if_matching,
     preparation_work_dir,
     prepare_packed_corpus,
@@ -70,6 +71,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--source-read-workers",
+        type=positive_int,
+        default=None,
+        help=(
+            "Ordered streaming source-reader threads. Defaults to "
+            "--tokenization-workers and preserves the exact shuffled order."
+        ),
+    )
+    parser.add_argument(
         "--progress-interval-seconds",
         type=positive_float,
         default=60.0,
@@ -110,11 +120,14 @@ def _summary(
         "role_manifest_hashes": manifest["role_manifest_hashes"],
         "tokenizer_manifest_hash": tokenizer_manifest["manifest_hash"],
         "tokenization_workers": args.tokenization_workers,
+        "source_read_workers": args.source_read_workers,
     }
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
+    if args.source_read_workers is None:
+        args.source_read_workers = args.tokenization_workers
     started_at = time.monotonic()
     tokenizer_manifest = load_tokenizer_manifest(
         args.prepared_tokenizer_dir, verify_files=True
@@ -196,9 +209,35 @@ def main(argv: Sequence[str] | None = None) -> None:
         seed=args.data_seed,
         buffer_size=args.shuffle_buffer_size,
     )
+    dataset = iter_streaming_documents_with_ordered_prefetch(
+        dataset,
+        workers=args.source_read_workers,
+    )
 
     def report_progress(progress: dict) -> None:
         elapsed = max(time.monotonic() - started_at, 1e-9)
+        if progress["event"] in {"resume_replay", "resume_replay_completed"}:
+            replayed = int(progress["replayed_document_count"])
+            replay_target = int(progress["replay_target_document_count"])
+            replay_rate = float(progress["replay_documents_per_second"])
+            replay_remaining = max(replay_target - replayed, 0)
+            replay_eta = replay_remaining / replay_rate if replay_rate > 0 else 0.0
+            replay_percent = (
+                100.0 * replayed / replay_target if replay_target else 100.0
+            )
+            print(
+                "[corpus-progress] "
+                f"event={progress['event']} phase=resume_replay "
+                f"replayed_documents={replayed:,}/{replay_target:,} "
+                f"replay_percent={replay_percent:.2f} "
+                f"elapsed_seconds={progress['replay_elapsed_seconds']:.1f} "
+                f"documents_per_second={replay_rate:.1f} "
+                f"eta_seconds={replay_eta:.1f} "
+                f"source_read_workers={progress['source_read_workers']}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return
         documents_done = max(
             int(progress["committed_document_count"]) - resumed_document_count,
             0,
@@ -217,7 +256,9 @@ def main(argv: Sequence[str] | None = None) -> None:
             f"shard_offset_tokens={progress['current_optimizer_shard_offset']:,} "
             f"elapsed_seconds={elapsed:.1f} "
             f"documents_per_second={documents_done / elapsed:.1f} "
-            f"tokens_per_second={tokens_done / elapsed:.1f}",
+            f"tokens_per_second={tokens_done / elapsed:.1f} "
+            f"source_read_workers={progress['source_read_workers']} "
+            f"tokenization_workers={progress['tokenization_workers']}",
             file=sys.stderr,
             flush=True,
         )
@@ -227,7 +268,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         f"event={'resuming' if was_resumable else 'starting'} "
         f"documents={resumed_document_count:,} "
         f"optimizer_tokens={resumed_token_count:,} "
-        f"interval_seconds={args.progress_interval_seconds:g}",
+        f"interval_seconds={args.progress_interval_seconds:g} "
+        f"source_read_workers={args.source_read_workers} "
+        f"tokenization_workers={args.tokenization_workers}",
         file=sys.stderr,
         flush=True,
     )
@@ -247,6 +290,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         shard_token_capacity=args.shard_token_capacity,
         shuffle_buffer_size=args.shuffle_buffer_size,
         tokenization_workers=args.tokenization_workers,
+        source_read_workers=args.source_read_workers,
         tokenizer_manifest=tokenizer_manifest,
         progress_callback=report_progress,
         progress_interval_seconds=args.progress_interval_seconds,

@@ -21,6 +21,12 @@ PROBABILISTIC_SEED_STREAMS = (
     "pre_nested_warmup_schedule",
     "controller_reset_schedule",
 )
+PANELGRAD_SEED_STREAMS = (
+    "controller_panel",
+    "final_holdout",
+    "pre_nested_warmup_schedule",
+    "panelgrad_sampling",
+)
 SEED_STREAMS = (
     "model_initialization",
     "python_training",
@@ -33,6 +39,7 @@ SEED_STREAMS = (
     "granularity_selection",
     "adaptive_sampling",
     "artifact_retry_jitter",
+    "panelgrad_sampling",
     *PROBABILISTIC_SEED_STREAMS,
 )
 
@@ -350,12 +357,38 @@ def probabilistic_seed_provenance(
     }
 
 
+def panelgrad_seed_provenance(
+    config: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Resolve only the data-role, warmup, and categorical PanelGrad streams."""
+
+    seed_stream_version = int(
+        config["run"]["reproducibility"]["seed_stream_version"]
+    )
+    return {
+        stream_name: {
+            "stream_name": stream_name,
+            "seed_stream_version": seed_stream_version,
+            "resolved_seed": seed_for(config, stream_name),
+        }
+        for stream_name in PANELGRAD_SEED_STREAMS
+    }
+
+
 def _uses_probabilistic_adaptive_controller(config: Mapping[str, Any]) -> bool:
     model = config.get("model", {})
     return (
         model.get("granularity_sampling_mode")
         in {"adaptive_global", "adaptive_per_block"}
         and model.get("adaptive_sampler_strategy") == "thompson"
+    )
+
+
+def _uses_panelgrad(config: Mapping[str, Any]) -> bool:
+    model = config.get("model", {})
+    return (
+        model.get("granularity_sampling_mode") == "adaptive_global"
+        and model.get("adaptive_sampler_strategy") == "panelgrad"
     )
 
 
@@ -401,6 +434,17 @@ def build_comparison_control_signature(config: Mapping[str, Any]) -> tuple[str, 
     if _uses_probabilistic_adaptive_controller(config):
         inputs["probabilistic_seed_streams"] = probabilistic_seed_provenance(config)
         inputs["probabilistic_data_role_manifests"] = {
+            "data_roles": config.get("data_roles_manifest_hash"),
+            "optimizer_training": config.get(
+                "optimizer_training_manifest_hash"
+            ),
+            "controller": config.get("controller_manifest_hash"),
+            "ordinary_validation": config.get("validation_manifest_hash"),
+            "final_holdout": config.get("final_holdout_manifest_hash"),
+        }
+    if _uses_panelgrad(config):
+        inputs["panelgrad_seed_streams"] = panelgrad_seed_provenance(config)
+        inputs["panelgrad_data_role_manifests"] = {
             "data_roles": config.get("data_roles_manifest_hash"),
             "optimizer_training": config.get(
                 "optimizer_training_manifest_hash"
