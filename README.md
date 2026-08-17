@@ -9,15 +9,22 @@ This repository contains a compact MatFormer-style language modeling workflow bu
 
 ## Environment Setup
 
-This repository uses a lightweight Python research stack. Install the baseline
-dependencies with:
+The validated Linux x86-64 GPU environment uses Python 3.12.13 and PyTorch
+2.11.0 with CUDA 12.8. Create the path-neutral Conda environment; its pip phase
+installs the official CUDA wheel and all pinned repository dependencies:
 
 ```bash
-python3 -m pip install -r requirements.txt
+conda env create --file environment.yml
+conda activate elasticnn
+python -m pip check
 ```
 
-GPU-enabled PyTorch builds may require a platform-specific install command from
-the PyTorch project before installing the remaining packages.
+The production 10B configs disable W&B and downstream `lm-eval`, so those
+optional tools are intentionally not part of the execution environment. Install
+them separately only when enabling their corresponding configuration surfaces.
+Run repository commands from the repository root. The
+[complete 10B operator handoff](docs/10b-slicing-experiments.md) is the
+authoritative guide for those experiments.
 
 The importable code now lives under `src/`. The root `train.py` and
 `scripts/make_figures.py` entrypoints remain thin wrappers around that package

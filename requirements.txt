@@ -1,13 +1,15 @@
-torch
-transformers
+# Versions below match the validated Linux x86-64 10B training environment.
+# PyTorch is pinned to the official Python 3.12 / CUDA 12.8 wheel.
+torch @ https://download.pytorch.org/whl/cu128/torch-2.11.0%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl
+transformers==5.8.0
+datasets==4.8.5
 sentencepiece==0.2.1
-protobuf
-datasets
-pyyaml
-pandas
-matplotlib
-pytest
-lm-eval
-ipykernel
-python-dotenv
-wandb
+protobuf==7.35.1
+PyYAML==6.0.3
+numpy==2.4.3
+pandas==3.0.2
+matplotlib==3.10.9
+pytest==9.0.3
+python-dotenv==1.2.2
+huggingface-hub==1.14.0
+pyarrow==24.0.0
