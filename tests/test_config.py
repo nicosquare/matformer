@@ -2080,7 +2080,7 @@ def test_10b_production_preflight_resolves_exact_four_gpu_schedule(tmp_path, mon
         },
     )
     resolved = resolve_run_config(
-        "configs/opt-in_exps/slicing_10b_base.yaml",
+        "configs/production/slicing_10b_base.yaml",
         output_dir=tmp_path / "slicing-10b-base",
         overrides=[
             "dataset.prepared_corpus_dir=/prepared/fineweb",
@@ -2134,20 +2134,20 @@ def test_packed_preflight_rejects_oversized_misaligned_and_mismatched_source(
     ]
     with pytest.raises(ConfigError, match="exceeds.*optimizer tokens"):
         resolve_run_config(
-            "configs/opt-in_exps/slicing_10b_base.yaml",
+            "configs/production/slicing_10b_base.yaml",
             output_dir=tmp_path / "oversized" / "slicing-10b-base",
             overrides=[*common, "training.token_budget=100000000000"],
         )
     with pytest.raises(ConfigError, match="divisible by model.context_length"):
         resolve_run_config(
-            "configs/opt-in_exps/slicing_10b_base.yaml",
+            "configs/production/slicing_10b_base.yaml",
             output_dir=tmp_path / "misaligned" / "slicing-10b-base",
             overrides=[*common, "training.token_budget=10000000001"],
         )
     manifest["source"]["dataset_config_name"] = "sample-10BT"
     with pytest.raises(ConfigError, match="source identity.*dataset_config_name"):
         resolve_run_config(
-            "configs/opt-in_exps/slicing_10b_base.yaml",
+            "configs/production/slicing_10b_base.yaml",
             output_dir=tmp_path / "source-mismatch" / "slicing-10b-base",
             overrides=common,
         )
@@ -2189,7 +2189,7 @@ def test_10b_bayesian_dimensions_and_balanced_warmup(tmp_path, monkeypatch):
         "model.tokenizer_dir=/prepared/tokenizer",
     ]
     global_config = resolve_run_config(
-        "configs/opt-in_exps/slicing_10b_bayesian.yaml",
+        "configs/production/slicing_10b_bayesian.yaml",
         output_dir=tmp_path / "slicing-10b-bayesian-global",
         overrides=common,
     )
@@ -2199,14 +2199,14 @@ def test_10b_bayesian_dimensions_and_balanced_warmup(tmp_path, monkeypatch):
     assert global_config["training"]["pre_nested_warmup"]["duration"] == 800
     assert global_config["training"]["pre_nested_warmup"]["passes"] == 2
     per_block = resolve_run_config(
-        "configs/opt-in_exps/slicing_10b_bayesian.yaml",
+        "configs/production/slicing_10b_bayesian.yaml",
         output_dir=tmp_path / "slicing-10b-bayesian-global",
         overrides=[*common, "model.granularity_sampling_mode=adaptive_per_block"],
     )
     assert per_block["model"]["adaptive_controller"]["coefficient_dimension"] == 113
 
     gmc = resolve_run_config(
-        "configs/opt-in_exps/slicing_10b_bayesian.yaml",
+        "configs/production/slicing_10b_bayesian.yaml",
         output_dir=tmp_path / "slicing-10b-bayesian-global",
         overrides=[*common, "model.correction_mode=gmc"],
     )
@@ -2225,7 +2225,7 @@ def test_packed_mmap_rejects_per_run_sampling_and_distributed_ucb(tmp_path, monk
     )
     with pytest.raises(ConfigError, match="sample_limit is forbidden"):
         resolve_run_config(
-            "configs/opt-in_exps/slicing_10b_base.yaml",
+            "configs/production/slicing_10b_base.yaml",
             output_dir=tmp_path / "slicing-10b-base",
             overrides=[
                 "dataset.prepared_corpus_dir=/prepared/fineweb",

@@ -82,8 +82,8 @@ fan out experiments.
 
 ```bash
 export OUT=/nfs-stor/$USER/matformer-10b-runs
-export BASE=configs/opt-in_exps/slicing_10b_base.yaml
-export BAYES=configs/opt-in_exps/slicing_10b_bayesian.yaml
+export BASE=configs/production/slicing_10b_base.yaml
+export BAYES=configs/production/slicing_10b_bayesian.yaml
 COMMON="--output-root $OUT --override dataset.prepared_corpus_dir=$CORPUS --override model.tokenizer_dir=$TOKENIZER"
 ```
 
