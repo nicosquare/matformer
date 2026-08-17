@@ -1918,6 +1918,7 @@ def _resolve_panelgrad_configuration(config: dict[str, Any]) -> None:
         "eta",
         "temperature",
         "epsilon",
+        "epsilon_schedule",
         "method_family",
         "method_version",
         "scope",
@@ -1980,13 +1981,54 @@ def _resolve_panelgrad_configuration(config: dict[str, Any]) -> None:
     if temperature <= 0.0:
         raise ConfigError("model.panelgrad.temperature must be positive")
     panelgrad["temperature"] = temperature
-    epsilon = _finite_float(
-        panelgrad.get("epsilon", 0.1),
-        "model.panelgrad.epsilon",
-    )
-    if epsilon < 0.0 or epsilon > 1.0:
-        raise ConfigError("model.panelgrad.epsilon must be between zero and one")
-    panelgrad["epsilon"] = epsilon
+    has_epsilon = "epsilon" in panelgrad
+    has_epsilon_schedule = "epsilon_schedule" in panelgrad
+    if has_epsilon and has_epsilon_schedule:
+        raise ConfigError(
+            "model.panelgrad accepts either epsilon or epsilon_schedule, not both"
+        )
+    if has_epsilon_schedule:
+        raw_schedule = panelgrad["epsilon_schedule"]
+        if not isinstance(raw_schedule, Mapping):
+            raise ConfigError("model.panelgrad.epsilon_schedule must be a mapping")
+        schedule = copy.deepcopy(dict(raw_schedule))
+        unknown_schedule_fields = sorted(
+            set(schedule) - {"type", "start", "end", "duration_steps"}
+        )
+        if unknown_schedule_fields:
+            raise ConfigError(
+                "Unknown model.panelgrad.epsilon_schedule fields: "
+                f"{unknown_schedule_fields}"
+            )
+        schedule_type = schedule.get("type")
+        if schedule_type != "linear":
+            raise ConfigError(
+                "model.panelgrad.epsilon_schedule.type must be 'linear'"
+            )
+        for endpoint in ("start", "end"):
+            value = _finite_float(
+                schedule.get(endpoint),
+                f"model.panelgrad.epsilon_schedule.{endpoint}",
+            )
+            if value < 0.0 or value > 1.0:
+                raise ConfigError(
+                    f"model.panelgrad.epsilon_schedule.{endpoint} must be "
+                    "between zero and one"
+                )
+            schedule[endpoint] = value
+        schedule["duration_steps"] = _strict_positive_int(
+            schedule.get("duration_steps"),
+            "model.panelgrad.epsilon_schedule.duration_steps",
+        )
+        panelgrad["epsilon_schedule"] = schedule
+    else:
+        epsilon = _finite_float(
+            panelgrad.get("epsilon", 0.1),
+            "model.panelgrad.epsilon",
+        )
+        if epsilon < 0.0 or epsilon > 1.0:
+            raise ConfigError("model.panelgrad.epsilon must be between zero and one")
+        panelgrad["epsilon"] = epsilon
 
     fixed_fields = {
         "method_family": PANELGRAD_METHOD_FAMILY,

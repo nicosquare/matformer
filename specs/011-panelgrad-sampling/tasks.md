@@ -124,6 +124,18 @@
 
 ---
 
+## Phase 7: Linear Epsilon Schedule Extension
+
+**Purpose**: Add an opt-in refresh-boundary linear exploration schedule while preserving fixed-epsilon behavior.
+
+- [X] T039 Add mutually exclusive fixed/linear epsilon configuration resolution and validation in `src/utils/config.py` and `tests/test_config.py`
+- [X] T040 Evaluate epsilon from committed PanelGrad steps only at refresh boundaries, freeze it in each probability snapshot, and preserve rollback/warmup/terminal semantics in `src/training/panelgrad.py`, `src/training/run.py`, `tests/test_panelgrad.py`, and `tests/test_training_smoke.py`
+- [X] T041 Increment PanelGrad state schema, validate `p` with the snapshot epsilon, and migrate version-1 fixed-epsilon state only for fixed-policy resumes in `src/training/panelgrad.py`, `tests/test_panelgrad_resume.py`, and `tests/test_artifacts.py`
+- [X] T042 Record epsilon schedule progress in refresh artifacts/controller summaries and add schedule-aware plot identities plus epsilon-over-tokens diagnostics in `src/utils/metrics.py`, `src/evaluation/reporting.py`, `src/evaluation/reporting_io.py`, `src/evaluation/reporting_impl.py`, and `tests/test_reporting.py`
+- [X] T043 Verify distributed agreement, categorical reproducibility, scheduled and fixed lifecycle behavior, and non-PanelGrad compatibility in `tests/test_distributed.py` and the focused compatibility suite
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies

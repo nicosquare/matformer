@@ -18,6 +18,20 @@ Confirm:
 - raw aggregate-controller-gradient RMS over granularity-controlled FFN support;
 - fixed controller/final-holdout contracts and `panelgrad_sampling` seed stream.
 
+To opt into a refresh-boundary linear epsilon schedule, replace scalar `epsilon`
+in a PanelGrad YAML with:
+
+```yaml
+epsilon_schedule:
+  type: linear
+  start: 0.5
+  end: 0.1
+  duration_steps: 24415
+```
+
+The initial refresh uses `0.5`; later refreshes interpolate from committed
+PanelGrad optimizer steps, excluding warmup and failed attempts.
+
 Inspect normalized fields without loading data:
 
 ```bash
@@ -83,7 +97,7 @@ sed -n '1,10p' outputs/panelgrad-smoke/controller_metrics.jsonl
 sed -n '1,10p' outputs/panelgrad-smoke/metrics.csv
 ```
 
-Verify refresh records contain ordered `N_g`, gradient norm/RMS, `q`, `p`, entropy/extrema, controller totals, and measurement cost. Training rows contain the sampled granularity, its probability, exposure counts, and interval progress.
+Verify refresh records contain active epsilon/schedule progress, ordered `N_g`, gradient norm/RMS, `q`, `p`, entropy/extrema, controller totals, and measurement cost. Training rows remain compact and contain the sampled granularity, its probability, exposure counts, and interval progress.
 
 ## 5. Validate measurement isolation and boundaries
 

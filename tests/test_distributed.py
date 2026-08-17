@@ -667,7 +667,25 @@ def test_real_two_process_gloo_rank_zero_controller_commit(tmp_path):
     assert records[0]["global_granularity"] in ("small", "full")
 
 
-def test_panelgrad_rank_zero_draw_is_broadcast_with_generator_state(monkeypatch):
+@pytest.mark.parametrize(
+    "epsilon_kwargs",
+    [
+        {"epsilon": 0.1},
+        {
+            "epsilon": None,
+            "epsilon_schedule": {
+                "type": "linear",
+                "start": 0.5,
+                "end": 0.1,
+                "duration_steps": 4,
+            },
+        },
+    ],
+)
+def test_panelgrad_rank_zero_draw_is_broadcast_with_generator_state(
+    monkeypatch,
+    epsilon_kwargs,
+):
     support = {
         "ordered_granularities": ["small", "full"],
         "controlled_support_counts": {"small": 10, "full": 20},
@@ -679,7 +697,7 @@ def test_panelgrad_rank_zero_draw_is_broadcast_with_generator_state(monkeypatch)
             refresh_interval_steps=2,
             eta=1e-12,
             temperature=1.0,
-            epsilon=0.1,
+            **epsilon_kwargs,
             sampling_seed=91,
             support_identity=support,
         )
@@ -740,3 +758,9 @@ def test_panelgrad_rank_zero_draw_is_broadcast_with_generator_state(monkeypatch)
         left["sampling"]["generator_state"],
         right["sampling"]["generator_state"],
     )
+    assert left["policy"]["epsilon_schedule"] == right["policy"][
+        "epsilon_schedule"
+    ]
+    assert left["refresh"]["active_epsilon"] == right["refresh"][
+        "active_epsilon"
+    ]

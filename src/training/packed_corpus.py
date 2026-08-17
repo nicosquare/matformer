@@ -547,6 +547,134 @@ def _ordered_tokenize_documents(
         executor.shutdown(wait=True, cancel_futures=True)
 
 
+def iter_streaming_documents_with_ordered_prefetch(
+    dataset: Any,
+    *,
+    workers: int,
+) -> Iterator[Mapping[str, Any]]:
+    """Read shuffled HF source shards concurrently without changing their order.
+
+    Hugging Face's streaming shuffle first permutes data sources, then applies a
+    deterministic in-memory buffer shuffle. We parallelize only the independent
+    source-shard reads, consume those futures in their original order, and apply
+    the same buffer algorithm in the caller. This makes fresh preparation and
+    legacy resume replay use the requested CPUs while preserving corpus identity.
+
+    Unsupported iterable layouts fail explicitly and can be run with one reader
+    rather than silently claiming parallelism. The optimization deliberately
+    depends on no change to saved preparation state.
+    """
+
+    worker_count = int(workers)
+    if worker_count <= 0:
+        raise PackedCorpusError("Source-read workers must be positive")
+    if worker_count == 1:
+        yield from dataset
+        return
+
+    prepare = getattr(dataset, "_prepare_ex_iterable_for_iteration", None)
+    if not callable(prepare):
+        raise PackedCorpusError(
+            "Parallel source reading requires a sharded Hugging Face "
+            "IterableDataset; use source_read_workers=1 for this source"
+        )
+    prepared = prepare()
+    buffered = prepared
+    while buffered is not None and not (
+        isinstance(getattr(buffered, "buffer_size", None), int)
+        and getattr(buffered, "generator", None) is not None
+        and callable(getattr(buffered, "_iter_random_indices", None))
+    ):
+        buffered = getattr(buffered, "ex_iterable", None)
+    child = getattr(buffered, "ex_iterable", None)
+    source_count = getattr(child, "num_shards", 0) if child is not None else 0
+    shard_sources = getattr(child, "shard_data_sources", None)
+    if (
+        buffered is None
+        or child is None
+        or not isinstance(source_count, int)
+        or source_count <= 1
+        or not callable(shard_sources)
+    ):
+        raise PackedCorpusError(
+            "Parallel source reading does not support this Hugging Face iterable "
+            "layout; use source_read_workers=1"
+        )
+
+    def read_source_shard(index: int, *, as_arrow: bool) -> list[Any]:
+        shard = child.shard_data_sources(
+            num_shards=source_count,
+            index=index,
+            contiguous=True,
+        )
+        if as_arrow:
+            arrow_iterator = getattr(shard, "iter_arrow", None)
+            if not callable(arrow_iterator):
+                raise PackedCorpusError(
+                    "A parallel source shard unexpectedly lacks Arrow iteration"
+                )
+            return list(arrow_iterator())
+        return list(shard)
+
+    def ordered_source_records(*, as_arrow: bool) -> Iterator[Any]:
+        max_pending = min(source_count, worker_count * 2)
+        pending: deque[Future[list[Any]]] = deque()
+        next_source = 0
+        executor = ThreadPoolExecutor(
+            max_workers=min(worker_count, source_count),
+            thread_name_prefix="fineweb-read",
+        )
+        try:
+            while next_source < max_pending:
+                pending.append(
+                    executor.submit(
+                        read_source_shard,
+                        next_source,
+                        as_arrow=as_arrow,
+                    )
+                )
+                next_source += 1
+            while pending:
+                records = pending.popleft().result()
+                if next_source < source_count:
+                    pending.append(
+                        executor.submit(
+                            read_source_shard,
+                            next_source,
+                            as_arrow=as_arrow,
+                        )
+                    )
+                    next_source += 1
+                yield from records
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
+
+    class OrderedParallelChild:
+        def __iter__(self):
+            yield from ordered_source_records(as_arrow=False)
+
+        @property
+        def iter_arrow(self):
+            return (
+                self._iter_arrow
+                if callable(getattr(child, "iter_arrow", None))
+                else None
+            )
+
+        def _iter_arrow(self):
+            yield from ordered_source_records(as_arrow=True)
+
+        def __getattr__(self, name: str):
+            return getattr(child, name)
+
+    buffered.ex_iterable = OrderedParallelChild()
+    try:
+        for record in prepared:
+            yield record[1] if isinstance(record, tuple) and len(record) == 2 else record
+    finally:
+        buffered.ex_iterable = child
+
+
 def prepare_packed_corpus(
     documents: Iterable[Mapping[str, Any]],
     tokenizer: Any,
@@ -564,6 +692,7 @@ def prepare_packed_corpus(
     shard_token_capacity: int = DEFAULT_SHARD_TOKEN_CAPACITY,
     shuffle_buffer_size: int = DEFAULT_SHUFFLE_BUFFER_SIZE,
     tokenization_workers: int = 1,
+    source_read_workers: int = 1,
     tokenizer_manifest: Mapping[str, Any],
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
     progress_interval_seconds: float = 60.0,
@@ -579,6 +708,8 @@ def prepare_packed_corpus(
         raise PackedCorpusError("context_length must exceed one token")
     if isinstance(tokenization_workers, bool) or int(tokenization_workers) <= 0:
         raise PackedCorpusError("tokenization_workers must be positive")
+    if isinstance(source_read_workers, bool) or int(source_read_workers) <= 0:
+        raise PackedCorpusError("source_read_workers must be positive")
     if float(progress_interval_seconds) <= 0:
         raise PackedCorpusError("progress_interval_seconds must be positive")
 
@@ -660,7 +791,11 @@ def prepare_packed_corpus(
         writers: dict[str, _RoleShardWriter] = {}
         last_progress_at = time.monotonic()
 
-        def emit_progress(event: str, role: str | None = None) -> None:
+        def emit_progress(
+            event: str,
+            role: str | None = None,
+            **event_fields: Any,
+        ) -> None:
             if progress_callback is None:
                 return
             training_writer = writers.get("optimizer_training")
@@ -683,24 +818,22 @@ def prepare_packed_corpus(
                 current_shard_index = 0
                 current_shard_offset = 0
             try:
-                progress_callback(
-                    {
-                        "event": event,
-                        "phase": progress["phase"],
-                        "role": role,
-                        "committed_document_count": int(
-                            progress["committed_shuffled_document_count"]
-                        ),
-                        "optimizer_token_count": int(token_count),
-                        "completed_optimizer_shard_count": int(shard_count),
-                        "current_optimizer_shard_index": int(
-                            current_shard_index
-                        ),
-                        "current_optimizer_shard_offset": int(
-                            current_shard_offset
-                        ),
-                    }
-                )
+                payload = {
+                    "event": event,
+                    "phase": progress["phase"],
+                    "role": role,
+                    "committed_document_count": int(
+                        progress["committed_shuffled_document_count"]
+                    ),
+                    "optimizer_token_count": int(token_count),
+                    "completed_optimizer_shard_count": int(shard_count),
+                    "current_optimizer_shard_index": int(current_shard_index),
+                    "current_optimizer_shard_offset": int(current_shard_offset),
+                    "source_read_workers": int(source_read_workers),
+                    "tokenization_workers": int(tokenization_workers),
+                }
+                payload.update(event_fields)
+                progress_callback(payload)
             except Exception:
                 # Progress reporting must never invalidate expensive corpus work.
                 return
@@ -772,6 +905,7 @@ def prepare_packed_corpus(
             if progress["phase"] == "tokenization":
                 source_iterator = iter(documents)
                 committed = int(progress["committed_shuffled_document_count"])
+                replay_started_at = time.monotonic()
                 for skipped in range(committed):
                     try:
                         next(source_iterator)
@@ -779,6 +913,32 @@ def prepare_packed_corpus(
                         raise PackedCorpusError(
                             "Source ended before the resumable checkpoint offset"
                         ) from error
+                    now = time.monotonic()
+                    if now - last_progress_at >= float(progress_interval_seconds):
+                        replayed = skipped + 1
+                        replay_elapsed = max(now - replay_started_at, 1e-9)
+                        emit_progress(
+                            "resume_replay",
+                            "optimizer_training",
+                            replayed_document_count=replayed,
+                            replay_target_document_count=committed,
+                            replay_elapsed_seconds=replay_elapsed,
+                            replay_documents_per_second=replayed / replay_elapsed,
+                        )
+                        last_progress_at = now
+                if committed:
+                    replay_elapsed = max(
+                        time.monotonic() - replay_started_at,
+                        1e-9,
+                    )
+                    emit_progress(
+                        "resume_replay_completed",
+                        "optimizer_training",
+                        replayed_document_count=committed,
+                        replay_target_document_count=committed,
+                        replay_elapsed_seconds=replay_elapsed,
+                        replay_documents_per_second=committed / replay_elapsed,
+                    )
 
                 def pending_records():
                     for source_index, document in enumerate(

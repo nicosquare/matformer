@@ -20,7 +20,7 @@ from src.training.distributed import autocast_context
 from src.utils.reproducibility import capture_rng_state, restore_rng_state, stable_hash
 
 
-PANELGRAD_STATE_SCHEMA_VERSION = 1
+PANELGRAD_STATE_SCHEMA_VERSION = 2
 CONTROLLED_SUPPORT_SCHEMA_VERSION = 1
 PANELGRAD_METHOD_FAMILY = "panelgrad_gradient_rms"
 PANELGRAD_METHOD_VERSION = 1
@@ -48,6 +48,82 @@ def _finite_float(value: Any, field_name: str) -> float:
     if not math.isfinite(result):
         raise PanelGradError(f"{field_name} must be finite")
     return result
+
+
+def resolve_epsilon_schedule(
+    *,
+    epsilon: Any | None,
+    epsilon_schedule: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Return one explicit fixed or linear schedule for controller state."""
+
+    if epsilon is not None and epsilon_schedule is not None:
+        raise PanelGradError("provide either epsilon or epsilon_schedule, not both")
+    if epsilon_schedule is None:
+        value = _finite_float(0.1 if epsilon is None else epsilon, "epsilon")
+        if not 0.0 <= value <= 1.0:
+            raise PanelGradError("epsilon must be between zero and one")
+        return {
+            "type": "fixed",
+            "start": value,
+            "end": value,
+            "duration_steps": None,
+        }
+    if not isinstance(epsilon_schedule, Mapping):
+        raise PanelGradError("epsilon schedule must be a mapping")
+    schedule = copy.deepcopy(dict(epsilon_schedule))
+    if set(schedule) != {"type", "start", "end", "duration_steps"}:
+        raise PanelGradError(
+            "epsilon schedule requires exactly type, start, end, and duration_steps"
+        )
+    if schedule["type"] != "linear":
+        raise PanelGradError("epsilon schedule type must be 'linear'")
+    for endpoint in ("start", "end"):
+        value = _finite_float(schedule[endpoint], f"epsilon schedule {endpoint}")
+        if not 0.0 <= value <= 1.0:
+            raise PanelGradError(
+                f"epsilon schedule {endpoint} must be between zero and one"
+            )
+        schedule[endpoint] = value
+    duration_steps = schedule["duration_steps"]
+    if (
+        isinstance(duration_steps, bool)
+        or not isinstance(duration_steps, int)
+        or duration_steps <= 0
+    ):
+        raise PanelGradError("epsilon schedule duration_steps must be a positive integer")
+    schedule["duration_steps"] = int(duration_steps)
+    return schedule
+
+
+def epsilon_at_schedule_step(
+    epsilon_schedule: Mapping[str, Any],
+    schedule_step: Any,
+) -> float:
+    """Evaluate a resolved epsilon schedule at a committed PanelGrad step."""
+
+    if (
+        isinstance(schedule_step, bool)
+        or not isinstance(schedule_step, int)
+        or schedule_step < 0
+    ):
+        raise PanelGradError("epsilon schedule step must be a nonnegative integer")
+    schedule = resolve_epsilon_schedule(
+        epsilon=(
+            epsilon_schedule.get("start")
+            if epsilon_schedule.get("type") == "fixed"
+            else None
+        ),
+        epsilon_schedule=(
+            None if epsilon_schedule.get("type") == "fixed" else epsilon_schedule
+        ),
+    )
+    if schedule["type"] == "fixed":
+        return float(schedule["start"])
+    fraction = min(schedule_step / int(schedule["duration_steps"]), 1.0)
+    return float(
+        schedule["start"] + (schedule["end"] - schedule["start"]) * fraction
+    )
 
 
 def gradient_rms_from_squared_norm(
@@ -432,18 +508,26 @@ class PanelGradController:
         refresh_interval_steps: int,
         eta: float,
         temperature: float,
-        epsilon: float,
+        epsilon: float | None,
         sampling_seed: int,
         support_identity: Mapping[str, Any],
         manifest_hashes: Mapping[str, str | None] | None = None,
+        epsilon_schedule: Mapping[str, Any] | None = None,
     ) -> None:
         ordered = [str(label) for label in ordered_granularities]
         if not ordered or len(set(ordered)) != len(ordered):
             raise PanelGradError("ordered granularities must be non-empty and unique")
         if isinstance(refresh_interval_steps, bool) or refresh_interval_steps <= 0:
             raise PanelGradError("refresh interval steps must be a positive integer")
+        resolved_epsilon_schedule = resolve_epsilon_schedule(
+            epsilon=epsilon,
+            epsilon_schedule=epsilon_schedule,
+        )
         build_probability_snapshot(
-            [0.0] * len(ordered), eta=eta, temperature=temperature, epsilon=epsilon
+            [0.0] * len(ordered),
+            eta=eta,
+            temperature=temperature,
+            epsilon=epsilon_at_schedule_step(resolved_epsilon_schedule, 0),
         )
         support = copy.deepcopy(dict(support_identity))
         if support.get("ordered_granularities") != ordered:
@@ -467,7 +551,7 @@ class PanelGradController:
                 "refresh_interval_steps": int(refresh_interval_steps),
                 "eta": float(eta),
                 "temperature": float(temperature),
-                "epsilon": float(epsilon),
+                "epsilon_schedule": resolved_epsilon_schedule,
                 "relative_tolerance": 1e-6,
                 "absolute_tolerance": 1e-8,
             },
@@ -486,6 +570,8 @@ class PanelGradController:
                 "entropy": None,
                 "min_probability": None,
                 "max_probability": None,
+                "active_epsilon": None,
+                "epsilon_schedule_step": None,
                 "cost": None,
             },
             "sampling": {
@@ -522,6 +608,10 @@ class PanelGradController:
             },
             "failure": None,
         }
+        if resolved_epsilon_schedule["type"] == "fixed":
+            self._state["policy"]["epsilon"] = float(
+                resolved_epsilon_schedule["start"]
+            )
 
     @property
     def phase(self) -> str:
@@ -541,6 +631,18 @@ class PanelGradController:
         restored["sampling"]["generator_state"] = self._generator.get_state()
         self._state = restored
 
+    def epsilon_for_next_refresh(self) -> dict[str, Any]:
+        """Resolve refresh policy from committed PanelGrad optimizer steps."""
+
+        schedule_step = int(self._state["sampling"]["sample_count"])
+        return {
+            "active_epsilon": epsilon_at_schedule_step(
+                self._state["policy"]["epsilon_schedule"],
+                schedule_step,
+            ),
+            "epsilon_schedule_step": schedule_step,
+        }
+
     def install_refresh(
         self,
         measurement_result: Mapping[str, Any],
@@ -557,11 +659,13 @@ class PanelGradController:
             _finite_float(item.get("gradient_rms_score"), "gradient RMS score")
             for item in measurements
         ]
-        probability = build_probability_snapshot(scores, **{
-            "eta": self._state["policy"]["eta"],
-            "temperature": self._state["policy"]["temperature"],
-            "epsilon": self._state["policy"]["epsilon"],
-        })
+        refresh_policy = self.epsilon_for_next_refresh()
+        probability = build_probability_snapshot(
+            scores,
+            eta=self._state["policy"]["eta"],
+            temperature=self._state["policy"]["temperature"],
+            epsilon=refresh_policy["active_epsilon"],
+        )
         refresh = copy.deepcopy(self._state["refresh"])
         refresh.update(
             {
@@ -578,6 +682,7 @@ class PanelGradController:
                 "entropy": probability["entropy"],
                 "min_probability": probability["min_probability"],
                 "max_probability": probability["max_probability"],
+                **refresh_policy,
                 "cost": {
                     key: copy.deepcopy(value)
                     for key, value in measurement_result.items()
@@ -718,7 +823,8 @@ def build_panelgrad_controller(
         refresh_interval_steps=panelgrad["refresh_interval_steps"],
         eta=panelgrad["eta"],
         temperature=panelgrad["temperature"],
-        epsilon=panelgrad["epsilon"],
+        epsilon=panelgrad.get("epsilon"),
+        epsilon_schedule=panelgrad.get("epsilon_schedule"),
         sampling_seed=panelgrad["sampling_seed"],
         support_identity=support_identity,
         manifest_hashes={field: config.get(field) for field in manifest_fields},
@@ -737,6 +843,48 @@ def validate_panelgrad_state(
         raise PanelGradError("checkpoint is missing panelgrad_state")
     result = copy.deepcopy(dict(state))
     panelgrad = config["model"]["panelgrad"]
+    if result.get("schema_version") == 1:
+        if "epsilon_schedule" in panelgrad:
+            raise PanelGradError(
+                "panelgrad_state version 1 cannot resume an epsilon-scheduled run"
+            )
+        legacy_policy = result.get("policy")
+        legacy_refresh = result.get("refresh")
+        legacy_sampling = result.get("sampling")
+        if not all(
+            isinstance(value, Mapping)
+            for value in (legacy_policy, legacy_refresh, legacy_sampling)
+        ):
+            raise PanelGradError("panelgrad_state version 1 is malformed")
+        legacy_epsilon = legacy_policy.get("epsilon")
+        legacy_policy["epsilon_schedule"] = resolve_epsilon_schedule(
+            epsilon=legacy_epsilon,
+            epsilon_schedule=None,
+        )
+        if legacy_refresh.get("p") is None:
+            legacy_refresh["active_epsilon"] = None
+            legacy_refresh["epsilon_schedule_step"] = None
+        else:
+            sample_count = int(legacy_sampling.get("sample_count", -1))
+            interval_progress = int(
+                legacy_refresh.get("completed_steps_since_refresh", -1)
+            )
+            schedule_step = sample_count - interval_progress
+            if schedule_step < 0:
+                raise PanelGradError(
+                    "panelgrad_state version 1 interval progress is invalid"
+                )
+            legacy_refresh["active_epsilon"] = float(legacy_epsilon)
+            legacy_refresh["epsilon_schedule_step"] = schedule_step
+        result["schema_version"] = PANELGRAD_STATE_SCHEMA_VERSION
+        resume = result.setdefault("resume", {})
+        if isinstance(resume, dict):
+            resume["state_migrated_from_schema_version"] = 1
+
+    resolved_epsilon_schedule = resolve_epsilon_schedule(
+        epsilon=panelgrad.get("epsilon"),
+        epsilon_schedule=panelgrad.get("epsilon_schedule"),
+    )
     expected = {
         "schema_version": PANELGRAD_STATE_SCHEMA_VERSION,
         "method_family": PANELGRAD_METHOD_FAMILY,
@@ -755,10 +903,12 @@ def validate_panelgrad_state(
         "refresh_interval_steps": int(panelgrad["refresh_interval_steps"]),
         "eta": float(panelgrad["eta"]),
         "temperature": float(panelgrad["temperature"]),
-        "epsilon": float(panelgrad["epsilon"]),
+        "epsilon_schedule": resolved_epsilon_schedule,
         "relative_tolerance": float(panelgrad["relative_tolerance"]),
         "absolute_tolerance": float(panelgrad["absolute_tolerance"]),
     }
+    if resolved_epsilon_schedule["type"] == "fixed":
+        expected_policy["epsilon"] = float(resolved_epsilon_schedule["start"])
     if result.get("policy") != expected_policy:
         raise PanelGradError("panelgrad_state policy mismatch")
     expected_support = support_identity or {
@@ -797,11 +947,39 @@ def validate_panelgrad_state(
     if sampling.get("pending_action") is not None:
         raise PanelGradError("checkpoint cannot contain an uncommitted PanelGrad action")
     if refresh.get("p") is not None:
+        active_epsilon = _finite_float(
+            refresh.get("active_epsilon"),
+            "panelgrad_state active epsilon",
+        )
+        schedule_step = refresh.get("epsilon_schedule_step")
+        if (
+            isinstance(schedule_step, bool)
+            or not isinstance(schedule_step, int)
+            or schedule_step < 0
+        ):
+            raise PanelGradError("panelgrad_state epsilon schedule step is invalid")
+        interval_progress = refresh.get("completed_steps_since_refresh")
+        if (
+            isinstance(interval_progress, bool)
+            or not isinstance(interval_progress, int)
+            or interval_progress < 0
+            or interval_progress > expected_policy["refresh_interval_steps"]
+        ):
+            raise PanelGradError("panelgrad_state interval progress is invalid")
+        expected_schedule_step = int(sampling["sample_count"]) - interval_progress
+        if schedule_step != expected_schedule_step:
+            raise PanelGradError("panelgrad_state epsilon schedule progress is invalid")
+        scheduled_epsilon = epsilon_at_schedule_step(
+            resolved_epsilon_schedule,
+            schedule_step,
+        )
+        if not math.isclose(active_epsilon, scheduled_epsilon, rel_tol=0.0, abs_tol=1e-15):
+            raise PanelGradError("panelgrad_state active epsilon is invalid")
         expected_probability = build_probability_snapshot(
             refresh["scores"],
             eta=expected_policy["eta"],
             temperature=expected_policy["temperature"],
-            epsilon=expected_policy["epsilon"],
+            epsilon=active_epsilon,
         )
         p = torch.tensor(refresh["p"], dtype=torch.float64)
         if len(p) != len(ordered) or not math.isclose(
@@ -815,6 +993,13 @@ def validate_panelgrad_state(
             atol=expected_policy["absolute_tolerance"],
         ):
             raise PanelGradError("panelgrad_state p does not match saved scores")
+    elif (
+        refresh.get("active_epsilon") is not None
+        or refresh.get("epsilon_schedule_step") is not None
+    ):
+        raise PanelGradError(
+            "panelgrad_state without a snapshot cannot have active epsilon state"
+        )
     expected_manifests = {
         field: config.get(field)
         for field in (
@@ -861,10 +1046,12 @@ __all__ = [
     "PanelGradError",
     "build_panelgrad_controller",
     "build_probability_snapshot",
+    "epsilon_at_schedule_step",
     "gradient_rms_from_squared_norm",
     "measure_panelgrad_gradients",
     "resolve_controlled_ffn_support",
     "restore_panelgrad_controller",
+    "resolve_epsilon_schedule",
     "uses_panelgrad",
     "validate_panelgrad_state",
 ]

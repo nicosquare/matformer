@@ -70,6 +70,26 @@ PanelGrad requires a nested model and resolves the run mode to `nested-random`. 
 - Defaults to `0.1`.
 - `0` is a controlled no-uniform-mixture ablation; `1` is uniform global sampling after measurement.
 
+### `model.panelgrad.epsilon_schedule`
+
+- Optional alternative to scalar `epsilon`; specifying both is invalid.
+- The supported form is `type: linear` with finite `start` and `end` in `[0,1]` and positive integer `duration_steps`.
+- At a refresh, schedule step `s` is the number of committed PanelGrad optimizer steps before that refresh. Warmup and failed optimizer attempts do not count.
+- The active value is `start + (end - start) * min(s / duration_steps, 1)` and clamps to `end` after the duration.
+- The first adaptive refresh uses `start`; epsilon and the resulting `p` remain frozen for the complete `H`-step interval.
+
+Example:
+
+```yaml
+model:
+  panelgrad:
+    epsilon_schedule:
+      type: linear
+      start: 0.5
+      end: 0.1
+      duration_steps: 24415
+```
+
 ## Fixed Resolved Fields
 
 The resolver records and rejects conflicting supplied values for:
@@ -114,7 +134,7 @@ Warmup steps do not consume PanelGrad exposure or interval progress. If training
 - Empty/duplicate granularities, zero controlled FFN support, non-finite policy values, and invalid ranges fail before adaptive training.
 - Distributed PanelGrad requires current FSDP `use_orig_params: true` and rejects CPU parameter/gradient offload until an exact supported measurement path exists.
 - Controller/final role configuration must match the existing fixed contracts.
-- Resume requires exact method version, granularity order, policy values, support hash/counts, data hashes, and seed identity.
+- Resume requires exact method version, granularity order, scalar or scheduled epsilon policy, support hash/counts, data hashes, and seed identity. Version-1 fixed-epsilon PanelGrad state is migrated only for fixed-policy resumes.
 
 ## Preflight Contract
 
@@ -123,7 +143,7 @@ Warmup steps do not consume PanelGrad exposure or interval progress. If training
 - requested/resolved sampling mode and strategy;
 - PanelGrad family/version/scope;
 - ordered granularities and per-granularity controlled FFN counts when available;
-- `H`, `eta`, `T`, `epsilon`, and tolerance defaults/overrides;
+- `H`, `eta`, `T`, the fixed epsilon or schedule type/start/end/duration, and tolerance defaults/overrides;
 - probability, loss, gradient, and support semantics;
 - controller/final role contracts and named seed provenance;
 - whether balanced warmup is active and its resolved interval.

@@ -66,6 +66,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "use 'none' for uncorrected runs."
         ),
     )
+    parser.add_argument(
+        "--sampling-bin-steps",
+        type=int,
+        default=50,
+        help="Optimizer steps per local sampling-policy exposure bin (default: 50).",
+    )
+    parser.add_argument(
+        "--sampling-zoom-steps",
+        type=int,
+        default=250,
+        help="Exact actions shown at each end of sampling zoom plots (default: 250).",
+    )
     return parser.parse_args(argv)
 
 
@@ -84,6 +96,8 @@ def main(argv: list[str] | None = None) -> None:
         ),
         variants=args.variants,
         corrections=args.corrections,
+        sampling_bin_steps=args.sampling_bin_steps,
+        sampling_zoom_steps=args.sampling_zoom_steps,
     )
     for path in figure_paths:
         print(path)

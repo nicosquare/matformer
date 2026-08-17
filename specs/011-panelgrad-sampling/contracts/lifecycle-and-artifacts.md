@@ -29,9 +29,11 @@ For a refresh at completed step `s`:
    - calculate the float64 squared norm over only that granularity's controlled FFN support;
    - combine with the saved `N_g` to calculate norm and RMS;
    - clear its gradients before measuring the next label.
-5. Construct and validate `q`, then `p`, entropy, and probability extrema in float64.
+5. Resolve epsilon from committed PanelGrad optimizer-step count `s` (not global/warmup steps), then construct and validate `q`, `p`, entropy, and probability extrema in float64.
 6. Restore correction, prior model mode/granularity state, ordinary RNG, and empty gradients in `finally`.
 7. Atomically install the complete snapshot, append its event, synchronize state, and enter `active_interval` with progress zero.
+
+The initial refresh uses the schedule start. A complete snapshot stores its active epsilon and schedule step, and both epsilon and `p` remain immutable until the next successful refresh. A failed refresh leaves schedule progress unchanged.
 
 On any failure, restore the previous complete state, leave gradients empty, record an attributable failure, synchronize failure, and stop. PanelGrad never falls back to its old `p`, random sampling, TS, or UCB for another training step.
 
@@ -76,6 +78,7 @@ where `S_g` is the resolved controlled FFN support. Batchwise norms are never av
 Each PanelGrad checkpoint includes:
 
 - method family/version, scope, ordered granularities, policy values, and tolerances;
+- resolved fixed/linear epsilon schedule plus the active snapshot epsilon and schedule step;
 - all controller/data role hashes and controlled-support schema/counts;
 - lifecycle phase, refresh index, last/next boundary, and interval progress;
 - last complete measurements, `q`, `p`, and cost;
@@ -84,14 +87,14 @@ Each PanelGrad checkpoint includes:
 - controller journal path, committed event count/offset/hash;
 - resume count/source and last failure provenance.
 
-Resume validates the complete schema before further measurement or training. Missing or incompatible PanelGrad state is never synthesized. Non-PanelGrad checkpoints contain no valid PanelGrad state, and Bayesian/legacy controller state is never coerced.
+Resume validates the complete schema before further measurement or training, including reconstructing `p` with the snapshot's active epsilon. State schema version 2 migrates version-1 checkpoints only when the resumed run uses fixed epsilon. Missing or incompatible scheduled state is never synthesized. Non-PanelGrad checkpoints contain no valid PanelGrad state, and Bayesian/legacy controller state is never coerced.
 
 ## `controller_metrics.jsonl`
 
 PanelGrad uses explicit method/version and event types:
 
-- `panelgrad_refresh_completed`: boundary, ordered per-granularity support counts/loss/norm/RMS, `q`, `p`, entropy/extrema, controller totals, duration/backward count, cumulative cost, hashes, and resume provenance;
-- `panelgrad_refresh_failed`: failing stage/error, boundary, previous valid snapshot hash, and explicit no-new-distribution/no-action fields;
+- `panelgrad_refresh_completed`: boundary, active epsilon, epsilon schedule step, ordered per-granularity support counts/loss/norm/RMS, `q`, `p`, entropy/extrema, controller totals, duration/backward count, cumulative cost, hashes, and resume provenance;
+- `panelgrad_refresh_failed`: failing stage/error, boundary, attempted active epsilon/schedule step, previous valid snapshot hash, and explicit no-new-distribution/no-action fields;
 - existing balanced-warmup events, carrying `posterior_updated: false` and no PanelGrad exposure;
 - `panelgrad_terminal_partial` or `panelgrad_terminal_complete`: last snapshot, progress, exposures, and explicit no-unused-refresh/no-unused-draw fields.
 
@@ -110,7 +113,7 @@ Each adaptive training row includes compact fields:
 
 Full measurement and probability vectors stay in the refresh journal, summary, and checkpoint.
 
-`controller_summary.json` and `run_summary.json` include resolved policy/support/data provenance, final snapshot, refresh count, exposure counts/fractions, cumulative controller examples/targets/backward evaluations/duration, terminal/warmup/resume status, journal path/hash, and any failure. Reporting classifies the run from explicit PanelGrad family/version rather than strategy-name inference.
+`controller_summary.json` and `run_summary.json` include resolved policy/support/data provenance, resolved epsilon schedule, final active epsilon/schedule step, epsilon history, final snapshot, refresh count, exposure counts/fractions, cumulative controller examples/targets/backward evaluations/duration, terminal/warmup/resume status, journal path/hash, and any failure. Reporting classifies the run from explicit PanelGrad family/version rather than strategy-name inference and includes epsilon schedule identity in plot grouping. Refresh diagnostics plot active epsilon over tokens.
 
 ## Final-Holdout and Comparison Contract
 

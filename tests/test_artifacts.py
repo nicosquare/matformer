@@ -3011,6 +3011,8 @@ def test_panelgrad_refresh_terminal_summary_and_compact_fields_are_auditable(tmp
             "q": refresh["q"],
             "p": refresh["p"],
             "entropy": refresh["entropy"],
+            "active_epsilon": refresh["active_epsilon"],
+            "epsilon_schedule_step": refresh["epsilon_schedule_step"],
             "duration_seconds": 0.25,
             "backward_evaluation_count": 4,
         },
@@ -3035,6 +3037,16 @@ def test_panelgrad_refresh_terminal_summary_and_compact_fields_are_auditable(tmp
 
     assert summary["refresh_count"] == 1
     assert summary["final_p"] == refresh["p"]
+    assert summary["active_epsilon"] == pytest.approx(0.1)
+    assert summary["epsilon_schedule_step"] == 0
+    assert summary["epsilon_schedule"]["type"] == "fixed"
+    assert summary["epsilon_history"] == [
+        {
+            "refresh_index": 0,
+            "active_epsilon": 0.1,
+            "epsilon_schedule_step": 0,
+        }
+    ]
     assert summary["exposure_counts"][action["global_granularity"]] == 1
     assert summary["cumulative_measurement_duration_seconds"] == 0.25
     assert summary["cumulative_backward_evaluations"] == 4
@@ -3042,6 +3054,7 @@ def test_panelgrad_refresh_terminal_summary_and_compact_fields_are_auditable(tmp
     assert compact["controller_strategy"] == "panelgrad"
     assert compact["controller_sampled_probability"] == action["probability"]
     assert compact["controller_phase"] == "terminal_partial"
+    assert "active_epsilon" not in compact
 
 
 def test_panelgrad_checkpoint_round_trips_versioned_policy_and_rng_state(tmp_path):

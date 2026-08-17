@@ -71,6 +71,8 @@ As a researcher, I can resume and inspect a PanelGrad run with enough state and 
 - With one resolved granularity, `q` and `p` are exactly `[1]`, while measurement and provenance behavior remain active.
 - If every gradient RMS score is zero, positive `eta` yields a uniform `q` rather than an undefined distribution.
 - With `epsilon = 1`, training samples uniformly regardless of the measured scores; with `epsilon = 0`, `p` equals `q`.
+- A linear epsilon schedule may increase or decrease; it uses its start at the initial refresh, its endpoint at the duration, and clamps there beyond the duration.
+- Warmup, failed optimizer attempts, and failed refreshes do not advance epsilon schedule progress.
 - Invalid `H`, `eta`, `T`, or `epsilon`, an empty granularity set, or a granularity with zero active trainable scalars causes failure before affected training begins.
 - A non-finite controller loss, gradient, score, or probability causes an attributable refresh failure and no new action is sampled.
 - A refresh failure does not partially replace the last complete score or probability state.
@@ -109,7 +111,7 @@ As a researcher, I can resume and inspect a PanelGrad run with enough state and 
 
 #### Probability construction and action lifecycle
 
-- **FR-013**: PanelGrad MUST expose a positive integer refresh interval `H`, positive `eta`, positive temperature `T`, and exploration mixture `epsilon` in the inclusive range `[0, 1]`; omitted values MUST resolve to `H=50`, `eta=1e-12`, `T=1`, and `epsilon=0.1`, and invalid resolved values MUST fail before training.
+- **FR-013**: PanelGrad MUST expose a positive integer refresh interval `H`, positive `eta`, positive temperature `T`, and either a scalar exploration mixture `epsilon` in `[0,1]` or a mutually exclusive linear `epsilon_schedule` with endpoints in `[0,1]` and positive integer duration; omitted values MUST resolve to `H=50`, `eta=1e-12`, `T=1`, and fixed `epsilon=0.1`, and invalid resolved values MUST fail before training.
 - **FR-014**: At each refresh, PanelGrad MUST convert the complete contemporaneous score vector into
 
   $$
@@ -121,7 +123,7 @@ As a researcher, I can resume and inspect a PanelGrad run with enough state and 
 
 - **FR-015**: PanelGrad MUST validate that `q` and `p` are finite, nonnegative vectors summing to one within relative tolerance `1e-6` and absolute tolerance `1e-8` before using them for sampling.
 - **FR-016**: The `p` vector MUST be the categorical action distribution; `q` is an intermediate normalized score distribution and MUST NOT bypass the configured exploration mixture.
-- **FR-017**: PanelGrad MUST freeze the complete scores, `q`, and `p` for the next `H` completed PanelGrad optimizer steps.
+- **FR-017**: PanelGrad MUST evaluate scheduled epsilon only at refresh boundaries from the number of committed PanelGrad optimizer steps, then freeze epsilon, scores, `q`, and `p` for the next `H` completed PanelGrad optimizer steps.
 - **FR-018**: At each ordinary PanelGrad optimizer step, the method MUST independently draw one action from `Categorical(p)` and train exactly that complete global granularity using the existing forward/backward and optimizer behavior.
 - **FR-019**: PanelGrad MUST refresh before its first adaptive action and before the first action following each group of `H` completed PanelGrad optimizer steps.
 - **FR-020**: An optional existing balanced-global warmup MAY precede PanelGrad; warmup steps MUST NOT consume the PanelGrad interval, and a full refresh MUST occur after warmup before adaptive sampling.
@@ -134,16 +136,16 @@ As a researcher, I can resume and inspect a PanelGrad run with enough state and 
 
 - **FR-025**: In distributed execution, gradient squared norms and parameter counts MUST represent the complete distributed granularity-controlled FFN support, and all workers MUST agree on `I`, `q`, and `p` within relative tolerance `1e-6` and absolute tolerance `1e-8`.
 - **FR-026**: Rank zero MUST own the authoritative categorical sampling stream and synchronize the selected global action so every worker trains the same action.
-- **FR-027**: PanelGrad checkpoints MUST preserve the current scores, `q`, `p`, categorical RNG state, completed steps since refresh, next refresh boundary, exposure counts, lifecycle phase, method parameters, and controller-panel provenance.
+- **FR-027**: PanelGrad checkpoints MUST preserve the resolved epsilon schedule, current snapshot epsilon and schedule step, scores, `q`, `p`, categorical RNG state, completed steps since refresh, next refresh boundary, exposure counts, lifecycle phase, method parameters, and controller-panel provenance. Fixed-epsilon version-1 state MAY migrate to the current schema only for a fixed-policy resume.
 - **FR-028**: Resume MUST reject missing, malformed, non-finite, method-incompatible, granularity-incompatible, or controller-provenance-incompatible PanelGrad state rather than silently reinitializing it.
 - **FR-029**: Under equivalent deterministic runtime conditions, resume MUST neither repeat nor skip a refresh or action sample and MUST reproduce the subsequent discrete action sequence.
-- **FR-030**: Every refresh record MUST include its completed-step boundary, controller-panel identity, per-granularity active count, gradient norm, gradient RMS, `q`, `p`, entropy, probability extrema, duration or equivalent measurement-cost value, and success or failure state.
+- **FR-030**: Every refresh record MUST include its completed-step boundary, active epsilon, epsilon schedule step, controller-panel identity, per-granularity active count, gradient norm, gradient RMS, `q`, `p`, entropy, probability extrema, duration or equivalent measurement-cost value, and success or failure state.
 - **FR-031**: Every PanelGrad training-step record MUST identify the sampled granularity, its probability, cumulative per-granularity exposure, and whether balanced warmup or adaptive PanelGrad selection was active.
 - **FR-032**: Shared artifacts MUST be written once by the authoritative process while remaining sufficient to audit distributed agreement.
 
 ### Research & Experiment Requirements
 
-- **EX-001**: Every PanelGrad run MUST save the resolved granularity set, `H`, `eta`, `T`, `epsilon`, seeds, method identity, data-role provenance, and numerical-tolerance assumptions.
+- **EX-001**: Every PanelGrad run MUST save the resolved granularity set, `H`, `eta`, `T`, fixed epsilon or schedule type/start/end/duration, seeds, method identity, data-role provenance, and numerical-tolerance assumptions.
 - **EX-002**: Every PanelGrad run MUST write refresh and action diagnostics to structured artifacts rather than terminal output alone.
 - **EX-003**: The first PanelGrad evaluation MUST compare against uniform global sampling at matched optimizer steps or target tokens.
 - **EX-004**: PanelGrad's controller-measurement work MUST be reported separately so matched-step results are not misrepresented as matched-compute results.

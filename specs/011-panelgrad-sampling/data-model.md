@@ -15,6 +15,7 @@ Resolved scientific inputs and fixed method identity.
 - **eta**: finite positive scalar, default `1e-12`
 - **temperature**: finite positive scalar `T`, default `1.0`
 - **epsilon**: finite scalar in `[0,1]`, default `0.1`
+- **epsilon_schedule**: optional mutually exclusive linear schedule with `start`, `end`, and positive `duration_steps`
 - **relative_tolerance**: fixed `1e-6`
 - **absolute_tolerance**: fixed `1e-8`
 - **score_definition**: raw aggregate-controller-gradient RMS over controlled FFN support
@@ -96,6 +97,7 @@ The complete contemporaneous policy state from one refresh.
 - **p**: ordered final categorical vector
 - **entropy**, **minimum_probability**, **maximum_probability**
 - **eta**, **temperature**, **epsilon**
+- **epsilon_schedule_step**: committed PanelGrad step count used to resolve the active epsilon
 - **measurement_duration_seconds**, **controller_backward_count**, and cumulative cost
 - **controller/support/config hashes**
 
@@ -105,6 +107,7 @@ Rules:
 - Values are finite and nonnegative and sums equal one within `rtol=1e-6`, `atol=1e-8`.
 - A snapshot becomes active only after every granularity measurement and probability check succeeds.
 - The snapshot remains immutable for its interval.
+- For scheduled runs, epsilon is evaluated only when the snapshot is installed; warmup and failed steps do not advance its step.
 
 ### CategoricalSamplingState
 
@@ -134,6 +137,7 @@ Tracks refresh ownership and exact continuation.
 - **next_refresh_step**
 - **completed_steps_since_refresh**: integer in `[0,H]`
 - **active_probability_snapshot**: required while an interval is active
+- **resolved_epsilon_schedule**, **active_epsilon**, and **epsilon_schedule_step** for the current snapshot
 - **sampling_state**
 - **last_committed_action**
 - **terminal_reason/progress**
@@ -176,6 +180,7 @@ Append-only audit record for a refresh or refresh failure.
 - **schema/method version and run identity**
 - **event_type**: `panelgrad_refresh_completed` or `panelgrad_refresh_failed`
 - **boundary/refresh/interval state**
+- **active epsilon and epsilon schedule step**
 - **ordered measurements, q, p, and probability diagnostics**
 - **controller/support/config hashes**
 - **measurement cost and cumulative cost**
@@ -189,6 +194,7 @@ Completed events are committed transactionally with the active snapshot. A failu
 Aggregated audit state for a completed or failed run.
 
 - method/config/data/support provenance
+- resolved epsilon schedule, final active epsilon, and refresh-by-refresh schedule history
 - refresh count and final probability snapshot
 - per-granularity exposure counts/fractions
 - probability entropy/minimum/maximum history summaries

@@ -12,6 +12,7 @@ from src.training.panelgrad import (
     PanelGradController,
     PanelGradError,
     build_probability_snapshot,
+    epsilon_at_schedule_step,
     gradient_rms_from_squared_norm,
     measure_panelgrad_gradients,
     resolve_controlled_ffn_support,
@@ -103,15 +104,37 @@ def _measurement(scores=(1.0, 2.0)):
     }
 
 
-def _controller(seed=13, interval=2, epsilon=0.1):
+def _controller(seed=13, interval=2, epsilon=0.1, epsilon_schedule=None):
     return PanelGradController(
         ordered_granularities=["small", "full"],
         refresh_interval_steps=interval,
         eta=1e-12,
         temperature=1.0,
-        epsilon=epsilon,
+        epsilon=None if epsilon_schedule is not None else epsilon,
+        epsilon_schedule=epsilon_schedule,
         sampling_seed=seed,
         support_identity=_support_identity(),
+    )
+
+
+@pytest.mark.parametrize(
+    ("schedule", "steps", "expected"),
+    [
+        (
+            {"type": "linear", "start": 0.5, "end": 0.1, "duration_steps": 100},
+            (0, 50, 100, 150),
+            (0.5, 0.3, 0.1, 0.1),
+        ),
+        (
+            {"type": "linear", "start": 0.1, "end": 0.5, "duration_steps": 100},
+            (0, 50, 100, 150),
+            (0.1, 0.3, 0.5, 0.5),
+        ),
+    ],
+)
+def test_linear_epsilon_schedule_interpolates_and_clamps(schedule, steps, expected):
+    assert [epsilon_at_schedule_step(schedule, step) for step in steps] == (
+        pytest.approx(expected)
     )
 
 
@@ -192,6 +215,72 @@ def test_panelgrad_controller_refresh_draw_commit_and_boundary_transitions():
     assert sum(state["sampling"]["exposure_counts"].values()) == 2
     assert first["global_granularity"] in {"small", "full"}
     assert second["global_granularity"] in {"small", "full"}
+
+
+def test_scheduled_epsilon_updates_only_at_exact_refresh_boundaries_and_freezes_p():
+    controller = _controller(
+        interval=2,
+        epsilon_schedule={
+            "type": "linear",
+            "start": 0.5,
+            "end": 0.1,
+            "duration_steps": 4,
+        },
+    )
+
+    initial = controller.install_refresh(_measurement(), boundary_step=100)
+    assert initial["active_epsilon"] == pytest.approx(0.5)
+    assert initial["epsilon_schedule_step"] == 0
+    initial_p = list(initial["p"])
+    for completed_step in (101, 102):
+        controller.sample_action()
+        controller.commit_pending_action(completed_step=completed_step)
+        assert controller.state_dict()["refresh"]["p"] == initial_p
+
+    midpoint = controller.install_refresh(_measurement(), boundary_step=102)
+    assert midpoint["active_epsilon"] == pytest.approx(0.3)
+    assert midpoint["epsilon_schedule_step"] == 2
+    midpoint_p = list(midpoint["p"])
+    for completed_step in (103, 104):
+        controller.sample_action()
+        controller.commit_pending_action(completed_step=completed_step)
+        assert controller.state_dict()["refresh"]["p"] == midpoint_p
+
+    endpoint = controller.install_refresh(_measurement(), boundary_step=104)
+    assert endpoint["active_epsilon"] == pytest.approx(0.1)
+    assert endpoint["epsilon_schedule_step"] == 4
+
+
+def test_scheduled_epsilon_excludes_failed_steps_and_failed_refreshes():
+    controller = _controller(
+        interval=2,
+        epsilon_schedule={
+            "type": "linear",
+            "start": 0.5,
+            "end": 0.1,
+            "duration_steps": 4,
+        },
+    )
+    controller.install_refresh(_measurement(), boundary_step=80)
+    controller.sample_action()
+    controller.rollback_pending_action()
+    state_after_rollback = controller.state_dict()
+    assert state_after_rollback["sampling"]["sample_count"] == 0
+    assert state_after_rollback["refresh"]["active_epsilon"] == pytest.approx(0.5)
+
+    for completed_step in (81, 82):
+        controller.sample_action()
+        controller.commit_pending_action(completed_step=completed_step)
+    before_failed_refresh = controller.state_dict()["refresh"]
+    invalid = _measurement()
+    invalid["measurements"][1]["gradient_rms_score"] = float("nan")
+    with pytest.raises(PanelGradError, match="finite"):
+        controller.install_refresh(invalid, boundary_step=82)
+    assert controller.state_dict()["refresh"] == before_failed_refresh
+
+    refreshed = controller.install_refresh(_measurement(), boundary_step=82)
+    assert refreshed["active_epsilon"] == pytest.approx(0.3)
+    assert refreshed["epsilon_schedule_step"] == 2
 
 
 def test_categorical_draw_sequence_is_deterministic_and_rollback_retries_action():

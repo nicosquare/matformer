@@ -1,3 +1,4 @@
+import csv
 import json
 from pathlib import Path
 
@@ -33,7 +34,7 @@ def _write_controller_timeline_run(
     run_dir = root / run_id
     run_dir.mkdir(parents=True)
     config = {
-        "run": {"run_id": run_id},
+        "run": {"run_id": run_id, "sampling_mode": "nested-random", "seed": 42},
         "model": {
             "variant": model_variant,
             "correction_mode": correction_mode,
@@ -48,6 +49,7 @@ def _write_controller_timeline_run(
                 "method_version": 1,
                 "scope": scope,
                 "feature_schema": {"block_count": block_count},
+                "decision_interval_steps": 2,
             },
         },
         "training": {
@@ -60,6 +62,37 @@ def _write_controller_timeline_run(
         "".join(json.dumps(event) + "\n" for event in events),
         encoding="utf-8",
     )
+    if scope == "global":
+        rows = []
+        for event in events:
+            if "boundary_step_start" not in event or "boundary_step_end" not in event:
+                continue
+            action = event.get("action", {}).get("global_granularity")
+            if action not in ordered_granularities:
+                continue
+            for step in range(
+                int(event["boundary_step_start"]) + 1,
+                int(event["boundary_step_end"]) + 1,
+            ):
+                rows.append(
+                    {
+                        "run_id": run_id,
+                        "step": step,
+                        "split": "train",
+                        "tokens_seen": step * expected_tokens_per_step,
+                        "granularity": action,
+                        "controller_action": action,
+                        "controller_window_index": event["window_index"],
+                        "controller_sampled_probability": "",
+                    }
+                )
+        if rows:
+            with (run_dir / "metrics.csv").open(
+                "w", encoding="utf-8", newline=""
+            ) as metrics_file:
+                writer = csv.DictWriter(metrics_file, fieldnames=list(rows[0]))
+                writer.writeheader()
+                writer.writerows(rows)
     return run_dir
 
 
@@ -87,6 +120,237 @@ def _completed_controller_window(
         "completed_optimizer_steps": end_step - start_step,
         "action": action,
     }
+
+
+def _write_panelgrad_history_run(root: Path, run_id: str = "panelgrad-run") -> Path:
+    run_dir = root / run_id
+    run_dir.mkdir(parents=True)
+    config = {
+        "run": {"run_id": run_id, "sampling_mode": "nested-random", "seed": 42},
+        "model": {
+            "variant": "slicing",
+            "correction_mode": "none",
+            "membership_correction": False,
+            "adaptive_sampler_strategy": "panelgrad",
+            "granularity_sampling_mode": "adaptive_global",
+            "granularities": ["micro", "medium", "full"],
+            "panelgrad": {
+                "method_family": "panelgrad_gradient_rms",
+                "method_version": 1,
+                "scope": "global",
+                "ordered_granularities": ["micro", "medium", "full"],
+                "refresh_interval_steps": 2,
+                "eta": 1e-12,
+                "temperature": 1.0,
+                "epsilon_schedule": {
+                    "type": "linear",
+                    "start": 0.5,
+                    "end": 0.1,
+                    "duration_steps": 4,
+                },
+            },
+        },
+        "training": {"expected_tokens_per_step": 10, "token_budget": 40},
+    }
+    (run_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    metric_fields = [
+        "run_id",
+        "step",
+        "split",
+        "tokens_seen",
+        "granularity",
+        "controller_action",
+        "controller_sampled_probability",
+        "loss",
+        "perplexity",
+    ]
+    with (run_dir / "metrics.csv").open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=metric_fields)
+        writer.writeheader()
+        writer.writerows(
+            [
+                {
+                    "run_id": run_id,
+                    "step": 1,
+                    "split": "train",
+                    "tokens_seen": 10,
+                    "granularity": "full",
+                    "controller_action": "full",
+                    "controller_sampled_probability": "",
+                    "loss": 3.0,
+                    "perplexity": 20.0,
+                },
+                {
+                    "run_id": run_id,
+                    "step": 2,
+                    "split": "train",
+                    "tokens_seen": 20,
+                    "granularity": "micro",
+                    "controller_action": "micro",
+                    "controller_sampled_probability": 0.5,
+                    "loss": 2.9,
+                    "perplexity": 18.2,
+                },
+                {
+                    "run_id": run_id,
+                    "step": 3,
+                    "split": "train",
+                    "tokens_seen": 30,
+                    "granularity": "full",
+                    "controller_action": "full",
+                    "controller_sampled_probability": 0.2,
+                    "loss": 2.8,
+                    "perplexity": 16.4,
+                },
+            ]
+        )
+
+    def refresh(
+        window_index,
+        boundary_step,
+        scores,
+        p,
+        q,
+        duration,
+        active_epsilon,
+        epsilon_schedule_step,
+    ):
+        return {
+            "event_type": "panelgrad_refresh_completed",
+            "method_family": "panelgrad_gradient_rms",
+            "method_version": 1,
+            "window_index": window_index,
+            "boundary_step": boundary_step,
+            "p": p,
+            "q": q,
+            "entropy": 1.0,
+            "min_probability": min(p),
+            "max_probability": max(p),
+            "active_epsilon": active_epsilon,
+            "epsilon_schedule_step": epsilon_schedule_step,
+            "duration_seconds": duration,
+            "backward_evaluation_count": 3,
+            "controller_target_count": 30,
+            "measurements": [
+                {
+                    "granularity": label,
+                    "gradient_rms_score": score,
+                }
+                for label, score in zip(("micro", "medium", "full"), scores)
+            ],
+        }
+
+    events = [
+        refresh(
+            0,
+            1,
+            [0.3, 0.2, 0.1],
+            [0.5, 0.3, 0.2],
+            [0.52, 0.30, 0.18],
+            2.0,
+            0.5,
+            0,
+        ),
+        refresh(
+            1,
+            3,
+            [0.2, 0.25, 0.15],
+            [0.3, 0.4, 0.3],
+            [0.29, 0.42, 0.29],
+            1.5,
+            0.3,
+            2,
+        ),
+    ]
+    (run_dir / "controller_metrics.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events),
+        encoding="utf-8",
+    )
+    return run_dir
+
+
+def _write_global_policy_run(
+    root: Path,
+    *,
+    run_id: str,
+    policy: str,
+    actions: list[str],
+    decision_interval_steps: int = 2,
+) -> Path:
+    run_dir = root / run_id
+    run_dir.mkdir(parents=True)
+    model = {
+        "variant": "slicing",
+        "correction_mode": "none",
+        "membership_correction": False,
+        "granularities": ["micro", "medium", "full"],
+    }
+    if policy == "uniform":
+        model["granularity_sampling_mode"] = "global"
+    elif policy == "thompson":
+        model.update(
+            {
+                "granularity_sampling_mode": "adaptive_global",
+                "adaptive_sampler_strategy": "thompson",
+                "adaptive_controller": {
+                    "method_family": "bayesian_gaussian_linear_thompson",
+                    "method_version": 1,
+                    "scope": "global",
+                    "decision_interval_steps": decision_interval_steps,
+                },
+            }
+        )
+    elif policy == "panelgrad":
+        model.update(
+            {
+                "granularity_sampling_mode": "adaptive_global",
+                "adaptive_sampler_strategy": "panelgrad",
+                "panelgrad": {
+                    "method_family": "panelgrad_gradient_rms",
+                    "method_version": 1,
+                    "scope": "global",
+                },
+            }
+        )
+    else:
+        raise ValueError(policy)
+    config = {
+        "run": {"run_id": run_id, "sampling_mode": "nested-random", "seed": 42},
+        "model": model,
+        "training": {
+            "token_budget": len(actions) * 10,
+            "expected_tokens_per_step": 10,
+            "gradient_accumulation_steps": 1,
+        },
+    }
+    (run_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    fields = [
+        "run_id", "step", "split", "tokens_seen", "granularity",
+        "controller_action", "controller_window_index",
+        "controller_sampled_probability",
+    ]
+    with (run_dir / "metrics.csv").open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=fields)
+        writer.writeheader()
+        for step, action in enumerate(actions, start=1):
+            controller_action = action
+            if policy == "thompson" and step % decision_interval_steps == 0:
+                controller_action = actions[min(step, len(actions) - 1)]
+            writer.writerow(
+                {
+                    "run_id": run_id,
+                    "step": step,
+                    "split": "train",
+                    "tokens_seen": step * 10,
+                    "granularity": action,
+                    "controller_action": controller_action,
+                    "controller_window_index": (step - 1) // decision_interval_steps,
+                    "controller_sampled_probability": (
+                        0.5 if policy == "panelgrad" else ""
+                    ),
+                }
+            )
+    return run_dir
 
 
 def test_make_figures_cli_forwards_validation_loss_log_y(monkeypatch):
@@ -122,6 +386,33 @@ def test_make_figures_cli_forwards_validation_loss_log_y(monkeypatch):
     assert captured["kwargs"]["include_incomplete_validation_traces"] is True
     assert captured["kwargs"]["variants"] == ["slicing", "concat"]
     assert captured["kwargs"]["corrections"] == ["none", "gmc"]
+
+
+def test_parameter_count_refresh_preserves_stored_counts_for_legacy_config(
+    tmp_path, monkeypatch
+):
+    from src.evaluation import reporting_io
+
+    run_dir = tmp_path / "legacy-run"
+    run_dir.mkdir()
+    (run_dir / "config.json").write_text("{}", encoding="utf-8")
+    row = {
+        "_source_csv": str(run_dir / "scaling_results.csv"),
+        "granularity": "micro",
+        "total_parameters": "123",
+        "non_embedding_parameters": "100",
+    }
+    monkeypatch.setattr(
+        reporting_io,
+        "recompute_parameter_counts",
+        lambda _path: (_ for _ in ()).throw(KeyError("vocab_size")),
+    )
+
+    with pytest.warns(RuntimeWarning, match="using scaling_results.csv values"):
+        refreshed = reporting_io.refresh_scaling_parameter_counts(tmp_path, [row])
+
+    assert refreshed[0]["total_parameters"] == "123"
+    assert refreshed[0]["non_embedding_parameters"] == "100"
 
 
 def test_reporting_path_groups_loss_rows_and_writes_medium_trend_report(tmp_path):
@@ -383,6 +674,51 @@ def test_multi_panel_size_figure_is_not_written_without_numeric_panels(
 
     assert output_paths == []
     assert saved_paths == []
+
+
+@pytest.mark.parametrize(
+    ("metric_name", "ylabel", "output_name"),
+    [
+        ("loss", "Loss", "loss_vs_size.png"),
+        ("perplexity", "Perplexity", "ppl_vs_size.png"),
+    ],
+)
+def test_panelgrad_is_included_in_size_plot_panels(
+    tmp_path,
+    metric_name,
+    ylabel,
+    output_name,
+):
+    from src.evaluation.reporting_impl import plot_metric_vs_size
+    from src.evaluation.reporting_styles import SIZE_PLOT_PANELS_WITH_SAMPLING
+
+    row = {
+        "sampling_mode": "nested-random",
+        "model_variant": "slicing",
+        "resolved_sampling_mode": "adaptive_global",
+        "adaptive_sampler_strategy": "panelgrad",
+        "controller_method_family": "panelgrad_gradient_rms",
+        "controller_method_version": 1,
+        "controller_scope": "global",
+        "non_embedding_parameters": 100,
+        metric_name: 2.0,
+    }
+
+    output_paths = plot_metric_vs_size(
+        [row],
+        metric_name=metric_name,
+        ylabel=ylabel,
+        output_path=tmp_path / output_name,
+        panel_specs=SIZE_PLOT_PANELS_WITH_SAMPLING,
+        dpi=20,
+    )
+
+    assert [path.name for path in output_paths] == [
+        output_name,
+        output_name.replace(
+            ".png", "__nested_random_slicing_panelgrad_global.png"
+        ),
+    ]
 
 
 def test_plot_filters_select_only_uncorrected_slicing_rows():
@@ -938,6 +1274,9 @@ def test_reporting_defines_distinct_styles_for_each_bayesian_scope():
     assert "probabilistic_global_thompson_acquisition_only" not in panel_identities
     assert "probabilistic_global_thompson_reset" not in panel_identities
     assert "probabilistic_per_block_thompson" in panel_identities
+    assert "panelgrad_global" in panel_identities
+    assert SCALING_SAMPLING_MARKERS["panelgrad_global"] == "d"
+    assert SCALING_SAMPLING_TONES["panelgrad_global"] == pytest.approx(0.42)
     assert "adaptive_per_block_thompson" not in panel_identities
     assert "adaptive_per_block_thompson" not in SCALING_SAMPLING_MARKERS
     assert "adaptive_per_block_thompson" not in SCALING_SAMPLING_TONES
@@ -1090,7 +1429,7 @@ def test_controller_timeline_extracts_exact_sixteen_block_profile(tmp_path):
     assert timeline.windows[0].block_granularities == profile
 
 
-def test_controller_selection_share_plots_one_exact_fraction_trace_per_granularity(
+def test_controller_selection_share_plots_one_exact_fraction_line_per_granularity(
     tmp_path,
     monkeypatch,
 ):
@@ -1152,6 +1491,10 @@ def test_controller_selection_share_plots_one_exact_fraction_trace_per_granulari
         "full",
     ]
     assert figure.axes[-1].get_xlabel() == "Total training tokens"
+    assert all(
+        axis.get_ylabel() == "Selected\nblock fraction"
+        for axis in figure.axes
+    )
     expected_endpoints = {
         "micro": (2 / 3, 0.0),
         "medium": (0.0, 1 / 3),
@@ -1212,8 +1555,126 @@ def test_global_controller_selection_share_is_binary(tmp_path, monkeypatch):
     )
 
     [figure] = saved_figures
+    assert all(
+        axis.get_ylabel() == "Selected\n(0 or 1)"
+        for axis in figure.axes
+    )
     for axis in figure.axes:
         assert set(axis.lines[0].get_ydata()).issubset({0.0, 1.0})
+        assert axis.lines[0].get_linestyle() == "None"
+    assert [axis.get_title() for axis in figure.axes] == [
+        "micro — 1/2 steps (50.0%)",
+        "medium — 0/2 steps (0.0%)",
+        "full — 1/2 steps (50.0%)",
+    ]
+
+
+def test_global_controller_timeline_uses_borderless_categorical_mesh(
+    tmp_path,
+    monkeypatch,
+):
+    from matplotlib.collections import QuadMesh
+    from matplotlib.figure import Figure
+
+    from src.evaluation.reporting import plot_selected_granularity_over_tokens
+    from src.evaluation.reporting_io import iter_controller_granularity_timelines
+
+    run_id = "global-mesh"
+    _write_controller_timeline_run(
+        tmp_path,
+        run_id=run_id,
+        scope="global",
+        events=[
+            _completed_controller_window(
+                run_id=run_id,
+                scope="global",
+                window_index=index,
+                start_step=index,
+                end_step=index + 1,
+                action={
+                    "global_granularity": ("micro", "medium", "full")[index % 3]
+                },
+            )
+            for index in range(300)
+        ],
+        expected_tokens_per_step=10,
+        token_budget=3_000,
+    )
+    [timeline] = list(iter_controller_granularity_timelines(tmp_path))
+    saved_figures = []
+    monkeypatch.setattr(
+        Figure,
+        "savefig",
+        lambda figure, _output_path, **_kwargs: saved_figures.append(figure),
+    )
+
+    plot_selected_granularity_over_tokens(
+        timeline,
+        tmp_path / "global-mesh.png",
+        dpi=40,
+    )
+
+    [figure] = saved_figures
+    timeline_axis = figure.axes[0]
+    meshes = [
+        collection
+        for collection in timeline_axis.collections
+        if isinstance(collection, QuadMesh)
+    ]
+    assert len(meshes) == 1
+    assert len(timeline_axis.patches) == 0
+
+
+def test_dense_global_selection_history_is_binned_into_local_frequencies(
+    tmp_path,
+    monkeypatch,
+):
+    from matplotlib.figure import Figure
+
+    from src.evaluation.reporting import (
+        plot_granularity_selection_frequency_over_tokens,
+    )
+    from src.evaluation.reporting_io import iter_controller_granularity_timelines
+
+    events = [
+        _completed_controller_window(
+            run_id="dense-global-share",
+            scope="global",
+            window_index=index,
+            start_step=index,
+            end_step=index + 1,
+            action={"global_granularity": "micro" if index % 2 == 0 else "full"},
+        )
+        for index in range(200)
+    ]
+    _write_controller_timeline_run(
+        tmp_path,
+        run_id="dense-global-share",
+        scope="global",
+        events=events,
+        token_budget=2_000,
+    )
+    [timeline] = list(iter_controller_granularity_timelines(tmp_path))
+    saved_figures = []
+    monkeypatch.setattr(
+        Figure,
+        "savefig",
+        lambda figure, _output_path, **_kwargs: saved_figures.append(figure),
+    )
+
+    plot_granularity_selection_frequency_over_tokens(
+        timeline,
+        tmp_path / "dense-share.png",
+        dpi=40,
+        max_bins=10,
+    )
+
+    [figure] = saved_figures
+    lines = {axis.get_title(): axis.lines[0] for axis in figure.axes}
+    assert list(lines["micro"].get_ydata()) == pytest.approx([0.5] * 10)
+    assert list(lines["full"].get_ydata()) == pytest.approx([0.5] * 10)
+    assert list(lines["medium"].get_ydata()) == pytest.approx([0.0] * 10)
+    assert "10 equal-token bins" in figure._suptitle.get_text()
 
 
 def test_controller_timeline_streams_490_current_schema_events_to_exact_budget(
@@ -1438,6 +1899,26 @@ def test_generate_figures_returns_global_and_per_block_controller_timeline_pngs(
     for path in share_paths.values():
         assert path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
 
+    zoom_paths = {
+        path.name: path
+        for path in paths
+        if path.name.startswith("selected_granularity_zoom_")
+    }
+    assert set(zoom_paths) == {
+        "selected_granularity_zoom_global-timeline.png",
+    }
+
+    frequency_paths = {
+        path.name: path
+        for path in paths
+        if path.name.startswith("granularity_selection_frequency_over_tokens_")
+    }
+    assert set(frequency_paths) == {
+        "granularity_selection_frequency_over_tokens_per-block-timeline.png",
+    }
+    for path in frequency_paths.values():
+        assert path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
     from src.evaluation.reporting_impl import (
         generate_figures as generate_compatibility_figures,
     )
@@ -1458,6 +1939,16 @@ def test_generate_figures_returns_global_and_per_block_controller_timeline_pngs(
         for path in compatibility_paths
         if path.name.startswith("selected_granularity_share_over_tokens_")
     } == set(share_paths)
+    assert {
+        path.name
+        for path in compatibility_paths
+        if path.name.startswith("granularity_selection_frequency_over_tokens_")
+    } == set(frequency_paths)
+    assert {
+        path.name
+        for path in compatibility_paths
+        if path.name.startswith("selected_granularity_zoom_")
+    } == set(zoom_paths)
 
 
 def test_generate_figures_filters_controller_plots_by_variant_and_correction(
@@ -1501,6 +1992,7 @@ def test_generate_figures_filters_controller_plots_by_variant_and_correction(
     assert policy_names == {
         "selected_granularity_over_tokens_slicing-none.png",
         "selected_granularity_share_over_tokens_slicing-none.png",
+        "selected_granularity_zoom_slicing-none.png",
     }
 
 
@@ -1984,6 +2476,319 @@ def test_panelgrad_has_explicit_reporting_identity_and_saved_provenance():
     )
     assert controller_method_version_from_saved_config(config) == 1
     assert controller_scope_from_saved_config(config) == "global"
+
+
+def test_panelgrad_size_curves_are_split_and_labeled_by_policy_configuration():
+    from src.evaluation.reporting_impl import (
+        compact_size_curve_labels,
+        group_size_plot_rows,
+    )
+    from src.evaluation.reporting_io import (
+        controller_contract_provenance_from_saved_config,
+    )
+
+    rows = []
+    for temperature in (1.0, 2.0, 4.0):
+        config = {
+            "model": {
+                "adaptive_sampler_strategy": "panelgrad",
+                "panelgrad": {
+                    "method_family": "panelgrad_gradient_rms",
+                    "method_version": 1,
+                    "scope": "global",
+                    "refresh_interval_steps": 50,
+                    "eta": 1e-12,
+                    "temperature": temperature,
+                    "epsilon": 0.1,
+                },
+            }
+        }
+        row = {
+            "run_id": f"panelgrad-t{temperature:g}",
+            "sampling_mode": "nested-random",
+            "model_variant": "slicing",
+            "resolved_sampling_mode": "adaptive_global",
+            "adaptive_sampler_strategy": "panelgrad",
+            "controller_method_family": "panelgrad_gradient_rms",
+            "controller_method_version": 1,
+            "controller_scope": "global",
+            "granularity": "micro",
+            "non_embedding_parameters": 100,
+            "perplexity": 2.0,
+        }
+        row.update(controller_contract_provenance_from_saved_config(config))
+        rows.append(row)
+
+    grouped = group_size_plot_rows(rows)
+    labels = compact_size_curve_labels(
+        grouped,
+        panel_sampling_label="panelgrad_global",
+    )
+
+    assert len(grouped) == 3
+    assert set(labels.values()) == {"T=1", "T=2", "T=4"}
+
+
+def test_panelgrad_schedule_identity_prevents_fixed_and_linear_curve_merging():
+    from src.evaluation.reporting_impl import group_size_plot_rows
+    from src.evaluation.reporting_io import (
+        controller_contract_provenance_from_saved_config,
+    )
+
+    policies = [
+        {"epsilon": 0.5},
+        {
+            "epsilon_schedule": {
+                "type": "linear",
+                "start": 0.5,
+                "end": 0.1,
+                "duration_steps": 24415,
+            }
+        },
+    ]
+    rows = []
+    for index, epsilon_policy in enumerate(policies):
+        panelgrad = {
+            "method_family": "panelgrad_gradient_rms",
+            "method_version": 1,
+            "scope": "global",
+            "refresh_interval_steps": 50,
+            "eta": 1e-12,
+            "temperature": 1.0,
+            **epsilon_policy,
+        }
+        config = {
+            "model": {
+                "adaptive_sampler_strategy": "panelgrad",
+                "panelgrad": panelgrad,
+            }
+        }
+        row = {
+            "run_id": f"panelgrad-schedule-{index}",
+            "sampling_mode": "nested-random",
+            "model_variant": "slicing",
+            "resolved_sampling_mode": "adaptive_global",
+            "adaptive_sampler_strategy": "panelgrad",
+            "controller_method_family": "panelgrad_gradient_rms",
+            "controller_method_version": 1,
+            "controller_scope": "global",
+            "granularity": "micro",
+            "non_embedding_parameters": 100,
+            "perplexity": 2.0,
+        }
+        row.update(controller_contract_provenance_from_saved_config(config))
+        rows.append(row)
+
+    grouped = group_size_plot_rows(rows)
+
+    assert len(grouped) == 2
+    identities = {
+        (
+            row[0]["panelgrad_epsilon_schedule_type"],
+            row[0]["panelgrad_epsilon_schedule_start"],
+            row[0]["panelgrad_epsilon_schedule_end"],
+            row[0]["panelgrad_epsilon_schedule_duration_steps"],
+        )
+        for row in grouped.values()
+    }
+    assert identities == {
+        ("fixed", 0.5, 0.5, None),
+        ("linear", 0.5, 0.1, 24415),
+    }
+
+
+def test_panelgrad_history_extracts_committed_actions_and_refresh_diagnostics(
+    tmp_path,
+):
+    from src.evaluation.reporting_io import (
+        iter_controller_granularity_timelines,
+        iter_panelgrad_histories,
+        panelgrad_history_as_timeline,
+    )
+
+    _write_panelgrad_history_run(tmp_path)
+
+    assert list(iter_controller_granularity_timelines(tmp_path)) == []
+    [history] = list(iter_panelgrad_histories(tmp_path))
+
+    assert history.run_id == "panelgrad-run"
+    assert history.ordered_granularities == ("micro", "medium", "full")
+    assert [
+        (
+            action.step,
+            action.start_tokens,
+            action.end_tokens,
+            action.granularity,
+            action.sampled_probability,
+        )
+        for action in history.actions
+    ] == [
+        (2, 10, 20, "micro", 0.5),
+        (3, 20, 30, "full", 0.2),
+    ]
+    assert [refresh.boundary_tokens for refresh in history.refreshes] == [10, 30]
+    assert history.refreshes[0].gradient_rms_scores == (0.3, 0.2, 0.1)
+    assert history.refreshes[0].p == (0.5, 0.3, 0.2)
+    assert history.refreshes[0].q == (0.52, 0.30, 0.18)
+    assert history.refreshes[0].controller_target_tokens == 90
+    assert [refresh.active_epsilon for refresh in history.refreshes] == pytest.approx(
+        [0.5, 0.3]
+    )
+    assert [refresh.epsilon_schedule_step for refresh in history.refreshes] == [0, 2]
+
+    timeline = panelgrad_history_as_timeline(history)
+    assert timeline.scope == "global"
+    assert [window.block_granularities for window in timeline.windows] == [
+        ("micro",),
+        ("full",),
+    ]
+    assert [(window.start_tokens, window.end_tokens) for window in timeline.windows] == [
+        (10, 20),
+        (20, 30),
+    ]
+
+
+def test_panelgrad_refresh_diagnostics_plot_epsilon_over_tokens(tmp_path, monkeypatch):
+    from matplotlib.figure import Figure
+
+    from src.evaluation.reporting import plot_panelgrad_refresh_diagnostics
+    from src.evaluation.reporting_io import iter_panelgrad_histories
+
+    _write_panelgrad_history_run(tmp_path)
+    [history] = list(iter_panelgrad_histories(tmp_path))
+    saved_figures = []
+    monkeypatch.setattr(
+        Figure,
+        "savefig",
+        lambda figure, _output_path, **_kwargs: saved_figures.append(figure),
+    )
+
+    plot_panelgrad_refresh_diagnostics(
+        history,
+        tmp_path / "panelgrad-refresh-diagnostics.png",
+        dpi=40,
+    )
+
+    [figure] = saved_figures
+    epsilon_axis = figure.axes[2]
+    assert epsilon_axis.get_title() == "Refresh-boundary exploration schedule"
+    assert list(epsilon_axis.lines[0].get_xdata()) == [10, 30]
+    assert list(epsilon_axis.lines[0].get_ydata()) == pytest.approx([0.5, 0.3])
+
+
+def test_generate_figures_writes_panelgrad_action_exposure_and_refresh_plots(tmp_path):
+    _write_panelgrad_history_run(tmp_path)
+
+    paths = generate_figures(tmp_path, tmp_path / "figures", dpi=30)
+    names = {path.name for path in paths}
+
+    assert "selected_granularity_over_tokens_panelgrad-run.png" in names
+    assert "selected_granularity_share_over_tokens_panelgrad-run.png" in names
+    assert "selected_granularity_zoom_panelgrad-run.png" in names
+    assert "granularity_selection_frequency_over_tokens_panelgrad-run.png" not in names
+    assert "panelgrad_cumulative_exposure_panelgrad-run.png" not in names
+    assert "panelgrad_refresh_diagnostics_panelgrad-run.png" in names
+    for name in names:
+        assert (tmp_path / "figures" / name).is_file()
+
+
+def test_global_sampling_histories_use_committed_metrics_actions_for_all_policies(
+    tmp_path,
+):
+    from src.evaluation.reporting_io import iter_global_sampling_histories
+
+    actions = ["micro", "micro", "full", "full"]
+    for policy in ("uniform", "thompson", "panelgrad"):
+        _write_global_policy_run(
+            tmp_path,
+            run_id=f"{policy}-run",
+            policy=policy,
+            actions=actions,
+        )
+
+    histories = {
+        history.policy_identity: history
+        for history in iter_global_sampling_histories(tmp_path)
+    }
+    assert set(histories) == {
+        "uniform_global",
+        "thompson_global",
+        "panelgrad_global",
+    }
+    assert all(
+        [action.granularity for action in history.actions] == actions
+        for history in histories.values()
+    )
+    assert histories["uniform_global"].decision_count == 4
+    assert histories["panelgrad_global"].decision_count == 4
+    assert histories["thompson_global"].decision_count == 2
+    assert len({history.comparison_key for history in histories.values()}) == 1
+
+
+def test_global_sampling_bins_preserve_step_resolution_and_partial_final_bin(tmp_path):
+    from src.evaluation.reporting import global_sampling_bin_series
+    from src.evaluation.reporting_io import iter_global_sampling_histories
+
+    actions = ["micro"] * 25 + ["full"] * 25 + ["medium"] * 15
+    _write_global_policy_run(
+        tmp_path,
+        run_id="panelgrad-bins",
+        policy="panelgrad",
+        actions=actions,
+    )
+    [history] = list(iter_global_sampling_histories(tmp_path))
+
+    _x_values, shares, bin_sizes = global_sampling_bin_series(history, bin_steps=50)
+
+    assert bin_sizes == [50, 15]
+    assert shares["micro"] == pytest.approx([0.5, 0.0])
+    assert shares["medium"] == pytest.approx([0.0, 1.0])
+    assert shares["full"] == pytest.approx([0.5, 0.0])
+    assert [sum(values) for values in zip(*shares.values())] == pytest.approx([1.0, 1.0])
+
+
+def test_generate_figures_writes_unified_global_policy_comparisons(tmp_path):
+    action_sets = {
+        "uniform": ["micro", "medium", "full", "micro"],
+        "thompson": ["micro", "micro", "full", "full"],
+        "panelgrad": ["full", "medium", "micro", "full"],
+    }
+    for policy, actions in action_sets.items():
+        _write_global_policy_run(
+            tmp_path,
+            run_id=f"{policy}-comparison",
+            policy=policy,
+            actions=actions,
+        )
+
+    paths = generate_figures(
+        tmp_path,
+        tmp_path / "figures",
+        dpi=30,
+        sampling_bin_steps=2,
+        sampling_zoom_steps=2,
+    )
+    names = {path.name for path in paths}
+
+    assert len([name for name in names if name.startswith("selected_granularity_over_tokens_")]) == 3
+    assert len([name for name in names if name.startswith("selected_granularity_share_over_tokens_")]) == 3
+    assert len([name for name in names if name.startswith("selected_granularity_zoom_")]) == 3
+    assert len([name for name in names if name.startswith("global_sampling_exposure_comparison__")]) == 1
+    assert len([name for name in names if name.startswith("global_sampling_cumulative_comparison__")]) == 1
+    [summary_name] = [
+        name for name in names if name.startswith("global_sampling_policy_summary__")
+    ]
+    with (tmp_path / "figures" / summary_name).open(
+        "r", encoding="utf-8", newline=""
+    ) as file:
+        rows = list(csv.DictReader(file))
+    assert {row["policy"] for row in rows} == {
+        "Uniform global", "Thompson global", "PanelGrad"
+    }
+    assert {row["completed_steps"] for row in rows} == {"4"}
+    assert {
+        row["policy"]: row["policy_decisions"] for row in rows
+    } == {"PanelGrad": "4", "Thompson global": "2", "Uniform global": "4"}
 
 
 def test_non_panelgrad_reporting_labels_remain_unchanged():

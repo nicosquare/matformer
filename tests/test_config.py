@@ -2,6 +2,7 @@ import copy
 import json
 import math
 import textwrap
+from pathlib import Path
 
 import pytest
 import yaml
@@ -2276,6 +2277,92 @@ def test_panelgrad_resolves_defaults_overrides_and_preflight_contract():
     assert overridden["eta"] == 1e-6
     assert overridden["temperature"] == 2.5
     assert overridden["epsilon"] == 0.0
+
+
+def _write_panelgrad_epsilon_schedule_config(
+    tmp_path,
+    schedule,
+    *,
+    retain_scalar_epsilon=False,
+):
+    config = yaml.safe_load(
+        (Path("tests/fixtures/panelgrad_smoke.yaml")).read_text(encoding="utf-8")
+    )
+    panelgrad = config["model"]["panelgrad"]
+    if not retain_scalar_epsilon:
+        panelgrad.pop("epsilon", None)
+    panelgrad["epsilon_schedule"] = schedule
+    path = tmp_path / "panelgrad-epsilon-schedule.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def test_panelgrad_resolves_linear_epsilon_schedule_without_scalar(tmp_path):
+    path = _write_panelgrad_epsilon_schedule_config(
+        tmp_path,
+        {"type": "linear", "start": 0.5, "end": 0.1, "duration_steps": 24415},
+    )
+
+    panelgrad = resolve_run_config(path)["model"]["panelgrad"]
+
+    assert "epsilon" not in panelgrad
+    assert panelgrad["epsilon_schedule"] == {
+        "type": "linear",
+        "start": 0.5,
+        "end": 0.1,
+        "duration_steps": 24415,
+    }
+
+
+@pytest.mark.parametrize(
+    ("schedule", "retain_scalar", "match"),
+    [
+        (
+            {"type": "linear", "start": 0.5, "end": 0.1, "duration_steps": 10},
+            True,
+            "either epsilon or epsilon_schedule",
+        ),
+        (
+            {"type": "cosine", "start": 0.5, "end": 0.1, "duration_steps": 10},
+            False,
+            "type must be 'linear'",
+        ),
+        (
+            {"type": "linear", "start": -0.1, "end": 0.1, "duration_steps": 10},
+            False,
+            "start must be between zero and one",
+        ),
+        (
+            {"type": "linear", "start": 0.5, "end": 1.1, "duration_steps": 10},
+            False,
+            "end must be between zero and one",
+        ),
+        (
+            {"type": "linear", "start": 0.5, "end": 0.1, "duration_steps": 0},
+            False,
+            "duration_steps must be a positive integer",
+        ),
+        (
+            {"type": "linear", "start": 0.5, "end": 0.1, "duration_steps": 1.5},
+            False,
+            "duration_steps must be a positive integer",
+        ),
+    ],
+)
+def test_panelgrad_rejects_invalid_epsilon_schedule(
+    tmp_path,
+    schedule,
+    retain_scalar,
+    match,
+):
+    path = _write_panelgrad_epsilon_schedule_config(
+        tmp_path,
+        schedule,
+        retain_scalar_epsilon=retain_scalar,
+    )
+
+    with pytest.raises(ConfigError, match=match):
+        resolve_run_config(path)
 
 
 @pytest.mark.parametrize(

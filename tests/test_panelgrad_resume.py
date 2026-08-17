@@ -13,8 +13,16 @@ from src.utils.config import resolve_run_config
 from src.utils.reproducibility import stable_hash
 
 
-def _resume_fixture():
+def _resume_fixture(*, scheduled=False):
     config = resolve_run_config("tests/fixtures/panelgrad_smoke.yaml")
+    if scheduled:
+        config["model"]["panelgrad"].pop("epsilon")
+        config["model"]["panelgrad"]["epsilon_schedule"] = {
+            "type": "linear",
+            "start": 0.5,
+            "end": 0.1,
+            "duration_steps": 4,
+        }
     labels = list(config["model"]["granularities"])
     support = {
         "support_schema_version": 1,
@@ -72,11 +80,15 @@ def _committed_actions(controller, start_step, count, measurement):
     return actions
 
 
+@pytest.mark.parametrize("scheduled", [False, True])
 @pytest.mark.parametrize("resume_after", [1, 2])
 def test_panelgrad_resume_inside_interval_and_at_refresh_boundary_is_exact(
     resume_after,
+    scheduled,
 ):
-    config, support, uninterrupted, measurement = _resume_fixture()
+    config, support, uninterrupted, measurement = _resume_fixture(
+        scheduled=scheduled
+    )
     resumed_source = build_panelgrad_controller(config, support)
     uninterrupted.install_refresh(measurement, boundary_step=0)
     resumed_source.install_refresh(measurement, boundary_step=0)
@@ -153,3 +165,54 @@ def test_panelgrad_terminal_state_round_trips_without_an_extra_action():
     assert restored.state_dict()["sampling"]["sample_count"] == 1
     with pytest.raises(PanelGradError, match="complete refresh"):
         restored.sample_action()
+
+
+def test_fixed_epsilon_version_one_state_migrates_exactly():
+    config, support, source, measurement = _resume_fixture()
+    reference = build_panelgrad_controller(config, support)
+    for controller in (source, reference):
+        controller.install_refresh(measurement, boundary_step=0)
+        _committed_actions(controller, 1, 1, measurement)
+
+    version_one = source.state_dict()
+    version_one["schema_version"] = 1
+    version_one["policy"].pop("epsilon_schedule")
+    version_one["refresh"].pop("active_epsilon")
+    version_one["refresh"].pop("epsilon_schedule_step")
+
+    restored = restore_panelgrad_controller(config, support, version_one)
+
+    assert restored.state_dict()["schema_version"] == 2
+    assert restored.state_dict()["policy"]["epsilon_schedule"]["type"] == "fixed"
+    assert restored.state_dict()["refresh"]["active_epsilon"] == pytest.approx(0.1)
+    assert _committed_actions(restored, 2, 4, measurement) == _committed_actions(
+        reference, 2, 4, measurement
+    )
+
+
+def test_version_one_state_cannot_initialize_a_scheduled_policy():
+    fixed_config, support, controller, measurement = _resume_fixture()
+    controller.install_refresh(measurement, boundary_step=0)
+    version_one = controller.state_dict()
+    version_one["schema_version"] = 1
+    version_one["policy"].pop("epsilon_schedule")
+    version_one["refresh"].pop("active_epsilon")
+    version_one["refresh"].pop("epsilon_schedule_step")
+    scheduled_config, _, _, _ = _resume_fixture(scheduled=True)
+
+    with pytest.raises(PanelGradError, match="cannot resume.*scheduled"):
+        validate_panelgrad_state(
+            version_one,
+            config=scheduled_config,
+            support_identity=support,
+        )
+
+
+def test_scheduled_checkpoint_probability_is_validated_with_snapshot_epsilon():
+    config, support, controller, measurement = _resume_fixture(scheduled=True)
+    controller.install_refresh(measurement, boundary_step=0)
+    state = controller.state_dict()
+    state["refresh"]["active_epsilon"] = 0.4
+
+    with pytest.raises(PanelGradError, match="active epsilon is invalid"):
+        validate_panelgrad_state(state, config=config, support_identity=support)

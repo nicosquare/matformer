@@ -381,6 +381,31 @@ def _select_optimizer_window_action(
     }
 
 
+def _training_action_heartbeat_fields(action: Mapping[str, Any]) -> dict[str, Any]:
+    """Build one compact action description shared by all sampling modes."""
+
+    kind = str(action.get("kind") or "unknown")
+    granularities = [str(label) for label in action.get("granularities", [])]
+    fields: dict[str, Any] = {"selection_kind": kind}
+    if kind == "global" and len(granularities) == 1:
+        fields["selected_granularity"] = granularities[0]
+    elif kind == "nested_all":
+        fields["selected_granularity"] = "all"
+        fields["selected_granularities"] = granularities
+    elif granularities:
+        counts = {
+            label: granularities.count(label)
+            for label in dict.fromkeys(granularities)
+        }
+        fields["selected_granularity"] = "per_block"
+        fields["selected_granularity_counts"] = counts
+    if action.get("panelgrad_probability") is not None:
+        fields["controller_sampled_probability"] = float(
+            action["panelgrad_probability"]
+        )
+    return fields
+
+
 def _backward_context(model, *, synchronize: bool):
     if synchronize or not hasattr(model, "no_sync"):
         return nullcontext()
@@ -501,6 +526,12 @@ def train_for_steps(
     content_tokens_seen = int(run_state.get("content_tokens_seen", 0))
     heartbeat_writer = heartbeat_writer or NoopHeartbeatWriter()
     heartbeat_cadence = build_heartbeat_cadence(config)
+    # The stage-start event is the cadence baseline. This keeps ordinary fast
+    # steps on committed boundaries (10, 20, ...) instead of consuming the
+    # cadence on the first in-flight microbatch (1, 11, ...).
+    heartbeat_cadence.mark_emitted(step=step, now=start_time)
+    latest_committed_loss: float | None = None
+    latest_committed_loss_step: int | None = None
     checkpoint_state = checkpoint_state if checkpoint_state is not None else {}
     latest_checkpoint_path = Path(
         run_state.get("latest_checkpoint_path")
@@ -580,6 +611,7 @@ def train_for_steps(
                 window_sampler_snapshot = training_data.packed_sampler_state(
                     train_dataloader
                 )
+                in_flight_heartbeat_emitted = False
                 window: list[tuple[int, dict[str, torch.Tensor]]] = []
                 while len(window) < accumulation_steps:
                     try:
@@ -669,10 +701,14 @@ def train_for_steps(
                                     step=pending_step,
                                     tokens_seen=tokens_seen,
                                     content_tokens_seen=content_tokens_seen,
+                                    latest_loss=latest_committed_loss,
                                     peak_gpu_memory_bytes=current_peak_memory_bytes(
                                         device
                                     ),
                                 ),
+                                progress_state="optimizer_window_in_progress",
+                                latest_loss_step=latest_committed_loss_step,
+                                **_training_action_heartbeat_fields(action),
                                 pending_optimizer_step=pending_step,
                                 pending_microstep=microstep_index,
                                 optimizer_window_microsteps=len(prepared_window),
@@ -681,6 +717,7 @@ def train_for_steps(
                             heartbeat_cadence.mark_emitted(
                                 step=pending_step, now=now
                             )
+                            in_flight_heartbeat_emitted = True
 
                     committed_tokens = sum_int(
                         local_window_content_tokens,
@@ -770,6 +807,8 @@ def train_for_steps(
                         for label, numerator in local_loss_numerators.items()
                     }
                     latest_loss = sum(global_losses.values()) / len(global_losses)
+                    latest_committed_loss = latest_loss
+                    latest_committed_loss_step = step
                     if successful_step_callback is not None:
                         successful_step_callback(step=step, tokens_seen=tokens_seen)
                     if probabilistic_boundary_callback is not None:
@@ -853,6 +892,12 @@ def train_for_steps(
                         tokens_per_second=tokens_per_second,
                         peak_gpu_memory_bytes=peak_memory_bytes,
                         stage_name=stage_name,
+                        force=in_flight_heartbeat_emitted,
+                        extra_fields={
+                            "progress_state": "optimizer_step_committed",
+                            "latest_loss_step": step,
+                            **_training_action_heartbeat_fields(action),
+                        },
                     )
                     if (
                         metrics_journal is not None

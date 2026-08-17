@@ -23,6 +23,7 @@ from src.utils.monitoring import group_loss_rows_by_series
 
 def _panelgrad_smoke_controller(config, *, seed=31):
     granularities = list(config["model"]["granularities"])
+    panelgrad = config["model"]["panelgrad"]
     return PanelGradController(
         ordered_granularities=granularities,
         refresh_interval_steps=int(
@@ -30,7 +31,12 @@ def _panelgrad_smoke_controller(config, *, seed=31):
         ),
         eta=float(config["model"]["panelgrad"]["eta"]),
         temperature=float(config["model"]["panelgrad"]["temperature"]),
-        epsilon=float(config["model"]["panelgrad"]["epsilon"]),
+        epsilon=(
+            float(panelgrad["epsilon"])
+            if panelgrad.get("epsilon") is not None
+            else None
+        ),
+        epsilon_schedule=panelgrad.get("epsilon_schedule"),
         sampling_seed=seed,
         support_identity={
             "ordered_granularities": granularities,
@@ -959,6 +965,8 @@ def test_tiny_nested_training_accumulates_all_granularities_per_batch(
             "training.warmup_steps=0",
         ],
     )
+    config["training"]["heartbeat_step_interval"] = 1
+    config["training"]["heartbeat_time_interval_seconds"] = 3600.0
     tokenized_dataset = Dataset.from_dict(
         {
             "input_ids": [[1, 2, 0], [3, 4, 5]],
@@ -993,6 +1001,22 @@ def test_tiny_nested_training_accumulates_all_granularities_per_batch(
         ]
 
     assert [row["granularity"] for row in train_rows] == ["s", "m", "l", "xl"]
+
+    heartbeat_events = _read_heartbeat_events(output_dir / "heartbeats.jsonl")
+    committed_heartbeats = [
+        event
+        for event in heartbeat_events
+        if event.get("event_type") == "heartbeat"
+        and event.get("stage") == "training"
+        and event.get("progress_state") == "optimizer_step_committed"
+    ]
+    assert len(committed_heartbeats) == 1
+    [committed] = committed_heartbeats
+    assert committed["step"] == 1
+    assert committed["latest_loss"] is not None
+    assert committed["latest_loss_step"] == 1
+    assert committed["selection_kind"] == "nested_all"
+    assert committed["selected_granularity"] == "all"
 
 
 def test_tiny_nested_training_averages_losses_across_all_granularities_for_nested_all(
@@ -3387,8 +3411,10 @@ def test_panelgrad_uses_the_ordinary_unweighted_global_optimizer_path(tmp_path):
     assert panel_model.weight.detach() == pytest.approx(baseline.weight.detach())
 
 
+@pytest.mark.parametrize("scheduled", [False, True])
 def test_panelgrad_run_training_resolves_support_refreshes_and_uses_global_rows(
     tmp_path,
+    scheduled,
 ):
     output_dir = tmp_path / "panelgrad-run" / "panelgrad-smoke-001"
     config = resolve_run_config(
@@ -3412,6 +3438,14 @@ def test_panelgrad_run_training_resolves_support_refreshes_and_uses_global_rows(
             "outputs.save_checkpoints=false",
         ],
     )
+    if scheduled:
+        config["model"]["panelgrad"].pop("epsilon")
+        config["model"]["panelgrad"]["epsilon_schedule"] = {
+            "type": "linear",
+            "start": 0.5,
+            "end": 0.1,
+            "duration_steps": 4,
+        }
     examples = 900
     tokenized_dataset = Dataset.from_dict(
         {
@@ -3442,6 +3476,27 @@ def test_panelgrad_run_training_resolves_support_refreshes_and_uses_global_rows(
         "medium",
         "full",
     }
+    refresh_events = [
+        event
+        for event in (
+            json.loads(line)
+            for line in (output_dir / "controller_metrics.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        )
+        if event.get("event_type") == "panelgrad_refresh_completed"
+    ]
+    assert [event["epsilon_schedule_step"] for event in refresh_events] == [0, 2]
+    assert [event["active_epsilon"] for event in refresh_events] == pytest.approx(
+        [0.5, 0.3] if scheduled else [0.1, 0.1]
+    )
+    controller_summary = json.loads(
+        (output_dir / "controller_summary.json").read_text(encoding="utf-8")
+    )
+    assert controller_summary["epsilon_schedule"]["type"] == (
+        "linear" if scheduled else "fixed"
+    )
+    assert controller_summary["epsilon_schedule_step"] == 2
 
 
 def test_panelgrad_failed_optimizer_attempt_rolls_back_draw_and_interval(tmp_path):
@@ -3505,10 +3560,12 @@ def test_panelgrad_failed_optimizer_attempt_rolls_back_draw_and_interval(tmp_pat
     "max_steps, expect_adaptive_step",
     [(13, True), (12, False)],
 )
+@pytest.mark.parametrize("scheduled", [False, True])
 def test_panelgrad_balanced_warmup_has_no_exposure_and_refreshes_only_if_training_continues(
     tmp_path,
     max_steps,
     expect_adaptive_step,
+    scheduled,
 ):
     import src.training.warmup as training_warmup
 
@@ -3529,6 +3586,14 @@ def test_panelgrad_balanced_warmup_has_no_exposure_and_refreshes_only_if_trainin
             "outputs.save_checkpoints=false",
         ],
     )
+    if scheduled:
+        config["model"]["panelgrad"].pop("epsilon")
+        config["model"]["panelgrad"]["epsilon_schedule"] = {
+            "type": "linear",
+            "start": 0.5,
+            "end": 0.1,
+            "duration_steps": 4,
+        }
     model = TinyNestedTrainingModel(
         loss_scale_by_granularity={"micro": 1.0, "medium": 2.0, "full": 3.0},
         granularities=config["model"]["granularities"],
@@ -3585,3 +3650,8 @@ def test_panelgrad_balanced_warmup_has_no_exposure_and_refreshes_only_if_trainin
     state = controller.state_dict()
     assert refresh_boundaries == ([12] if expect_adaptive_step else [])
     assert state["sampling"]["sample_count"] == (1 if expect_adaptive_step else 0)
+    if expect_adaptive_step:
+        assert state["refresh"]["epsilon_schedule_step"] == 0
+        assert state["refresh"]["active_epsilon"] == pytest.approx(
+            0.5 if scheduled else 0.1
+        )

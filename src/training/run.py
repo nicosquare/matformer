@@ -1307,6 +1307,8 @@ def run_training(
             if panelgrad_controller.phase != "refresh_pending":
                 run_state["panelgrad_state"] = panelgrad_controller.state_dict()
                 return
+            refresh_policy = panelgrad_controller.epsilon_for_next_refresh()
+            transaction_snapshot = panelgrad_controller.transaction_snapshot()
             try:
                 measurement = training_panelgrad.measure_panelgrad_gradients(
                     model,
@@ -1336,8 +1338,40 @@ def run_training(
                             authoritative_state
                         )
                         refresh = panelgrad_controller.state_dict()["refresh"]
+                run_state["panelgrad_state"] = panelgrad_controller.state_dict()
+                commit_panelgrad_event(
+                    {
+                        "schema_version": 1,
+                        "event_type": "panelgrad_refresh_completed",
+                        "method_family": "panelgrad_gradient_rms",
+                        "method_version": 1,
+                        "boundary_step": int(step),
+                        "window_index": int(refresh["refresh_index"]),
+                        "measurements": refresh["measurements"],
+                        "q": refresh["q"],
+                        "p": refresh["p"],
+                        "entropy": refresh["entropy"],
+                        "min_probability": refresh["min_probability"],
+                        "max_probability": refresh["max_probability"],
+                        "active_epsilon": refresh["active_epsilon"],
+                        "epsilon_schedule_step": refresh[
+                            "epsilon_schedule_step"
+                        ],
+                        **(refresh.get("cost") or {}),
+                        "controller_manifest_hash": config.get(
+                            "controller_manifest_hash"
+                        ),
+                        "controlled_support_hash": config["model"]["panelgrad"].get(
+                            "controlled_support_hash"
+                        ),
+                    }
+                )
             except Exception as error:
+                panelgrad_controller.restore_transaction_snapshot(
+                    transaction_snapshot
+                )
                 state = panelgrad_controller.state_dict()
+                run_state["panelgrad_state"] = state
                 commit_panelgrad_event(
                     {
                         "schema_version": 1,
@@ -1352,33 +1386,10 @@ def run_training(
                         "error": str(error),
                         "new_distribution_installed": False,
                         "new_action_selected": False,
+                        **refresh_policy,
                     }
                 )
                 raise
-            run_state["panelgrad_state"] = panelgrad_controller.state_dict()
-            commit_panelgrad_event(
-                {
-                    "schema_version": 1,
-                    "event_type": "panelgrad_refresh_completed",
-                    "method_family": "panelgrad_gradient_rms",
-                    "method_version": 1,
-                    "boundary_step": int(step),
-                    "window_index": int(refresh["refresh_index"]),
-                    "measurements": refresh["measurements"],
-                    "q": refresh["q"],
-                    "p": refresh["p"],
-                    "entropy": refresh["entropy"],
-                    "min_probability": refresh["min_probability"],
-                    "max_probability": refresh["max_probability"],
-                    **(refresh.get("cost") or {}),
-                    "controller_manifest_hash": config.get(
-                        "controller_manifest_hash"
-                    ),
-                    "controlled_support_hash": config["model"]["panelgrad"].get(
-                        "controlled_support_hash"
-                    ),
-                }
-            )
 
         def finish_panelgrad_training(*, step: int, tokens_seen: int) -> None:
             del tokens_seen

@@ -87,9 +87,11 @@ def maybe_emit_training_heartbeat(
     tokens_per_second: float | None,
     peak_gpu_memory_bytes: int,
     stage_name: str = "training",
+    force: bool = False,
+    extra_fields: dict[str, Any] | None = None,
 ) -> None:
     now = time.time()
-    if not heartbeat_cadence.should_emit(step=step, now=now):
+    if not force and not heartbeat_cadence.should_emit(step=step, now=now):
         return
 
     heartbeat_writer.heartbeat(
@@ -108,6 +110,7 @@ def maybe_emit_training_heartbeat(
                 tokens_per_second=tokens_per_second,
             ),
         ),
+        **dict(extra_fields or {}),
     )
     heartbeat_cadence.mark_emitted(step=step, now=now)
 
@@ -264,6 +267,14 @@ class HeartbeatWriter:
             parts.append(f"content_tokens={event['content_tokens_seen']}")
         if event.get("latest_loss") is not None:
             parts.append(f"loss={event['latest_loss']}")
+        if event.get("latest_loss_step") is not None:
+            parts.append(f"loss_step={event['latest_loss_step']}")
+        if event.get("progress_state") is not None:
+            parts.append(f"progress={event['progress_state']}")
+        if event.get("selected_granularity") is not None:
+            parts.append(f"granularity={event['selected_granularity']}")
+        if event.get("controller_sampled_probability") is not None:
+            parts.append(f"p={event['controller_sampled_probability']}")
         if event.get("tokens_per_second") is not None:
             parts.append(f"tok/s={event['tokens_per_second']}")
         if event.get("eta_seconds") is not None:

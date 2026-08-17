@@ -1844,6 +1844,14 @@ def build_controller_summary(
         total_duration = sum(
             float(event.get("duration_seconds", 0.0)) for event in completed
         )
+        epsilon_history = [
+            {
+                "refresh_index": event.get("window_index"),
+                "active_epsilon": event.get("active_epsilon"),
+                "epsilon_schedule_step": event.get("epsilon_schedule_step"),
+            }
+            for event in completed
+        ]
         journal_path = Path(controller_metrics_path)
         return {
             "schema_version": state.get("schema_version"),
@@ -1853,6 +1861,9 @@ def build_controller_summary(
             "scope": state.get("scope"),
             "ordered_granularities": state.get("ordered_granularities"),
             "policy": state.get("policy"),
+            "epsilon_schedule": state.get("policy", {}).get(
+                "epsilon_schedule"
+            ),
             "support": state.get("support"),
             "manifest_hashes": state.get("manifest_hashes"),
             "refresh_count": len(completed),
@@ -1860,6 +1871,9 @@ def build_controller_summary(
             "final_q": refresh.get("q"),
             "final_p": refresh.get("p"),
             "final_entropy": refresh.get("entropy"),
+            "active_epsilon": refresh.get("active_epsilon"),
+            "epsilon_schedule_step": refresh.get("epsilon_schedule_step"),
+            "epsilon_history": epsilon_history,
             "exposure_counts": sampling.get("exposure_counts"),
             "sample_count": sampling.get("sample_count"),
             "terminal": state.get("terminal"),
