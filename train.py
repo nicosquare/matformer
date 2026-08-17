@@ -10,6 +10,22 @@ from src.utils.config import resolve_run_config
 from src.utils.reproducibility import build_comparison_control_signature
 
 
+def _pre_nested_warmup_preflight(training: dict) -> dict:
+    """Return the compact warmup contract needed to validate a launch."""
+    warmup = training.get("pre_nested_warmup", {})
+    keys = (
+        "enabled",
+        "active",
+        "duration",
+        "unit",
+        "policy",
+        "action_interval_steps",
+        "passes",
+        "controller_start_step",
+    )
+    return {key: warmup[key] for key in keys if key in warmup}
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a MatFormer training job.")
     parser.add_argument("--config", required=True, help="Path to the run config YAML")
@@ -96,6 +112,9 @@ def main(argv: list[str] | None = None) -> None:
                     "resolved_warmup_steps": resolved["training"][
                         "resolved_warmup_steps"
                     ],
+                    "pre_nested_warmup": _pre_nested_warmup_preflight(
+                        resolved["training"]
+                    ),
                     "tokenizer_manifest_hash": resolved["model"].get(
                         "tokenizer_manifest_hash"
                     ),
