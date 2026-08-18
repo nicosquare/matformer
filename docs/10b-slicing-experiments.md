@@ -86,6 +86,33 @@ Prepared-corpus training is local-only and does not need a Hugging Face token.
 Optional Hugging Face cache and credential fields remain available in `.env`
 for workflows that access remote datasets.
 
+### Rerun accumulation geometry (2026-08-18)
+
+The original production runs used a per-process batch size of 4 and 64 gradient
+accumulation microsteps. For the reruns, the per-process batch is increased to 8
+and accumulation is reduced to 32:
+
+| Geometry | Original runs | Reruns |
+| --- | ---: | ---: |
+| Sequences per process and microstep | 4 | 8 |
+| Global tokens per microstep | 16,384 | 32,768 |
+| Gradient accumulation steps | 64 | 32 |
+| Global tokens per optimizer update | 1,048,576 | 1,048,576 |
+
+This change reduces the number of forward/backward microsteps while preserving
+the global token batch per optimizer update. Consequently, the token budget,
+9,537-update schedule, 156-update cosine warmup, validation cadence, and all
+controller/reset intervals expressed in optimizer updates remain unchanged.
+The larger microbatch requires more accelerator memory and must pass the smoke
+runs in section 5 before production submission.
+
+The production YAML files retain the original 4/64 defaults as the historical
+experiment contract. The shared command-line overrides below define the 8/32
+rerun profile without silently changing those configs. Although the effective
+batch is unchanged, the different microbatch partition can change floating-point
+reduction and RNG behavior, so reruns are not expected to be bitwise identical
+to the original runs and cannot resume their checkpoints.
+
 Define the arguments shared by every Slurm launch:
 
 ```bash
@@ -94,6 +121,8 @@ COMMON=(
   --python-bin "$PYTHON_BIN"
   --override "dataset.prepared_corpus_dir=$CORPUS"
   --override "model.tokenizer_dir=$TOKENIZER"
+  --override training.batch_size_per_process=8
+  --override training.gradient_accumulation_steps=32
 )
 
 SBATCH=(sbatch)
@@ -124,6 +153,8 @@ python train.py \
   --override "dataset.prepared_corpus_dir=$CORPUS" \
   --override "model.tokenizer_dir=$TOKENIZER" \
   --override training.distributed.expected_world_size=4 \
+  --override training.batch_size_per_process=8 \
+  --override training.gradient_accumulation_steps=32 \
   --preflight
 
 python train.py \
@@ -133,14 +164,16 @@ python train.py \
   --override "dataset.prepared_corpus_dir=$CORPUS" \
   --override "model.tokenizer_dir=$TOKENIZER" \
   --override training.distributed.expected_world_size=4 \
+  --override training.batch_size_per_process=8 \
+  --override training.gradient_accumulation_steps=32 \
   --preflight
 ```
 
 Both must report:
 
 - `effective_world_size: 4`
-- `expected_tokens_per_microstep: 16384`
-- `gradient_accumulation_steps: 64`
+- `expected_tokens_per_microstep: 32768`
+- `gradient_accumulation_steps: 32`
 - `expected_tokens_per_step: 1048576`
 - `derived_max_steps: 9537`
 - `resolved_warmup_steps: 156`
@@ -153,7 +186,7 @@ The Bayesian preflight must additionally report Thompson sampling, the fixed
 
 Before production, submit one-update smokes for the five distinct control-flow
 paths. Do not proceed until all five complete successfully. These jobs exercise
-the full 64-microstep accumulation window under four-process FSDP.
+the full 32-microstep accumulation window under four-process FSDP.
 
 ```bash
 "${SBATCH[@]}" --time=01:00:00 --gres=gpu:4 \
@@ -326,6 +359,10 @@ boundary. Never run two jobs with the same run ID concurrently. Resume requires
 the same four-GPU topology, accumulation geometry, tokenizer, corpus, role
 manifests, and sampling policy.
 
+The batch-8/accumulation-32 commands in this guide cannot resume checkpoints
+created with batch 4 and accumulation 64. Start these reruns with new run IDs or
+an output root that does not contain the earlier run directories.
+
 The Slurm wrapper automatically launches final-holdout evaluation after a
 training run reaches completion. A complete run must contain
 `run_summary.json`, a final checkpoint, and `final_holdout_results.json`.
@@ -338,10 +375,10 @@ test -r "$RUN_DIR/final_holdout_results.json"
 
 ## 8. Fixed scientific and data contract
 
-For four GPUs, each rank consumes four 1,024-token sequences per microstep:
-16,384 global tokens per microstep, accumulation 64, and 1,048,576 nominal
+For four GPUs, each rank consumes eight 1,024-token sequences per microstep:
+32,768 global tokens per microstep, accumulation 32, and 1,048,576 nominal
 tokens per optimizer update. The 10B budget resolves to 9,537 updates; the final
-window has 48 microsteps and commits exactly 779,264 token IDs. The cosine
+window has 24 microsteps and commits exactly 779,264 token IDs. The cosine
 scheduler uses 156 warmup updates. Bayesian `h=50`, the 800-update balanced
 warmup, and reset `K=2000` are all expressed in optimizer-update units.
 
