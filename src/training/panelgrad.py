@@ -20,14 +20,36 @@ from src.training.distributed import autocast_context
 from src.utils.reproducibility import capture_rng_state, restore_rng_state, stable_hash
 
 
-PANELGRAD_STATE_SCHEMA_VERSION = 2
+PANELGRAD_STATE_SCHEMA_VERSION = 3
 CONTROLLED_SUPPORT_SCHEMA_VERSION = 1
-PANELGRAD_METHOD_FAMILY = "panelgrad_gradient_rms"
+PANELGRAD_DEFAULT_IMPORTANCE_METRIC = "gradient_rms"
+PANELGRAD_METHOD_FAMILIES = {
+    "gradient_rms": "panelgrad_gradient_rms",
+    "gradient_l2": "panelgrad_gradient_l2",
+}
+PANELGRAD_METHOD_FAMILY = PANELGRAD_METHOD_FAMILIES[
+    PANELGRAD_DEFAULT_IMPORTANCE_METRIC
+]
 PANELGRAD_METHOD_VERSION = 1
 
 
 class PanelGradError(ValueError):
     """Raised when PanelGrad cannot form or advance a valid policy state."""
+
+
+def panelgrad_method_family(importance_metric: str) -> str:
+    if not isinstance(importance_metric, str):
+        raise PanelGradError(
+            "importance metric must be one of "
+            f"{sorted(PANELGRAD_METHOD_FAMILIES)}"
+        )
+    try:
+        return PANELGRAD_METHOD_FAMILIES[importance_metric]
+    except KeyError as error:
+        raise PanelGradError(
+            "importance metric must be one of "
+            f"{sorted(PANELGRAD_METHOD_FAMILIES)}"
+        ) from error
 
 
 def uses_panelgrad(config: Mapping[str, Any]) -> bool:
@@ -508,6 +530,7 @@ class PanelGradController:
         refresh_interval_steps: int,
         eta: float,
         temperature: float,
+        importance_metric: str = PANELGRAD_DEFAULT_IMPORTANCE_METRIC,
         epsilon: float | None,
         sampling_seed: int,
         support_identity: Mapping[str, Any],
@@ -523,6 +546,7 @@ class PanelGradController:
             epsilon=epsilon,
             epsilon_schedule=epsilon_schedule,
         )
+        method_family = panelgrad_method_family(importance_metric)
         build_probability_snapshot(
             [0.0] * len(ordered),
             eta=eta,
@@ -543,7 +567,7 @@ class PanelGradController:
         self._generator = torch.Generator(device="cpu").manual_seed(int(sampling_seed))
         self._state: dict[str, Any] = {
             "schema_version": PANELGRAD_STATE_SCHEMA_VERSION,
-            "method_family": PANELGRAD_METHOD_FAMILY,
+            "method_family": method_family,
             "method_version": PANELGRAD_METHOD_VERSION,
             "scope": "global",
             "ordered_granularities": ordered,
@@ -551,6 +575,7 @@ class PanelGradController:
                 "refresh_interval_steps": int(refresh_interval_steps),
                 "eta": float(eta),
                 "temperature": float(temperature),
+                "importance_metric": importance_metric,
                 "epsilon_schedule": resolved_epsilon_schedule,
                 "relative_tolerance": 1e-6,
                 "absolute_tolerance": 1e-8,
@@ -564,6 +589,8 @@ class PanelGradController:
                 "next_boundary_step": 0,
                 "completed_steps_since_refresh": 0,
                 "measurements": None,
+                "importance_metric": importance_metric,
+                "importance_scores": None,
                 "scores": None,
                 "q": None,
                 "p": None,
@@ -655,8 +682,13 @@ class PanelGradController:
         measurements = copy.deepcopy(list(measurement_result.get("measurements", [])))
         if [item.get("granularity") for item in measurements] != ordered:
             raise PanelGradError("refresh measurement granularity order mismatch")
+        importance_metric = self._state["policy"]["importance_metric"]
+        measurement_field = {
+            "gradient_rms": "gradient_rms_score",
+            "gradient_l2": "gradient_norm",
+        }[importance_metric]
         scores = [
-            _finite_float(item.get("gradient_rms_score"), "gradient RMS score")
+            _finite_float(item.get(measurement_field), f"{importance_metric} score")
             for item in measurements
         ]
         refresh_policy = self.epsilon_for_next_refresh()
@@ -676,6 +708,8 @@ class PanelGradController:
                 + int(self._state["policy"]["refresh_interval_steps"]),
                 "completed_steps_since_refresh": 0,
                 "measurements": measurements,
+                "importance_metric": importance_metric,
+                "importance_scores": probability["scores"],
                 "scores": probability["scores"],
                 "q": probability["q"],
                 "p": probability["p"],
@@ -823,6 +857,7 @@ def build_panelgrad_controller(
         refresh_interval_steps=panelgrad["refresh_interval_steps"],
         eta=panelgrad["eta"],
         temperature=panelgrad["temperature"],
+        importance_metric=panelgrad["importance_metric"],
         epsilon=panelgrad.get("epsilon"),
         epsilon_schedule=panelgrad.get("epsilon_schedule"),
         sampling_seed=panelgrad["sampling_seed"],
@@ -843,7 +878,8 @@ def validate_panelgrad_state(
         raise PanelGradError("checkpoint is missing panelgrad_state")
     result = copy.deepcopy(dict(state))
     panelgrad = config["model"]["panelgrad"]
-    if result.get("schema_version") == 1:
+    saved_schema_version = result.get("schema_version")
+    if saved_schema_version == 1:
         if "epsilon_schedule" in panelgrad:
             raise PanelGradError(
                 "panelgrad_state version 1 cannot resume an epsilon-scheduled run"
@@ -876,10 +912,31 @@ def validate_panelgrad_state(
                 )
             legacy_refresh["active_epsilon"] = float(legacy_epsilon)
             legacy_refresh["epsilon_schedule_step"] = schedule_step
+    if saved_schema_version in {1, 2}:
+        importance_metric = panelgrad.get(
+            "importance_metric", PANELGRAD_DEFAULT_IMPORTANCE_METRIC
+        )
+        if importance_metric != PANELGRAD_DEFAULT_IMPORTANCE_METRIC:
+            raise PanelGradError(
+                f"panelgrad_state version {saved_schema_version} uses "
+                "importance_metric='gradient_rms' and cannot resume a "
+                f"{importance_metric!r} run"
+            )
+        legacy_policy = result.get("policy")
+        legacy_refresh = result.get("refresh")
+        if not isinstance(legacy_policy, dict) or not isinstance(legacy_refresh, dict):
+            raise PanelGradError(
+                f"panelgrad_state version {saved_schema_version} is malformed"
+            )
+        legacy_policy["importance_metric"] = PANELGRAD_DEFAULT_IMPORTANCE_METRIC
+        legacy_refresh["importance_metric"] = PANELGRAD_DEFAULT_IMPORTANCE_METRIC
+        legacy_refresh["importance_scores"] = copy.deepcopy(
+            legacy_refresh.get("scores")
+        )
         result["schema_version"] = PANELGRAD_STATE_SCHEMA_VERSION
         resume = result.setdefault("resume", {})
         if isinstance(resume, dict):
-            resume["state_migrated_from_schema_version"] = 1
+            resume["state_migrated_from_schema_version"] = saved_schema_version
 
     resolved_epsilon_schedule = resolve_epsilon_schedule(
         epsilon=panelgrad.get("epsilon"),
@@ -887,7 +944,7 @@ def validate_panelgrad_state(
     )
     expected = {
         "schema_version": PANELGRAD_STATE_SCHEMA_VERSION,
-        "method_family": PANELGRAD_METHOD_FAMILY,
+        "method_family": panelgrad_method_family(panelgrad["importance_metric"]),
         "method_version": PANELGRAD_METHOD_VERSION,
         "scope": "global",
         "ordered_granularities": list(panelgrad["ordered_granularities"]),
@@ -903,6 +960,7 @@ def validate_panelgrad_state(
         "refresh_interval_steps": int(panelgrad["refresh_interval_steps"]),
         "eta": float(panelgrad["eta"]),
         "temperature": float(panelgrad["temperature"]),
+        "importance_metric": panelgrad["importance_metric"],
         "epsilon_schedule": resolved_epsilon_schedule,
         "relative_tolerance": float(panelgrad["relative_tolerance"]),
         "absolute_tolerance": float(panelgrad["absolute_tolerance"]),
@@ -947,6 +1005,11 @@ def validate_panelgrad_state(
     if sampling.get("pending_action") is not None:
         raise PanelGradError("checkpoint cannot contain an uncommitted PanelGrad action")
     if refresh.get("p") is not None:
+        if refresh.get("importance_metric") != expected_policy["importance_metric"]:
+            raise PanelGradError("panelgrad_state refresh importance metric mismatch")
+        importance_scores = refresh.get("importance_scores")
+        if importance_scores != refresh.get("scores"):
+            raise PanelGradError("panelgrad_state importance scores are invalid")
         active_epsilon = _finite_float(
             refresh.get("active_epsilon"),
             "panelgrad_state active epsilon",
@@ -976,7 +1039,7 @@ def validate_panelgrad_state(
         if not math.isclose(active_epsilon, scheduled_epsilon, rel_tol=0.0, abs_tol=1e-15):
             raise PanelGradError("panelgrad_state active epsilon is invalid")
         expected_probability = build_probability_snapshot(
-            refresh["scores"],
+            importance_scores,
             eta=expected_policy["eta"],
             temperature=expected_policy["temperature"],
             epsilon=active_epsilon,
@@ -1039,6 +1102,8 @@ def restore_panelgrad_controller(
 
 __all__ = [
     "CONTROLLED_SUPPORT_SCHEMA_VERSION",
+    "PANELGRAD_DEFAULT_IMPORTANCE_METRIC",
+    "PANELGRAD_METHOD_FAMILIES",
     "PANELGRAD_METHOD_FAMILY",
     "PANELGRAD_METHOD_VERSION",
     "PANELGRAD_STATE_SCHEMA_VERSION",
@@ -1049,6 +1114,7 @@ __all__ = [
     "epsilon_at_schedule_step",
     "gradient_rms_from_squared_norm",
     "measure_panelgrad_gradients",
+    "panelgrad_method_family",
     "resolve_controlled_ffn_support",
     "restore_panelgrad_controller",
     "resolve_epsilon_schedule",

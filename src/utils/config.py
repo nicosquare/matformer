@@ -47,7 +47,18 @@ PROBABILISTIC_ADAPTIVE_SAMPLING_MODES = {
 BAYESIAN_CONTROLLER_METHOD_FAMILY = "bayesian_gaussian_linear_thompson"
 BAYESIAN_CONTROLLER_METHOD_VERSION = 1
 BAYESIAN_COVARIANCE_TOLERANCE = 1e-10
-PANELGRAD_METHOD_FAMILY = "panelgrad_gradient_rms"
+PANELGRAD_DEFAULT_IMPORTANCE_METRIC = "gradient_rms"
+PANELGRAD_METHOD_FAMILIES = {
+    "gradient_rms": "panelgrad_gradient_rms",
+    "gradient_l2": "panelgrad_gradient_l2",
+}
+PANELGRAD_METHOD_FAMILY = PANELGRAD_METHOD_FAMILIES[
+    PANELGRAD_DEFAULT_IMPORTANCE_METRIC
+]
+PANELGRAD_SCORE_DEFINITIONS = {
+    "gradient_rms": "raw_aggregate_controller_gradient_rms",
+    "gradient_l2": "raw_aggregate_controller_gradient_l2",
+}
 PANELGRAD_METHOD_VERSION = 1
 PANELGRAD_RELATIVE_TOLERANCE = 1e-6
 PANELGRAD_ABSOLUTE_TOLERANCE = 1e-8
@@ -1919,6 +1930,7 @@ def _resolve_panelgrad_configuration(config: dict[str, Any]) -> None:
         "temperature",
         "epsilon",
         "epsilon_schedule",
+        "importance_metric",
         "method_family",
         "method_version",
         "scope",
@@ -1981,6 +1993,18 @@ def _resolve_panelgrad_configuration(config: dict[str, Any]) -> None:
     if temperature <= 0.0:
         raise ConfigError("model.panelgrad.temperature must be positive")
     panelgrad["temperature"] = temperature
+    importance_metric = panelgrad.get(
+        "importance_metric", PANELGRAD_DEFAULT_IMPORTANCE_METRIC
+    )
+    if (
+        not isinstance(importance_metric, str)
+        or importance_metric not in PANELGRAD_METHOD_FAMILIES
+    ):
+        raise ConfigError(
+            "model.panelgrad.importance_metric must be one of "
+            f"{sorted(PANELGRAD_METHOD_FAMILIES)}"
+        )
+    panelgrad["importance_metric"] = importance_metric
     has_epsilon = "epsilon" in panelgrad
     has_epsilon_schedule = "epsilon_schedule" in panelgrad
     if has_epsilon and has_epsilon_schedule:
@@ -2031,10 +2055,10 @@ def _resolve_panelgrad_configuration(config: dict[str, Any]) -> None:
         panelgrad["epsilon"] = epsilon
 
     fixed_fields = {
-        "method_family": PANELGRAD_METHOD_FAMILY,
+        "method_family": PANELGRAD_METHOD_FAMILIES[importance_metric],
         "method_version": PANELGRAD_METHOD_VERSION,
         "scope": "global",
-        "score": "raw_aggregate_controller_gradient_rms",
+        "score": PANELGRAD_SCORE_DEFINITIONS[importance_metric],
         "support": "granularity_controlled_ffn",
         "probability_mapping": "powered_score_uniform_mixture",
         "action_distribution": "categorical",

@@ -122,7 +122,13 @@ def _completed_controller_window(
     }
 
 
-def _write_panelgrad_history_run(root: Path, run_id: str = "panelgrad-run") -> Path:
+def _write_panelgrad_history_run(
+    root: Path,
+    run_id: str = "panelgrad-run",
+    importance_metric: str | None = None,
+) -> Path:
+    resolved_metric = importance_metric or "gradient_rms"
+    method_family = f"panelgrad_{resolved_metric}"
     run_dir = root / run_id
     run_dir.mkdir(parents=True)
     config = {
@@ -135,7 +141,7 @@ def _write_panelgrad_history_run(root: Path, run_id: str = "panelgrad-run") -> P
             "granularity_sampling_mode": "adaptive_global",
             "granularities": ["micro", "medium", "full"],
             "panelgrad": {
-                "method_family": "panelgrad_gradient_rms",
+                "method_family": method_family,
                 "method_version": 1,
                 "scope": "global",
                 "ordered_granularities": ["micro", "medium", "full"],
@@ -148,6 +154,11 @@ def _write_panelgrad_history_run(root: Path, run_id: str = "panelgrad-run") -> P
                     "end": 0.1,
                     "duration_steps": 4,
                 },
+                **(
+                    {"importance_metric": importance_metric}
+                    if importance_metric is not None
+                    else {}
+                ),
             },
         },
         "training": {"expected_tokens_per_step": 10, "token_budget": 40},
@@ -217,7 +228,7 @@ def _write_panelgrad_history_run(root: Path, run_id: str = "panelgrad-run") -> P
     ):
         return {
             "event_type": "panelgrad_refresh_completed",
-            "method_family": "panelgrad_gradient_rms",
+            "method_family": method_family,
             "method_version": 1,
             "window_index": window_index,
             "boundary_step": boundary_step,
@@ -231,10 +242,19 @@ def _write_panelgrad_history_run(root: Path, run_id: str = "panelgrad-run") -> P
             "duration_seconds": duration,
             "backward_evaluation_count": 3,
             "controller_target_count": 30,
+            **(
+                {
+                    "importance_metric": resolved_metric,
+                    "importance_scores": scores,
+                }
+                if importance_metric is not None
+                else {}
+            ),
             "measurements": [
                 {
                     "granularity": label,
                     "gradient_rms_score": score,
+                    "gradient_norm": score,
                 }
                 for label, score in zip(("micro", "medium", "full"), scores)
             ],
@@ -2612,6 +2632,7 @@ def test_panelgrad_history_extracts_committed_actions_and_refresh_diagnostics(
     [history] = list(iter_panelgrad_histories(tmp_path))
 
     assert history.run_id == "panelgrad-run"
+    assert history.importance_metric == "gradient_rms"
     assert history.ordered_granularities == ("micro", "medium", "full")
     assert [
         (
@@ -2648,6 +2669,48 @@ def test_panelgrad_history_extracts_committed_actions_and_refresh_diagnostics(
     ]
 
 
+def test_panelgrad_rms_and_l2_have_distinct_reporting_and_plot_identities(tmp_path):
+    from src.evaluation.reporting import generate_figures
+    from src.evaluation.reporting_io import (
+        iter_global_sampling_histories,
+        iter_panelgrad_histories,
+    )
+
+    _write_panelgrad_history_run(
+        tmp_path, run_id="same-policy-rms", importance_metric="gradient_rms"
+    )
+    _write_panelgrad_history_run(
+        tmp_path, run_id="same-policy-l2", importance_metric="gradient_l2"
+    )
+
+    histories = list(iter_panelgrad_histories(tmp_path))
+    assert {history.importance_metric for history in histories} == {
+        "gradient_rms",
+        "gradient_l2",
+    }
+    global_histories = {
+        history.policy_identity: history
+        for history in iter_global_sampling_histories(tmp_path)
+    }
+    assert set(global_histories) == {
+        "panelgrad_global_gradient_rms",
+        "panelgrad_global_gradient_l2",
+    }
+    assert "metric=Gradient RMS" in global_histories[
+        "panelgrad_global_gradient_rms"
+    ].policy_label
+    assert "metric=Gradient L2 norm" in global_histories[
+        "panelgrad_global_gradient_l2"
+    ].policy_label
+
+    names = {
+        path.name
+        for path in generate_figures(tmp_path, tmp_path / "figures", dpi=30)
+    }
+    assert "panelgrad_refresh_diagnostics_same-policy-rms_gradient_rms.png" in names
+    assert "panelgrad_refresh_diagnostics_same-policy-l2_gradient_l2.png" in names
+
+
 def test_panelgrad_refresh_diagnostics_plot_epsilon_over_tokens(tmp_path, monkeypatch):
     from matplotlib.figure import Figure
 
@@ -2671,6 +2734,7 @@ def test_panelgrad_refresh_diagnostics_plot_epsilon_over_tokens(tmp_path, monkey
 
     [figure] = saved_figures
     epsilon_axis = figure.axes[2]
+    assert figure.axes[0].get_ylabel() == "Gradient RMS"
     assert epsilon_axis.get_title() == "Refresh-boundary exploration schedule"
     assert list(epsilon_axis.lines[0].get_xdata()) == [10, 30]
     assert list(epsilon_axis.lines[0].get_ydata()) == pytest.approx([0.5, 0.3])
@@ -2687,7 +2751,7 @@ def test_generate_figures_writes_panelgrad_action_exposure_and_refresh_plots(tmp
     assert "selected_granularity_zoom_panelgrad-run.png" in names
     assert "granularity_selection_frequency_over_tokens_panelgrad-run.png" not in names
     assert "panelgrad_cumulative_exposure_panelgrad-run.png" not in names
-    assert "panelgrad_refresh_diagnostics_panelgrad-run.png" in names
+    assert "panelgrad_refresh_diagnostics_panelgrad-run_gradient_rms.png" in names
     for name in names:
         assert (tmp_path / "figures" / name).is_file()
 
@@ -2713,14 +2777,14 @@ def test_global_sampling_histories_use_committed_metrics_actions_for_all_policie
     assert set(histories) == {
         "uniform_global",
         "thompson_global",
-        "panelgrad_global",
+        "panelgrad_global_gradient_rms",
     }
     assert all(
         [action.granularity for action in history.actions] == actions
         for history in histories.values()
     )
     assert histories["uniform_global"].decision_count == 4
-    assert histories["panelgrad_global"].decision_count == 4
+    assert histories["panelgrad_global_gradient_rms"].decision_count == 4
     assert histories["thompson_global"].decision_count == 2
     assert len({history.comparison_key for history in histories.values()}) == 1
 
@@ -2783,12 +2847,16 @@ def test_generate_figures_writes_unified_global_policy_comparisons(tmp_path):
     ) as file:
         rows = list(csv.DictReader(file))
     assert {row["policy"] for row in rows} == {
-        "Uniform global", "Thompson global", "PanelGrad"
+        "Uniform global", "Thompson global", "PanelGrad (metric=Gradient RMS)"
     }
     assert {row["completed_steps"] for row in rows} == {"4"}
     assert {
         row["policy"]: row["policy_decisions"] for row in rows
-    } == {"PanelGrad": "4", "Thompson global": "2", "Uniform global": "4"}
+    } == {
+        "PanelGrad (metric=Gradient RMS)": "4",
+        "Thompson global": "2",
+        "Uniform global": "4",
+    }
 
 
 def test_non_panelgrad_reporting_labels_remain_unchanged():

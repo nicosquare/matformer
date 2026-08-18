@@ -2984,11 +2984,13 @@ def test_panelgrad_refresh_terminal_summary_and_compact_fields_are_auditable(tmp
             {
                 "granularity": "small",
                 "controlled_parameter_count": 10,
+                "gradient_norm": 1.0,
                 "gradient_rms_score": 1.0,
             },
             {
                 "granularity": "full",
                 "controlled_parameter_count": 20,
+                "gradient_norm": 2.0,
                 "gradient_rms_score": 2.0,
             },
         ],
@@ -3005,6 +3007,8 @@ def test_panelgrad_refresh_terminal_summary_and_compact_fields_are_auditable(tmp
             "event_type": "panelgrad_refresh_completed",
             "method_family": "panelgrad_gradient_rms",
             "method_version": 1,
+            "importance_metric": "gradient_rms",
+            "importance_scores": refresh["importance_scores"],
             "boundary_step": 0,
             "window_index": 0,
             "measurements": refresh["measurements"],
@@ -3036,6 +3040,8 @@ def test_panelgrad_refresh_terminal_summary_and_compact_fields_are_auditable(tmp
     compact = build_compact_controller_metric_fields(controller.state_dict())
 
     assert summary["refresh_count"] == 1
+    assert summary["importance_metric"] == "gradient_rms"
+    assert summary["final_importance_scores"] == [1.0, 2.0]
     assert summary["final_p"] == refresh["p"]
     assert summary["active_epsilon"] == pytest.approx(0.1)
     assert summary["epsilon_schedule_step"] == 0
@@ -3052,9 +3058,79 @@ def test_panelgrad_refresh_terminal_summary_and_compact_fields_are_auditable(tmp
     assert summary["cumulative_backward_evaluations"] == 4
     assert summary["controller_metrics_hash"]
     assert compact["controller_strategy"] == "panelgrad"
+    assert compact["controller_importance_metric"] == "gradient_rms"
     assert compact["controller_sampled_probability"] == action["probability"]
     assert compact["controller_phase"] == "terminal_partial"
     assert "active_epsilon" not in compact
+
+
+def test_panelgrad_l2_summary_and_compact_fields_keep_metric_identity(tmp_path):
+    labels = ["small", "full"]
+    controller = PanelGradController(
+        ordered_granularities=labels,
+        refresh_interval_steps=2,
+        eta=1e-12,
+        temperature=1.0,
+        importance_metric="gradient_l2",
+        epsilon=0.1,
+        sampling_seed=17,
+        support_identity={
+            "ordered_granularities": labels,
+            "controlled_support_counts": {"small": 4, "full": 16},
+            "controlled_support_hash": "support-hash",
+        },
+    )
+    refresh = controller.install_refresh(
+        {
+            "measurements": [
+                {
+                    "granularity": "small",
+                    "controlled_parameter_count": 4,
+                    "gradient_norm": 2.0,
+                    "gradient_rms_score": 1.0,
+                },
+                {
+                    "granularity": "full",
+                    "controlled_parameter_count": 16,
+                    "gradient_norm": 4.0,
+                    "gradient_rms_score": 1.0,
+                },
+            ],
+            "duration_seconds": 0.25,
+            "backward_evaluation_count": 4,
+        },
+        boundary_step=0,
+    )
+    event = {
+        "schema_version": 1,
+        "event_type": "panelgrad_refresh_completed",
+        "method_family": "panelgrad_gradient_l2",
+        "method_version": 1,
+        "importance_metric": "gradient_l2",
+        "importance_scores": refresh["importance_scores"],
+        "boundary_step": 0,
+        "window_index": 0,
+        "measurements": refresh["measurements"],
+        "q": refresh["q"],
+        "p": refresh["p"],
+        "entropy": refresh["entropy"],
+        "duration_seconds": 0.25,
+        "backward_evaluation_count": 4,
+    }
+    path = tmp_path / "controller_metrics.jsonl"
+    append_controller_events(path, [event])
+
+    summary = build_controller_summary(
+        controller_state=controller.state_dict(),
+        controller_events=[event],
+        controller_metrics_path=path,
+    )
+    compact = build_compact_controller_metric_fields(controller.state_dict())
+
+    assert summary["method_family"] == "panelgrad_gradient_l2"
+    assert summary["importance_metric"] == "gradient_l2"
+    assert summary["final_importance_scores"] == [2.0, 4.0]
+    assert compact["controller_importance_metric"] == "gradient_l2"
 
 
 def test_panelgrad_checkpoint_round_trips_versioned_policy_and_rng_state(tmp_path):

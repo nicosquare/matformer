@@ -2,7 +2,7 @@
 
 ## Decision 1: Add PanelGrad as an explicit global adaptive strategy
 
-- **Decision**: Resolve PanelGrad as `model.granularity_sampling_mode: adaptive_global` plus `model.adaptive_sampler_strategy: panelgrad`. Store its inputs in a distinct `model.panelgrad` mapping and identify artifacts with `method_family: panelgrad_gradient_rms`, `method_version: 1`, and `scope: global`.
+- **Decision**: Resolve PanelGrad as `model.granularity_sampling_mode: adaptive_global` plus `model.adaptive_sampler_strategy: panelgrad`. Store its inputs in a distinct `model.panelgrad` mapping and identify artifacts as `panelgrad_gradient_rms` by default or `panelgrad_gradient_l2` when raw L2 importance is selected, with `method_version: 1` and `scope: global`.
 - **Rationale**: `adaptive_global` already selects one complete global granularity under `nested-random`. A distinct strategy preserves current mode compatibility while preventing PanelGrad state from being interpreted as a Bayesian posterior or legacy UCB statistics.
 - **Alternatives considered**:
   - Add a new sampling mode. Rejected because it duplicates the established global adaptive scope and expands compatibility branching.

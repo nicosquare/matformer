@@ -13,8 +13,11 @@ from src.utils.config import resolve_run_config
 from src.utils.reproducibility import stable_hash
 
 
-def _resume_fixture(*, scheduled=False):
-    config = resolve_run_config("tests/fixtures/panelgrad_smoke.yaml")
+def _resume_fixture(*, scheduled=False, importance_metric="gradient_rms"):
+    config = resolve_run_config(
+        "tests/fixtures/panelgrad_smoke.yaml",
+        overrides=[f"model.panelgrad.importance_metric={importance_metric}"],
+    )
     if scheduled:
         config["model"]["panelgrad"].pop("epsilon")
         config["model"]["panelgrad"]["epsilon_schedule"] = {
@@ -82,12 +85,15 @@ def _committed_actions(controller, start_step, count, measurement):
 
 @pytest.mark.parametrize("scheduled", [False, True])
 @pytest.mark.parametrize("resume_after", [1, 2])
+@pytest.mark.parametrize("importance_metric", ["gradient_rms", "gradient_l2"])
 def test_panelgrad_resume_inside_interval_and_at_refresh_boundary_is_exact(
     resume_after,
     scheduled,
+    importance_metric,
 ):
     config, support, uninterrupted, measurement = _resume_fixture(
-        scheduled=scheduled
+        scheduled=scheduled,
+        importance_metric=importance_metric,
     )
     resumed_source = build_panelgrad_controller(config, support)
     uninterrupted.install_refresh(measurement, boundary_step=0)
@@ -182,7 +188,8 @@ def test_fixed_epsilon_version_one_state_migrates_exactly():
 
     restored = restore_panelgrad_controller(config, support, version_one)
 
-    assert restored.state_dict()["schema_version"] == 2
+    assert restored.state_dict()["schema_version"] == 3
+    assert restored.state_dict()["policy"]["importance_metric"] == "gradient_rms"
     assert restored.state_dict()["policy"]["epsilon_schedule"]["type"] == "fixed"
     assert restored.state_dict()["refresh"]["active_epsilon"] == pytest.approx(0.1)
     assert _committed_actions(restored, 2, 4, measurement) == _committed_actions(
@@ -205,6 +212,45 @@ def test_version_one_state_cannot_initialize_a_scheduled_policy():
             version_one,
             config=scheduled_config,
             support_identity=support,
+        )
+
+
+@pytest.mark.parametrize("legacy_version", [1, 2])
+def test_legacy_state_migrates_to_rms_and_rejects_l2_reuse(legacy_version):
+    rms_config, support, controller, measurement = _resume_fixture()
+    controller.install_refresh(measurement, boundary_step=0)
+    legacy = controller.state_dict()
+    legacy["schema_version"] = legacy_version
+    legacy["policy"].pop("importance_metric")
+    legacy["refresh"].pop("importance_metric")
+    legacy["refresh"].pop("importance_scores")
+    if legacy_version == 1:
+        legacy["policy"].pop("epsilon_schedule")
+        legacy["refresh"].pop("active_epsilon")
+        legacy["refresh"].pop("epsilon_schedule_step")
+
+    migrated = validate_panelgrad_state(
+        legacy, config=rms_config, support_identity=support
+    )
+    assert migrated["schema_version"] == 3
+    assert migrated["policy"]["importance_metric"] == "gradient_rms"
+    assert migrated["refresh"]["importance_scores"] == migrated["refresh"]["scores"]
+
+    l2_config, _, _, _ = _resume_fixture(importance_metric="gradient_l2")
+    with pytest.raises(PanelGradError, match="cannot resume.*gradient_l2"):
+        validate_panelgrad_state(
+            legacy, config=l2_config, support_identity=support
+        )
+
+
+def test_current_state_rejects_cross_metric_resume():
+    rms_config, support, controller, measurement = _resume_fixture()
+    controller.install_refresh(measurement, boundary_step=0)
+    l2_config, _, _, _ = _resume_fixture(importance_metric="gradient_l2")
+
+    with pytest.raises(PanelGradError, match="identity mismatch"):
+        validate_panelgrad_state(
+            controller.state_dict(), config=l2_config, support_identity=support
         )
 
 

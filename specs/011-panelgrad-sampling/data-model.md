@@ -6,7 +6,8 @@
 
 Resolved scientific inputs and fixed method identity.
 
-- **method_family**: `panelgrad_gradient_rms`
+- **importance_metric**: `gradient_rms` (default) or `gradient_l2`
+- **method_family**: `panelgrad_gradient_rms` or `panelgrad_gradient_l2`, derived from the metric
 - **method_version**: `1`
 - **strategy**: `panelgrad`
 - **scope**: `global`
@@ -18,7 +19,7 @@ Resolved scientific inputs and fixed method identity.
 - **epsilon_schedule**: optional mutually exclusive linear schedule with `start`, `end`, and positive `duration_steps`
 - **relative_tolerance**: fixed `1e-6`
 - **absolute_tolerance**: fixed `1e-8`
-- **score_definition**: raw aggregate-controller-gradient RMS over controlled FFN support
+- **score_definition**: raw aggregate-controller-gradient RMS or raw aggregate L2 norm over controlled FFN support
 - **probability_definition**: powered normalized score plus uniform mixture
 - **controller_panel_contract**: fixed existing 128-example controller role
 - **final_holdout_contract**: fixed existing 512-example training-inaccessible role
@@ -74,6 +75,7 @@ One completed measurement for one granularity at one refresh.
 - **gradient_squared_norm**: float64 sum over the controlled support
 - **gradient_norm**: `sqrt(gradient_squared_norm)`
 - **gradient_rms_score**: `I_g = gradient_norm / sqrt(N_g)`
+- **importance_score**: selected `gradient_rms_score` or `gradient_norm`
 - **aggregate_controller_loss**: finite target-token-weighted loss used for differentiation
 - **evaluation_examples/target_tokens/batches**
 - **microbatch_aggregation**: `target_token_weighted_aggregate_gradient`
@@ -93,6 +95,7 @@ The complete contemporaneous policy state from one refresh.
 - **refresh_index**
 - **boundary_step**: completed optimizer step before the next action
 - **measurements**: ordered `GranularityMeasurement` list
+- **importance_metric** and **importance_scores**: the exact vector used to build `q` and `p`
 - **q**: ordered normalized powered-score vector
 - **p**: ordered final categorical vector
 - **entropy**, **minimum_probability**, **maximum_probability**

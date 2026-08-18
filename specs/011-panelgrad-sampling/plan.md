@@ -7,7 +7,7 @@
 
 ## Summary
 
-Add PanelGrad as `adaptive_global + panelgrad`. At the first adaptive action and every 50 completed PanelGrad steps by default, measure each resolved global granularity's raw aggregate controller-loss gradient over only its granularity-controlled FFN parameters. Convert the contemporaneous RMS scores into `q`, mix with the uniform exploration floor to obtain `p`, freeze `p` for the interval, and draw one global action from `Categorical(p)` before every optimizer step.
+Add PanelGrad as `adaptive_global + panelgrad`. At the first adaptive action and every 50 completed PanelGrad steps by default, measure each resolved global granularity's raw aggregate controller-loss gradient over only its granularity-controlled FFN parameters. Convert either the contemporaneous RMS scores (default) or opt-in raw L2 norms into `q`, mix with the uniform exploration floor to obtain `p`, freeze `p` for the interval, and draw one global action from `Categorical(p)` before every optimizer step.
 
 Implementation keeps the research flow visible: immediately before ordinary action selection, one PanelGrad block refreshes if due and samples a global action; immediately after a successful optimizer commit, it records exposure and interval progress. A focused `src/training/panelgrad.py` owns measurement math, categorical RNG, and compact state. Existing controller/final-holdout roles, balanced warmup, global action shape, forward/backward path, distributed primitives, checkpoint flow, and controller artifact names are extended directly.
 

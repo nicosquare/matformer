@@ -104,12 +104,19 @@ def _measurement(scores=(1.0, 2.0)):
     }
 
 
-def _controller(seed=13, interval=2, epsilon=0.1, epsilon_schedule=None):
+def _controller(
+    seed=13,
+    interval=2,
+    epsilon=0.1,
+    epsilon_schedule=None,
+    importance_metric="gradient_rms",
+):
     return PanelGradController(
         ordered_granularities=["small", "full"],
         refresh_interval_steps=interval,
         eta=1e-12,
         temperature=1.0,
+        importance_metric=importance_metric,
         epsilon=None if epsilon_schedule is not None else epsilon,
         epsilon_schedule=epsilon_schedule,
         sampling_seed=seed,
@@ -193,8 +200,11 @@ def test_probability_mapping_rejects_invalid_numerics(scores, kwargs, match):
         build_probability_snapshot(scores, **kwargs)
 
 
-def test_panelgrad_controller_refresh_draw_commit_and_boundary_transitions():
-    controller = _controller(interval=2)
+@pytest.mark.parametrize("importance_metric", ["gradient_rms", "gradient_l2"])
+def test_panelgrad_controller_refresh_draw_commit_and_boundary_transitions(
+    importance_metric,
+):
+    controller = _controller(interval=2, importance_metric=importance_metric)
     assert controller.phase == "refresh_pending"
     with pytest.raises(PanelGradError, match="complete refresh"):
         controller.sample_action()
@@ -215,6 +225,56 @@ def test_panelgrad_controller_refresh_draw_commit_and_boundary_transitions():
     assert sum(state["sampling"]["exposure_counts"].values()) == 2
     assert first["global_granularity"] in {"small", "full"}
     assert second["global_granularity"] in {"small", "full"}
+
+
+def test_panelgrad_controller_selects_rms_or_l2_without_changing_measurement_cost():
+    measurements = {
+        "measurements": [
+            {
+                "granularity": "small",
+                "controlled_parameter_count": 4,
+                "gradient_squared_norm": 4.0,
+                "gradient_norm": 2.0,
+                "gradient_rms_score": 1.0,
+            },
+            {
+                "granularity": "full",
+                "controlled_parameter_count": 16,
+                "gradient_squared_norm": 16.0,
+                "gradient_norm": 4.0,
+                "gradient_rms_score": 1.0,
+            },
+        ],
+        "controller_example_count": 4,
+        "controller_target_count": 12,
+        "backward_evaluation_count": 4,
+        "duration_seconds": 0.1,
+    }
+    controllers = {
+        metric: PanelGradController(
+            ordered_granularities=["small", "full"],
+            refresh_interval_steps=2,
+            eta=1e-12,
+            temperature=1.0,
+            importance_metric=metric,
+            epsilon=0.0,
+            sampling_seed=13,
+            support_identity=_support_identity(),
+        )
+        for metric in ("gradient_rms", "gradient_l2")
+    }
+
+    rms = controllers["gradient_rms"].install_refresh(measurements, boundary_step=0)
+    l2 = controllers["gradient_l2"].install_refresh(measurements, boundary_step=0)
+
+    assert rms["importance_scores"] == [1.0, 1.0]
+    assert rms["q"] == pytest.approx([0.5, 0.5])
+    assert l2["importance_scores"] == [2.0, 4.0]
+    assert l2["q"] == pytest.approx([1 / 3, 2 / 3])
+    assert rms["cost"] == l2["cost"]
+    assert controllers["gradient_l2"].state_dict()["method_family"] == (
+        "panelgrad_gradient_l2"
+    )
 
 
 def test_scheduled_epsilon_updates_only_at_exact_refresh_boundaries_and_freezes_p():
@@ -283,9 +343,12 @@ def test_scheduled_epsilon_excludes_failed_steps_and_failed_refreshes():
     assert refreshed["epsilon_schedule_step"] == 2
 
 
-def test_categorical_draw_sequence_is_deterministic_and_rollback_retries_action():
-    left = _controller(seed=917)
-    right = _controller(seed=917)
+@pytest.mark.parametrize("importance_metric", ["gradient_rms", "gradient_l2"])
+def test_categorical_draw_sequence_is_deterministic_and_rollback_retries_action(
+    importance_metric,
+):
+    left = _controller(seed=917, importance_metric=importance_metric)
+    right = _controller(seed=917, importance_metric=importance_metric)
     for controller in (left, right):
         controller.install_refresh(_measurement(scores=(1.0, 3.0)), boundary_step=0)
 
@@ -301,18 +364,23 @@ def test_categorical_draw_sequence_is_deterministic_and_rollback_retries_action(
             right.install_refresh(_measurement(scores=(1.0, 3.0)), boundary_step=2)
     assert left_actions == right_actions
 
-    retry = _controller(seed=5)
+    retry = _controller(seed=5, importance_metric=importance_metric)
     retry.install_refresh(_measurement(), boundary_step=0)
     first = retry.sample_action()
     retry.rollback_pending_action()
     assert retry.sample_action() == first
 
 
-def test_refresh_installation_is_atomic_on_invalid_measurement():
-    controller = _controller()
+@pytest.mark.parametrize("importance_metric", ["gradient_rms", "gradient_l2"])
+def test_refresh_installation_is_atomic_on_invalid_measurement(importance_metric):
+    controller = _controller(importance_metric=importance_metric)
     before = controller.state_dict()
     invalid = _measurement()
-    invalid["measurements"][1]["gradient_rms_score"] = float("nan")
+    invalid_field = {
+        "gradient_rms": "gradient_rms_score",
+        "gradient_l2": "gradient_norm",
+    }[importance_metric]
+    invalid["measurements"][1][invalid_field] = float("nan")
 
     with pytest.raises(PanelGradError, match="finite"):
         controller.install_refresh(invalid, boundary_step=0)

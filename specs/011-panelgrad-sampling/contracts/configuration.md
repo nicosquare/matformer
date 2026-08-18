@@ -9,6 +9,7 @@ model:
   granularity_sampling_mode: adaptive_global
   adaptive_sampler_strategy: panelgrad
   panelgrad:
+    importance_metric: gradient_rms
     refresh_interval_steps: 50
     eta: 1.0e-12
     temperature: 1.0
@@ -45,6 +46,14 @@ PanelGrad requires a nested model and resolves the run mode to `nested-random`. 
 
 ## PanelGrad Fields
 
+### `model.panelgrad.importance_metric`
+
+- Selects `gradient_rms` or `gradient_l2`.
+- Defaults to `gradient_rms`, preserving existing PanelGrad behavior.
+- `gradient_rms` uses `gradient_norm / sqrt(controlled_parameter_count)`.
+- `gradient_l2` uses the already measured aggregate `gradient_norm` directly.
+- The selection changes neither controller forward/backward counts nor controlled-FFN support.
+
 ### `model.panelgrad.refresh_interval_steps`
 
 - Positive integer completed PanelGrad optimizer steps.
@@ -56,7 +65,7 @@ PanelGrad requires a nested model and resolves the run mode to `nested-random`. 
 
 - Finite scalar strictly greater than zero.
 - Defaults to `1e-12`.
-- Added to every nonnegative RMS score before powered normalization.
+- Added to every nonnegative selected importance score before powered normalization.
 
 ### `model.panelgrad.temperature`
 
@@ -94,10 +103,10 @@ model:
 
 The resolver records and rejects conflicting supplied values for:
 
-- `method_family: panelgrad_gradient_rms`
+- `method_family: panelgrad_gradient_rms` for `gradient_rms`, or `panelgrad_gradient_l2` for `gradient_l2`
 - `method_version: 1`
 - `scope: global`
-- `score: raw_aggregate_controller_gradient_rms`
+- `score: raw_aggregate_controller_gradient_rms` or `raw_aggregate_controller_gradient_l2`, derived from `importance_metric`
 - `support: granularity_controlled_ffn`
 - `probability_mapping: powered_score_uniform_mixture`
 - `action_distribution: categorical`
@@ -134,7 +143,7 @@ Warmup steps do not consume PanelGrad exposure or interval progress. If training
 - Empty/duplicate granularities, zero controlled FFN support, non-finite policy values, and invalid ranges fail before adaptive training.
 - Distributed PanelGrad requires current FSDP `use_orig_params: true` and rejects CPU parameter/gradient offload until an exact supported measurement path exists.
 - Controller/final role configuration must match the existing fixed contracts.
-- Resume requires exact method version, granularity order, scalar or scheduled epsilon policy, support hash/counts, data hashes, and seed identity. Version-1 fixed-epsilon PanelGrad state is migrated only for fixed-policy resumes.
+- Resume requires the exact importance metric, method version, granularity order, scalar or scheduled epsilon policy, support hash/counts, data hashes, and seed identity. State schema versions 1 and 2 are interpreted as `gradient_rms`; version 1 is migrated only for fixed-policy resumes. A checkpoint is never reused across RMS and L2 policies because its saved probability snapshot belongs to the recorded metric.
 
 ## Preflight Contract
 

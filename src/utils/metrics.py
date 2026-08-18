@@ -73,6 +73,7 @@ METRICS_COLUMNS = [
     "controller_method_version",
     "controller_strategy",
     "controller_scope",
+    "controller_importance_metric",
     "controller_action",
     "controller_sampled_probability",
     "controller_exposure_counts",
@@ -1833,7 +1834,10 @@ def build_controller_summary(
     events = [_controller_json_value(event) for event in controller_events]
     for event in events:
         _validate_controller_event(event)
-    if state.get("method_family") == "panelgrad_gradient_rms":
+    if state.get("method_family") in {
+        "panelgrad_gradient_rms",
+        "panelgrad_gradient_l2",
+    }:
         refresh = state.get("refresh", {})
         sampling = state.get("sampling", {})
         completed = [
@@ -1859,6 +1863,9 @@ def build_controller_summary(
             "method_version": state.get("method_version"),
             "strategy": "panelgrad",
             "scope": state.get("scope"),
+            "importance_metric": state.get("policy", {}).get(
+                "importance_metric", "gradient_rms"
+            ),
             "ordered_granularities": state.get("ordered_granularities"),
             "policy": state.get("policy"),
             "epsilon_schedule": state.get("policy", {}).get(
@@ -1868,6 +1875,9 @@ def build_controller_summary(
             "manifest_hashes": state.get("manifest_hashes"),
             "refresh_count": len(completed),
             "final_scores": refresh.get("scores"),
+            "final_importance_scores": refresh.get(
+                "importance_scores", refresh.get("scores")
+            ),
             "final_q": refresh.get("q"),
             "final_p": refresh.get("p"),
             "final_entropy": refresh.get("entropy"),
@@ -2294,7 +2304,10 @@ def build_compact_controller_metric_fields(
 ) -> dict[str, Any]:
     if not isinstance(controller_state, Mapping):
         return {}
-    if controller_state.get("method_family") == "panelgrad_gradient_rms":
+    if controller_state.get("method_family") in {
+        "panelgrad_gradient_rms",
+        "panelgrad_gradient_l2",
+    }:
         refresh = controller_state.get("refresh", {})
         sampling = controller_state.get("sampling", {})
         return {
@@ -2302,6 +2315,9 @@ def build_compact_controller_metric_fields(
             "controller_method_version": controller_state.get("method_version"),
             "controller_strategy": "panelgrad",
             "controller_scope": "global",
+            "controller_importance_metric": controller_state.get(
+                "policy", {}
+            ).get("importance_metric", "gradient_rms"),
             "controller_action": sampling.get("last_committed_action"),
             "controller_sampled_probability": sampling.get(
                 "last_committed_probability"
@@ -2455,14 +2471,31 @@ def _validate_controller_event(event: Mapping[str, Any]) -> None:
             f"Controller {event_type} event missing required fields: {missing}"
         )
     if str(event_type).startswith("panelgrad_"):
-        if event.get("method_family") != "panelgrad_gradient_rms":
+        method_family = event.get("method_family")
+        metric_by_family = {
+            "panelgrad_gradient_rms": "gradient_rms",
+            "panelgrad_gradient_l2": "gradient_l2",
+        }
+        if method_family not in metric_by_family:
             raise ArtifactError("PanelGrad event method family is invalid")
+        importance_metric = event.get(
+            "importance_metric", metric_by_family[method_family]
+        )
+        if importance_metric != metric_by_family[method_family]:
+            raise ArtifactError("PanelGrad event importance metric is invalid")
         if event_type == "panelgrad_refresh_completed":
             for field in ("measurements", "q", "p", "entropy"):
                 if field not in event:
                     raise ArtifactError(
                         f"PanelGrad refresh event missing {field}"
                     )
+            if (
+                method_family == "panelgrad_gradient_l2"
+                or "importance_metric" in event
+            ) and "importance_scores" not in event:
+                raise ArtifactError(
+                    "PanelGrad refresh event missing importance_scores"
+                )
         if event_type == "panelgrad_refresh_failed" and event.get(
             "new_distribution_installed"
         ) is not False:
@@ -2757,6 +2790,7 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "controller_method_version": None,
         "controller_strategy": None,
         "controller_scope": None,
+        "controller_importance_metric": None,
         "controller_action": None,
         "controller_sampled_probability": None,
         "controller_exposure_counts": None,

@@ -136,6 +136,20 @@
 
 ---
 
+## Phase 8: Configurable Importance Metric
+
+**Purpose**: Preserve RMS as the default while allowing the existing aggregate
+controller gradient's raw L2 norm to drive the same PanelGrad probability and
+sampling lifecycle.
+
+- [X] T044 Add `importance_metric` resolution, derived method identity, raw-L2 score selection, and schema-3 RMS migration/cross-metric rejection in `src/utils/config.py`, `src/training/panelgrad.py`, `tests/test_config.py`, `tests/test_panelgrad.py`, and `tests/test_panelgrad_resume.py`
+- [X] T045 Persist the metric and selected score vector through refresh state/events, compact metrics, controller summaries, and run summaries in `src/training/run.py`, `src/utils/metrics.py`, and `tests/test_artifacts.py`
+- [X] T046 Generalize reporting to both PanelGrad families, legacy RMS journals, generic importance scores, metric-aware labels, comparison identities, and diagnostic filenames in `src/evaluation/reporting.py`, `src/evaluation/reporting_io.py`, `src/evaluation/reporting_impl.py`, and `tests/test_reporting.py`
+- [X] T047 Verify RMS/L2 probability math, frozen intervals, rollback/refresh atomicity, exact resume, legacy migration, cross-metric rejection, and distributed rank agreement in the focused PanelGrad suite
+- [X] T048 Document raw-L2 configuration and checkpoint compatibility in `specs/011-panelgrad-sampling/contracts/configuration.md`, `specs/011-panelgrad-sampling/contracts/lifecycle-and-artifacts.md`, and `specs/011-panelgrad-sampling/quickstart.md`
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies

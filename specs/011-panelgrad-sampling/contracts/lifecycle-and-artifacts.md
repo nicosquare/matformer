@@ -29,7 +29,7 @@ For a refresh at completed step `s`:
    - calculate the float64 squared norm over only that granularity's controlled FFN support;
    - combine with the saved `N_g` to calculate norm and RMS;
    - clear its gradients before measuring the next label.
-5. Resolve epsilon from committed PanelGrad optimizer-step count `s` (not global/warmup steps), then construct and validate `q`, `p`, entropy, and probability extrema in float64.
+5. Select either each recorded RMS or raw L2 norm according to `importance_metric`, resolve epsilon from committed PanelGrad optimizer-step count `s` (not global/warmup steps), then construct and validate `q`, `p`, entropy, and probability extrema in float64.
 6. Restore correction, prior model mode/granularity state, ordinary RNG, and empty gradients in `finally`.
 7. Atomically install the complete snapshot, append its event, synchronize state, and enter `active_interval` with progress zero.
 
@@ -45,13 +45,21 @@ $$
 d_g=\nabla_{\theta_g}\left(\frac{\sum_b n_bL_{g,b}}{N}\right).
 $$
 
-The score is
+The default RMS score is
 
 $$
 I_g=\frac{\sqrt{\sum_{j\in S_g}d_{g,j}^2}}{\sqrt{|S_g|}},
 $$
 
 where `S_g` is the resolved controlled FFN support. Batchwise norms are never averaged. Membership correction, clipping, optimizer transforms, and inverse-probability weights are absent.
+
+With `importance_metric: gradient_l2`, the score is instead
+
+$$
+I_g=\sqrt{\sum_{j\in S_g}d_{g,j}^2}.
+$$
+
+Both measurement fields remain recorded and the controller measurement path is identical.
 
 ## Distributed Measurement Contract
 
@@ -77,7 +85,7 @@ where `S_g` is the resolved controlled FFN support. Batchwise norms are never av
 
 Each PanelGrad checkpoint includes:
 
-- method family/version, scope, ordered granularities, policy values, and tolerances;
+- method family/version, importance metric, scope, ordered granularities, policy values, and tolerances;
 - resolved fixed/linear epsilon schedule plus the active snapshot epsilon and schedule step;
 - all controller/data role hashes and controlled-support schema/counts;
 - lifecycle phase, refresh index, last/next boundary, and interval progress;
@@ -87,13 +95,13 @@ Each PanelGrad checkpoint includes:
 - controller journal path, committed event count/offset/hash;
 - resume count/source and last failure provenance.
 
-Resume validates the complete schema before further measurement or training, including reconstructing `p` with the snapshot's active epsilon. State schema version 2 migrates version-1 checkpoints only when the resumed run uses fixed epsilon. Missing or incompatible scheduled state is never synthesized. Non-PanelGrad checkpoints contain no valid PanelGrad state, and Bayesian/legacy controller state is never coerced.
+Resume validates the complete schema before further measurement or training, including reconstructing `p` from the saved importance scores and snapshot epsilon. State schema version 3 treats versions 1 and 2 as legacy `gradient_rms` checkpoints; version 1 additionally migrates only when the resumed run uses fixed epsilon. Cross-metric resume is rejected. Missing or incompatible scheduled state is never synthesized. Non-PanelGrad checkpoints contain no valid PanelGrad state, and Bayesian/legacy controller state is never coerced.
 
 ## `controller_metrics.jsonl`
 
 PanelGrad uses explicit method/version and event types:
 
-- `panelgrad_refresh_completed`: boundary, active epsilon, epsilon schedule step, ordered per-granularity support counts/loss/norm/RMS, `q`, `p`, entropy/extrema, controller totals, duration/backward count, cumulative cost, hashes, and resume provenance;
+- `panelgrad_refresh_completed`: boundary, importance metric and selected importance-score vector, active epsilon, epsilon schedule step, ordered per-granularity support counts/loss/norm/RMS, `q`, `p`, entropy/extrema, controller totals, duration/backward count, cumulative cost, hashes, and resume provenance;
 - `panelgrad_refresh_failed`: failing stage/error, boundary, attempted active epsilon/schedule step, previous valid snapshot hash, and explicit no-new-distribution/no-action fields;
 - existing balanced-warmup events, carrying `posterior_updated: false` and no PanelGrad exposure;
 - `panelgrad_terminal_partial` or `panelgrad_terminal_complete`: last snapshot, progress, exposures, and explicit no-unused-refresh/no-unused-draw fields.

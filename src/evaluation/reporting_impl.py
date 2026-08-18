@@ -108,7 +108,10 @@ SCALING_SAMPLING_MARKERS = {
 }
 
 BAYESIAN_CONTROLLER_METHOD_FAMILY = "bayesian_gaussian_linear_thompson"
-PANELGRAD_METHOD_FAMILY = "panelgrad_gradient_rms"
+PANELGRAD_METHOD_FAMILIES = {
+    "panelgrad_gradient_rms",
+    "panelgrad_gradient_l2",
+}
 
 PLOT_STYLE_BASE = {
     "figure_title_fontsize": 17,
@@ -1470,6 +1473,7 @@ def _minimal_peer_differentiators(
 
     selected = {contract: [] for contract, _ in items}
     candidate_fields = (
+        "panelgrad_importance_metric",
         "panelgrad_temperature",
         "panelgrad_epsilon_schedule_type",
         "panelgrad_epsilon_schedule_start",
@@ -1606,6 +1610,7 @@ def compact_size_curve_labels(
                     parts.append(f"K={_format_scientific(interval)}")
 
         field_labels = {
+            "panelgrad_importance_metric": "importance metric",
             "panelgrad_temperature": "T",
             "panelgrad_epsilon": "ε",
             "panelgrad_epsilon_schedule_type": "ε schedule",
@@ -3749,6 +3754,7 @@ SIZE_PLOT_CONTRACT_FIELDS = (
     "controller_feature_schema_hash",
     "controller_reset_enabled",
     "controller_reset_policy",
+    "panelgrad_importance_metric",
     "panelgrad_refresh_interval_steps",
     "panelgrad_eta",
     "panelgrad_temperature",
@@ -4183,7 +4189,7 @@ def _probabilistic_sampling_label(row: dict[str, str]) -> str | None:
     strategy = adaptive_sampler_strategy_for_row(row)
     scope = str(row.get("controller_scope") or "").strip().lower()
     if (
-        method_family == PANELGRAD_METHOD_FAMILY
+        method_family in PANELGRAD_METHOD_FAMILIES
         and method_version not in (None, "")
         and strategy == "panelgrad"
         and scope == "global"

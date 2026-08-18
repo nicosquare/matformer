@@ -61,7 +61,10 @@ __all__ = [
 
 
 BAYESIAN_CONTROLLER_METHOD_FAMILY = "bayesian_gaussian_linear_thompson"
-PANELGRAD_METHOD_FAMILY = "panelgrad_gradient_rms"
+PANELGRAD_METHOD_FAMILIES = {
+    "panelgrad_gradient_rms",
+    "panelgrad_gradient_l2",
+}
 
 
 def resolve_plot_style(style_name: str) -> dict[str, Any]:
@@ -301,7 +304,7 @@ def scaling_curve_sampling_label(row: dict[str, Any]) -> str | None:
         and scope in {"global", "per_block"}
     )
     if (
-        str(method_family or "").strip().lower() == PANELGRAD_METHOD_FAMILY
+        str(method_family or "").strip().lower() in PANELGRAD_METHOD_FAMILIES
         and method_version not in (None, "")
         and strategy == "panelgrad"
         and scope == "global"
@@ -770,7 +773,7 @@ def plot_panelgrad_refresh_diagnostics(
         axes[0].plot(
             tokens,
             [
-                refresh.gradient_rms_scores[granularity_index]
+                refresh.importance_scores[granularity_index]
                 for refresh in history.refreshes
             ],
             color=color,
@@ -796,8 +799,13 @@ def plot_panelgrad_refresh_diagnostics(
             label=f"q({label})",
         )
 
-    axes[0].set_ylabel("Gradient RMS")
-    axes[0].set_title("Whole-active-subnetwork gradient RMS")
+    score_label = (
+        "Gradient RMS"
+        if history.importance_metric == "gradient_rms"
+        else "Gradient L2 norm"
+    )
+    axes[0].set_ylabel(score_label)
+    axes[0].set_title(f"Whole-active-subnetwork {score_label.lower()}")
     axes[0].legend(loc="center left", bbox_to_anchor=(1.01, 0.5), frameon=False)
     axes[1].set_ylim(-0.02, 1.02)
     axes[1].set_ylabel("Probability")
@@ -1199,9 +1207,20 @@ def panelgrad_exposure_share_filename(run_id: str) -> str:
     return f"panelgrad_cumulative_exposure_{safe_run_id or 'unknown'}.png"
 
 
-def panelgrad_refresh_diagnostics_filename(run_id: str) -> str:
+def panelgrad_refresh_diagnostics_filename(
+    run_id: str,
+    importance_metric: str | None = None,
+) -> str:
     safe_run_id = re.sub(r"[^A-Za-z0-9._-]+", "_", run_id).strip("._-")
-    return f"panelgrad_refresh_diagnostics_{safe_run_id or 'unknown'}.png"
+    metric_suffix = (
+        ""
+        if importance_metric in (None, "")
+        else f"_{safe_filename_fragment(str(importance_metric))}"
+    )
+    return (
+        f"panelgrad_refresh_diagnostics_{safe_run_id or 'unknown'}"
+        f"{metric_suffix}.png"
+    )
 
 
 def generate_global_sampling_policy_figures(
@@ -1605,7 +1624,9 @@ def generate_figures(
                 plot_panelgrad_refresh_diagnostics(
                     history,
                     output_dir
-                    / panelgrad_refresh_diagnostics_filename(history.run_id),
+                    / panelgrad_refresh_diagnostics_filename(
+                        history.run_id, history.importance_metric
+                    ),
                     dpi=dpi,
                 )
             )

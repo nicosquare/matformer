@@ -2,6 +2,20 @@
 
 These commands were verified against the implementation. PanelGrad remains opt-in and does not expand the default pilot queue.
 
+PanelGrad defaults to the existing RMS importance score. To opt into the raw
+aggregate L2 norm without adding any controller evaluations:
+
+```yaml
+model:
+  panelgrad:
+    importance_metric: gradient_l2
+```
+
+Supported values are `gradient_rms` and `gradient_l2`. Checkpoint resumes must
+use the same metric. State schema versions 1 and 2 are legacy RMS states and
+migrate only to `gradient_rms`; RMS and L2 checkpoints are intentionally not
+cross-compatible because they contain metric-specific probability snapshots.
+
 ## 1. Inspect resolved configuration
 
 ```bash
@@ -15,7 +29,7 @@ Confirm:
 - `granularity_sampling_mode=adaptive_global` and strategy `panelgrad`;
 - method family/version and global scope;
 - defaults `H=50`, `eta=1e-12`, `T=1`, `epsilon=0.1` unless overridden;
-- raw aggregate-controller-gradient RMS over granularity-controlled FFN support;
+- the selected raw aggregate-controller-gradient RMS or L2 importance over granularity-controlled FFN support;
 - fixed controller/final-holdout contracts and `panelgrad_sampling` seed stream.
 
 To opt into a refresh-boundary linear epsilon schedule, replace scalar `epsilon`

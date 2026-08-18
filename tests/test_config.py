@@ -2256,6 +2256,8 @@ def test_panelgrad_resolves_defaults_overrides_and_preflight_contract():
     assert resolved["run"]["sampling_mode"] == "nested-random"
     assert resolved["training"]["granularity_sampling"] == "random"
     assert panelgrad["method_family"] == "panelgrad_gradient_rms"
+    assert panelgrad["importance_metric"] == "gradient_rms"
+    assert panelgrad["score"] == "raw_aggregate_controller_gradient_rms"
     assert panelgrad["scope"] == "global"
     assert panelgrad["ordered_granularities"] == ["micro", "medium", "full"]
     assert panelgrad["action_distribution"] == "categorical"
@@ -2277,6 +2279,14 @@ def test_panelgrad_resolves_defaults_overrides_and_preflight_contract():
     assert overridden["eta"] == 1e-6
     assert overridden["temperature"] == 2.5
     assert overridden["epsilon"] == 0.0
+
+    l2 = resolve_run_config(
+        "tests/fixtures/panelgrad_smoke.yaml",
+        overrides=["model.panelgrad.importance_metric=gradient_l2"],
+    )["model"]["panelgrad"]
+    assert l2["importance_metric"] == "gradient_l2"
+    assert l2["method_family"] == "panelgrad_gradient_l2"
+    assert l2["score"] == "raw_aggregate_controller_gradient_l2"
 
 
 def _write_panelgrad_epsilon_schedule_config(
@@ -2375,6 +2385,10 @@ def test_panelgrad_rejects_invalid_epsilon_schedule(
         ("model.panelgrad.refresh_interval_steps=0", "must be a positive integer"),
         ("model.panelgrad.eta=0", "eta must be positive"),
         ("model.panelgrad.temperature=0", "temperature must be positive"),
+        (
+            "model.panelgrad.importance_metric=gradient_max",
+            "importance_metric must be one of",
+        ),
         ("model.panelgrad.epsilon=-0.1", "between zero and one"),
         ("model.panelgrad.epsilon=1.1", "between zero and one"),
         ("model.panelgrad.scope=per_block", "scope must be 'global'"),

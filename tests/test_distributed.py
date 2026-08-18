@@ -682,9 +682,11 @@ def test_real_two_process_gloo_rank_zero_controller_commit(tmp_path):
         },
     ],
 )
+@pytest.mark.parametrize("importance_metric", ["gradient_rms", "gradient_l2"])
 def test_panelgrad_rank_zero_draw_is_broadcast_with_generator_state(
     monkeypatch,
     epsilon_kwargs,
+    importance_metric,
 ):
     support = {
         "ordered_granularities": ["small", "full"],
@@ -697,6 +699,7 @@ def test_panelgrad_rank_zero_draw_is_broadcast_with_generator_state(
             refresh_interval_steps=2,
             eta=1e-12,
             temperature=1.0,
+            importance_metric=importance_metric,
             **epsilon_kwargs,
             sampling_seed=91,
             support_identity=support,
@@ -705,8 +708,16 @@ def test_panelgrad_rank_zero_draw_is_broadcast_with_generator_state(
     ]
     measurement = {
         "measurements": [
-            {"granularity": "small", "gradient_rms_score": 1.0},
-            {"granularity": "full", "gradient_rms_score": 4.0},
+            {
+                "granularity": "small",
+                "gradient_norm": 2.0,
+                "gradient_rms_score": 1.0,
+            },
+            {
+                "granularity": "full",
+                "gradient_norm": 8.0,
+                "gradient_rms_score": 4.0,
+            },
         ]
     }
     for controller in controllers:
@@ -758,6 +769,10 @@ def test_panelgrad_rank_zero_draw_is_broadcast_with_generator_state(
         left["sampling"]["generator_state"],
         right["sampling"]["generator_state"],
     )
+    assert left["policy"]["importance_metric"] == importance_metric
+    assert left["refresh"]["importance_scores"] == right["refresh"][
+        "importance_scores"
+    ]
     assert left["policy"]["epsilon_schedule"] == right["policy"][
         "epsilon_schedule"
     ]

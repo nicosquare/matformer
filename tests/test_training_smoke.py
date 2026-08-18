@@ -31,6 +31,7 @@ def _panelgrad_smoke_controller(config, *, seed=31):
         ),
         eta=float(config["model"]["panelgrad"]["eta"]),
         temperature=float(config["model"]["panelgrad"]["temperature"]),
+        importance_metric=panelgrad["importance_metric"],
         epsilon=(
             float(panelgrad["epsilon"])
             if panelgrad.get("epsilon") is not None
@@ -75,7 +76,14 @@ def _tiny_training_batches(count=8):
     ]
 
 
-def _run_direct_panelgrad_steps(tmp_path, *, max_steps, scores, seed=31):
+def _run_direct_panelgrad_steps(
+    tmp_path,
+    *,
+    max_steps,
+    scores,
+    seed=31,
+    importance_metric="gradient_rms",
+):
     config = resolve_run_config(
         "tests/fixtures/panelgrad_smoke.yaml",
         output_dir=tmp_path / "panelgrad-smoke-001",
@@ -89,6 +97,7 @@ def _run_direct_panelgrad_steps(tmp_path, *, max_steps, scores, seed=31):
             "training.eval_interval=0",
             "training.learning_rate=0.01",
             "training.scheduler.name=constant",
+            f"model.panelgrad.importance_metric={importance_metric}",
         ],
     )
     model = TinyNestedTrainingModel(
@@ -3352,14 +3361,17 @@ def test_reset_training_reuses_one_panel_evaluation_per_boundary_and_batches_eve
     assert sum(summary["thompson_action_frequencies"].values()) == 3
 
 
+@pytest.mark.parametrize("importance_metric", ["gradient_rms", "gradient_l2"])
 def test_panelgrad_refreshes_at_completed_step_boundaries_and_resamples_each_step(
     tmp_path,
+    importance_metric,
 ):
     _, model, controller, run_state, boundaries, probabilities = (
         _run_direct_panelgrad_steps(
             tmp_path / "panelgrad-lifecycle",
             max_steps=5,
             scores=[1.0, 2.0, 4.0],
+            importance_metric=importance_metric,
         )
     )
 
@@ -3370,6 +3382,7 @@ def test_panelgrad_refreshes_at_completed_step_boundaries_and_resamples_each_ste
     assert sum(state["sampling"]["exposure_counts"].values()) == 5
     assert state["refresh"]["refresh_index"] == 2
     assert state["refresh"]["completed_steps_since_refresh"] == 1
+    assert state["policy"]["importance_metric"] == importance_metric
     assert run_state["last_completed_step"] == 5
     assert len(model.train_forward_granularities) == 5
     assert all(

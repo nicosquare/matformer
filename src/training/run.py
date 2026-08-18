@@ -1343,8 +1343,14 @@ def run_training(
                     {
                         "schema_version": 1,
                         "event_type": "panelgrad_refresh_completed",
-                        "method_family": "panelgrad_gradient_rms",
-                        "method_version": 1,
+                        "method_family": panelgrad_controller.state_dict()[
+                            "method_family"
+                        ],
+                        "method_version": panelgrad_controller.state_dict()[
+                            "method_version"
+                        ],
+                        "importance_metric": refresh["importance_metric"],
+                        "importance_scores": refresh["importance_scores"],
                         "boundary_step": int(step),
                         "window_index": int(refresh["refresh_index"]),
                         "measurements": refresh["measurements"],
@@ -1376,8 +1382,9 @@ def run_training(
                     {
                         "schema_version": 1,
                         "event_type": "panelgrad_refresh_failed",
-                        "method_family": "panelgrad_gradient_rms",
-                        "method_version": 1,
+                        "method_family": state["method_family"],
+                        "method_version": state["method_version"],
+                        "importance_metric": state["policy"]["importance_metric"],
                         "boundary_step": int(step),
                         "window_index": int(
                             state["refresh"]["refresh_index"] + 1
@@ -1402,8 +1409,15 @@ def run_training(
                 {
                     "schema_version": 1,
                     "event_type": f"panelgrad_{terminal['status']}",
-                    "method_family": "panelgrad_gradient_rms",
-                    "method_version": 1,
+                    "method_family": panelgrad_controller.state_dict()[
+                        "method_family"
+                    ],
+                    "method_version": panelgrad_controller.state_dict()[
+                        "method_version"
+                    ],
+                    "importance_metric": panelgrad_controller.state_dict()[
+                        "policy"
+                    ]["importance_metric"],
                     "boundary_step": int(step),
                     "window_index": int(
                         panelgrad_controller.state_dict()["refresh"][
@@ -1741,6 +1755,9 @@ def run_training(
                     ),
                     "controller_strategy": controller_summary.get("strategy"),
                     "controller_scope": controller_summary.get("scope"),
+                    "controller_importance_metric": controller_summary.get(
+                        "importance_metric"
+                    ),
                     "controller_feature_schema": controller_summary.get(
                         "feature_schema"
                     ),

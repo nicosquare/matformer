@@ -52,7 +52,10 @@ __all__ = [
 
 
 BAYESIAN_CONTROLLER_METHOD_FAMILY = "bayesian_gaussian_linear_thompson"
-PANELGRAD_METHOD_FAMILY = "panelgrad_gradient_rms"
+PANELGRAD_METHOD_FAMILIES = {
+    "panelgrad_gradient_rms": "gradient_rms",
+    "panelgrad_gradient_l2": "gradient_l2",
+}
 
 
 @dataclass(frozen=True)
@@ -136,6 +139,8 @@ class PanelGradRefresh:
     refresh_index: int
     boundary_step: int
     boundary_tokens: int
+    importance_metric: str
+    importance_scores: tuple[float, ...]
     gradient_rms_scores: tuple[float, ...]
     q: tuple[float, ...]
     p: tuple[float, ...]
@@ -148,12 +153,12 @@ class PanelGradRefresh:
     backward_evaluations: int
     controller_target_tokens: int
 
-
 @dataclass(frozen=True)
 class PanelGradHistory:
     """Plot-ready PanelGrad actions and refresh diagnostics."""
 
     run_id: str
+    importance_metric: str
     ordered_granularities: tuple[str, ...]
     token_budget: int
     actions: tuple[PanelGradAction, ...]
@@ -229,9 +234,10 @@ def _read_global_sampling_history(
         panelgrad = model.get("panelgrad")
         if not isinstance(panelgrad, Mapping) or str(
             panelgrad.get("method_family") or ""
-        ).lower() != PANELGRAD_METHOD_FAMILY:
+        ).lower() not in PANELGRAD_METHOD_FAMILIES:
             return None
-        policy_identity = "panelgrad_global"
+        importance_metric = _panelgrad_importance_metric(panelgrad)
+        policy_identity = f"panelgrad_global_{importance_metric}"
         policy_label = _panelgrad_policy_label(panelgrad)
     elif sampling_mode == "adaptive_global" and strategy == "thompson":
         controller = model.get("adaptive_controller")
@@ -285,7 +291,7 @@ def _read_global_sampling_history(
         trained = str(row.get("granularity") or "").strip()
         recorded_action = str(row.get("controller_action") or "").strip()
         if (
-            policy_identity == "panelgrad_global"
+            policy_identity.startswith("panelgrad_global_")
             and recorded_action
             and recorded_action != trained
         ):
@@ -548,12 +554,13 @@ def _read_panelgrad_history(
     strategy = str(model.get("adaptive_sampler_strategy") or "").strip().lower()
     scope = str(policy.get("scope") or "").strip().lower()
     if not (
-        method_family == PANELGRAD_METHOD_FAMILY
+        method_family in PANELGRAD_METHOD_FAMILIES
         and policy.get("method_version") not in (None, "")
         and strategy == "panelgrad"
         and scope == "global"
     ):
         return None
+    importance_metric = _panelgrad_importance_metric(policy)
 
     run = _required_mapping(config.get("run"), "config.run")
     run_id = str(run.get("run_id") or "").strip()
@@ -640,12 +647,14 @@ def _read_panelgrad_history(
                     expected_tokens_per_step=expected_tokens_per_step,
                     token_budget=token_budget,
                     fallback_epsilon=float(epsilon_schedule_identity["start"]),
+                    importance_metric=importance_metric,
                 )
             )
     refreshes.sort(key=lambda refresh: (refresh.boundary_step, refresh.refresh_index))
 
     return PanelGradHistory(
         run_id=run_id,
+        importance_metric=importance_metric,
         ordered_granularities=ordered_granularities,
         token_budget=token_budget,
         actions=tuple(actions),
@@ -667,6 +676,7 @@ def _normalize_panelgrad_refresh(
     expected_tokens_per_step: int,
     token_budget: int,
     fallback_epsilon: float,
+    importance_metric: str,
 ) -> PanelGradRefresh:
     prefix = f"journal line {line_number}"
     refresh_index = _nonnegative_int(event.get("window_index"), f"{prefix} window_index")
@@ -677,6 +687,14 @@ def _normalize_panelgrad_refresh(
     if not isinstance(measurements, list):
         raise ValueError(f"{prefix} measurements must be a list")
     score_by_granularity = {}
+    rms_by_granularity = {}
+    event_importance_metric = event.get("importance_metric", importance_metric)
+    if event_importance_metric != importance_metric:
+        raise ValueError(f"{prefix} importance metric does not match config")
+    measurement_field = {
+        "gradient_rms": "gradient_rms_score",
+        "gradient_l2": "gradient_norm",
+    }[importance_metric]
     for measurement in measurements:
         if not isinstance(measurement, Mapping):
             raise ValueError(f"{prefix} measurement must be a mapping")
@@ -684,11 +702,26 @@ def _normalize_panelgrad_refresh(
         if label in score_by_granularity:
             raise ValueError(f"{prefix} repeats measurement for {label!r}")
         score_by_granularity[label] = _finite_float(
+            measurement.get(measurement_field),
+            f"{prefix} {label} {measurement_field}",
+        )
+        rms_by_granularity[label] = _finite_float(
             measurement.get("gradient_rms_score"),
             f"{prefix} {label} gradient_rms_score",
         )
     if set(score_by_granularity) != set(ordered_granularities):
         raise ValueError(f"{prefix} measurements do not cover every granularity")
+    importance_scores = tuple(
+        score_by_granularity[label] for label in ordered_granularities
+    )
+    recorded_importance_scores = event.get("importance_scores")
+    if recorded_importance_scores is not None:
+        normalized_scores = tuple(
+            _finite_float(value, f"{prefix} importance_scores")
+            for value in recorded_importance_scores
+        )
+        if normalized_scores != importance_scores:
+            raise ValueError(f"{prefix} importance_scores disagree with measurements")
     duration_seconds = _finite_float(
         event.get("duration_seconds"), f"{prefix} duration_seconds"
     )
@@ -712,8 +745,10 @@ def _normalize_panelgrad_refresh(
         refresh_index=refresh_index,
         boundary_step=boundary_step,
         boundary_tokens=min(boundary_step * expected_tokens_per_step, token_budget),
+        importance_metric=importance_metric,
+        importance_scores=importance_scores,
         gradient_rms_scores=tuple(
-            score_by_granularity[label] for label in ordered_granularities
+            rms_by_granularity[label] for label in ordered_granularities
         ),
         q=q,
         p=p,
@@ -1539,6 +1574,15 @@ def controller_contract_provenance_from_saved_config(
         "panelgrad_refresh_interval_steps": controller.get(
             "refresh_interval_steps"
         ),
+        "panelgrad_importance_metric": (
+            _panelgrad_importance_metric(controller)
+            if (
+                str(controller.get("method_family") or "").strip().lower()
+                in PANELGRAD_METHOD_FAMILIES
+                or "importance_metric" in controller
+            )
+            else None
+        ),
         "panelgrad_eta": controller.get("eta"),
         "panelgrad_temperature": controller.get("temperature"),
         "panelgrad_epsilon": controller.get("epsilon"),
@@ -1595,7 +1639,17 @@ def _panelgrad_policy_label(policy: Mapping[str, Any]) -> str:
     """Render the scientific knobs that distinguish PanelGrad policies."""
 
     schedule = _panelgrad_epsilon_schedule_identity(policy)
-    labels = [("T", policy.get("temperature"))]
+    importance_metric = _panelgrad_importance_metric(policy)
+    labels = [
+        (
+            "metric",
+            {
+                "gradient_rms": "Gradient RMS",
+                "gradient_l2": "Gradient L2 norm",
+            }[importance_metric],
+        ),
+        ("T", policy.get("temperature")),
+    ]
     if schedule["type"] == "linear":
         labels.extend(
             (
@@ -1630,7 +1684,7 @@ def _panelgrad_epsilon_schedule_identity(
 ) -> dict[str, Any]:
     is_panelgrad = (
         str(policy.get("method_family") or "").strip().lower()
-        == PANELGRAD_METHOD_FAMILY
+        in PANELGRAD_METHOD_FAMILIES
         or "epsilon" in policy
         or "epsilon_schedule" in policy
     )
@@ -1651,6 +1705,20 @@ def _panelgrad_epsilon_schedule_identity(
         "end": epsilon,
         "duration_steps": None,
     }
+
+
+def _panelgrad_importance_metric(policy: Mapping[str, Any]) -> str:
+    metric = policy.get("importance_metric")
+    family = str(policy.get("method_family") or "").strip().lower()
+    if metric in (None, ""):
+        metric = PANELGRAD_METHOD_FAMILIES.get(family, "gradient_rms")
+    metric = str(metric)
+    if metric not in {"gradient_rms", "gradient_l2"}:
+        raise ValueError(f"Unknown PanelGrad importance metric: {metric!r}")
+    expected = PANELGRAD_METHOD_FAMILIES.get(family)
+    if expected is not None and metric != expected:
+        raise ValueError("PanelGrad importance metric and method family disagree")
+    return metric
 
 
 def _enrich_controller_provenance(

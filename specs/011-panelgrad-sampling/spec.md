@@ -98,13 +98,13 @@ As a researcher, I can resume and inspect a PanelGrad run with enough state and 
 - **FR-006**: Controller examples MUST remain disjoint from optimizer-training, ordinary-validation, and final-holdout examples; the final holdout MUST NOT be evaluated or consulted during PanelGrad training.
 - **FR-007**: At each refresh, PanelGrad MUST measure every resolved global granularity against the same complete controller panel, current model parameters, and controller-loss definition in evaluation mode with gradient tracking enabled, then restore the model's prior training mode.
 - **FR-008**: For each granularity `g`, PanelGrad MUST obtain the raw gradient of one aggregate target-token-weighted controller-panel loss with respect to only the parameters selected by the resolved granularity definition across all controlled FFN layers, before gradient clipping, optimizer transformations, or training-only gradient correction; the result MUST be invariant to controller microbatch partitioning within relative tolerance `1e-6` and absolute tolerance `1e-8`.
-- **FR-009**: PanelGrad MUST calculate the complete granularity-controlled score
+- **FR-009**: PanelGrad MUST support `gradient_rms` (default) and `gradient_l2` importance metrics. RMS MUST calculate the complete granularity-controlled score
 
   $$
   I_g = \frac{\lVert d_g \rVert_2}{\sqrt{N_g}},
   $$
 
-  where `d_g` contains the gradients for the complete trainable FFN parameter support selected by granularity `g` and `N_g` is the number of unique trainable scalars in that same support.
+  where `d_g` contains the gradients for the complete trainable FFN parameter support selected by granularity `g` and `N_g` is the number of unique trainable scalars in that same support. Raw L2 MUST use `||d_g||_2` from the same aggregate gradient and support without another measurement pass.
 - **FR-010**: The definition of `N_g` MUST come from the resolved granularity definitions and remain stable across controller batches: selected parameter storage is counted once, selected scalars with numerical zero gradients remain counted, and embeddings, attention parameters, frozen parameters, and every other scalar outside the granularity-controlled FFN support are excluded.
 - **FR-011**: Full-panel measurement MUST NOT update model parameters, optimizer state, scheduler state, mixed-precision state, training metrics, or the ordinary training-data position, and MUST leave no accumulated measurement gradients.
 - **FR-012**: PanelGrad measurement MUST NOT perturb the random sequence used by ordinary training actions or training-batch computation beyond its explicitly separate PanelGrad sampling stream.
@@ -136,10 +136,10 @@ As a researcher, I can resume and inspect a PanelGrad run with enough state and 
 
 - **FR-025**: In distributed execution, gradient squared norms and parameter counts MUST represent the complete distributed granularity-controlled FFN support, and all workers MUST agree on `I`, `q`, and `p` within relative tolerance `1e-6` and absolute tolerance `1e-8`.
 - **FR-026**: Rank zero MUST own the authoritative categorical sampling stream and synchronize the selected global action so every worker trains the same action.
-- **FR-027**: PanelGrad checkpoints MUST preserve the resolved epsilon schedule, current snapshot epsilon and schedule step, scores, `q`, `p`, categorical RNG state, completed steps since refresh, next refresh boundary, exposure counts, lifecycle phase, method parameters, and controller-panel provenance. Fixed-epsilon version-1 state MAY migrate to the current schema only for a fixed-policy resume.
+- **FR-027**: PanelGrad checkpoints MUST preserve the importance metric, resolved epsilon schedule, current snapshot epsilon and schedule step, selected importance scores, `q`, `p`, categorical RNG state, completed steps since refresh, next refresh boundary, exposure counts, lifecycle phase, method parameters, and controller-panel provenance. State versions 1 and 2 MUST migrate only as RMS; fixed-epsilon version-1 state MAY migrate only for a fixed-policy resume, and cross-metric resume MUST be rejected.
 - **FR-028**: Resume MUST reject missing, malformed, non-finite, method-incompatible, granularity-incompatible, or controller-provenance-incompatible PanelGrad state rather than silently reinitializing it.
 - **FR-029**: Under equivalent deterministic runtime conditions, resume MUST neither repeat nor skip a refresh or action sample and MUST reproduce the subsequent discrete action sequence.
-- **FR-030**: Every refresh record MUST include its completed-step boundary, active epsilon, epsilon schedule step, controller-panel identity, per-granularity active count, gradient norm, gradient RMS, `q`, `p`, entropy, probability extrema, duration or equivalent measurement-cost value, and success or failure state.
+- **FR-030**: Every refresh record MUST include its completed-step boundary, importance metric and selected score vector, active epsilon, epsilon schedule step, controller-panel identity, per-granularity active count, gradient norm, gradient RMS, `q`, `p`, entropy, probability extrema, duration or equivalent measurement-cost value, and success or failure state.
 - **FR-031**: Every PanelGrad training-step record MUST identify the sampled granularity, its probability, cumulative per-granularity exposure, and whether balanced warmup or adaptive PanelGrad selection was active.
 - **FR-032**: Shared artifacts MUST be written once by the authoritative process while remaining sufficient to audit distributed agreement.
 
