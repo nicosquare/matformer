@@ -24,7 +24,10 @@ optional tools are intentionally not part of the execution environment. Install
 them separately only when enabling their corresponding configuration surfaces.
 Run repository commands from the repository root. The
 [complete 10B operator handoff](docs/10b-slicing-experiments.md) is the
-authoritative guide for those experiments.
+authoritative guide for those experiments. The
+[clean 100M prepared-corpus slicing guide](docs/100m-slicing-experiments.md)
+defines the matched baseline, Thompson, and PanelGrad pilot suite over the same
+immutable tokenizer and corpus.
 
 The importable code now lives under `src/`. The root `train.py` and
 `scripts/make_figures.py` entrypoints remain thin wrappers around that package

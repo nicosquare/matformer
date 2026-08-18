@@ -2107,6 +2107,129 @@ def test_10b_production_preflight_resolves_exact_four_gpu_schedule(tmp_path, mon
     assert resolved["dataset"]["training_order_sha256"] == "order-hash"
 
 
+def test_100m_prepared_slicing_preflight_resolves_matched_one_gpu_contract(
+    tmp_path, monkeypatch
+):
+    import src.training.packed_corpus as packed_corpus
+    import src.training.fineweb_tokenizer as fineweb_tokenizer
+
+    monkeypatch.delenv("WORLD_SIZE", raising=False)
+    monkeypatch.setattr(
+        packed_corpus,
+        "load_corpus_manifest",
+        lambda *args, **kwargs: _production_manifest(),
+    )
+    monkeypatch.setattr(
+        fineweb_tokenizer,
+        "load_tokenizer_manifest",
+        lambda *args, **kwargs: {
+            "tokenizer_name": "fineweb_sentencepiece_bpe_256k",
+            "manifest_hash": "tokenizer-hash",
+            "sentencepiece_model_sha256": "model-hash",
+            "vocab_size": 256000,
+        },
+    )
+    shared_overrides = [
+        "dataset.prepared_corpus_dir=/prepared/fineweb",
+        "model.tokenizer_dir=/prepared/tokenizer",
+    ]
+    resolved = resolve_run_config(
+        "configs/production/slicing_100m_prepared.yaml",
+        output_dir=tmp_path / "slicing-100m-prepared-base",
+        overrides=shared_overrides,
+    )
+
+    training = resolved["training"]
+    assert training["token_budget"] == 99_999_744
+    assert training["batch_size_per_process"] == 8
+    assert training["expected_tokens_per_microstep"] == 8_192
+    assert training["gradient_accumulation_steps"] == 1
+    assert training["expected_tokens_per_step"] == 8_192
+    assert training["derived_max_steps"] == 12_207
+    assert training["max_steps"] == 12_207
+    assert training["resolved_warmup_steps"] == 1_000
+    assert training["pre_nested_warmup"]["enabled"] is False
+    assert resolved["evaluation"]["validation"]["interval_steps"] == 250
+    assert resolved["evaluation"]["validation"]["interval_tokens"] == 0
+    assert resolved["outputs"]["metrics_flush_interval_steps"] == 50
+    assert resolved["evaluation"]["adaptive_controller"]["enabled"] is True
+    assert resolved["evaluation"]["final_holdout"]["enabled"] is True
+    assert resolved["model"]["variant"] == "slicing"
+    assert resolved["model"]["correction_mode"] == "none"
+    assert resolved["model"]["granularities"] == [
+        "g125",
+        "g250",
+        "g375",
+        "g500",
+        "g625",
+        "g750",
+        "g875",
+        "g1000",
+    ]
+    assert resolved["dataset"]["fixed_four_role_partition"] is True
+    assert resolved["dataset"]["selected_optimizer_samples"] == 97_656
+    assert resolved["run"]["output_group"] == "matformer_llama_148m_100m_tokens"
+
+    thompson = resolve_run_config(
+        "configs/production/slicing_100m_prepared.yaml",
+        output_dir=tmp_path / "slicing-100m-prepared-thompson",
+        overrides=shared_overrides
+        + [
+            "run.run_id=slicing-100m-prepared-thompson",
+            "model.granularity_sampling_mode=adaptive_global",
+            "model.adaptive_sampler_strategy=thompson",
+            "model.adaptive_controller.decision_interval_steps=25",
+            "model.adaptive_controller.prior_mean=0.0",
+            "model.adaptive_controller.prior_covariance=1.0",
+            "model.adaptive_controller.observation_noise_variance=0.01",
+            "model.adaptive_controller.process_noise_covariance=0.0001",
+            "model.adaptive_controller.reset.enabled=false",
+        ],
+    )
+    assert thompson["model"]["adaptive_controller"]["decision_interval_steps"] == 25
+
+    panelgrad_l2 = resolve_run_config(
+        "configs/production/slicing_100m_prepared.yaml",
+        output_dir=tmp_path / "slicing-100m-prepared-panelgrad-l2",
+        overrides=shared_overrides
+        + [
+            "run.run_id=slicing-100m-prepared-panelgrad-l2",
+            "model.granularity_sampling_mode=adaptive_global",
+            "model.adaptive_sampler_strategy=panelgrad",
+            "model.panelgrad.importance_metric=gradient_l2",
+            "model.panelgrad.refresh_interval_steps=25",
+            "model.panelgrad.eta=1.0e-12",
+            "model.panelgrad.temperature=1.0",
+            "model.panelgrad.epsilon_schedule={type: linear, start: 0.5, end: 0.1, duration_steps: 12207}",
+        ],
+    )
+    assert panelgrad_l2["model"]["panelgrad"]["refresh_interval_steps"] == 25
+    assert panelgrad_l2["model"]["panelgrad"]["epsilon_schedule"] == {
+        "type": "linear",
+        "start": 0.5,
+        "end": 0.1,
+        "duration_steps": 12_207,
+    }
+
+    panelgrad_rms = resolve_run_config(
+        "configs/production/slicing_100m_prepared.yaml",
+        output_dir=tmp_path / "slicing-100m-prepared-panelgrad-rms",
+        overrides=shared_overrides
+        + [
+            "run.run_id=slicing-100m-prepared-panelgrad-rms",
+            "model.granularity_sampling_mode=adaptive_global",
+            "model.adaptive_sampler_strategy=panelgrad",
+            "model.panelgrad.importance_metric=gradient_rms",
+            "model.panelgrad.refresh_interval_steps=25",
+            "model.panelgrad.eta=1.0e-12",
+            "model.panelgrad.temperature=1.0",
+            "model.panelgrad.epsilon=0.1",
+        ],
+    )
+    assert panelgrad_rms["model"]["panelgrad"]["refresh_interval_steps"] == 25
+    assert panelgrad_rms["model"]["panelgrad"]["epsilon"] == 0.1
+
+
 def test_packed_preflight_rejects_oversized_misaligned_and_mismatched_source(
     tmp_path, monkeypatch
 ):
