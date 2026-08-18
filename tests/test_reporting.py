@@ -3110,7 +3110,10 @@ def test_non_panelgrad_reporting_labels_remain_unchanged():
 
 
 def test_size_reporting_does_not_merge_distinct_fixed_global_distributions():
-    from src.evaluation.reporting_impl import group_size_plot_rows
+    from src.evaluation.reporting_impl import (
+        compact_size_curve_labels,
+        group_size_plot_rows,
+    )
 
     base = {
         "sampling_mode": "nested-random",
@@ -3143,4 +3146,37 @@ def test_size_reporting_does_not_merge_distinct_fixed_global_distributions():
         },
     ]
 
-    assert len(group_size_plot_rows(rows)) == 2
+    grouped = group_size_plot_rows(rows)
+    labels = compact_size_curve_labels(grouped)
+
+    assert len(grouped) == 2
+    assert len(set(labels.values())) == 2
+    assert all("Sampling distribution=" in label for label in labels.values())
+
+
+def test_size_reporting_treats_blank_and_absent_contract_fields_as_missing():
+    from src.evaluation.reporting_impl import compact_size_curve_labels
+
+    base = {
+        "sampling_mode": "standalone",
+        "resolved_run_mode": "standalone",
+        "model_variant": "slicing",
+        "granularity": "s",
+        "non_embedding_parameters": "100",
+        "perplexity": "10",
+    }
+    grouped = {
+        "contract-with-absent-field": [{**base, "run_id": "standalone-a"}],
+        "contract-with-blank-field": [
+            {
+                **base,
+                "run_id": "standalone-b",
+                "global_sampling_distribution": "",
+            }
+        ],
+    }
+
+    labels = compact_size_curve_labels(grouped)
+
+    assert len(labels) == 2
+    assert all("Sampling distribution=" not in label for label in labels.values())

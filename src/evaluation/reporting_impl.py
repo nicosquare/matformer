@@ -1554,8 +1554,11 @@ def _differing_fields(groups: list[list[dict[str, Any]]]) -> set[str]:
 def _field_contract_value(row: dict[str, Any], field_name: str) -> str:
     if field_name == "correction":
         return str(scaling_curve_correction_label(row) or "none")
+    value = row.get(field_name)
+    if _value_is_missing(value):
+        value = None
     return json.dumps(
-        _canonical_contract_value(row.get(field_name)),
+        _canonical_contract_value(value),
         sort_keys=True,
         separators=(",", ":"),
         default=str,
@@ -1707,6 +1710,7 @@ def compact_size_curve_labels(
                     parts.append(f"K={_format_scientific(interval)}")
 
         field_labels = {
+            "global_sampling_distribution": "Sampling distribution",
             "panelgrad_importance_metric": "importance metric",
             "panelgrad_temperature": "T",
             "panelgrad_epsilon": "ε",
