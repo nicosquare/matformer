@@ -337,7 +337,7 @@ def test_make_figures_reads_csv_artifacts(tmp_path):
         assert path.stat().st_size > 0
 
 
-def test_make_figures_writes_one_loss_figure_per_experiment_group(tmp_path):
+def test_compatibility_figure_entrypoint_uses_canonical_completion_filtering(tmp_path):
     first_run_dir = tmp_path / "debug-nested-001"
     second_run_dir = tmp_path / "debug-standalone-s-001"
     third_run_dir = tmp_path / "debug-standalone-m-001"
@@ -549,20 +549,9 @@ def test_make_figures_writes_one_loss_figure_per_experiment_group(tmp_path):
 
     figure_names = {path.name for path in figure_paths}
     assert not any(name.startswith("loss_over_steps_") for name in figure_names)
-    assert "validation_loss_over_tokens_nested_random_slicing_global.png" in figure_names
-    assert "validation_loss_over_tokens_standalone.png" in figure_names
+    assert "validation_loss_over_tokens_nested_random_slicing_global.png" not in figure_names
+    assert "validation_loss_over_tokens_standalone.png" not in figure_names
     assert "ppl_over_steps.png" in figure_names
-
-    validation_nested_path = (
-        tmp_path / "figures" / "validation_loss_over_tokens_nested_random_slicing_global.png"
-    )
-    validation_standalone_path = (
-        tmp_path / "figures" / "validation_loss_over_tokens_standalone.png"
-    )
-    assert validation_nested_path.exists()
-    assert validation_nested_path.stat().st_size > 0
-    assert validation_standalone_path.exists()
-    assert validation_standalone_path.stat().st_size > 0
 
 
 def test_make_figures_classifies_loss_traces_by_sampling_mode():

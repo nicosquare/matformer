@@ -553,70 +553,52 @@ def plot_granularity_selection_frequency_over_tokens(
     dpi: int = 300,
     max_bins: int = 100,
 ) -> Path:
-    """Render local, token-weighted granularity selection frequencies.
-
-    Short controller histories retain one point per decision window. Dense
-    histories are aggregated into equal-token bins so rapidly alternating
-    global actions do not render as several apparently solid 0/1 traces.
-    """
+    """Render token-weighted per-block allocation as a 100%-stacked timeline."""
 
     granularities = timeline.ordered_granularities
-    color_positions = (
-        [0.5]
-        if len(granularities) == 1
-        else [index / (len(granularities) - 1) for index in range(len(granularities))]
-    )
-    colors = [plt.get_cmap("viridis")(position) for position in color_positions]
-    x_values, shares, binned = _selection_share_series(
-        timeline,
-        max_bins=max_bins,
-    )
-    figure_height = max(3.0, 2.0 * len(granularities))
-    figure, axes = plt.subplots(
-        len(granularities),
-        1,
-        figsize=(12, figure_height),
-        sharex=True,
-    )
-    axes = [axes] if len(granularities) == 1 else list(axes)
-    for axis, granularity, color in zip(axes, granularities, colors):
-        axis.plot(
-            x_values,
-            shares[granularity],
+    colors = _sampling_colors(granularities)
+    spans, shares, binned = _selection_share_bins(timeline, max_bins=max_bins)
+    if not spans:
+        raise ValueError("granularity allocation plot requires at least one window")
+    centers = [(start + end) / 2 for start, end in spans]
+    widths = [end - start for start, end in spans]
+    figure, axis = plt.subplots(figsize=(12, 4.8))
+    bottoms = [0.0] * len(spans)
+    for granularity, color in zip(granularities, colors):
+        heights = [share * 100.0 for share in shares[granularity]]
+        axis.bar(
+            centers,
+            heights,
+            width=widths,
+            bottom=bottoms,
             color=color,
-            linewidth=1.8,
+            edgecolor="white",
+            linewidth=0.35,
+            label=granularity,
+            align="center",
         )
-        axis.set_ylim(-0.02, 1.02)
-        axis.set_yticks([0.0, 0.5, 1.0])
-        axis.set_ylabel(
-            "Selection rate\nwithin token bin"
-            if timeline.scope == "global"
-            else "Mean selected block\nfraction within token bin"
-        )
-        axis.set_title(granularity, fontsize=11, pad=4)
-        axis.grid(True, axis="both", alpha=0.25)
-        axis.set_axisbelow(True)
+        bottoms = [bottom + height for bottom, height in zip(bottoms, heights)]
 
-    axes[-1].set_xlim(0, timeline.token_budget)
-    axes[-1].set_xlabel("Total training tokens")
-    axes[-1].ticklabel_format(axis="x", style="sci", scilimits=(0, 0))
+    axis.set_xlim(min(start for start, _ in spans), max(end for _, end in spans))
+    axis.set_ylim(0.0, 100.0)
+    axis.set_yticks([0.0, 50.0, 100.0])
+    axis.set_xlabel("Total training tokens")
+    axis.set_ylabel("Selected block fraction (%)")
+    axis.ticklabel_format(axis="x", style="sci", scilimits=(0, 0))
+    axis.grid(True, axis="both", alpha=0.25)
+    axis.set_axisbelow(True)
+    axis.legend(loc="center left", bbox_to_anchor=(1.01, 0.5), frameon=False)
     aggregation = (
-        f"{len(x_values)} equal-token bins"
+        f"{len(spans)} equal-token bins"
         if binned
-        else "one point per controller window"
+        else "one bar per controller window"
     )
     figure.suptitle(
         f"Granularity allocation over training — {timeline.run_id}\n{aggregation}",
         fontsize=15,
         y=0.995,
     )
-    figure.subplots_adjust(
-        left=0.14,
-        right=0.98,
-        top=0.92,
-        bottom=0.08,
-        hspace=0.42,
-    )
+    figure.subplots_adjust(left=0.10, right=0.82, top=0.86, bottom=0.14)
     figure.savefig(output_path, dpi=dpi, bbox_inches="tight")
     plt.close(figure)
     return output_path
@@ -624,6 +606,13 @@ def plot_granularity_selection_frequency_over_tokens(
 
 def _selection_share_series(timeline, *, max_bins: int = 100):
     """Return token positions and allocation shares that sum to one."""
+
+    spans, shares, binned = _selection_share_bins(timeline, max_bins=max_bins)
+    return ([(start + end) / 2 for start, end in spans], shares, binned)
+
+
+def _selection_share_bins(timeline, *, max_bins: int = 100):
+    """Return token spans and token-weighted block shares that sum to one."""
 
     if max_bins <= 0:
         raise ValueError("max_bins must be positive")
@@ -633,9 +622,7 @@ def _selection_share_series(timeline, *, max_bins: int = 100):
         return [], {label: [] for label in granularities}, False
 
     if len(windows) <= max_bins:
-        x_values = [
-            (window.start_tokens + window.end_tokens) / 2 for window in windows
-        ]
+        spans = [(window.start_tokens, window.end_tokens) for window in windows]
         shares = {
             label: [
                 window.block_granularities.count(label)
@@ -644,7 +631,7 @@ def _selection_share_series(timeline, *, max_bins: int = 100):
             ]
             for label in granularities
         }
-        return x_values, shares, False
+        return spans, shares, False
 
     observed_start = min(window.start_tokens for window in windows)
     observed_end = max(window.end_tokens for window in windows)
@@ -691,14 +678,12 @@ def _selection_share_series(timeline, *, max_bins: int = 100):
                 weighted[label][bin_index] += overlap * window_shares[label]
 
     populated = [index for index, value in enumerate(coverage) if value > 0]
-    x_values = [
-        (bin_edges[index] + bin_edges[index + 1]) / 2 for index in populated
-    ]
+    spans = [(bin_edges[index], bin_edges[index + 1]) for index in populated]
     shares = {
         label: [weighted[label][index] / coverage[index] for index in populated]
         for label in granularities
     }
-    return x_values, shares, True
+    return spans, shares, True
 
 
 def plot_panelgrad_cumulative_exposure_share(
@@ -919,12 +904,24 @@ def plot_panelgrad_refresh_diagnostics(
 def global_sampling_bin_series(history, *, bin_steps: int = 50):
     """Return exact committed-action fractions in fixed optimizer-step bins."""
 
+    bins = _global_sampling_bins(history, bin_steps=bin_steps)
+    granularities = tuple(history.ordered_granularities)
+    x_values = [(item[0] + item[1]) / 2 for item in bins]
+    shares = {
+        label: [item[3][label] for item in bins]
+        for label in granularities
+    }
+    bin_sizes = [item[2] for item in bins]
+    return x_values, shares, bin_sizes
+
+
+def _global_sampling_bins(history, *, bin_steps: int = 50):
+    """Return token spans, sizes, and fractions for fixed step-count bins."""
+
     if bin_steps <= 0:
         raise ValueError("bin_steps must be positive")
     granularities = tuple(history.ordered_granularities)
-    x_values: list[float] = []
-    shares = {label: [] for label in granularities}
-    bin_sizes: list[int] = []
+    bins = []
     actions = tuple(history.actions)
     for start in range(0, len(actions), bin_steps):
         chunk = actions[start : start + bin_steps]
@@ -933,11 +930,15 @@ def global_sampling_bin_series(history, *, bin_steps: int = 50):
         counts = {label: 0 for label in granularities}
         for action in chunk:
             counts[action.granularity] += 1
-        x_values.append((chunk[0].start_tokens + chunk[-1].end_tokens) / 2)
-        bin_sizes.append(len(chunk))
-        for label in granularities:
-            shares[label].append(counts[label] / len(chunk))
-    return x_values, shares, bin_sizes
+        bins.append(
+            (
+                chunk[0].start_tokens,
+                chunk[-1].end_tokens,
+                len(chunk),
+                {label: counts[label] / len(chunk) for label in granularities},
+            )
+        )
+    return bins
 
 
 def _sampling_colors(granularities):
@@ -1069,26 +1070,56 @@ def plot_global_sampling_exposure_comparison(
     bin_steps: int = 50,
     dpi: int = 300,
 ) -> Path:
-    """Compare local exposure trajectories on one common step resolution."""
+    """Compare local exposure as one 100%-stacked token-width timeline per run."""
 
     histories = tuple(histories)
+    if not histories:
+        raise ValueError("sampling exposure comparison requires at least one history")
     granularities = histories[0].ordered_granularities
-    labels = _sampling_history_labels(histories)
+    if any(history.ordered_granularities != granularities for history in histories):
+        raise ValueError("sampling histories must use the same granularity order")
+    colors = _sampling_colors(granularities)
     figure, axes = plt.subplots(
-        len(granularities), 1, figsize=(13, max(4.0, 2.2 * len(granularities))), sharex=True
+        len(histories),
+        1,
+        figsize=(13, 1.3 + 2.6 * len(histories)),
+        sharex=True,
     )
-    axes = [axes] if len(granularities) == 1 else list(axes)
-    for history, policy_label in zip(histories, labels):
-        x_values, shares, _ = global_sampling_bin_series(history, bin_steps=bin_steps)
-        for axis, granularity in zip(axes, granularities):
-            axis.plot(x_values, shares[granularity], linewidth=1.35, label=policy_label)
-    for axis, granularity in zip(axes, granularities):
-        axis.set_ylim(-0.02, 1.02)
-        axis.set_ylabel("Step fraction")
-        axis.set_title(granularity, fontsize=11)
+    axes = [axes] if len(histories) == 1 else list(axes)
+    observed_start = min(history.actions[0].start_tokens for history in histories)
+    observed_end = max(history.actions[-1].end_tokens for history in histories)
+    for axis, history in zip(axes, histories):
+        bins = _global_sampling_bins(history, bin_steps=bin_steps)
+        centers = [(start + end) / 2 for start, end, _, _ in bins]
+        widths = [end - start for start, end, _, _ in bins]
+        bottoms = [0.0] * len(bins)
+        for granularity, color in zip(granularities, colors):
+            heights = [fractions[granularity] * 100.0 for _, _, _, fractions in bins]
+            axis.bar(
+                centers,
+                heights,
+                width=widths,
+                bottom=bottoms,
+                color=color,
+                edgecolor="white",
+                linewidth=0.35,
+                label=granularity,
+                align="center",
+            )
+            bottoms = [bottom + height for bottom, height in zip(bottoms, heights)]
+        axis.set_ylim(0.0, 100.0)
+        axis.set_yticks([0.0, 50.0, 100.0])
+        axis.set_ylabel("Exposure (%)")
+        seed_label = "unknown" if history.seed is None else str(history.seed)
+        axis.set_title(
+            f"{history.policy_label} · seed {seed_label} · {history.run_id}",
+            fontsize=11,
+            loc="left",
+        )
         axis.grid(True, alpha=0.25)
+        axis.set_axisbelow(True)
     axes[0].legend(loc="center left", bbox_to_anchor=(1.01, 0.5), frameon=False)
-    axes[-1].set_xlim(0, max(history.token_budget for history in histories))
+    axes[-1].set_xlim(observed_start, observed_end)
     axes[-1].set_xlabel("Total training tokens")
     axes[-1].ticklabel_format(axis="x", style="sci", scilimits=(0, 0))
     figure.suptitle(
@@ -1096,7 +1127,7 @@ def plot_global_sampling_exposure_comparison(
         fontsize=15,
         y=0.995,
     )
-    figure.subplots_adjust(left=0.11, right=0.79, top=0.94, bottom=0.07, hspace=0.38)
+    figure.subplots_adjust(left=0.11, right=0.82, top=0.84, bottom=0.09, hspace=0.48)
     figure.savefig(output_path, dpi=dpi, bbox_inches="tight")
     plt.close(figure)
     return output_path
@@ -1137,7 +1168,10 @@ def plot_global_sampling_cumulative_comparison(
         axis.set_title(granularity, fontsize=11)
         axis.grid(True, alpha=0.25)
     axes[0].legend(loc="center left", bbox_to_anchor=(1.01, 0.5), frameon=False)
-    axes[-1].set_xlim(0, max(history.token_budget for history in histories))
+    axes[-1].set_xlim(
+        min(history.actions[0].start_tokens for history in histories),
+        max(history.actions[-1].end_tokens for history in histories),
+    )
     axes[-1].set_xlabel("Total training tokens")
     axes[-1].ticklabel_format(axis="x", style="sci", scilimits=(0, 0))
     figure.suptitle("Cumulative global granularity exposure", fontsize=15, y=0.995)
@@ -1231,7 +1265,7 @@ def generate_global_sampling_policy_figures(
     variants: list[str] | tuple[str, ...] | None = None,
     corrections: list[str] | tuple[str, ...] | None = None,
     sampling_bin_steps: int = 50,
-    sampling_zoom_steps: int = 250,
+    sampling_zoom_steps: int | None = None,
 ) -> list[Path]:
     """Generate action-grounded views shared by all global policies."""
 
@@ -1240,7 +1274,7 @@ def generate_global_sampling_policy_figures(
 
     if sampling_bin_steps <= 0:
         raise ValueError("sampling_bin_steps must be positive")
-    if sampling_zoom_steps <= 0:
+    if sampling_zoom_steps is not None and sampling_zoom_steps <= 0:
         raise ValueError("sampling_zoom_steps must be positive")
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1260,33 +1294,19 @@ def generate_global_sampling_policy_figures(
 
     paths: list[Path] = []
     for history in histories:
-        timeline = reporting_io.global_sampling_history_as_timeline(history)
-        paths.append(
-            plot_selected_granularity_over_tokens(
-                timeline,
-                output_dir / controller_timeline_filename(history.run_id),
-                dpi=dpi,
+        if sampling_zoom_steps is not None:
+            paths.append(
+                plot_global_sampling_zoom(
+                    history,
+                    output_dir / global_sampling_zoom_filename(history.run_id),
+                    zoom_steps=sampling_zoom_steps,
+                    dpi=dpi,
+                )
             )
-        )
-        paths.append(
-            plot_global_sampling_exposure(
-                history,
-                output_dir / controller_selection_share_filename(history.run_id),
-                bin_steps=sampling_bin_steps,
-                dpi=dpi,
-            )
-        )
-        paths.append(
-            plot_global_sampling_zoom(
-                history,
-                output_dir / global_sampling_zoom_filename(history.run_id),
-                zoom_steps=sampling_zoom_steps,
-                dpi=dpi,
-            )
-        )
-        # These names came from incompatible token-bin and PanelGrad-only views.
-        # Removing them prevents stale files from being mistaken for current output.
+        # Per-run global heatmaps and share plots were replaced by grouped views.
         for stale_name in (
+            controller_timeline_filename(history.run_id),
+            controller_selection_share_filename(history.run_id),
             controller_selection_frequency_filename(history.run_id),
             panelgrad_exposure_share_filename(history.run_id),
         ):
@@ -1296,8 +1316,6 @@ def generate_global_sampling_policy_figures(
     for history in histories:
         groups.setdefault(history.comparison_key, []).append(history)
     for comparison_key, group in sorted(groups.items()):
-        if len({history.policy_identity for history in group}) < 2:
-            continue
         granularities = {history.ordered_granularities for history in group}
         if len(granularities) != 1:
             continue
@@ -1345,7 +1363,8 @@ def generate_figures(
     variants: list[str] | tuple[str, ...] | None = None,
     corrections: list[str] | tuple[str, ...] | None = None,
     sampling_bin_steps: int = 50,
-    sampling_zoom_steps: int = 250,
+    sampling_zoom_steps: int | None = None,
+    include_individual_size_panels: bool = False,
 ) -> list[Path]:
     from . import reporting_io
     from .reporting_impl import (
@@ -1365,6 +1384,10 @@ def generate_figures(
     input_root = Path(input_root)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    _remove_stale_generator_artifacts(
+        output_dir,
+        sampling_zoom_steps=sampling_zoom_steps,
+    )
 
     figure_paths: list[Path] = []
     scaling_rows = reporting_io.read_csv_artifacts(input_root, "scaling_results.csv")
@@ -1402,16 +1425,6 @@ def generate_figures(
         scaling_rows = aggregate_scaling_summary(scaling_rows, task_result_rows)
 
     if scaling_rows:
-        figure_paths.extend(
-            plot_metric_vs_size(
-                scaling_rows,
-                metric_name="loss",
-                ylabel="Loss",
-                output_path=output_dir / "loss_vs_size.png",
-                panel_specs=reporting_styles.SIZE_PLOT_PANELS_WITH_SAMPLING,
-                dpi=dpi,
-            )
-        )
         for figure_spec in reporting_styles.PPL_VS_SIZE_FIGURE_SPECS:
             figure_paths.extend(
                 plot_metric_vs_size(
@@ -1426,6 +1439,7 @@ def generate_figures(
                     figure_title=figure_spec["figure_title"],
                     style=figure_spec["style"],
                     figure_alias=figure_spec["figure_alias"],
+                    include_individual_panels=include_individual_size_panels,
                     dpi=dpi,
                 )
             )
@@ -1450,6 +1464,7 @@ def generate_figures(
                     metric_name="average_downstream_accuracy",
                     ylabel="Average downstream accuracy",
                     output_path=output_dir / "accuracy_vs_size.png",
+                    include_individual_panels=include_individual_size_panels,
                     dpi=dpi,
                 )
             )
@@ -1584,20 +1599,6 @@ def generate_figures(
         if not timeline_rows:
             continue
         figure_paths.append(
-            plot_selected_granularity_over_tokens(
-                timeline,
-                output_dir / controller_timeline_filename(timeline.run_id),
-                dpi=dpi,
-            )
-        )
-        figure_paths.append(
-            plot_selected_granularity_share_over_tokens(
-                timeline,
-                output_dir / controller_selection_share_filename(timeline.run_id),
-                dpi=dpi,
-            )
-        )
-        figure_paths.append(
             plot_granularity_selection_frequency_over_tokens(
                 timeline,
                 output_dir / controller_selection_frequency_filename(timeline.run_id),
@@ -1632,6 +1633,33 @@ def generate_figures(
             )
 
     return figure_paths
+
+
+def _remove_stale_generator_artifacts(
+    output_dir: Path,
+    *,
+    sampling_zoom_steps: int | None,
+) -> None:
+    """Remove superseded figure-generator outputs before rendering."""
+
+    stale_patterns = [
+        "loss_vs_size.png",
+        "loss_vs_size__*.png",
+        "selected_granularity_over_tokens_*.png",
+        "selected_granularity_share_over_tokens_*.png",
+    ]
+    size_output_names = [
+        spec["output_name"] for spec in reporting_styles.PPL_VS_SIZE_FIGURE_SPECS
+    ] + ["accuracy_vs_size.png"]
+    stale_patterns.extend(
+        f"{Path(output_name).stem}__*.png" for output_name in size_output_names
+    )
+    if sampling_zoom_steps is None:
+        stale_patterns.append("selected_granularity_zoom_*.png")
+
+    for pattern in stale_patterns:
+        for path in output_dir.glob(pattern):
+            path.unlink(missing_ok=True)
 
 
 def parse_args(argv: list[str] | None = None):
@@ -1688,11 +1716,23 @@ def parse_args(argv: list[str] | None = None):
     )
     parser.add_argument(
         "--sampling-zoom-steps",
-        type=int,
-        default=250,
-        help="Exact actions shown at each end of sampling zoom plots (default: 250).",
+        type=_positive_cli_int,
+        default=None,
+        help="Emit exact-action zooms using this many steps at each end.",
+    )
+    parser.add_argument(
+        "--individual-size-panels",
+        action="store_true",
+        help="Also emit one companion PNG per PPL and accuracy size panel.",
     )
     return parser.parse_args(argv)
+
+
+def _positive_cli_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -1710,6 +1750,7 @@ def main(argv: list[str] | None = None) -> None:
         corrections=args.corrections,
         sampling_bin_steps=args.sampling_bin_steps,
         sampling_zoom_steps=args.sampling_zoom_steps,
+        include_individual_size_panels=args.individual_size_panels,
     )
     for path in figure_paths:
         print(path)

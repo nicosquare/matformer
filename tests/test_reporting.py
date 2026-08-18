@@ -399,6 +399,9 @@ def test_make_figures_cli_forwards_validation_loss_log_y(monkeypatch):
             "none",
             "--correction",
             "gmc",
+            "--individual-size-panels",
+            "--sampling-zoom-steps",
+            "75",
         ]
     )
 
@@ -406,6 +409,18 @@ def test_make_figures_cli_forwards_validation_loss_log_y(monkeypatch):
     assert captured["kwargs"]["include_incomplete_validation_traces"] is True
     assert captured["kwargs"]["variants"] == ["slicing", "concat"]
     assert captured["kwargs"]["corrections"] == ["none", "gmc"]
+    assert captured["kwargs"]["include_individual_size_panels"] is True
+    assert captured["kwargs"]["sampling_zoom_steps"] == 75
+
+
+def test_make_figures_cli_sampling_zoom_is_opt_in_and_positive():
+    import scripts.make_figures as make_figures
+
+    assert make_figures.parse_args([]).sampling_zoom_steps is None
+    with pytest.raises(SystemExit):
+        make_figures.parse_args(["--sampling-zoom-steps", "0"])
+    with pytest.raises(SystemExit):
+        make_figures.parse_args(["--sampling-zoom-steps", "-1"])
 
 
 def test_parameter_count_refresh_preserves_stored_counts_for_legacy_config(
@@ -576,6 +591,69 @@ def test_reporting_path_groups_loss_rows_and_writes_medium_trend_report(tmp_path
     assert "- nested-random: 2 rows; granularities=s, xl" in report
     assert "average_downstream_accuracy: 0.58" in report
 
+    assert not any(name.startswith("ppl_vs_size__") for name in figure_names)
+    assert not any(name.startswith("accuracy_vs_size__") for name in figure_names)
+
+    (run_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "run": {
+                    "run_id": "debug-nested-001",
+                    "sampling_mode": "nested-random",
+                    "seed": 42,
+                },
+                "model": {
+                    "variant": "matformer_llama",
+                    "granularity_sampling_mode": "global",
+                    "granularities": ["s", "xl"],
+                },
+                "training": {
+                    "token_budget": 256,
+                    "expected_tokens_per_step": 128,
+                    "gradient_accumulation_steps": 1,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    individual_paths = generate_figures(
+        tmp_path,
+        tmp_path / "individual-figures",
+        refresh_counts=False,
+        include_individual_size_panels=True,
+        dpi=20,
+    )
+    individual_names = {path.name for path in individual_paths}
+    assert any(
+        name.startswith("ppl_vs_size") and "__" in name
+        for name in individual_names
+    ), individual_names
+    assert any(
+        name.startswith("accuracy_vs_size") and "__" in name
+        for name in individual_names
+    )
+    assert not any(name.startswith("loss_vs_size") for name in individual_names)
+
+
+def test_default_generation_removes_superseded_artifacts(tmp_path):
+    output_dir = tmp_path / "figures"
+    output_dir.mkdir()
+    stale_names = {
+        "loss_vs_size.png",
+        "loss_vs_size__nested_random_slicing_global.png",
+        "ppl_vs_size__nested_random_slicing_global.png",
+        "accuracy_vs_size__nested_random_slicing_global.png",
+        "selected_granularity_over_tokens_old-run.png",
+        "selected_granularity_share_over_tokens_old-run.png",
+        "selected_granularity_zoom_old-run.png",
+    }
+    for name in stale_names:
+        (output_dir / name).write_bytes(b"stale")
+
+    generate_figures(tmp_path, output_dir, refresh_counts=False, dpi=20)
+
+    assert not any((output_dir / name).exists() for name in stale_names)
+
 
 def test_multi_panel_size_figures_skip_empty_panels_and_share_y_limits(
     tmp_path,
@@ -635,6 +713,7 @@ def test_multi_panel_size_figures_skip_empty_panels_and_share_y_limits(
         ylabel="Loss",
         output_path=tmp_path / "loss_vs_size.png",
         panel_specs=panel_specs,
+        include_individual_panels=True,
     )
 
     assert [path.name for path in output_paths] == [
@@ -696,6 +775,88 @@ def test_multi_panel_size_figure_is_not_written_without_numeric_panels(
     assert saved_paths == []
 
 
+def test_perplexity_size_figures_add_loss_axes_without_duplicate_curves(
+    tmp_path,
+    monkeypatch,
+):
+    from matplotlib.figure import Figure
+
+    from src.evaluation.reporting_impl import plot_metric_vs_size
+
+    saved_figures = []
+    monkeypatch.setattr(
+        Figure,
+        "savefig",
+        lambda figure, output_path, **_kwargs: saved_figures.append(
+            (Path(output_path), figure)
+        ),
+    )
+    monkeypatch.setattr("src.evaluation.reporting_impl.plt.close", lambda _figure: None)
+    rows = [
+        {
+            "sampling_mode": "nested-random",
+            "model_variant": "slicing",
+            "resolved_sampling_mode": "global",
+            "non_embedding_parameters": 100,
+            "perplexity": 2.0,
+        },
+        {
+            "sampling_mode": "nested-random",
+            "model_variant": "slicing",
+            "resolved_sampling_mode": "global",
+            "non_embedding_parameters": 200,
+            "perplexity": 0.0,
+        },
+        {
+            "sampling_mode": "nested-random",
+            "model_variant": "concat",
+            "resolved_sampling_mode": "global",
+            "non_embedding_parameters": 100,
+            "perplexity": 4.0,
+        },
+        {
+            "sampling_mode": "nested-random",
+            "model_variant": "slicing",
+            "resolved_sampling_mode": "per_block",
+            "non_embedding_parameters": 100,
+            "perplexity": 8.0,
+        },
+    ]
+    output_paths = plot_metric_vs_size(
+        rows,
+        metric_name="perplexity",
+        ylabel="Perplexity",
+        output_path=tmp_path / "ppl_vs_size.png",
+        panel_specs=[
+            ("nested-random", "slicing", "global"),
+            ("nested-random", "concat", "global"),
+            ("nested-random", "slicing", "per_block"),
+        ],
+        include_individual_panels=True,
+        dpi=20,
+    )
+
+    assert len(output_paths) == 4
+    combined = saved_figures[0][1]
+    visible_axes = [axis for axis in combined.axes if axis.get_visible()]
+    assert [len(axis.child_axes) for axis in visible_axes] == [0, 1, 1]
+    assert all(
+        value > 0.0
+        for axis in visible_axes
+        for line in axis.lines
+        for value in line.get_ydata()
+    )
+    assert sum(len(axis.lines) for axis in visible_axes) == 3
+    for axis in (visible_axes[1], visible_axes[2]):
+        [loss_axis] = axis.child_axes
+        assert loss_axis.get_ylabel() == "Loss (nats/token)"
+        forward, inverse = loss_axis._functions
+        assert forward([2.0])[0] == pytest.approx(0.69314718056)
+        assert inverse([0.69314718056])[0] == pytest.approx(2.0)
+    for _, panel_figure in saved_figures[1:]:
+        assert len(panel_figure.axes[0].child_axes) == 1
+
+
 @pytest.mark.parametrize(
     ("metric_name", "ylabel", "output_name"),
     [
@@ -730,6 +891,7 @@ def test_panelgrad_is_included_in_size_plot_panels(
         ylabel=ylabel,
         output_path=tmp_path / output_name,
         panel_specs=SIZE_PLOT_PANELS_WITH_SAMPLING,
+        include_individual_panels=True,
         dpi=20,
     )
 
@@ -1645,7 +1807,7 @@ def test_global_controller_timeline_uses_borderless_categorical_mesh(
     assert len(timeline_axis.patches) == 0
 
 
-def test_dense_global_selection_history_is_binned_into_local_frequencies(
+def test_dense_per_block_selection_history_is_stacked_into_local_frequencies(
     tmp_path,
     monkeypatch,
 ):
@@ -1658,19 +1820,20 @@ def test_dense_global_selection_history_is_binned_into_local_frequencies(
 
     events = [
         _completed_controller_window(
-            run_id="dense-global-share",
-            scope="global",
+            run_id="dense-per-block-share",
+            scope="per_block",
             window_index=index,
             start_step=index,
             end_step=index + 1,
-            action={"global_granularity": "micro" if index % 2 == 0 else "full"},
+            action={"block_granularities": ["micro", "full"]},
         )
         for index in range(200)
     ]
     _write_controller_timeline_run(
         tmp_path,
-        run_id="dense-global-share",
-        scope="global",
+        run_id="dense-per-block-share",
+        scope="per_block",
+        block_count=2,
         events=events,
         token_budget=2_000,
     )
@@ -1690,10 +1853,17 @@ def test_dense_global_selection_history_is_binned_into_local_frequencies(
     )
 
     [figure] = saved_figures
-    lines = {axis.get_title(): axis.lines[0] for axis in figure.axes}
-    assert list(lines["micro"].get_ydata()) == pytest.approx([0.5] * 10)
-    assert list(lines["full"].get_ydata()) == pytest.approx([0.5] * 10)
-    assert list(lines["medium"].get_ydata()) == pytest.approx([0.0] * 10)
+    [axis] = figure.axes
+    assert axis.get_ylim() == pytest.approx((0.0, 100.0))
+    assert len(axis.containers) == 3
+    for bin_index in range(10):
+        assert sum(
+            container.patches[bin_index].get_height()
+            for container in axis.containers
+        ) == pytest.approx(100.0)
+    assert [
+        container.patches[0].get_height() for container in axis.containers
+    ] == pytest.approx([50.0, 0.0, 50.0])
     assert "10 equal-token bins" in figure._suptitle.get_text()
 
 
@@ -1851,7 +2021,7 @@ def test_controller_timeline_warns_and_skips_malformed_runs_without_losing_valid
     )
 
 
-def test_generate_figures_returns_global_and_per_block_controller_timeline_pngs(
+def test_generate_figures_returns_grouped_global_and_stacked_per_block_pngs(
     tmp_path,
 ):
     global_run_id = "global-timeline"
@@ -1894,39 +2064,16 @@ def test_generate_figures_returns_global_and_per_block_controller_timeline_pngs(
         refresh_counts=False,
         dpi=40,
     )
-    timeline_paths = {
-        path.name: path
-        for path in paths
-        if path.name.startswith("selected_granularity_over_tokens_")
-    }
-
-    assert set(timeline_paths) == {
-        "selected_granularity_over_tokens_global-timeline.png",
-        "selected_granularity_over_tokens_per-block-timeline.png",
-    }
-    for path in timeline_paths.values():
-        assert path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
-
-    share_paths = {
-        path.name: path
-        for path in paths
-        if path.name.startswith("selected_granularity_share_over_tokens_")
-    }
-    assert set(share_paths) == {
-        "selected_granularity_share_over_tokens_global-timeline.png",
-        "selected_granularity_share_over_tokens_per-block-timeline.png",
-    }
-    for path in share_paths.values():
-        assert path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
-
-    zoom_paths = {
-        path.name: path
-        for path in paths
-        if path.name.startswith("selected_granularity_zoom_")
-    }
-    assert set(zoom_paths) == {
-        "selected_granularity_zoom_global-timeline.png",
-    }
+    names = {path.name for path in paths}
+    assert not any(name.startswith("selected_granularity_over_tokens_") for name in names)
+    assert not any(name.startswith("selected_granularity_share_over_tokens_") for name in names)
+    assert not any(name.startswith("selected_granularity_zoom_") for name in names)
+    assert len(
+        [name for name in names if name.startswith("global_sampling_exposure_comparison__")]
+    ) == 1
+    assert len(
+        [name for name in names if name.startswith("global_sampling_policy_summary__")]
+    ) == 1
 
     frequency_paths = {
         path.name: path
@@ -1949,26 +2096,7 @@ def test_generate_figures_returns_global_and_per_block_controller_timeline_pngs(
         refresh_counts=False,
         dpi=40,
     )
-    assert {
-        path.name
-        for path in compatibility_paths
-        if path.name.startswith("selected_granularity_over_tokens_")
-    } == set(timeline_paths)
-    assert {
-        path.name
-        for path in compatibility_paths
-        if path.name.startswith("selected_granularity_share_over_tokens_")
-    } == set(share_paths)
-    assert {
-        path.name
-        for path in compatibility_paths
-        if path.name.startswith("granularity_selection_frequency_over_tokens_")
-    } == set(frequency_paths)
-    assert {
-        path.name
-        for path in compatibility_paths
-        if path.name.startswith("selected_granularity_zoom_")
-    } == set(zoom_paths)
+    assert {path.name for path in compatibility_paths} == names
 
 
 def test_generate_figures_filters_controller_plots_by_variant_and_correction(
@@ -2005,15 +2133,11 @@ def test_generate_figures_filters_controller_plots_by_variant_and_correction(
         variants=["slicing"],
         corrections=["none"],
     )
-    policy_names = {
-        path.name for path in paths if path.name.startswith("selected_granularity_")
-    }
-
-    assert policy_names == {
-        "selected_granularity_over_tokens_slicing-none.png",
-        "selected_granularity_share_over_tokens_slicing-none.png",
-        "selected_granularity_zoom_slicing-none.png",
-    }
+    names = {path.name for path in paths}
+    assert not any(name.startswith("selected_granularity_") for name in names)
+    assert len(
+        [name for name in names if name.startswith("global_sampling_exposure_comparison__")]
+    ) == 1
 
 
 def _validation_trace_row(
@@ -2746,12 +2870,18 @@ def test_generate_figures_writes_panelgrad_action_exposure_and_refresh_plots(tmp
     paths = generate_figures(tmp_path, tmp_path / "figures", dpi=30)
     names = {path.name for path in paths}
 
-    assert "selected_granularity_over_tokens_panelgrad-run.png" in names
-    assert "selected_granularity_share_over_tokens_panelgrad-run.png" in names
-    assert "selected_granularity_zoom_panelgrad-run.png" in names
+    assert "selected_granularity_over_tokens_panelgrad-run.png" not in names
+    assert "selected_granularity_share_over_tokens_panelgrad-run.png" not in names
+    assert "selected_granularity_zoom_panelgrad-run.png" not in names
     assert "granularity_selection_frequency_over_tokens_panelgrad-run.png" not in names
     assert "panelgrad_cumulative_exposure_panelgrad-run.png" not in names
     assert "panelgrad_refresh_diagnostics_panelgrad-run_gradient_rms.png" in names
+    assert len(
+        [name for name in names if name.startswith("global_sampling_exposure_comparison__")]
+    ) == 1
+    assert len(
+        [name for name in names if name.startswith("global_sampling_policy_summary__")]
+    ) == 1
     for name in names:
         assert (tmp_path / "figures" / name).is_file()
 
@@ -2811,6 +2941,71 @@ def test_global_sampling_bins_preserve_step_resolution_and_partial_final_bin(tmp
     assert [sum(values) for values in zip(*shares.values())] == pytest.approx([1.0, 1.0])
 
 
+def test_grouped_sampling_exposure_uses_stacked_actual_token_spans(
+    tmp_path,
+    monkeypatch,
+):
+    from matplotlib.figure import Figure
+
+    from src.evaluation.reporting import (
+        plot_global_sampling_cumulative_comparison,
+        plot_global_sampling_exposure_comparison,
+    )
+    from src.evaluation.reporting_io import GlobalSamplingAction, GlobalSamplingHistory
+
+    history = GlobalSamplingHistory(
+        run_id="in-progress-seed-7",
+        policy_identity="uniform_global",
+        policy_label="Uniform global",
+        ordered_granularities=("micro", "medium", "full"),
+        token_budget=100,
+        actions=(
+            GlobalSamplingAction(1, 0, 5, "micro", 0, None),
+            GlobalSamplingAction(2, 5, 20, "full", 1, None),
+            GlobalSamplingAction(3, 20, 35, "medium", 2, None),
+        ),
+        decision_count=3,
+        comparison_key="comparison",
+        model_variant="slicing",
+        correction_mode="none",
+        membership_correction=False,
+        seed=7,
+        config_path=tmp_path / "config.json",
+        metrics_path=tmp_path / "metrics.csv",
+    )
+    saved_figures = []
+    monkeypatch.setattr(
+        Figure,
+        "savefig",
+        lambda figure, _path, **_kwargs: saved_figures.append(figure),
+    )
+
+    plot_global_sampling_exposure_comparison(
+        [history], tmp_path / "exposure.png", bin_steps=2, dpi=20
+    )
+    [exposure_figure] = saved_figures
+    [axis] = exposure_figure.axes
+    assert axis.get_xlim() == pytest.approx((0.0, 35.0))
+    assert axis.get_ylim() == pytest.approx((0.0, 100.0))
+    assert "seed 7" in axis.get_title(loc="left")
+    assert "in-progress-seed-7" in axis.get_title(loc="left")
+    assert [patch.get_width() for patch in axis.containers[0].patches] == pytest.approx(
+        [20.0, 15.0]
+    )
+    for bin_index in range(2):
+        assert sum(
+            container.patches[bin_index].get_height()
+            for container in axis.containers
+        ) == pytest.approx(100.0)
+
+    saved_figures.clear()
+    plot_global_sampling_cumulative_comparison(
+        [history], tmp_path / "cumulative.png", bin_steps=2, dpi=20
+    )
+    [cumulative_figure] = saved_figures
+    assert cumulative_figure.axes[-1].get_xlim() == pytest.approx((0.0, 35.0))
+
+
 def test_generate_figures_writes_unified_global_policy_comparisons(tmp_path):
     action_sets = {
         "uniform": ["micro", "medium", "full", "micro"],
@@ -2834,8 +3029,8 @@ def test_generate_figures_writes_unified_global_policy_comparisons(tmp_path):
     )
     names = {path.name for path in paths}
 
-    assert len([name for name in names if name.startswith("selected_granularity_over_tokens_")]) == 3
-    assert len([name for name in names if name.startswith("selected_granularity_share_over_tokens_")]) == 3
+    assert not any(name.startswith("selected_granularity_over_tokens_") for name in names)
+    assert not any(name.startswith("selected_granularity_share_over_tokens_") for name in names)
     assert len([name for name in names if name.startswith("selected_granularity_zoom_")]) == 3
     assert len([name for name in names if name.startswith("global_sampling_exposure_comparison__")]) == 1
     assert len([name for name in names if name.startswith("global_sampling_cumulative_comparison__")]) == 1

@@ -433,6 +433,19 @@ python scripts/make_figures.py \
   --correction none
 ```
 
+By default, size reporting writes only the combined perplexity and downstream-
+accuracy figures. Perplexity figures expose the equivalent loss scale on the
+right (`loss = log(perplexity)`) without drawing duplicate loss curves. Add
+`--individual-size-panels` when one PNG per size panel is useful.
+
+Global sampling comparisons are written as grouped 100%-stacked exposure
+timelines plus their summary CSV, including while only one policy/run has been
+discovered. Exact early/late action zooms are opt-in; for example,
+`--sampling-zoom-steps 250` shows 250 committed steps at each end. Per-block
+controllers retain one stacked allocation timeline. The generator removes
+superseded loss, heatmap, share, companion-panel, and disabled-zoom artifacts
+from the selected figure directory when it is rerun.
+
 Use `final_holdout_results.json` as the primary method-selection surface.
 Ordinary validation selects checkpoints and is useful for learning curves, but
 it must not replace the reserved final holdout in the final comparison.

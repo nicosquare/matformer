@@ -18,6 +18,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib.colors import to_rgb
 from matplotlib.collections import PolyCollection
 
@@ -281,6 +282,7 @@ def main(argv: list[str] | None = None) -> None:
         corrections=args.corrections,
         sampling_bin_steps=args.sampling_bin_steps,
         sampling_zoom_steps=args.sampling_zoom_steps,
+        include_individual_size_panels=args.individual_size_panels,
     )
     for path in figure_paths:
         print(path)
@@ -333,11 +335,28 @@ def parse_args(argv: list[str] | None = None):
         help="Only include this correction mode; use 'none' for uncorrected runs.",
     )
     parser.add_argument("--sampling-bin-steps", type=int, default=50)
-    parser.add_argument("--sampling-zoom-steps", type=int, default=250)
+    parser.add_argument(
+        "--sampling-zoom-steps",
+        type=_positive_cli_int,
+        default=None,
+        help="Emit exact-action zooms using this many steps at each end.",
+    )
+    parser.add_argument(
+        "--individual-size-panels",
+        action="store_true",
+        help="Also emit one companion PNG per PPL and accuracy size panel.",
+    )
     return parser.parse_args(argv)
 
 
-def generate_figures(
+def _positive_cli_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def _legacy_generate_figures(
     input_root: str | Path,
     output_dir: str | Path,
     refresh_counts: bool = True,
@@ -347,7 +366,8 @@ def generate_figures(
     variants: list[str] | tuple[str, ...] | None = None,
     corrections: list[str] | tuple[str, ...] | None = None,
     sampling_bin_steps: int = 50,
-    sampling_zoom_steps: int = 250,
+    sampling_zoom_steps: int | None = None,
+    include_individual_size_panels: bool = False,
 ) -> list[Path]:
     input_root = Path(input_root)
     output_dir = Path(output_dir)
@@ -590,6 +610,38 @@ def generate_figures(
         )
 
     return figure_paths
+
+
+def generate_figures(
+    input_root: str | Path,
+    output_dir: str | Path,
+    refresh_counts: bool = True,
+    dpi: int = 300,
+    validation_loss_log_y: bool = False,
+    include_incomplete_validation_traces: bool = False,
+    variants: list[str] | tuple[str, ...] | None = None,
+    corrections: list[str] | tuple[str, ...] | None = None,
+    sampling_bin_steps: int = 50,
+    sampling_zoom_steps: int | None = None,
+    include_individual_size_panels: bool = False,
+) -> list[Path]:
+    """Compatibility entrypoint forwarding to the canonical generator."""
+
+    from src.evaluation.reporting import generate_figures as canonical_generate_figures
+
+    return canonical_generate_figures(
+        input_root,
+        output_dir,
+        refresh_counts=refresh_counts,
+        dpi=dpi,
+        validation_loss_log_y=validation_loss_log_y,
+        include_incomplete_validation_traces=include_incomplete_validation_traces,
+        variants=variants,
+        corrections=corrections,
+        sampling_bin_steps=sampling_bin_steps,
+        sampling_zoom_steps=sampling_zoom_steps,
+        include_individual_size_panels=include_individual_size_panels,
+    )
 
 
 def read_csv_artifacts(input_root: Path, filename: str) -> list[dict[str, str]]:
@@ -951,6 +1003,7 @@ def plot_metric_vs_size(
     figure_title: str | None = None,
     style: str = "default",
     figure_alias: str | None = None,
+    include_individual_panels: bool = False,
     dpi: int = 300,
 ) -> list[Path]:
     panel_specs = panel_specs or reporting_styles.SIZE_PLOT_PANELS_DEFAULT
@@ -998,10 +1051,15 @@ def plot_metric_vs_size(
     for axis in axes_list[len(available_panel_specs) :]:
         axis.set_visible(False)
 
-    shared_y_limits = shared_metric_limits(displayed_axes)
+    shared_y_limits = shared_metric_limits(displayed_axes, metric_name=metric_name)
     if shared_y_limits is not None:
         for axis in displayed_axes:
             axis.set_ylim(*shared_y_limits)
+    if metric_name == "perplexity":
+        for row_start in range(0, len(displayed_axes), column_count):
+            add_loss_secondary_axis(
+                displayed_axes[min(row_start + column_count, len(displayed_axes)) - 1]
+            )
 
     figure.suptitle(
         figure_title or f"{ylabel} vs Non-embedding parameters",
@@ -1012,6 +1070,9 @@ def plot_metric_vs_size(
     plt.close(figure)
 
     output_paths = [output_path]
+    if not include_individual_panels:
+        return output_paths
+
     panel_stem = output_path.stem
     if figure_alias:
         panel_stem = f"{panel_stem}__{safe_filename_fragment(figure_alias)}"
@@ -1051,13 +1112,34 @@ def metric_row_limits_for_panel_specs(
     return [shared_limits] * row_count
 
 
-def shared_metric_limits(axes_list: list[Any]) -> tuple[float, float] | None:
+def shared_metric_limits(
+    axes_list: list[Any],
+    *,
+    metric_name: str | None = None,
+) -> tuple[float, float] | None:
     values: list[float] = []
     for axis in axes_list:
         values.extend(axis_numeric_y_values(axis))
     if not values:
         return None
-    return padded_limits(min(values), max(values))
+    limits = padded_limits(min(values), max(values))
+    if metric_name == "perplexity" and limits[0] <= 0.0:
+        limits = (min(values) * 0.92, limits[1])
+    return limits
+
+
+def add_loss_secondary_axis(axis):
+    """Expose loss as an exact transform of a positive perplexity axis."""
+
+    y_min, y_max = axis.get_ylim()
+    if y_min <= 0.0 or y_max <= 0.0:
+        raise ValueError("perplexity axis limits must be positive")
+    loss_axis = axis.secondary_yaxis(
+        "right",
+        functions=(np.log, np.exp),
+    )
+    loss_axis.set_ylabel("Loss (nats/token)")
+    return loss_axis
 
 
 def numeric_metric_point(
@@ -1071,6 +1153,7 @@ def numeric_metric_point(
         or y_value is None
         or not math.isfinite(x_value)
         or not math.isfinite(y_value)
+        or (metric_name == "perplexity" and y_value <= 0.0)
     ):
         return None
     return (x_value, y_value)
@@ -1152,6 +1235,8 @@ def plot_metric_vs_size_panel_figure(
     )
     if y_limits is not None:
         axis.set_ylim(*y_limits)
+    if metric_name == "perplexity":
+        add_loss_secondary_axis(axis)
     figure.tight_layout()
     figure.savefig(output_path, bbox_inches="tight", dpi=dpi)
     plt.close(figure)
@@ -1209,8 +1294,12 @@ def plot_metric_vs_size_split_comparison(
         )
 
     shared_limits = padded_limits(min(shared_values), max(shared_values))
+    if metric_name == "perplexity" and shared_limits[0] <= 0.0:
+        shared_limits = (min(shared_values) * 0.92, shared_limits[1])
     for axis in axes_list:
         axis.set_ylim(*shared_limits)
+    if metric_name == "perplexity":
+        add_loss_secondary_axis(axes_list[-1])
 
     figure.suptitle(
         figure_title,

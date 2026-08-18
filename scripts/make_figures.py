@@ -74,11 +74,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--sampling-zoom-steps",
-        type=int,
-        default=250,
-        help="Exact actions shown at each end of sampling zoom plots (default: 250).",
+        type=_positive_int,
+        default=None,
+        help="Emit exact-action zooms using this many steps at each end.",
+    )
+    parser.add_argument(
+        "--individual-size-panels",
+        action="store_true",
+        help="Also emit one companion PNG per PPL and accuracy size panel.",
     )
     return parser.parse_args(argv)
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -98,6 +110,7 @@ def main(argv: list[str] | None = None) -> None:
         corrections=args.corrections,
         sampling_bin_steps=args.sampling_bin_steps,
         sampling_zoom_steps=args.sampling_zoom_steps,
+        include_individual_size_panels=args.individual_size_panels,
     )
     for path in figure_paths:
         print(path)
