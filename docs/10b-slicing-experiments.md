@@ -60,6 +60,7 @@ cp .env.template .env
 TOKENIZER=<prepared-tokenizer-directory>
 CORPUS=<prepared-corpus-directory>
 OUT=<writable-output-root>
+# Optional: SLURM_EXCLUDE=gpu-[05],gpu-09
 ```
 
 Load the values into the submission shell and capture the active Python
@@ -94,10 +95,21 @@ COMMON=(
   --override "dataset.prepared_corpus_dir=$CORPUS"
   --override "model.tokenizer_dir=$TOKENIZER"
 )
+
+SBATCH=(sbatch)
+if [[ -n "${SLURM_EXCLUDE:-}" ]]; then
+  SBATCH+=(--exclude="$SLURM_EXCLUDE")
+fi
 ```
 
-`COMMON` is shell convenience only. Each `sbatch` command below submits exactly
-one experiment; nothing in this guide automatically fans out the matrix.
+`SLURM_EXCLUDE` accepts the same comma-separated node list and bracket syntax
+as Slurm's `--exclude` option. Leave it unset to make no command-line override.
+Define it in `.env` before constructing `SBATCH` so every submission in this
+guide uses the same list. This command-line value replaces any
+`#SBATCH --exclude` default in the wrapper, so include wrapper defaults in the
+list if they must remain excluded. `COMMON` is shell convenience only; each
+command below submits exactly one experiment and nothing automatically fans out
+the matrix.
 
 ## 4. Run both preflights
 
@@ -144,7 +156,7 @@ paths. Do not proceed until all five complete successfully. These jobs exercise
 the full 64-microstep accumulation window under four-process FSDP.
 
 ```bash
-sbatch --time=01:00:00 --gres=gpu:4 \
+"${SBATCH[@]}" --time=01:00:00 --gres=gpu:4 \
   --job-name=smoke-10b-random-global \
   scripts/slurm_dmodel256_pilot.sh \
   --config "$BASE" --mode nested-random \
@@ -153,7 +165,7 @@ sbatch --time=01:00:00 --gres=gpu:4 \
   --override model.granularity_sampling_mode=global \
   --override training.max_steps_cap=1
 
-sbatch --time=01:00:00 --gres=gpu:4 \
+"${SBATCH[@]}" --time=01:00:00 --gres=gpu:4 \
   --job-name=smoke-10b-nested-all \
   scripts/slurm_dmodel256_pilot.sh \
   --config "$BASE" --mode nested-all \
@@ -161,7 +173,7 @@ sbatch --time=01:00:00 --gres=gpu:4 \
   "${COMMON[@]}" \
   --override training.max_steps_cap=1
 
-sbatch --time=01:00:00 --gres=gpu:4 \
+"${SBATCH[@]}" --time=01:00:00 --gres=gpu:4 \
   --job-name=smoke-10b-ts-global \
   scripts/slurm_dmodel256_pilot.sh \
   --config "$BAYES" --mode nested-random \
@@ -169,7 +181,7 @@ sbatch --time=01:00:00 --gres=gpu:4 \
   "${COMMON[@]}" \
   --override training.max_steps_cap=1
 
-sbatch --time=01:00:00 --gres=gpu:4 \
+"${SBATCH[@]}" --time=01:00:00 --gres=gpu:4 \
   --job-name=smoke-10b-ts-reset \
   scripts/slurm_dmodel256_pilot.sh \
   --config "$BAYES" --mode nested-random \
@@ -182,7 +194,7 @@ sbatch --time=01:00:00 --gres=gpu:4 \
   --override model.adaptive_controller.reset.acquisition_policy=balanced_global \
   --override model.adaptive_controller.reset.acquisition_passes=1
 
-sbatch --time=01:00:00 --gres=gpu:4 \
+"${SBATCH[@]}" --time=01:00:00 --gres=gpu:4 \
   --job-name=smoke-10b-ts-acquisition \
   scripts/slurm_dmodel256_pilot.sh \
   --config "$BAYES" --mode nested-random \
@@ -213,7 +225,7 @@ Run the random-global reference first, then the remaining variants.
 
 ```bash
 # Random global reference
-sbatch --time=24:00:00 --gres=gpu:4 \
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:4 \
   --job-name=10b-random-global-plain \
   scripts/slurm_dmodel256_pilot.sh \
   --config "$BASE" --mode nested-random \
@@ -222,7 +234,7 @@ sbatch --time=24:00:00 --gres=gpu:4 \
   --override model.granularity_sampling_mode=global
 
 # Random independent per-block sampling
-sbatch --time=24:00:00 --gres=gpu:4 \
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:4 \
   --job-name=10b-random-per-block-plain \
   scripts/slurm_dmodel256_pilot.sh \
   --config "$BASE" --mode nested-random \
@@ -231,7 +243,7 @@ sbatch --time=24:00:00 --gres=gpu:4 \
   --override model.granularity_sampling_mode=per_block
 
 # Evaluate and train all eight nested granularities per microstep
-sbatch --time=24:00:00 --gres=gpu:4 \
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:4 \
   --job-name=10b-nested-all-plain \
   scripts/slurm_dmodel256_pilot.sh \
   --config "$BASE" --mode nested-all \
@@ -242,28 +254,28 @@ sbatch --time=24:00:00 --gres=gpu:4 \
 Independent standalone controls:
 
 ```bash
-sbatch --time=24:00:00 --gres=gpu:4 --job-name=10b-standalone-g125 scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode standalone --granularity g125 --run-id 10b-standalone-g125 "${COMMON[@]}"
-sbatch --time=24:00:00 --gres=gpu:4 --job-name=10b-standalone-g250 scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode standalone --granularity g250 --run-id 10b-standalone-g250 "${COMMON[@]}"
-sbatch --time=24:00:00 --gres=gpu:4 --job-name=10b-standalone-g375 scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode standalone --granularity g375 --run-id 10b-standalone-g375 "${COMMON[@]}"
-sbatch --time=24:00:00 --gres=gpu:4 --job-name=10b-standalone-g500 scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode standalone --granularity g500 --run-id 10b-standalone-g500 "${COMMON[@]}"
-sbatch --time=24:00:00 --gres=gpu:4 --job-name=10b-standalone-g625 scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode standalone --granularity g625 --run-id 10b-standalone-g625 "${COMMON[@]}"
-sbatch --time=24:00:00 --gres=gpu:4 --job-name=10b-standalone-g750 scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode standalone --granularity g750 --run-id 10b-standalone-g750 "${COMMON[@]}"
-sbatch --time=24:00:00 --gres=gpu:4 --job-name=10b-standalone-g875 scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode standalone --granularity g875 --run-id 10b-standalone-g875 "${COMMON[@]}"
-sbatch --time=24:00:00 --gres=gpu:4 --job-name=10b-standalone-g1000 scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode standalone --granularity g1000 --run-id 10b-standalone-g1000 "${COMMON[@]}"
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:4 --job-name=10b-standalone-g125 scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode standalone --granularity g125 --run-id 10b-standalone-g125 "${COMMON[@]}"
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:4 --job-name=10b-standalone-g250 scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode standalone --granularity g250 --run-id 10b-standalone-g250 "${COMMON[@]}"
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:4 --job-name=10b-standalone-g375 scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode standalone --granularity g375 --run-id 10b-standalone-g375 "${COMMON[@]}"
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:4 --job-name=10b-standalone-g500 scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode standalone --granularity g500 --run-id 10b-standalone-g500 "${COMMON[@]}"
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:4 --job-name=10b-standalone-g625 scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode standalone --granularity g625 --run-id 10b-standalone-g625 "${COMMON[@]}"
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:4 --job-name=10b-standalone-g750 scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode standalone --granularity g750 --run-id 10b-standalone-g750 "${COMMON[@]}"
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:4 --job-name=10b-standalone-g875 scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode standalone --granularity g875 --run-id 10b-standalone-g875 "${COMMON[@]}"
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:4 --job-name=10b-standalone-g1000 scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode standalone --granularity g1000 --run-id 10b-standalone-g1000 "${COMMON[@]}"
 ```
 
 Bayesian Thompson-sampling variants:
 
 ```bash
 # Global and per-block Thompson sampling
-sbatch --time=24:00:00 --gres=gpu:4 --job-name=10b-ts-global-plain scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-global-plain "${COMMON[@]}"
-sbatch --time=24:00:00 --gres=gpu:4 --job-name=10b-ts-per-block-plain scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-per-block-plain "${COMMON[@]}" --override model.granularity_sampling_mode=adaptive_per_block
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:4 --job-name=10b-ts-global-plain scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-global-plain "${COMMON[@]}"
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:4 --job-name=10b-ts-per-block-plain scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-per-block-plain "${COMMON[@]}" --override model.granularity_sampling_mode=adaptive_per_block
 
 # Full-prior reset every 2,000 optimizer updates
-sbatch --time=24:00:00 --gres=gpu:4 --job-name=10b-ts-global-plain-reset-k2000 scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-global-plain-reset-k2000 "${COMMON[@]}" --override model.adaptive_controller.reset.enabled=true --override model.adaptive_controller.reset.interval_steps=2000 --override model.adaptive_controller.reset.policy=full_prior --override model.adaptive_controller.reset.acquisition_policy=balanced_global --override model.adaptive_controller.reset.acquisition_passes=1
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:4 --job-name=10b-ts-global-plain-reset-k2000 scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-global-plain-reset-k2000 "${COMMON[@]}" --override model.adaptive_controller.reset.enabled=true --override model.adaptive_controller.reset.interval_steps=2000 --override model.adaptive_controller.reset.policy=full_prior --override model.adaptive_controller.reset.acquisition_policy=balanced_global --override model.adaptive_controller.reset.acquisition_passes=1
 
 # Acquisition-only episode every 2,000 optimizer updates
-sbatch --time=24:00:00 --gres=gpu:4 --job-name=10b-ts-global-plain-acquisition-k2000 scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-global-plain-acquisition-k2000 "${COMMON[@]}" --override model.adaptive_controller.reset.enabled=true --override model.adaptive_controller.reset.interval_steps=2000 --override model.adaptive_controller.reset.policy=acquisition_only --override model.adaptive_controller.reset.acquisition_policy=balanced_global --override model.adaptive_controller.reset.acquisition_passes=1
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:4 --job-name=10b-ts-global-plain-acquisition-k2000 scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-global-plain-acquisition-k2000 "${COMMON[@]}" --override model.adaptive_controller.reset.enabled=true --override model.adaptive_controller.reset.interval_steps=2000 --override model.adaptive_controller.reset.policy=acquisition_only --override model.adaptive_controller.reset.acquisition_policy=balanced_global --override model.adaptive_controller.reset.acquisition_passes=1
 ```
 
 ### GMC extensions
@@ -273,19 +285,19 @@ through one explicit correction override.
 
 ```bash
 # Random global and random independent per-block
-sbatch --time=24:00:00 --gres=gpu:4 --job-name=10b-random-global-gmc scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode nested-random --run-id 10b-random-global-gmc "${COMMON[@]}" --override model.granularity_sampling_mode=global --override model.correction_mode=gmc
-sbatch --time=24:00:00 --gres=gpu:4 --job-name=10b-random-per-block-gmc scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode nested-random --run-id 10b-random-per-block-gmc "${COMMON[@]}" --override model.granularity_sampling_mode=per_block --override model.correction_mode=gmc
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:4 --job-name=10b-random-global-gmc scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode nested-random --run-id 10b-random-global-gmc "${COMMON[@]}" --override model.granularity_sampling_mode=global --override model.correction_mode=gmc
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:4 --job-name=10b-random-per-block-gmc scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode nested-random --run-id 10b-random-per-block-gmc "${COMMON[@]}" --override model.granularity_sampling_mode=per_block --override model.correction_mode=gmc
 
 # Nested-all
-sbatch --time=24:00:00 --gres=gpu:4 --job-name=10b-nested-all-gmc scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode nested-all --run-id 10b-nested-all-gmc "${COMMON[@]}" --override model.correction_mode=gmc
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:4 --job-name=10b-nested-all-gmc scripts/slurm_dmodel256_pilot.sh --config "$BASE" --mode nested-all --run-id 10b-nested-all-gmc "${COMMON[@]}" --override model.correction_mode=gmc
 
 # Thompson global and per-block
-sbatch --time=24:00:00 --gres=gpu:4 --job-name=10b-ts-global-gmc scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-global-gmc "${COMMON[@]}" --override model.correction_mode=gmc
-sbatch --time=24:00:00 --gres=gpu:4 --job-name=10b-ts-per-block-gmc scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-per-block-gmc "${COMMON[@]}" --override model.granularity_sampling_mode=adaptive_per_block --override model.correction_mode=gmc
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:4 --job-name=10b-ts-global-gmc scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-global-gmc "${COMMON[@]}" --override model.correction_mode=gmc
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:4 --job-name=10b-ts-per-block-gmc scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-per-block-gmc "${COMMON[@]}" --override model.granularity_sampling_mode=adaptive_per_block --override model.correction_mode=gmc
 
 # Thompson episodic variants
-sbatch --time=24:00:00 --gres=gpu:4 --job-name=10b-ts-global-gmc-reset-k2000 scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-global-gmc-reset-k2000 "${COMMON[@]}" --override model.correction_mode=gmc --override model.adaptive_controller.reset.enabled=true --override model.adaptive_controller.reset.interval_steps=2000 --override model.adaptive_controller.reset.policy=full_prior --override model.adaptive_controller.reset.acquisition_policy=balanced_global --override model.adaptive_controller.reset.acquisition_passes=1
-sbatch --time=24:00:00 --gres=gpu:4 --job-name=10b-ts-global-gmc-acquisition-k2000 scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-global-gmc-acquisition-k2000 "${COMMON[@]}" --override model.correction_mode=gmc --override model.adaptive_controller.reset.enabled=true --override model.adaptive_controller.reset.interval_steps=2000 --override model.adaptive_controller.reset.policy=acquisition_only --override model.adaptive_controller.reset.acquisition_policy=balanced_global --override model.adaptive_controller.reset.acquisition_passes=1
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:4 --job-name=10b-ts-global-gmc-reset-k2000 scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-global-gmc-reset-k2000 "${COMMON[@]}" --override model.correction_mode=gmc --override model.adaptive_controller.reset.enabled=true --override model.adaptive_controller.reset.interval_steps=2000 --override model.adaptive_controller.reset.policy=full_prior --override model.adaptive_controller.reset.acquisition_policy=balanced_global --override model.adaptive_controller.reset.acquisition_passes=1
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:4 --job-name=10b-ts-global-gmc-acquisition-k2000 scripts/slurm_dmodel256_pilot.sh --config "$BAYES" --mode nested-random --run-id 10b-ts-global-gmc-acquisition-k2000 "${COMMON[@]}" --override model.correction_mode=gmc --override model.adaptive_controller.reset.enabled=true --override model.adaptive_controller.reset.interval_steps=2000 --override model.adaptive_controller.reset.policy=acquisition_only --override model.adaptive_controller.reset.acquisition_policy=balanced_global --override model.adaptive_controller.reset.acquisition_passes=1
 ```
 
 ## 7. Monitor, resume, and verify completion

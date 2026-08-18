@@ -66,6 +66,9 @@ export PYTHON_BIN="$(command -v python)"
 export BASE=configs/production/slicing_100m_prepared.yaml
 export EXPERIMENT_SEED=42
 
+# Optional: exclude unavailable Slurm nodes from every submission below.
+# export SLURM_EXCLUDE='gpu-[05],gpu-09'
+
 # Example only: choose a new path supplied for this comparison.
 # export OUT="/nfs-stor/$USER/results/elasticnn/slicing-100m-prepared-v1"
 
@@ -90,7 +93,18 @@ SLURM_COMMON=(
   --python-bin "$PYTHON_BIN"
   "${CONFIG_OVERRIDES[@]}"
 )
+
+SBATCH=(sbatch)
+if [[ -n "${SLURM_EXCLUDE:-}" ]]; then
+  SBATCH+=(--exclude="$SLURM_EXCLUDE")
+fi
 ```
+
+`SLURM_EXCLUDE` accepts the same comma-separated node list and bracket syntax
+as Slurm's `--exclude` option. Leave it unset to make no command-line override.
+Define it before `SBATCH` so every submission in this guide uses the same list.
+This command-line value replaces any `#SBATCH --exclude` default in the wrapper,
+so include wrapper defaults in the list if they must remain excluded.
 
 The nominal 100M budget is exactly `99,999,744` token IDs. Packed training
 requires complete 1,024-token rows, and this is the largest valid packed budget
@@ -170,7 +184,7 @@ These four jobs cover the distinct training paths used by the primary matrix.
 Do not submit the full runs until they complete successfully.
 
 ```bash
-sbatch --time=01:00:00 --gres=gpu:1 \
+"${SBATCH[@]}" --time=01:00:00 --gres=gpu:1 \
   --job-name=smoke-100m-random-global \
   scripts/slurm_dmodel256_pilot.sh \
   --mode nested-random \
@@ -179,7 +193,7 @@ sbatch --time=01:00:00 --gres=gpu:1 \
   --override "model.granularity_sampling_mode=global" \
   --override "training.max_steps_cap=1"
 
-sbatch --time=01:00:00 --gres=gpu:1 \
+"${SBATCH[@]}" --time=01:00:00 --gres=gpu:1 \
   --job-name=smoke-100m-nested-all \
   scripts/slurm_dmodel256_pilot.sh \
   --mode nested-all \
@@ -187,7 +201,7 @@ sbatch --time=01:00:00 --gres=gpu:1 \
   "${SLURM_COMMON[@]}" \
   --override "training.max_steps_cap=1"
 
-sbatch --time=01:00:00 --gres=gpu:1 \
+"${SBATCH[@]}" --time=01:00:00 --gres=gpu:1 \
   --job-name=smoke-100m-ts-global \
   scripts/slurm_dmodel256_pilot.sh \
   --mode nested-random \
@@ -198,7 +212,7 @@ sbatch --time=01:00:00 --gres=gpu:1 \
   --override 'model.adaptive_controller={"preset":"bayesian_thompson","decision_interval_steps":25,"prior_mean":0.0,"prior_covariance":1.0,"observation_noise_variance":0.01,"process_noise_covariance":0.0001,"reset":{"enabled":false}}' \
   --override "training.max_steps_cap=1"
 
-sbatch --time=01:00:00 --gres=gpu:1 \
+"${SBATCH[@]}" --time=01:00:00 --gres=gpu:1 \
   --job-name=smoke-100m-panelgrad-l2 \
   scripts/slurm_dmodel256_pilot.sh \
   --mode nested-random \
@@ -220,7 +234,7 @@ command submits exactly one run.
 Random global is the primary low-cost baseline:
 
 ```bash
-sbatch --time=24:00:00 --gres=gpu:1 \
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:1 \
   --job-name=100m-random-global \
   scripts/slurm_dmodel256_pilot.sh \
   --mode nested-random \
@@ -232,7 +246,7 @@ sbatch --time=24:00:00 --gres=gpu:1 \
 Nested-all is the high-compute joint-training reference:
 
 ```bash
-sbatch --time=24:00:00 --gres=gpu:1 \
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:1 \
   --job-name=100m-nested-all \
   scripts/slurm_dmodel256_pilot.sh \
   --mode nested-all \
@@ -243,20 +257,20 @@ sbatch --time=24:00:00 --gres=gpu:1 \
 Independent standalone controls:
 
 ```bash
-sbatch --time=24:00:00 --gres=gpu:1 --job-name=100m-standalone-g125  scripts/slurm_dmodel256_pilot.sh --mode standalone --granularity g125  --run-id "100m-prepared-slicing-standalone-g125-s$EXPERIMENT_SEED"  "${SLURM_COMMON[@]}"
-sbatch --time=24:00:00 --gres=gpu:1 --job-name=100m-standalone-g250  scripts/slurm_dmodel256_pilot.sh --mode standalone --granularity g250  --run-id "100m-prepared-slicing-standalone-g250-s$EXPERIMENT_SEED"  "${SLURM_COMMON[@]}"
-sbatch --time=24:00:00 --gres=gpu:1 --job-name=100m-standalone-g375  scripts/slurm_dmodel256_pilot.sh --mode standalone --granularity g375  --run-id "100m-prepared-slicing-standalone-g375-s$EXPERIMENT_SEED"  "${SLURM_COMMON[@]}"
-sbatch --time=24:00:00 --gres=gpu:1 --job-name=100m-standalone-g500  scripts/slurm_dmodel256_pilot.sh --mode standalone --granularity g500  --run-id "100m-prepared-slicing-standalone-g500-s$EXPERIMENT_SEED"  "${SLURM_COMMON[@]}"
-sbatch --time=24:00:00 --gres=gpu:1 --job-name=100m-standalone-g625  scripts/slurm_dmodel256_pilot.sh --mode standalone --granularity g625  --run-id "100m-prepared-slicing-standalone-g625-s$EXPERIMENT_SEED"  "${SLURM_COMMON[@]}"
-sbatch --time=24:00:00 --gres=gpu:1 --job-name=100m-standalone-g750  scripts/slurm_dmodel256_pilot.sh --mode standalone --granularity g750  --run-id "100m-prepared-slicing-standalone-g750-s$EXPERIMENT_SEED"  "${SLURM_COMMON[@]}"
-sbatch --time=24:00:00 --gres=gpu:1 --job-name=100m-standalone-g875  scripts/slurm_dmodel256_pilot.sh --mode standalone --granularity g875  --run-id "100m-prepared-slicing-standalone-g875-s$EXPERIMENT_SEED"  "${SLURM_COMMON[@]}"
-sbatch --time=24:00:00 --gres=gpu:1 --job-name=100m-standalone-g1000 scripts/slurm_dmodel256_pilot.sh --mode standalone --granularity g1000 --run-id "100m-prepared-slicing-standalone-g1000-s$EXPERIMENT_SEED" "${SLURM_COMMON[@]}"
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:1 --job-name=100m-standalone-g125  scripts/slurm_dmodel256_pilot.sh --mode standalone --granularity g125  --run-id "100m-prepared-slicing-standalone-g125-s$EXPERIMENT_SEED"  "${SLURM_COMMON[@]}"
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:1 --job-name=100m-standalone-g250  scripts/slurm_dmodel256_pilot.sh --mode standalone --granularity g250  --run-id "100m-prepared-slicing-standalone-g250-s$EXPERIMENT_SEED"  "${SLURM_COMMON[@]}"
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:1 --job-name=100m-standalone-g375  scripts/slurm_dmodel256_pilot.sh --mode standalone --granularity g375  --run-id "100m-prepared-slicing-standalone-g375-s$EXPERIMENT_SEED"  "${SLURM_COMMON[@]}"
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:1 --job-name=100m-standalone-g500  scripts/slurm_dmodel256_pilot.sh --mode standalone --granularity g500  --run-id "100m-prepared-slicing-standalone-g500-s$EXPERIMENT_SEED"  "${SLURM_COMMON[@]}"
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:1 --job-name=100m-standalone-g625  scripts/slurm_dmodel256_pilot.sh --mode standalone --granularity g625  --run-id "100m-prepared-slicing-standalone-g625-s$EXPERIMENT_SEED"  "${SLURM_COMMON[@]}"
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:1 --job-name=100m-standalone-g750  scripts/slurm_dmodel256_pilot.sh --mode standalone --granularity g750  --run-id "100m-prepared-slicing-standalone-g750-s$EXPERIMENT_SEED"  "${SLURM_COMMON[@]}"
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:1 --job-name=100m-standalone-g875  scripts/slurm_dmodel256_pilot.sh --mode standalone --granularity g875  --run-id "100m-prepared-slicing-standalone-g875-s$EXPERIMENT_SEED"  "${SLURM_COMMON[@]}"
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:1 --job-name=100m-standalone-g1000 scripts/slurm_dmodel256_pilot.sh --mode standalone --granularity g1000 --run-id "100m-prepared-slicing-standalone-g1000-s$EXPERIMENT_SEED" "${SLURM_COMMON[@]}"
 ```
 
 Optional random per-block diagnostic:
 
 ```bash
-sbatch --time=24:00:00 --gres=gpu:1 \
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:1 \
   --job-name=100m-random-per-block \
   scripts/slurm_dmodel256_pilot.sh \
   --mode nested-random \
@@ -273,7 +287,7 @@ below reproduce that controller profile while using the new prepared-corpus
 contract and eight production widths.
 
 ```bash
-sbatch --time=24:00:00 --gres=gpu:1 \
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:1 \
   --job-name=100m-ts-global \
   scripts/slurm_dmodel256_pilot.sh \
   --mode nested-random \
@@ -290,7 +304,7 @@ RMS with fixed epsilon 0.1 had the best uniform-average final-holdout loss
 among the earlier PanelGrad runs and favored the smallest widths:
 
 ```bash
-sbatch --time=24:00:00 --gres=gpu:1 \
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:1 \
   --job-name=100m-panelgrad-rms \
   scripts/slurm_dmodel256_pilot.sh \
   --mode nested-random \
@@ -305,7 +319,7 @@ Raw L2 with a linear epsilon schedule gave the strongest medium-to-full-width
 PanelGrad curve:
 
 ```bash
-sbatch --time=24:00:00 --gres=gpu:1 \
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:1 \
   --job-name=100m-panelgrad-l2 \
   scripts/slurm_dmodel256_pilot.sh \
   --mode nested-random \
