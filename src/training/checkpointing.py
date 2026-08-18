@@ -2345,6 +2345,25 @@ def load_checkpoint_state(
         checkpoint_path=checkpoint_path,
         distributed_context=distributed_context,
     )
+    if (
+        config is not None
+        and config.get("model", {}).get("granularity_sampling_mode")
+        == "fixed_global"
+    ):
+        checkpoint_provenance = checkpoint.get("granularity_pattern_provenance")
+        checkpoint_distribution = (
+            checkpoint_provenance.get("sampling_distribution")
+            if isinstance(checkpoint_provenance, Mapping)
+            else None
+        )
+        expected_distribution = config["model"].get(
+            "global_sampling_distribution"
+        )
+        if checkpoint_distribution != expected_distribution:
+            raise ConfigError(
+                "Checkpoint fixed_global sampling distribution does not match "
+                "model.global_sampling_distribution"
+            )
     probabilistic_controller_state = checkpoint.get(
         "probabilistic_controller_state"
     )

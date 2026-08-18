@@ -10,7 +10,12 @@ from src.models.granularity import GranularityPattern
 
 
 VALID_CORRECTION_MODES = {"none", "gmc", "lmc"}
-VALID_SAMPLING_MODES = {"global", "per_block", "adaptive_per_block"}
+VALID_SAMPLING_MODES = {
+    "global",
+    "fixed_global",
+    "per_block",
+    "adaptive_per_block",
+}
 
 
 @dataclass(frozen=True, slots=True)

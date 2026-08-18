@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -555,6 +556,15 @@ def summarize_granularity_pattern_from_config(
         f"run.sampling_mode={resolved_run_mode}",
         f"model.granularity_sampling_mode={sampling_mode}",
     ]
+    if sampling_mode == "fixed_global":
+        repeatable_source.append(
+            "model.global_sampling_distribution="
+            + json.dumps(
+                model.get("global_sampling_distribution", {}),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
     if resolved_run_mode == "standalone" and run.get("granularity") is not None:
         repeatable_source.append(f"run.granularity={run['granularity']}")
 

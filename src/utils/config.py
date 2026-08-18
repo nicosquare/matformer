@@ -35,6 +35,7 @@ VALID_MODEL_VARIANTS = {"slicing", "concat"}
 VALID_CORRECTION_MODES = {"none", "gmc", "lmc"}
 VALID_MODEL_GRANULARITY_SAMPLING_MODES = {
     "global",
+    "fixed_global",
     "per_block",
     "adaptive_global",
     "adaptive_per_block",
@@ -262,6 +263,7 @@ def resolve_run_config(
         requested_run_sampling_mode=requested_run_sampling_mode,
         explicit_override_keys=explicit_override_keys,
     )
+    _resolve_fixed_global_sampling_distribution(resolved)
     _resolve_adaptive_sampler_defaults(resolved)
     _resolve_distributed_contract_defaults(resolved)
     _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
@@ -304,6 +306,7 @@ def resolve_all_run_configs(
             requested_run_sampling_mode=requested_run_sampling_mode,
             explicit_override_keys=explicit_override_keys,
         )
+        _resolve_fixed_global_sampling_distribution(resolved)
         _resolve_adaptive_sampler_defaults(resolved)
         _resolve_distributed_contract_defaults(resolved)
         _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
@@ -335,6 +338,7 @@ def resolve_all_run_configs(
             requested_granularity_sampling_alias=requested_granularity_sampling_alias,
             requested_run_sampling_mode=requested_run_sampling_mode,
         )
+        _resolve_fixed_global_sampling_distribution(resolved)
         _resolve_adaptive_sampler_defaults(resolved)
         _resolve_distributed_contract_defaults(resolved)
         _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
@@ -439,7 +443,6 @@ def _normalize_model_granularity_sampling_mode(raw_mode: Any) -> str:
             "model.granularity_sampling_mode must be one of "
             f"{sorted(VALID_MODEL_GRANULARITY_SAMPLING_MODES)}"
         )
-
     return granularity_sampling_mode
 
 
@@ -829,6 +832,7 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "model.granularity_sampling_mode must be one of "
             f"{sorted(VALID_MODEL_GRANULARITY_SAMPLING_MODES)}"
         )
+    _resolve_fixed_global_sampling_distribution(copy.deepcopy(dict(config)))
     requested_mode = model.get("requested_correction_mode")
     if requested_mode not in (None, ""):
         if not isinstance(requested_mode, str):
@@ -1785,6 +1789,7 @@ def _resolve_sampling_mode_defaults(
     elif legacy_alias_mode == "global":
         derived_run_sampling_mode = "nested-all"
     elif canonical_mode in {
+        "fixed_global",
         "per_block",
         "adaptive_global",
         "adaptive_per_block",
@@ -1804,6 +1809,11 @@ def _resolve_sampling_mode_defaults(
 
     if (
         canonical_mode in PROBABILISTIC_ADAPTIVE_SAMPLING_MODES
+        and derived_run_sampling_mode != "nested-random"
+    ):
+        _raise_granularity_sampling_conflict("nested-random runs")
+    if (
+        canonical_mode == "fixed_global"
         and derived_run_sampling_mode != "nested-random"
     ):
         _raise_granularity_sampling_conflict("nested-random runs")
@@ -1857,6 +1867,80 @@ def _resolve_sampling_mode_defaults(
         model,
         run,
         requested_granularity_sampling_alias=requested_granularity_sampling_alias,
+    )
+
+
+def _resolve_fixed_global_sampling_distribution(config: dict[str, Any]) -> None:
+    """Validate and canonicalize the opt-in fixed global categorical policy."""
+
+    model = config.get("model")
+    run = config.get("run")
+    if not isinstance(model, dict) or not isinstance(run, Mapping):
+        return
+
+    sampling_mode = model.get("granularity_sampling_mode")
+    raw_distribution = model.get("global_sampling_distribution")
+    if sampling_mode != "fixed_global":
+        if raw_distribution is not None:
+            raise ConfigError(
+                "model.global_sampling_distribution requires "
+                "model.granularity_sampling_mode=fixed_global"
+            )
+        return
+
+    if not isinstance(raw_distribution, Mapping) or not raw_distribution:
+        raise ConfigError(
+            "model.global_sampling_distribution must be a non-empty mapping "
+            "when model.granularity_sampling_mode=fixed_global"
+        )
+
+    granularities = [str(label) for label in model.get("granularities", [])]
+    if any(not isinstance(label, str) for label in raw_distribution):
+        raise ConfigError(
+            "model.global_sampling_distribution keys must be granularity labels"
+        )
+    configured_labels = set(raw_distribution)
+    expected_labels = set(granularities)
+    if configured_labels != expected_labels:
+        missing = sorted(expected_labels - configured_labels)
+        extra = sorted(configured_labels - expected_labels)
+        raise ConfigError(
+            "model.global_sampling_distribution keys must exactly match "
+            f"model.granularities; missing={missing}, extra={extra}"
+        )
+
+    distribution: dict[str, float] = {}
+    for label in granularities:
+        probability = raw_distribution[label]
+        if isinstance(probability, bool):
+            raise ConfigError(
+                f"model.global_sampling_distribution.{label} must be a finite "
+                "nonnegative number"
+            )
+        distribution[label] = _nonnegative_finite_float(
+            probability,
+            f"model.global_sampling_distribution.{label}",
+        )
+
+    total = math.fsum(distribution.values())
+    if not math.isclose(total, 1.0, rel_tol=0.0, abs_tol=1e-9):
+        raise ConfigError(
+            "model.global_sampling_distribution probabilities must sum to 1; "
+            f"got {total:.17g}"
+        )
+    if len(distribution) < 2 or len(set(distribution.values())) == 1:
+        raise ConfigError(
+            "model.global_sampling_distribution must be non-uniform; use "
+            "model.granularity_sampling_mode=global for uniform sampling"
+        )
+
+    model["global_sampling_distribution"] = distribution
+    model["granularity_pattern_provenance"] = _build_granularity_pattern_provenance(
+        model,
+        run,
+        requested_granularity_sampling_alias=model.get(
+            "requested_granularity_sampling_alias"
+        ),
     )
 
 
@@ -2718,6 +2802,7 @@ def _granularity_sampling_alias_from_mode(mode: str) -> str:
         )
     return {
         "global": "all",
+        "fixed_global": "random",
         "per_block": "random",
         "adaptive_global": "random",
         "adaptive_per_block": "random",
@@ -2749,7 +2834,8 @@ def _build_granularity_pattern_provenance(
             if run_sampling_mode == "nested-all"
             else (
                 "single"
-                if granularity_sampling_mode in {"global", "adaptive_global"}
+                if granularity_sampling_mode
+                in {"global", "fixed_global", "adaptive_global"}
                 else "per_block"
             )
         ),
@@ -2761,6 +2847,10 @@ def _build_granularity_pattern_provenance(
         if isinstance(model.get("granularities"), list)
         else [],
     }
+    if granularity_sampling_mode == "fixed_global":
+        provenance["sampling_distribution"] = dict(
+            model.get("global_sampling_distribution", {})
+        )
     if requested_granularity_sampling_alias is not None or run.get("granularity") is not None:
         provenance["active_granularity"] = run.get("granularity")
     return provenance

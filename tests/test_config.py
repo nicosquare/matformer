@@ -300,6 +300,95 @@ def test_requested_run_sampling_mode_does_not_force_per_block_model_mode():
     assert resolved["model"]["granularity_sampling_mode"] == "global"
 
 
+def test_fixed_global_sampling_resolves_a_distinct_non_uniform_policy():
+    resolved = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        overrides=[
+            "model.granularity_sampling_mode=fixed_global",
+            "model.global_sampling_distribution={s: 0.1, m: 0.2, l: 0.3, xl: 0.4}",
+        ],
+    )
+
+    assert resolved["run"]["sampling_mode"] == "nested-random"
+    assert resolved["training"]["granularity_sampling"] == "random"
+    assert resolved["model"]["granularity_sampling_mode"] == "fixed_global"
+    assert resolved["model"]["resolved_sampling_mode"] == "fixed_global"
+    assert resolved["model"]["global_sampling_distribution"] == {
+        "s": 0.1,
+        "m": 0.2,
+        "l": 0.3,
+        "xl": 0.4,
+    }
+    assert resolved["model"]["granularity_pattern_provenance"] == {
+        "pattern_type": "single",
+        "scope": "model",
+        "source": "model.granularity_sampling_mode",
+        "requested_alias": None,
+        "layer_count": resolved["model"]["num_layers"],
+        "available_granularities": ["s", "m", "l", "xl"],
+        "sampling_distribution": {"s": 0.1, "m": 0.2, "l": 0.3, "xl": 0.4},
+    }
+    correction = correction_context_from_config(resolved)
+    assert correction.sampling_mode == "fixed_global"
+    assert correction.local_correction_active is False
+
+
+@pytest.mark.parametrize(
+    "overrides, message",
+    [
+        (
+            ["model.granularity_sampling_mode=fixed_global"],
+            "must be a non-empty mapping",
+        ),
+        (
+            [
+                "model.granularity_sampling_mode=fixed_global",
+                "model.global_sampling_distribution={s: 0.1, m: 0.2, l: 0.7}",
+            ],
+            "keys must exactly match",
+        ),
+        (
+            [
+                "model.granularity_sampling_mode=fixed_global",
+                "model.global_sampling_distribution={s: 0.1, m: 0.2, l: 0.3, xl: 0.3}",
+            ],
+            "must sum to 1",
+        ),
+        (
+            [
+                "model.granularity_sampling_mode=fixed_global",
+                "model.global_sampling_distribution={s: 0.25, m: 0.25, l: 0.25, xl: 0.25}",
+            ],
+            "must be non-uniform",
+        ),
+        (
+            [
+                "model.granularity_sampling_mode=global",
+                "model.global_sampling_distribution={s: 0.1, m: 0.2, l: 0.3, xl: 0.4}",
+            ],
+            "requires model.granularity_sampling_mode=fixed_global",
+        ),
+        (
+            [
+                "run.sampling_mode=nested-all",
+                "model.granularity_sampling_mode=fixed_global",
+                "model.global_sampling_distribution={s: 0.1, m: 0.2, l: 0.3, xl: 0.4}",
+            ],
+            "conflicts with nested-random runs",
+        ),
+    ],
+)
+def test_fixed_global_sampling_rejects_ambiguous_or_invalid_distributions(
+    overrides,
+    message,
+):
+    with pytest.raises(ConfigError, match=message):
+        resolve_run_config(
+            "configs/dmodel256_pilot_comparison.yaml",
+            overrides=overrides,
+        )
+
+
 def test_explicit_nested_random_mode_keeps_legacy_alias_stable_for_adaptive():
     resolved = resolve_run_config(
         "configs/dmodel256_pilot_comparison.yaml",

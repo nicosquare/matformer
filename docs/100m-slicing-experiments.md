@@ -132,6 +132,27 @@ python train.py \
   --preflight
 ```
 
+The `global` mode above remains uniform. To run a fixed, non-uniform global
+categorical policy, select the distinct `fixed_global` mode and provide one
+probability for every resolved granularity:
+
+```bash
+python train.py \
+  --config "$BASE" \
+  --output-root "$OUT" \
+  --override "run.run_id=preflight-100m-fixed-global-s$EXPERIMENT_SEED" \
+  "${CONFIG_OVERRIDES[@]}" \
+  --override "model.granularity_sampling_mode=fixed_global" \
+  --override 'model.global_sampling_distribution={g125: 0.04, g250: 0.06, g375: 0.08, g500: 0.10, g625: 0.12, g750: 0.16, g875: 0.19, g1000: 0.25}' \
+  --preflight
+```
+
+The mapping keys must exactly match `model.granularities`, values must be
+finite and nonnegative, and the probabilities must sum to one. A uniform
+mapping is rejected with guidance to use `global`. Resolved configs, metrics,
+summaries, checkpoints, and figures identify this policy as `fixed_global`, so
+it cannot be merged with the traditional `nested-random / global` baseline.
+
 ### Global Thompson sampling
 
 ```bash
@@ -241,6 +262,28 @@ Random global is the primary low-cost baseline:
   --run-id "100m-prepared-slicing-random-global-s$EXPERIMENT_SEED" \
   "${SLURM_COMMON[@]}" \
   --override "model.granularity_sampling_mode=global"
+```
+
+Fixed global with inverse granularity-membership weighting is the non-uniform
+low-cost baseline. For the eight ordered nested widths, the incremental FFN
+blocks introduced by `g125` through `g1000` belong to 8, 7, 6, 5, 4, 3, 2,
+and 1 configured subnetworks, respectively. The probabilities below use
+
+`p(g) = (1 / membership(g)) / sum_h(1 / membership(h))`,
+
+so less frequently included blocks receive more training exposure. The
+normalizer is `H_8 = 761 / 280`, and the full-precision probabilities sum to
+exactly one in the resolved configuration:
+
+```bash
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:1 \
+  --job-name=100m-fixed-global-inverse-membership \
+  scripts/slurm_dmodel256_pilot.sh \
+  --mode nested-random \
+  --run-id "100m-prepared-slicing-fixed-global-inverse-membership-s$EXPERIMENT_SEED" \
+  "${SLURM_COMMON[@]}" \
+  --override "model.granularity_sampling_mode=fixed_global" \
+  --override 'model.global_sampling_distribution={g125: 0.045992115637319315, g250: 0.052562417871222074, g375: 0.06132282084975909, g500: 0.073587385019710905, g625: 0.091984231274638631, g750: 0.12264564169951818, g875: 0.18396846254927726, g1000: 0.36793692509855452}'
 ```
 
 Nested-all is the high-compute joint-training reference:

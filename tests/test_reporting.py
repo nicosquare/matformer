@@ -307,6 +307,17 @@ def _write_global_policy_run(
     }
     if policy == "uniform":
         model["granularity_sampling_mode"] = "global"
+    elif policy == "fixed":
+        model.update(
+            {
+                "granularity_sampling_mode": "fixed_global",
+                "global_sampling_distribution": {
+                    "micro": 0.1,
+                    "medium": 0.3,
+                    "full": 0.6,
+                },
+            }
+        )
     elif policy == "thompson":
         model.update(
             {
@@ -366,7 +377,13 @@ def _write_global_policy_run(
                     "controller_action": controller_action,
                     "controller_window_index": (step - 1) // decision_interval_steps,
                     "controller_sampled_probability": (
-                        0.5 if policy == "panelgrad" else ""
+                        0.5
+                        if policy == "panelgrad"
+                        else (
+                            model["global_sampling_distribution"][action]
+                            if policy == "fixed"
+                            else ""
+                        )
                     ),
                 }
             )
@@ -2892,7 +2909,7 @@ def test_global_sampling_histories_use_committed_metrics_actions_for_all_policie
     from src.evaluation.reporting_io import iter_global_sampling_histories
 
     actions = ["micro", "micro", "full", "full"]
-    for policy in ("uniform", "thompson", "panelgrad"):
+    for policy in ("uniform", "fixed", "thompson", "panelgrad"):
         _write_global_policy_run(
             tmp_path,
             run_id=f"{policy}-run",
@@ -2904,16 +2921,28 @@ def test_global_sampling_histories_use_committed_metrics_actions_for_all_policie
         history.policy_identity: history
         for history in iter_global_sampling_histories(tmp_path)
     }
-    assert set(histories) == {
+    assert {
+        identity for identity in histories if not identity.startswith("fixed_global_")
+    } == {
         "uniform_global",
         "thompson_global",
         "panelgrad_global_gradient_rms",
     }
+    [fixed_identity] = [
+        identity for identity in histories if identity.startswith("fixed_global_")
+    ]
+    assert histories[fixed_identity].policy_label == (
+        "Fixed global (micro=0.1, medium=0.3, full=0.6)"
+    )
+    assert [
+        action.sampled_probability for action in histories[fixed_identity].actions
+    ] == pytest.approx([0.1, 0.1, 0.6, 0.6])
     assert all(
         [action.granularity for action in history.actions] == actions
         for history in histories.values()
     )
     assert histories["uniform_global"].decision_count == 4
+    assert histories[fixed_identity].decision_count == 4
     assert histories["panelgrad_global_gradient_rms"].decision_count == 4
     assert histories["thompson_global"].decision_count == 2
     assert len({history.comparison_key for history in histories.values()}) == 1
@@ -3009,6 +3038,7 @@ def test_grouped_sampling_exposure_uses_stacked_actual_token_spans(
 def test_generate_figures_writes_unified_global_policy_comparisons(tmp_path):
     action_sets = {
         "uniform": ["micro", "medium", "full", "micro"],
+        "fixed": ["full", "full", "medium", "full"],
         "thompson": ["micro", "micro", "full", "full"],
         "panelgrad": ["full", "medium", "micro", "full"],
     }
@@ -3031,7 +3061,7 @@ def test_generate_figures_writes_unified_global_policy_comparisons(tmp_path):
 
     assert not any(name.startswith("selected_granularity_over_tokens_") for name in names)
     assert not any(name.startswith("selected_granularity_share_over_tokens_") for name in names)
-    assert len([name for name in names if name.startswith("selected_granularity_zoom_")]) == 3
+    assert len([name for name in names if name.startswith("selected_granularity_zoom_")]) == 4
     assert len([name for name in names if name.startswith("global_sampling_exposure_comparison__")]) == 1
     assert len([name for name in names if name.startswith("global_sampling_cumulative_comparison__")]) == 1
     [summary_name] = [
@@ -3042,13 +3072,17 @@ def test_generate_figures_writes_unified_global_policy_comparisons(tmp_path):
     ) as file:
         rows = list(csv.DictReader(file))
     assert {row["policy"] for row in rows} == {
-        "Uniform global", "Thompson global", "PanelGrad (metric=Gradient RMS)"
+        "Uniform global",
+        "Fixed global (micro=0.1, medium=0.3, full=0.6)",
+        "Thompson global",
+        "PanelGrad (metric=Gradient RMS)",
     }
     assert {row["completed_steps"] for row in rows} == {"4"}
     assert {
         row["policy"]: row["policy_decisions"] for row in rows
     } == {
         "PanelGrad (metric=Gradient RMS)": "4",
+        "Fixed global (micro=0.1, medium=0.3, full=0.6)": "4",
         "Thompson global": "2",
         "Uniform global": "4",
     }
@@ -3063,3 +3097,50 @@ def test_non_panelgrad_reporting_labels_remain_unchanged():
         }
     ) == "adaptive_per_block_ucb"
     assert display_sampling_label_for_curve("global") is None
+    assert scaling_curve_sampling_label(
+        {
+            "sampling_mode": "nested-random",
+            "resolved_sampling_mode": "fixed_global",
+        }
+    ) == "fixed_global"
+    assert (
+        display_sampling_label_for_curve("fixed_global")
+        == "fixed non-uniform global"
+    )
+
+
+def test_size_reporting_does_not_merge_distinct_fixed_global_distributions():
+    from src.evaluation.reporting_impl import group_size_plot_rows
+
+    base = {
+        "sampling_mode": "nested-random",
+        "resolved_sampling_mode": "fixed_global",
+        "model_variant": "slicing",
+        "granularity": "s",
+        "non_embedding_parameters": "100",
+        "perplexity": "10",
+    }
+    rows = [
+        {
+            **base,
+            "run_id": "fixed-a",
+            "global_sampling_distribution": {
+                "s": 0.1,
+                "m": 0.2,
+                "l": 0.3,
+                "xl": 0.4,
+            },
+        },
+        {
+            **base,
+            "run_id": "fixed-b",
+            "global_sampling_distribution": {
+                "s": 0.4,
+                "m": 0.3,
+                "l": 0.2,
+                "xl": 0.1,
+            },
+        },
+    ]
+
+    assert len(group_size_plot_rows(rows)) == 2

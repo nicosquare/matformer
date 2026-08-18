@@ -49,6 +49,7 @@ METRICS_COLUMNS = [
     "resolved_run_mode",
     "resolved_sampling_mode",
     "granularity_sampling_mode",
+    "global_sampling_distribution",
     "correction_mode",
     "membership_correction",
     "granularity",
@@ -220,6 +221,7 @@ RUN_SUMMARY_FIELDS = [
     "resolved_sampling_mode",
     "requested_granularity_sampling_alias",
     "granularity_sampling_mode",
+    "global_sampling_distribution",
     "granularity_pattern_provenance",
     "granularity_pattern_summary",
     "granularity_mode",
@@ -865,6 +867,9 @@ def build_run_summary(
             "requested_granularity_sampling_alias"
         ),
         "granularity_sampling_mode": model.get("granularity_sampling_mode"),
+        "global_sampling_distribution": model.get(
+            "global_sampling_distribution"
+        ),
         "granularity_pattern_provenance": _granularity_pattern_provenance(config),
         "granularity_pattern_summary": _granularity_pattern_summary(config),
         **resolved_granularity_artifact_fields(model),
@@ -2767,6 +2772,7 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "resolved_run_mode": None,
         "resolved_sampling_mode": None,
         "granularity_sampling_mode": None,
+        "global_sampling_distribution": None,
         "correction_mode": None,
         "membership_correction": None,
         "granularity_pattern_summary": None,

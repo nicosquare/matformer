@@ -256,6 +256,8 @@ def display_sampling_label_for_curve(sampling_label: str | None) -> str | None:
         return None
     if sampling_label == "global":
         return None
+    if sampling_label == "fixed_global":
+        return "fixed non-uniform global"
     if sampling_label == "per_block":
         return "per_block sampling"
     if sampling_label == "adaptive_per_block_thompson":
@@ -325,7 +327,7 @@ def scaling_curve_sampling_label(row: dict[str, Any]) -> str | None:
             else "probabilistic_per_block_thompson"
         )
 
-    if normalized_mode in {"global", "per_block"}:
+    if normalized_mode in {"global", "fixed_global", "per_block"}:
         return normalized_mode
     if normalized_mode == "adaptive_per_block":
         if strategy == "thompson":

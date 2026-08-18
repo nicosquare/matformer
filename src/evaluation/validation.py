@@ -313,6 +313,9 @@ def validation_results_to_metric_rows(
                 model.get("granularity_sampling_mode", "global"),
             ),
             "granularity_sampling_mode": model.get("granularity_sampling_mode"),
+            "global_sampling_distribution": json_artifact_value(
+                model.get("global_sampling_distribution")
+            ),
             "granularity": result["granularity"],
             **resolved_granularity_artifact_fields(model),
             "granularity_pattern_summary": json_artifact_value(

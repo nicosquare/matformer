@@ -373,12 +373,18 @@ def _select_optimizer_window_action(
                 config, granularities, device
             ),
         }
-    return {
+    action = {
         "kind": "global",
         "granularities": select_training_granularities(
             config, granularities, device
         ),
     }
+    if model_sampling_mode == "fixed_global":
+        selected = action["granularities"][0]
+        action["sampled_probability"] = float(
+            config["model"]["global_sampling_distribution"][selected]
+        )
+    return action
 
 
 def _training_action_heartbeat_fields(action: Mapping[str, Any]) -> dict[str, Any]:
@@ -399,9 +405,12 @@ def _training_action_heartbeat_fields(action: Mapping[str, Any]) -> dict[str, An
         }
         fields["selected_granularity"] = "per_block"
         fields["selected_granularity_counts"] = counts
-    if action.get("panelgrad_probability") is not None:
+    sampled_probability = action.get(
+        "sampled_probability", action.get("panelgrad_probability")
+    )
+    if sampled_probability is not None:
         fields["controller_sampled_probability"] = float(
-            action["panelgrad_probability"]
+            sampled_probability
         )
     return fields
 
@@ -856,6 +865,10 @@ def train_for_steps(
                             "committed_tokens_this_step": committed_tokens,
                         }
                     )
+                    if action.get("sampled_probability") is not None:
+                        adaptive_artifacts["controller_sampled_probability"] = float(
+                            action["sampled_probability"]
+                        )
                     step_metric_rows = []
                     for label, loss_value in global_losses.items():
                         pattern, correction = runtime_artifacts[label]
@@ -1234,20 +1247,50 @@ def select_random_granularity_index(
     if granularity_count <= 0:
         raise ValueError("granularity_count must be positive")
 
+    model = config.get("model", {})
+    fixed_distribution = None
+    if (
+        isinstance(model, Mapping)
+        and model.get("granularity_sampling_mode") == "fixed_global"
+    ):
+        raw_distribution = model.get("global_sampling_distribution")
+        granularities = model.get("granularities")
+        if not isinstance(raw_distribution, Mapping) or not isinstance(
+            granularities, list
+        ):
+            raise ConfigError(
+                "fixed_global sampling requires a resolved "
+                "model.global_sampling_distribution"
+            )
+        if len(granularities) != granularity_count:
+            raise ConfigError(
+                "fixed_global distribution does not match the active "
+                "granularity count"
+            )
+        fixed_distribution = [
+            float(raw_distribution[label]) for label in granularities
+        ]
+
+    def sample_index() -> int:
+        generator = dedicated_random(config, "granularity_selection")
+        if fixed_distribution is not None:
+            return int(
+                generator.choices(
+                    range(granularity_count),
+                    weights=fixed_distribution,
+                    k=1,
+                )[0]
+            )
+        return int(generator.randrange(granularity_count))
+
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         selected_index = torch.empty((), dtype=torch.long, device=device)
         if torch.distributed.get_rank() == 0:
-            selected_index.fill_(
-                dedicated_random(config, "granularity_selection").randrange(
-                    granularity_count
-                )
-            )
+            selected_index.fill_(sample_index())
         torch.distributed.broadcast(selected_index, src=0)
         return int(selected_index.item())
 
-    return dedicated_random(config, "granularity_selection").randrange(
-        granularity_count
-    )
+    return sample_index()
 
 
 def configure_model_layer_granularities(
@@ -1554,6 +1597,9 @@ def build_training_metric_row(
             model.get("granularity_sampling_mode", "global"),
         ),
         "granularity_sampling_mode": model.get("granularity_sampling_mode"),
+        "global_sampling_distribution": json_artifact_value(
+            model.get("global_sampling_distribution")
+        ),
         "granularity": granularity,
         **resolved_granularity_artifact_fields(model),
         "granularity_pattern_summary": json_artifact_value(

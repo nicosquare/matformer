@@ -48,6 +48,8 @@ SIZE_PLOT_PANELS_DEFAULT = [
 SIZE_PLOT_PANELS_WITH_SAMPLING = [
     ("nested-random", "slicing", "global"),
     ("nested-random", "concat", "global"),
+    ("nested-random", "slicing", "fixed_global"),
+    ("nested-random", "concat", "fixed_global"),
     ("nested-random", "slicing", "per_block"),
     ("nested-random", "concat", "per_block"),
     ("nested-random", "slicing", "probabilistic_global_thompson"),
@@ -63,6 +65,7 @@ SIZE_PLOT_PANELS_WITH_SAMPLING = [
 ]
 SCALING_GROUP_COLORS = {
     "nested-random / slicing / global": "tab:blue",
+    "nested-random / slicing / fixed_global": "tab:green",
     "nested-random / slicing / per_block": "tab:cyan",
     "nested-random / slicing / probabilistic_global_thompson": "tab:blue",
     "nested-random / slicing / probabilistic_global_thompson_reset": "tab:purple",
@@ -71,6 +74,7 @@ SCALING_GROUP_COLORS = {
     "nested-random / slicing / probabilistic_per_block_thompson": "tab:cyan",
     "nested-random / slicing / adaptive_per_block_ucb": "tab:olive",
     "nested-random / concat / global": "tab:orange",
+    "nested-random / concat / fixed_global": "tab:olive",
     "nested-random / concat / per_block": "tab:red",
     "nested-random / concat / probabilistic_global_thompson": "tab:orange",
     "nested-random / concat / probabilistic_global_thompson_reset": "tab:brown",
@@ -89,6 +93,7 @@ SCALING_CORRECTION_STYLES = {
 }
 SCALING_SAMPLING_TONES = {
     "global": 0.0,
+    "fixed_global": 0.12,
     "per_block": 0.28,
     "probabilistic_global_thompson": 0.16,
     "probabilistic_global_thompson_reset": 0.24,
@@ -99,6 +104,7 @@ SCALING_SAMPLING_TONES = {
 }
 SCALING_SAMPLING_MARKERS = {
     "global": "o",
+    "fixed_global": "H",
     "per_block": "D",
     "probabilistic_global_thompson": "*",
     "probabilistic_global_thompson_reset": "P",
@@ -1500,6 +1506,7 @@ def _size_plot_sampling_family(row: dict[str, Any]) -> str:
 def _size_plot_sampling_display(row: dict[str, Any]) -> str:
     labels = {
         "global": "Global sampling",
+        "fixed_global": "Fixed non-uniform global",
         "per_block": "Per-block sampling",
         "probabilistic_global_thompson": "Bayesian global TS",
         "probabilistic_per_block_thompson": "Bayesian per-block TS",
@@ -1562,6 +1569,7 @@ def _minimal_peer_differentiators(
 
     selected = {contract: [] for contract, _ in items}
     candidate_fields = (
+        "global_sampling_distribution",
         "panelgrad_importance_metric",
         "panelgrad_temperature",
         "panelgrad_epsilon_schedule_type",
@@ -3830,6 +3838,7 @@ def group_scaling_rows(rows: list[dict[str, str]]) -> dict[str, list[dict[str, s
 
 
 SIZE_PLOT_CONTRACT_FIELDS = (
+    "global_sampling_distribution",
     "controller_method_family",
     "controller_method_version",
     "controller_scope",
@@ -4092,6 +4101,7 @@ def loss_trace_kind(rows: list[dict[str, str]]) -> str:
     resolved_sampling_mode = _first_row_value(rows, "resolved_sampling_mode")
     if resolved_run_mode == "nested-random" and resolved_sampling_mode in {
         "global",
+        "fixed_global",
         "per_block",
         "adaptive_per_block",
     }:
@@ -4247,7 +4257,7 @@ def scaling_curve_sampling_label(row: dict[str, str]) -> str | None:
         probabilistic_label = _probabilistic_sampling_label(row)
         if probabilistic_label is not None:
             return probabilistic_label
-        if normalized in {"global", "per_block"}:
+        if normalized in {"global", "fixed_global", "per_block"}:
             return normalized
         if normalized == "adaptive_per_block":
             strategy = adaptive_sampler_strategy_for_row(row)
@@ -4261,7 +4271,7 @@ def scaling_curve_sampling_label(row: dict[str, str]) -> str | None:
         probabilistic_label = _probabilistic_sampling_label(row)
         if probabilistic_label is not None:
             return probabilistic_label
-        if normalized in {"global", "per_block"}:
+        if normalized in {"global", "fixed_global", "per_block"}:
             return normalized
         if normalized == "adaptive_per_block":
             strategy = adaptive_sampler_strategy_for_row(row)
@@ -4370,6 +4380,8 @@ def display_sampling_label_for_curve(sampling_label: str | None) -> str | None:
         return None
     if sampling_label == "global":
         return None
+    if sampling_label == "fixed_global":
+        return "fixed non-uniform global"
     if sampling_label == "per_block":
         return "per_block sampling"
     if sampling_label == "adaptive_per_block_thompson":
@@ -4652,9 +4664,10 @@ def loss_trace_description(
             "nested-random + adaptive_per_block logs one shared step loss "
             "across the selected granularities for each step."
         )
-    if resolved_sampling_mode == "global" or sampling_mode == "global":
+    if resolved_sampling_mode in {"global", "fixed_global"} or sampling_mode == "global":
         return (
-            "nested-random + global samples one granularity per step, so each "
+            f"nested-random + {resolved_sampling_mode or 'global'} samples one "
+            "granularity per step, so each "
             "curve is a sampled training loss trace."
         )
     return ""
@@ -4682,7 +4695,7 @@ def loss_trace_panel_suffix(
         return "shared step loss"
     if resolved_sampling_mode == "adaptive_per_block":
         return "adaptive shared step loss"
-    if resolved_sampling_mode == "global" or sampling_mode == "global":
+    if resolved_sampling_mode in {"global", "fixed_global"} or sampling_mode == "global":
         return "sampled training loss"
     return ""
 

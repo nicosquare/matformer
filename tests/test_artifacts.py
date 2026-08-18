@@ -2964,6 +2964,59 @@ def test_nonadaptive_checkpoint_round_trip_remains_free_of_controller_state(tmp_
         assert torch.equal(parameter, restored_parameter)
 
 
+def test_fixed_global_checkpoint_rejects_a_changed_distribution(tmp_path):
+    import src.training.checkpointing as training_checkpointing
+
+    output_dir = tmp_path / "dmodel256-pilot-comparison-001"
+    config = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        output_dir=output_dir,
+        overrides=[
+            "run.continuation.enabled=true",
+            "model.granularity_sampling_mode=fixed_global",
+            "model.global_sampling_distribution={s: 0.1, m: 0.2, l: 0.3, xl: 0.4}",
+        ],
+    )
+    model = torch.nn.Linear(2, 1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    checkpoint_path = output_dir / "checkpoints" / "latest.pt"
+    training_checkpointing.save_model_checkpoint(
+        config,
+        model,
+        optimizer,
+        scheduler=None,
+        output_path=checkpoint_path,
+        checkpoint_fields={
+            "checkpoint_status": "latest",
+            "checkpoint_metric": None,
+            "checkpoint_metric_value": None,
+            "checkpoint_selection_step": None,
+        },
+        run_state=training_checkpointing.build_initial_continuation_state(config),
+    )
+
+    changed = copy.deepcopy(config)
+    changed_distribution = {"s": 0.4, "m": 0.3, "l": 0.2, "xl": 0.1}
+    changed["model"]["global_sampling_distribution"] = changed_distribution
+    changed["model"]["granularity_pattern_provenance"][
+        "sampling_distribution"
+    ] = changed_distribution
+    restored_model = torch.nn.Linear(2, 1)
+    restored_optimizer = torch.optim.SGD(restored_model.parameters(), lr=0.01)
+
+    with pytest.raises(
+        ConfigError,
+        match="fixed_global sampling distribution does not match",
+    ):
+        training_checkpointing.load_checkpoint_state(
+            checkpoint_path,
+            restored_model,
+            restored_optimizer,
+            scheduler=None,
+            config=changed,
+        )
+
+
 def test_panelgrad_refresh_terminal_summary_and_compact_fields_are_auditable(tmp_path):
     labels = ["small", "full"]
     controller = PanelGradController(

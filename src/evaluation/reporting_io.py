@@ -32,6 +32,7 @@ __all__ = [
     "enrich_metrics_metadata_from_run_config",
     "enrich_scaling_metadata_from_run_config",
     "granularity_sampling_mode_from_saved_config",
+    "global_sampling_distribution_from_saved_config",
     "iter_controller_granularity_timelines",
     "iter_global_sampling_histories",
     "iter_panelgrad_histories",
@@ -226,10 +227,32 @@ def _read_global_sampling_history(
     if str(run.get("sampling_mode") or "").strip().lower() != "nested-random":
         return None
 
+    granularities = model.get("granularities")
+    if not isinstance(granularities, list) or not granularities:
+        raise ValueError("config.model.granularities must be a nonempty list")
+    ordered_granularities = tuple(str(label) for label in granularities)
+    if len(set(ordered_granularities)) != len(ordered_granularities):
+        raise ValueError("config.model.granularities contains duplicates")
+
     sampling_mode = str(model.get("granularity_sampling_mode") or "global").lower()
     strategy = str(model.get("adaptive_sampler_strategy") or "").lower()
+    fixed_distribution: dict[str, float] | None = None
     if sampling_mode == "global":
         policy_identity, policy_label = "uniform_global", "Uniform global"
+    elif sampling_mode == "fixed_global":
+        fixed_distribution = _fixed_global_distribution(
+            model, ordered_granularities
+        )
+        distribution_json = json.dumps(
+            fixed_distribution, sort_keys=True, separators=(",", ":")
+        )
+        distribution_id = hashlib.sha256(distribution_json.encode()).hexdigest()[:8]
+        distribution_label = ", ".join(
+            f"{label}={fixed_distribution[label]:g}"
+            for label in ordered_granularities
+        )
+        policy_identity = f"fixed_global_{distribution_id}"
+        policy_label = f"Fixed global ({distribution_label})"
     elif sampling_mode == "adaptive_global" and strategy == "panelgrad":
         panelgrad = model.get("panelgrad")
         if not isinstance(panelgrad, Mapping) or str(
@@ -255,12 +278,6 @@ def _read_global_sampling_history(
     run_id = str(run.get("run_id") or config_path.parent.name).strip()
     if not run_id:
         raise ValueError("config.run.run_id must be nonempty")
-    granularities = model.get("granularities")
-    if not isinstance(granularities, list) or not granularities:
-        raise ValueError("config.model.granularities must be a nonempty list")
-    ordered_granularities = tuple(str(label) for label in granularities)
-    if len(set(ordered_granularities)) != len(ordered_granularities):
-        raise ValueError("config.model.granularities contains duplicates")
     token_budget = _positive_int(
         training.get("token_budget"), "config.training.token_budget"
     )
@@ -321,6 +338,19 @@ def _read_global_sampling_history(
             )
             if not 0.0 <= sampled_probability <= 1.0:
                 raise ValueError("sampled probability must be in [0, 1]")
+        if fixed_distribution is not None:
+            expected_probability = fixed_distribution[action]
+            if sampled_probability is not None and not math.isclose(
+                sampled_probability,
+                expected_probability,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            ):
+                raise ValueError(
+                    f"metrics.csv step {step} sampled probability disagrees "
+                    "with config.model.global_sampling_distribution"
+                )
+            sampled_probability = expected_probability
         actions.append(
             GlobalSamplingAction(
                 step=step,
@@ -371,6 +401,34 @@ def _read_global_sampling_history(
         config_path=config_path,
         metrics_path=metrics_path,
     )
+
+
+def _fixed_global_distribution(
+    model: Mapping[str, Any],
+    ordered_granularities: tuple[str, ...],
+) -> dict[str, float]:
+    raw = model.get("global_sampling_distribution")
+    if not isinstance(raw, Mapping):
+        raise ValueError(
+            "fixed_global config requires model.global_sampling_distribution"
+        )
+    if {str(label) for label in raw} != set(ordered_granularities):
+        raise ValueError(
+            "fixed_global distribution keys must match config.model.granularities"
+        )
+    distribution = {
+        label: _finite_float(
+            raw[label], f"config.model.global_sampling_distribution.{label}"
+        )
+        for label in ordered_granularities
+    }
+    if any(probability < 0.0 for probability in distribution.values()):
+        raise ValueError("fixed_global probabilities must be nonnegative")
+    if not math.isclose(
+        math.fsum(distribution.values()), 1.0, rel_tol=0.0, abs_tol=1e-9
+    ):
+        raise ValueError("fixed_global probabilities must sum to 1")
+    return distribution
 
 
 def global_sampling_history_as_timeline(
@@ -1127,6 +1185,15 @@ def enrich_scaling_metadata_from_run_config(
             )
             if granularity_sampling_mode is not None:
                 enriched_row["granularity_sampling_mode"] = granularity_sampling_mode
+            global_sampling_distribution = (
+                global_sampling_distribution_from_saved_config(
+                    config_cache[config_path]
+                )
+            )
+            if global_sampling_distribution is not None:
+                enriched_row["global_sampling_distribution"] = (
+                    global_sampling_distribution
+                )
             membership_correction = membership_correction_from_saved_config(
                 config_cache[config_path]
             )
@@ -1179,6 +1246,15 @@ def enrich_metrics_metadata_from_run_config(
             )
             if granularity_sampling_mode is not None:
                 enriched_row["granularity_sampling_mode"] = granularity_sampling_mode
+            global_sampling_distribution = (
+                global_sampling_distribution_from_saved_config(
+                    config_cache[config_path]
+                )
+            )
+            if global_sampling_distribution is not None:
+                enriched_row["global_sampling_distribution"] = (
+                    global_sampling_distribution
+                )
             membership_correction = membership_correction_from_saved_config(
                 config_cache[config_path]
             )
@@ -1764,6 +1840,18 @@ def granularity_sampling_mode_from_saved_config(config: dict[str, Any]) -> str |
     if value in (None, ""):
         return None
     return str(value).strip().lower()
+
+
+def global_sampling_distribution_from_saved_config(
+    config: dict[str, Any],
+) -> dict[str, float] | None:
+    model = config.get("model")
+    if not isinstance(model, dict):
+        return None
+    value = model.get("global_sampling_distribution")
+    if not isinstance(value, Mapping):
+        return None
+    return {str(label): float(probability) for label, probability in value.items()}
 
 
 def with_default_model_variant(config: dict[str, Any]) -> dict[str, Any]:

@@ -201,6 +201,25 @@ derives internal `training.granularity_sampling` and standalone
 `model.granularities` from those public fields, so use the mode flags rather
 than manually overriding training/model internals for the pilot comparison.
 
+Within `nested-random`, `model.granularity_sampling_mode=global` keeps the
+existing uniform one-granularity-per-step policy. A fixed non-uniform global
+policy uses the separately recorded `fixed_global` mode plus a label-keyed
+probability mapping:
+
+```bash
+python train.py \
+  --config configs/debug_matrix.yaml \
+  --run-id debug-nested-001 \
+  --override model.granularity_sampling_mode=fixed_global \
+  --override 'model.global_sampling_distribution={s: 0.1, m: 0.2, l: 0.3, xl: 0.4}'
+```
+
+The keys must exactly match the resolved granularities, probabilities must be
+finite and nonnegative, and they must sum to one. Uniform distributions remain
+the responsibility of `global`; `fixed_global` is deliberately non-uniform so
+resolved artifacts and reports cannot confuse it with the traditional random
+global baseline.
+
 For the adaptive per-block path, run the nested-random mode with the adaptive
 sampler enabled, then inspect the saved artifacts directly:
 

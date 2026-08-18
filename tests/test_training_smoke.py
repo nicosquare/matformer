@@ -609,6 +609,88 @@ def test_tiny_nested_training_can_sample_one_granularity_for_the_nested_random_g
     )
 
 
+def test_tiny_nested_training_uses_fixed_non_uniform_global_distribution(
+    tmp_path,
+    monkeypatch,
+):
+    output_dir = tmp_path / "dmodel256-pilot-comparison-001"
+    config = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        output_dir=output_dir,
+        overrides=[
+            "model.granularity_sampling_mode=fixed_global",
+            "model.global_sampling_distribution={s: 0.1, m: 0.2, l: 0.3, xl: 0.4}",
+            "run.continuation.enabled=false",
+            "training.max_steps=1",
+            "evaluation.validation.interval_steps=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "outputs.save_checkpoints=false",
+            "evaluation.validation.enabled=false",
+            "evaluation.validation.holdout.examples=1",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 0], [3, 4, 5]],
+            "attention_mask": [[1, 1, 0], [1, 1, 1]],
+        }
+    )
+    model = TinyNestedTrainingModel()
+    captured = {}
+
+    def choose(population, *, weights, k):
+        captured["population"] = list(population)
+        captured["weights"] = list(weights)
+        captured["k"] = k
+        return [1]
+
+    monkeypatch.setattr(
+        training_steps,
+        "dedicated_random",
+        lambda config, stream: SimpleNamespace(choices=choose),
+    )
+
+    result = run_training(
+        config,
+        model=model,
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    with result["metrics_path"].open("r", encoding="utf-8", newline="") as metrics_file:
+        train_rows = [
+            row
+            for row in csv.DictReader(metrics_file)
+            if row["split"] == "train" and row["step"] == "1"
+        ]
+
+    assert captured == {
+        "population": [0, 1, 2, 3],
+        "weights": [0.1, 0.2, 0.3, 0.4],
+        "k": 1,
+    }
+    assert model.train_forward_granularities == ["m"]
+    assert summary["resolved_sampling_mode"] == "fixed_global"
+    assert summary["global_sampling_distribution"] == {
+        "s": 0.1,
+        "m": 0.2,
+        "l": 0.3,
+        "xl": 0.4,
+    }
+    assert [row["granularity"] for row in train_rows] == ["m"]
+    assert train_rows[0]["resolved_sampling_mode"] == "fixed_global"
+    assert json.loads(train_rows[0]["global_sampling_distribution"]) == {
+        "s": 0.1,
+        "m": 0.2,
+        "l": 0.3,
+        "xl": 0.4,
+    }
+    assert float(train_rows[0]["controller_sampled_probability"]) == 0.2
+
+
 def test_refactored_training_flow_writes_representative_artifacts(tmp_path):
     output_dir = tmp_path / "debug-nested-001"
     config = resolve_run_config(
