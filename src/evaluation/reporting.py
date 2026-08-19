@@ -256,6 +256,9 @@ def display_sampling_label_for_curve(sampling_label: str | None) -> str | None:
         return None
     if sampling_label == "global":
         return None
+    uniform_window_match = re.fullmatch(r"uniform_global_h([1-9][0-9]*)", sampling_label)
+    if uniform_window_match is not None:
+        return f"Uniform global (H={uniform_window_match.group(1)})"
     if sampling_label == "fixed_global":
         return "fixed non-uniform global"
     if sampling_label == "per_block":
@@ -292,6 +295,15 @@ def scaling_curve_sampling_label(row: dict[str, Any]) -> str | None:
     if resolved_sampling_mode in (None, ""):
         return None
     normalized_mode = str(resolved_sampling_mode).strip().lower()
+
+    if normalized_mode == "global":
+        interval_value = row.get("global_sampling_interval_steps", 1)
+        try:
+            interval_steps = int(interval_value)
+        except (TypeError, ValueError):
+            interval_steps = 1
+        if interval_steps > 1:
+            return f"uniform_global_h{interval_steps}"
 
     strategy = row.get("adaptive_sampler_strategy")
     strategy = None if strategy in (None, "") else str(strategy).strip().lower()

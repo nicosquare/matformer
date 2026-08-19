@@ -8,6 +8,7 @@ import pytest
 from contextlib import nullcontext
 
 import src.training.distributed as distributed
+import src.training.checkpointing as training_checkpointing
 import src.training.steps as training_steps
 from src.training.panelgrad import PanelGradController
 from src.training.distributed import (
@@ -779,3 +780,76 @@ def test_panelgrad_rank_zero_draw_is_broadcast_with_generator_state(
     assert left["refresh"]["active_epsilon"] == right["refresh"][
         "active_epsilon"
     ]
+
+
+def test_uniform_global_window_draw_and_state_agree_across_ranks(monkeypatch):
+    config = {
+        "model": {
+            "granularity_sampling_mode": "global",
+            "global_sampling_interval_steps": 2,
+            "granularities": ["small", "full"],
+        },
+        "run": {
+            "sampling_mode": "nested-random",
+            "seed": 42,
+            "reproducibility": {"seed_stream_version": 1},
+        },
+        "training": {"granularity_sampling": "random"},
+    }
+    rank = {"value": 0}
+    broadcast_value = {}
+    draw_count = {"value": 0}
+
+    def randrange(count):
+        assert count == 2
+        draw_count["value"] += 1
+        return 1
+
+    def fake_broadcast(tensor, src):
+        assert src == 0
+        if rank["value"] == 0:
+            broadcast_value["index"] = int(tensor.item())
+        else:
+            tensor.fill_(broadcast_value["index"])
+
+    monkeypatch.setattr(torch.distributed, "is_available", lambda: True)
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+    monkeypatch.setattr(torch.distributed, "get_rank", lambda: rank["value"])
+    monkeypatch.setattr(torch.distributed, "broadcast", fake_broadcast)
+    monkeypatch.setattr(
+        training_steps,
+        "dedicated_random",
+        lambda _config, _stream: SimpleNamespace(randrange=randrange),
+    )
+
+    states = [
+        {
+            "global_sampling_state": (
+                training_checkpointing.build_initial_global_sampling_state(config)
+            )
+        }
+        for _ in range(2)
+    ]
+    actions = []
+    for process_rank in (0, 1):
+        rank["value"] = process_rank
+        action = training_steps._select_optimizer_window_action(
+            config,
+            ["small", "full"],
+            torch.device("cpu"),
+            optimizer_step=1,
+            tokens_seen=0,
+            supports_layer_granularities=False,
+            distributed_context=SimpleNamespace(enabled=True, rank=process_rank),
+            adaptive_sampler_state=None,
+            stage_name="training",
+            run_state=states[process_rank],
+        )
+        training_steps._commit_global_sampling_window_action(
+            config, states[process_rank], action
+        )
+        actions.append(action)
+
+    assert actions[0] == actions[1]
+    assert states[0]["global_sampling_state"] == states[1]["global_sampling_state"]
+    assert draw_count["value"] == 1

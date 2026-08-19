@@ -724,6 +724,15 @@ def enrich_scaling_metadata_from_run_config(
             )
             if granularity_sampling_mode is not None:
                 enriched_row["granularity_sampling_mode"] = granularity_sampling_mode
+            global_sampling_interval_steps = (
+                global_sampling_interval_steps_from_saved_config(
+                    config_cache[config_path]
+                )
+            )
+            if global_sampling_interval_steps is not None:
+                enriched_row["global_sampling_interval_steps"] = (
+                    global_sampling_interval_steps
+                )
             membership_correction = membership_correction_from_saved_config(
                 config_cache[config_path]
             )
@@ -775,6 +784,15 @@ def enrich_metrics_metadata_from_run_config(
             )
             if granularity_sampling_mode is not None:
                 enriched_row["granularity_sampling_mode"] = granularity_sampling_mode
+            global_sampling_interval_steps = (
+                global_sampling_interval_steps_from_saved_config(
+                    config_cache[config_path]
+                )
+            )
+            if global_sampling_interval_steps is not None:
+                enriched_row["global_sampling_interval_steps"] = (
+                    global_sampling_interval_steps
+                )
             membership_correction = membership_correction_from_saved_config(
                 config_cache[config_path]
             )
@@ -989,6 +1007,18 @@ def granularity_sampling_mode_from_saved_config(config: dict[str, Any]) -> str |
     if value in (None, ""):
         return None
     return str(value).strip().lower()
+
+
+def global_sampling_interval_steps_from_saved_config(
+    config: dict[str, Any],
+) -> int | None:
+    model = config.get("model")
+    if not isinstance(model, dict):
+        return None
+    value = model.get("global_sampling_interval_steps")
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
 
 
 def with_default_model_variant(config: dict[str, Any]) -> dict[str, Any]:
@@ -4258,6 +4288,14 @@ def scaling_curve_sampling_label(row: dict[str, str]) -> str | None:
     resolved_sampling_mode = row.get("resolved_sampling_mode")
     if resolved_sampling_mode not in (None, ""):
         normalized = str(resolved_sampling_mode).strip().lower()
+        if normalized == "global":
+            interval_value = row.get("global_sampling_interval_steps", 1)
+            try:
+                interval_steps = int(interval_value)
+            except (TypeError, ValueError):
+                interval_steps = 1
+            if interval_steps > 1:
+                return f"uniform_global_h{interval_steps}"
         probabilistic_label = _probabilistic_sampling_label(row)
         if probabilistic_label is not None:
             return probabilistic_label
@@ -4272,6 +4310,14 @@ def scaling_curve_sampling_label(row: dict[str, str]) -> str | None:
     granularity_sampling_mode = row.get("granularity_sampling_mode")
     if granularity_sampling_mode not in (None, ""):
         normalized = str(granularity_sampling_mode).strip().lower()
+        if normalized == "global":
+            interval_value = row.get("global_sampling_interval_steps", 1)
+            try:
+                interval_steps = int(interval_value)
+            except (TypeError, ValueError):
+                interval_steps = 1
+            if interval_steps > 1:
+                return f"uniform_global_h{interval_steps}"
         probabilistic_label = _probabilistic_sampling_label(row)
         if probabilistic_label is not None:
             return probabilistic_label
@@ -4384,6 +4430,9 @@ def display_sampling_label_for_curve(sampling_label: str | None) -> str | None:
         return None
     if sampling_label == "global":
         return None
+    uniform_window_match = re.fullmatch(r"uniform_global_h([1-9][0-9]*)", sampling_label)
+    if uniform_window_match is not None:
+        return f"Uniform global (H={uniform_window_match.group(1)})"
     if sampling_label == "fixed_global":
         return "fixed non-uniform global"
     if sampling_label == "per_block":

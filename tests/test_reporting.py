@@ -308,6 +308,13 @@ def _write_global_policy_run(
     }
     if policy == "uniform":
         model["granularity_sampling_mode"] = "global"
+    elif policy == "uniform_window":
+        model.update(
+            {
+                "granularity_sampling_mode": "global",
+                "global_sampling_interval_steps": decision_interval_steps,
+            }
+        )
     elif policy == "fixed":
         model.update(
             {
@@ -359,7 +366,8 @@ def _write_global_policy_run(
     fields = [
         "run_id", "step", "split", "tokens_seen", "granularity",
         "controller_action", "controller_window_index",
-        "controller_sampled_probability",
+        "controller_sampled_probability", "global_sampling_window_index",
+        "global_sampling_window_progress",
     ]
     with (run_dir / "metrics.csv").open("w", encoding="utf-8", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=fields)
@@ -385,6 +393,16 @@ def _write_global_policy_run(
                             if policy == "fixed"
                             else ""
                         )
+                    ),
+                    "global_sampling_window_index": (
+                        (step - 1) // decision_interval_steps
+                        if policy == "uniform_window"
+                        else ""
+                    ),
+                    "global_sampling_window_progress": (
+                        ((step - 1) % decision_interval_steps) + 1
+                        if policy == "uniform_window"
+                        else ""
                     ),
                 }
             )
@@ -2949,6 +2967,28 @@ def test_global_sampling_histories_use_committed_metrics_actions_for_all_policie
     assert len({history.comparison_key for history in histories.values()}) == 1
 
 
+def test_uniform_global_window_reporting_identity_and_decision_count(tmp_path):
+    from src.evaluation.reporting_io import iter_global_sampling_histories
+
+    actions = ["micro"] * 12_207
+    _write_global_policy_run(
+        tmp_path,
+        run_id="uniform-window25-run",
+        policy="uniform_window",
+        actions=actions,
+        decision_interval_steps=25,
+    )
+
+    [history] = list(iter_global_sampling_histories(tmp_path))
+
+    assert history.policy_identity == "uniform_global_h25"
+    assert history.policy_label == "Uniform global (H=25)"
+    assert history.decision_count == 489
+    assert history.actions[24].decision_index == 0
+    assert history.actions[25].decision_index == 1
+    assert history.actions[-1].decision_index == 488
+
+
 def test_global_sampling_bins_preserve_step_resolution_and_partial_final_bin(tmp_path):
     from src.evaluation.reporting import global_sampling_bin_series
     from src.evaluation.reporting_io import iter_global_sampling_histories
@@ -3108,6 +3148,53 @@ def test_non_panelgrad_reporting_labels_remain_unchanged():
         display_sampling_label_for_curve("fixed_global")
         == "fixed non-uniform global"
     )
+
+
+def test_uniform_global_window_scaling_identity_is_distinct():
+    row = {
+        "sampling_mode": "nested-random",
+        "resolved_sampling_mode": "global",
+        "global_sampling_interval_steps": 25,
+    }
+
+    assert scaling_curve_sampling_label(row) == "uniform_global_h25"
+    assert (
+        display_sampling_label_for_curve("uniform_global_h25")
+        == "Uniform global (H=25)"
+    )
+
+
+def test_uniform_global_window_interval_is_enriched_from_config(tmp_path):
+    from src.evaluation.reporting_io import enrich_scaling_metadata_from_run_config
+
+    run_dir = tmp_path / "uniform-window"
+    run_dir.mkdir()
+    (run_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "run": {"sampling_mode": "nested-random"},
+                "model": {
+                    "granularity_sampling_mode": "global",
+                    "global_sampling_interval_steps": 25,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    [row] = enrich_scaling_metadata_from_run_config(
+        tmp_path,
+        [
+            {
+                "run_id": "uniform-window",
+                "sampling_mode": "nested-random",
+                "_source_csv": str(run_dir / "scaling_results.csv"),
+            }
+        ],
+    )
+
+    assert row["global_sampling_interval_steps"] == 25
+    assert scaling_curve_sampling_label(row) == "uniform_global_h25"
 
 
 def test_size_reporting_does_not_merge_distinct_fixed_global_distributions():

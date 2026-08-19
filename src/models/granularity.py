@@ -565,6 +565,11 @@ def summarize_granularity_pattern_from_config(
                 separators=(",", ":"),
             )
         )
+    if sampling_mode == "global" and resolved_run_mode == "nested-random":
+        repeatable_source.append(
+            "model.global_sampling_interval_steps="
+            f"{int(model.get('global_sampling_interval_steps', 1))}"
+        )
     if resolved_run_mode == "standalone" and run.get("granularity") is not None:
         repeatable_source.append(f"run.granularity={run['granularity']}")
 

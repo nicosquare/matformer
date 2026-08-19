@@ -291,6 +291,7 @@ def _select_optimizer_window_action(
     distributed_context=None,
     adaptive_sampler_state=None,
     stage_name: str,
+    run_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     model_sampling_mode = str(
         config["model"].get("granularity_sampling_mode", "global")
@@ -373,6 +374,38 @@ def _select_optimizer_window_action(
                 config, granularities, device
             ),
         }
+    if model_sampling_mode == "global" and run_sampling_mode == "nested-random":
+        if run_state is None:
+            raise ConfigError("Uniform global sampling requires continuation state")
+        state = run_state.get("global_sampling_state")
+        if state is None:
+            state = training_checkpointing.build_initial_global_sampling_state(config)
+            run_state["global_sampling_state"] = state
+        state = training_checkpointing.validate_global_sampling_state(
+            state,
+            config=config,
+        )
+        run_state["global_sampling_state"] = state
+        interval = int(state["interval_steps"])
+        if int(state["successful_updates_in_window"]) == interval:
+            state["window_index"] = int(state["window_index"]) + 1
+            state["successful_updates_in_window"] = 0
+            state["held_granularity"] = None
+        if state["held_granularity"] is None:
+            state["held_granularity"] = select_training_granularities(
+                config, granularities, device
+            )[0]
+        return {
+            "kind": "global",
+            "granularities": [str(state["held_granularity"])],
+            "global_sampling_interval_steps": interval,
+            "global_sampling_window_index": int(state["window_index"]),
+            # This is committed progress at selection time. It is updated after
+            # the optimizer commits so metrics expose the post-commit value.
+            "global_sampling_window_progress": int(
+                state["successful_updates_in_window"]
+            ),
+        }
     action = {
         "kind": "global",
         "granularities": select_training_granularities(
@@ -385,6 +418,41 @@ def _select_optimizer_window_action(
             config["model"]["global_sampling_distribution"][selected]
         )
     return action
+
+
+def _commit_global_sampling_window_action(
+    config: Mapping[str, Any],
+    run_state: dict[str, Any],
+    action: dict[str, Any],
+) -> None:
+    """Advance a held uniform action only after its optimizer update commits."""
+
+    if "global_sampling_window_index" not in action:
+        return
+    state = run_state.get("global_sampling_state")
+    if not isinstance(state, dict):
+        raise ConfigError("Uniform global sampling state is missing at commit")
+    selected = str(action["granularities"][0])
+    if selected != state["held_granularity"]:
+        raise ConfigError("Committed uniform global action does not match held state")
+    if int(action["global_sampling_window_index"]) != int(state["window_index"]):
+        raise ConfigError("Committed uniform global action has the wrong window index")
+    if int(action["global_sampling_window_progress"]) != int(
+        state["successful_updates_in_window"]
+    ):
+        raise ConfigError("Committed uniform global action has stale window progress")
+
+    state["successful_updates_in_window"] = int(
+        state["successful_updates_in_window"]
+    ) + 1
+    state["total_successful_updates"] = int(state["total_successful_updates"]) + 1
+    state["exposure_counts"][selected] = int(
+        state["exposure_counts"][selected]
+    ) + 1
+    action["global_sampling_window_progress"] = int(
+        state["successful_updates_in_window"]
+    )
+    run_state["global_sampling_state"] = state
 
 
 def _training_action_heartbeat_fields(action: Mapping[str, Any]) -> dict[str, Any]:
@@ -412,6 +480,13 @@ def _training_action_heartbeat_fields(action: Mapping[str, Any]) -> dict[str, An
         fields["controller_sampled_probability"] = float(
             sampled_probability
         )
+    for field in (
+        "global_sampling_interval_steps",
+        "global_sampling_window_index",
+        "global_sampling_window_progress",
+    ):
+        if action.get(field) is not None:
+            fields[field] = int(action[field])
     return fields
 
 
@@ -670,6 +745,7 @@ def train_for_steps(
                         distributed_context=distributed_context,
                         adaptive_sampler_state=adaptive_sampler_state,
                         stage_name=stage_name,
+                        run_state=run_state,
                     )
                     optimizer.zero_grad(set_to_none=True)
                     local_loss_numerators: dict[str, float] = {}
@@ -798,6 +874,11 @@ def train_for_steps(
                         run_state["sampler_state"] = sampler_state
                     if probabilistic_controller is not None:
                         probabilistic_controller.record_successful_optimizer_step()
+                    _commit_global_sampling_window_action(
+                        config,
+                        run_state,
+                        action,
+                    )
                     if panelgrad_controller is not None:
                         panelgrad_controller.commit_pending_action(
                             completed_step=step
@@ -1110,6 +1191,27 @@ def _runtime_sampler_artifact_fields(
     panelgrad_state = run_state.get("panelgrad_state")
     if isinstance(panelgrad_state, Mapping):
         fields.update(build_compact_controller_metric_fields(panelgrad_state))
+    global_sampling_state = run_state.get("global_sampling_state")
+    if isinstance(global_sampling_state, Mapping):
+        fields.update(
+            {
+                "global_sampling_interval_steps": int(
+                    global_sampling_state["interval_steps"]
+                ),
+                "global_sampling_window_index": int(
+                    global_sampling_state["window_index"]
+                ),
+                "global_sampling_window_progress": int(
+                    global_sampling_state["successful_updates_in_window"]
+                ),
+                "global_sampling_total_successful_updates": int(
+                    global_sampling_state["total_successful_updates"]
+                ),
+                "global_sampling_exposure_counts": json_artifact_value(
+                    global_sampling_state["exposure_counts"]
+                ),
+            }
+        )
     return fields
 
 
@@ -1599,6 +1701,9 @@ def build_training_metric_row(
         "granularity_sampling_mode": model.get("granularity_sampling_mode"),
         "global_sampling_distribution": json_artifact_value(
             model.get("global_sampling_distribution")
+        ),
+        "global_sampling_interval_steps": model.get(
+            "global_sampling_interval_steps", 1
         ),
         "granularity": granularity,
         **resolved_granularity_artifact_fields(model),

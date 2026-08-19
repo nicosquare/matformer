@@ -656,6 +656,11 @@ def test_artifacts_record_explicit_nested_random_global_per_block_and_adaptive_p
         "requested_alias": None,
         "layer_count": config["model"]["num_layers"],
         "available_granularities": ["s", "m", "l", "xl"],
+        **(
+            {"global_sampling_interval_steps": 1}
+            if sampling_mode == "global"
+            else {}
+        ),
     }
     if expected_adaptive_sampler is None:
         assert "adaptive_sampler_strategy" not in saved_config["model"]

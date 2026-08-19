@@ -125,6 +125,9 @@ def main(argv: list[str] | None = None) -> None:
                     "resolved_sampling_mode": resolved["model"].get(
                         "resolved_sampling_mode"
                     ),
+                    "global_sampling_interval_steps": resolved["model"].get(
+                        "global_sampling_interval_steps"
+                    ),
                     "adaptive_sampler_strategy": resolved["model"].get(
                         "adaptive_sampler_strategy"
                     ),

@@ -298,6 +298,90 @@ def test_requested_run_sampling_mode_does_not_force_per_block_model_mode():
     assert resolved["run"]["sampling_mode"] == "nested-random"
     assert resolved["training"]["granularity_sampling"] == "random"
     assert resolved["model"]["granularity_sampling_mode"] == "global"
+    assert resolved["model"]["global_sampling_interval_steps"] == 1
+
+
+def test_uniform_global_sampling_interval_resolves_for_nested_random():
+    resolved = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        overrides=[
+            "model.granularity_sampling_mode=global",
+            "model.global_sampling_interval_steps=25",
+        ],
+    )
+
+    assert resolved["run"]["sampling_mode"] == "nested-random"
+    assert resolved["model"]["global_sampling_interval_steps"] == 25
+    assert resolved["model"]["granularity_pattern_provenance"][
+        "global_sampling_interval_steps"
+    ] == 25
+
+
+@pytest.mark.parametrize(
+    "value",
+    [0, -1, 1.5, True, "two"],
+)
+def test_uniform_global_sampling_interval_rejects_invalid_values(value):
+    with pytest.raises(
+        ConfigError,
+        match="model.global_sampling_interval_steps must be a positive integer",
+    ):
+        resolve_run_config(
+            "configs/dmodel256_pilot_comparison.yaml",
+            overrides={
+                "model.granularity_sampling_mode": "global",
+                "model.global_sampling_interval_steps": value,
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {
+            "model.granularity_sampling_mode": "fixed_global",
+            "model.global_sampling_distribution": {
+                "s": 0.1,
+                "m": 0.2,
+                "l": 0.3,
+                "xl": 0.4,
+            },
+        },
+        {"model.granularity_sampling_mode": "per_block"},
+        {
+            "model.granularity_sampling_mode": "adaptive_global",
+            "model.adaptive_sampler_strategy": "panelgrad",
+            "model.panelgrad": {},
+        },
+    ],
+)
+def test_uniform_global_sampling_interval_rejects_other_sampling_policies(overrides):
+    with pytest.raises(
+        ConfigError,
+        match="model.global_sampling_interval_steps is valid only for",
+    ):
+        resolve_run_config(
+            "configs/dmodel256_pilot_comparison.yaml",
+            overrides={**overrides, "model.global_sampling_interval_steps": 25},
+        )
+
+
+def test_uniform_global_sampling_interval_rejects_nested_all_and_standalone():
+    with pytest.raises(ConfigError, match="valid only for nested-random"):
+        resolve_run_config(
+            "configs/dmodel256_pilot_comparison.yaml",
+            overrides={
+                "run.sampling_mode": "nested-all",
+                "model.granularity_sampling_mode": "global",
+                "model.global_sampling_interval_steps": 25,
+            },
+        )
+    with pytest.raises(ConfigError, match="valid only for nested-random"):
+        resolve_run_config(
+            "configs/debug_matrix.yaml",
+            run_id="debug-standalone-m-001",
+            overrides={"model.global_sampling_interval_steps": 25},
+        )
 
 
 def test_fixed_global_sampling_resolves_a_distinct_non_uniform_policy():
@@ -448,6 +532,11 @@ def test_explicit_model_sampling_modes_preserve_nested_random_run_mode(
         "requested_alias": None,
         "layer_count": resolved["model"]["num_layers"],
         "available_granularities": ["s", "m", "l", "xl"],
+        **(
+            {"global_sampling_interval_steps": 1}
+            if sampling_mode == "global"
+            else {}
+        ),
     }
 
     runtime_pattern = build_granularity_pattern(

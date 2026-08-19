@@ -33,6 +33,7 @@ __all__ = [
     "enrich_scaling_metadata_from_run_config",
     "granularity_sampling_mode_from_saved_config",
     "global_sampling_distribution_from_saved_config",
+    "global_sampling_interval_steps_from_saved_config",
     "iter_controller_granularity_timelines",
     "iter_global_sampling_histories",
     "iter_panelgrad_histories",
@@ -237,8 +238,17 @@ def _read_global_sampling_history(
     sampling_mode = str(model.get("granularity_sampling_mode") or "global").lower()
     strategy = str(model.get("adaptive_sampler_strategy") or "").lower()
     fixed_distribution: dict[str, float] | None = None
+    uniform_interval = 1
     if sampling_mode == "global":
-        policy_identity, policy_label = "uniform_global", "Uniform global"
+        uniform_interval = _positive_int(
+            model.get("global_sampling_interval_steps", 1),
+            "config.model.global_sampling_interval_steps",
+        )
+        if uniform_interval == 1:
+            policy_identity, policy_label = "uniform_global", "Uniform global"
+        else:
+            policy_identity = f"uniform_global_h{uniform_interval}"
+            policy_label = f"Uniform global (H={uniform_interval})"
     elif sampling_mode == "fixed_global":
         fixed_distribution = _fixed_global_distribution(
             model, ordered_granularities
@@ -326,9 +336,31 @@ def _read_global_sampling_history(
 
         if policy_identity == "thompson_global":
             decision_index = (step - 1) // int(thompson_interval)
+        elif policy_identity.startswith("uniform_global"):
+            decision_index = (step - 1) // int(uniform_interval)
         else:
             decision_index = step - 1
         decision_indices.add(decision_index)
+        if policy_identity.startswith("uniform_global"):
+            recorded_window = row.get("global_sampling_window_index")
+            if recorded_window not in (None, "") and _csv_nonnegative_int(
+                recorded_window,
+                f"metrics.csv step {step} global sampling window index",
+            ) != decision_index:
+                raise ValueError(
+                    f"metrics.csv step {step} has inconsistent global sampling "
+                    "window index"
+                )
+            recorded_progress = row.get("global_sampling_window_progress")
+            expected_progress = ((step - 1) % int(uniform_interval)) + 1
+            if recorded_progress not in (None, "") and _csv_positive_int(
+                recorded_progress,
+                f"metrics.csv step {step} global sampling window progress",
+            ) != expected_progress:
+                raise ValueError(
+                    f"metrics.csv step {step} has inconsistent global sampling "
+                    "window progress"
+                )
         probability_raw = row.get("controller_sampled_probability")
         sampled_probability = None
         if probability_raw not in (None, ""):
@@ -1201,6 +1233,15 @@ def enrich_scaling_metadata_from_run_config(
                 enriched_row["global_sampling_distribution"] = (
                     global_sampling_distribution
                 )
+            global_sampling_interval_steps = (
+                global_sampling_interval_steps_from_saved_config(
+                    config_cache[config_path]
+                )
+            )
+            if global_sampling_interval_steps is not None:
+                enriched_row["global_sampling_interval_steps"] = (
+                    global_sampling_interval_steps
+                )
             membership_correction = membership_correction_from_saved_config(
                 config_cache[config_path]
             )
@@ -1261,6 +1302,15 @@ def enrich_metrics_metadata_from_run_config(
             if global_sampling_distribution is not None:
                 enriched_row["global_sampling_distribution"] = (
                     global_sampling_distribution
+                )
+            global_sampling_interval_steps = (
+                global_sampling_interval_steps_from_saved_config(
+                    config_cache[config_path]
+                )
+            )
+            if global_sampling_interval_steps is not None:
+                enriched_row["global_sampling_interval_steps"] = (
+                    global_sampling_interval_steps
                 )
             membership_correction = membership_correction_from_saved_config(
                 config_cache[config_path]
@@ -1859,6 +1909,18 @@ def global_sampling_distribution_from_saved_config(
     if not isinstance(value, Mapping):
         return None
     return {str(label): float(probability) for label, probability in value.items()}
+
+
+def global_sampling_interval_steps_from_saved_config(
+    config: dict[str, Any],
+) -> int | None:
+    model = config.get("model")
+    if not isinstance(model, dict):
+        return None
+    value = model.get("global_sampling_interval_steps")
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
 
 
 def with_default_model_variant(config: dict[str, Any]) -> dict[str, Any]:

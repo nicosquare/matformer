@@ -609,6 +609,83 @@ def test_tiny_nested_training_can_sample_one_granularity_for_the_nested_random_g
     )
 
 
+def test_uniform_global_window_records_committed_metrics_heartbeats_and_summary(
+    tmp_path,
+    monkeypatch,
+):
+    output_dir = tmp_path / "dmodel256-pilot-comparison-001"
+    config = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        output_dir=output_dir,
+        overrides=[
+            "model.granularity_sampling_mode=global",
+            "model.global_sampling_interval_steps=2",
+            "run.continuation.enabled=false",
+            "training.max_steps=3",
+            "training.heartbeat_step_interval=1",
+            "training.heartbeat_time_interval_seconds=3600",
+            "evaluation.validation.interval_steps=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "outputs.save_checkpoints=false",
+            "evaluation.validation.enabled=false",
+            "evaluation.validation.holdout.examples=1",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [[index + 1, index + 2, index + 3] for index in range(8)],
+            "attention_mask": [[1, 1, 1] for _ in range(8)],
+        }
+    )
+    model = TinyNestedTrainingModel()
+    sampled_indices = iter([2, 1])
+    monkeypatch.setattr(
+        training_steps,
+        "dedicated_random",
+        lambda config, stream: SimpleNamespace(
+            randrange=lambda count: next(sampled_indices)
+        ),
+    )
+
+    result = run_training(
+        config,
+        model=model,
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    with result["metrics_path"].open("r", encoding="utf-8", newline="") as file:
+        rows = [row for row in csv.DictReader(file) if row["split"] == "train"]
+    assert [row["granularity"] for row in rows] == ["l", "l", "m"]
+    assert [row["global_sampling_interval_steps"] for row in rows] == ["2"] * 3
+    assert [row["global_sampling_window_index"] for row in rows] == ["0", "0", "1"]
+    assert [row["global_sampling_window_progress"] for row in rows] == ["1", "2", "1"]
+
+    heartbeats = [
+        event
+        for event in _read_heartbeat_events(output_dir / "heartbeats.jsonl")
+        if event.get("event_type") == "heartbeat"
+        and event.get("progress_state") == "optimizer_step_committed"
+    ]
+    assert [event["global_sampling_window_index"] for event in heartbeats] == [0, 0, 1]
+    assert [event["global_sampling_window_progress"] for event in heartbeats] == [1, 2, 1]
+
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    assert summary["global_sampling_interval_steps"] == 2
+    assert summary["global_sampling_state"]["total_successful_updates"] == 3
+    assert summary["global_sampling_state"]["exposure_counts"] == {
+        "s": 0,
+        "m": 1,
+        "l": 2,
+        "xl": 0,
+    }
+    assert summary["continuation_state"]["global_sampling_state"] == summary[
+        "global_sampling_state"
+    ]
+
+
 def test_tiny_nested_training_uses_fixed_non_uniform_global_distribution(
     tmp_path,
     monkeypatch,

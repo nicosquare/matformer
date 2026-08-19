@@ -284,6 +284,15 @@ exactly one in the resolved configuration:
   "${SLURM_COMMON[@]}" \
   --override "model.granularity_sampling_mode=fixed_global" \
   --override 'model.global_sampling_distribution={g125: 0.045992115637319315, g250: 0.052562417871222074, g375: 0.06132282084975909, g500: 0.073587385019710905, g625: 0.091984231274638631, g750: 0.12264564169951818, g875: 0.18396846254927726, g1000: 0.36793692509855452}'
+
+"${SBATCH[@]}" --time=24:00:00 --gres=gpu:1 \
+  --job-name=100m-uniform-window25 \
+  scripts/slurm_dmodel256_pilot.sh \
+  --mode nested-random \
+  --run-id "100m-prepared-slicing-uniform-window25-s$EXPERIMENT_SEED" \
+  "${SLURM_COMMON[@]}" \
+  --override "model.granularity_sampling_mode=global" \
+  --override "model.global_sampling_interval_steps=25"
 ```
 
 Nested-all is the high-compute joint-training reference:
@@ -421,10 +430,23 @@ Confirm the isolated contract before submitting jobs:
   "${FOUR_GRANULARITY_OVERRIDES[@]}" \
   --override "model.granularity_sampling_mode=global" \
   --preflight
+
+"$PYTHON_BIN" train.py \
+  --config "$BASE" \
+  --output-root "$OUT_4G" \
+  --override "run.run_id=preflight-100m-slicing-4g-uniform-window25-s$EXPERIMENT_SEED" \
+  "${FOUR_GRANULARITY_OVERRIDES[@]}" \
+  --override "model.granularity_sampling_mode=global" \
+  --override "model.global_sampling_interval_steps=25" \
+  --preflight
 ```
 
 The preflight must report the four ordered granularities and retain 8,192
-tokens per optimizer step, 12,207 total updates, and 1,000 warmup updates.
+tokens per optimizer step, 12,207 total updates, and 1,000 warmup updates. The
+second preflight must additionally resolve `global_sampling_interval_steps=25`.
+This is the no-controller control for the Thompson
+`decision_interval_steps=25` run: it draws one independent uniform width per
+25-update window and incurs no controller measurement or evaluation cost.
 
 Define one small submission helper, then submit the matched matrix. Slurm
 resource options remain before the script path so they are not forwarded to
@@ -448,6 +470,11 @@ submit_4g() {
 submit_4g 100m-4g-random-global nested-random \
   "100m-prepared-slicing-4g-random-global-s$EXPERIMENT_SEED" \
   --override "model.granularity_sampling_mode=global"
+
+submit_4g 100m-4g-uniform-window25 nested-random \
+  "100m-prepared-slicing-4g-uniform-window25-s$EXPERIMENT_SEED" \
+  --override "model.granularity_sampling_mode=global" \
+  --override "model.global_sampling_interval_steps=25"
 
 submit_4g 100m-4g-fixed-global nested-random \
   "100m-prepared-slicing-4g-fixed-global-inverse-membership-s$EXPERIMENT_SEED" \
@@ -481,6 +508,50 @@ submit_4g 100m-4g-panelgrad-l2 nested-random \
   --override "model.adaptive_sampler_strategy=panelgrad" \
   --override 'model.panelgrad={"importance_metric":"gradient_l2","refresh_interval_steps":25,"eta":1.0e-12,"temperature":1.0,"epsilon_schedule":{"type":"linear","start":0.5,"end":0.1,"duration_steps":12207}}'
 ```
+
+After the uniform-window run completes, verify its resolved contract and
+decision boundaries:
+
+```bash
+export RUN_ID_4G="100m-prepared-slicing-4g-uniform-window25-s$EXPERIMENT_SEED"
+export RUN_DIR_4G="$(find "$OUT_4G" -type d -name "$RUN_ID_4G" -print -quit)"
+test -n "$RUN_DIR_4G"
+
+python - "$RUN_DIR_4G" <<'PY'
+import csv
+import json
+import pathlib
+import sys
+
+run_dir = pathlib.Path(sys.argv[1])
+config = json.loads((run_dir / "config.json").read_text())
+summary = json.loads((run_dir / "run_summary.json").read_text())
+rows = [
+    row for row in csv.DictReader((run_dir / "metrics.csv").open())
+    if row["split"] == "train"
+]
+assert config["model"]["global_sampling_interval_steps"] == 25
+assert len(rows) == 12_207
+assert rows[0]["global_sampling_window_index"] == "0"
+assert rows[0]["global_sampling_window_progress"] == "1"
+assert rows[24]["global_sampling_window_index"] == "0"
+assert rows[24]["global_sampling_window_progress"] == "25"
+assert rows[25]["global_sampling_window_index"] == "1"
+assert rows[25]["global_sampling_window_progress"] == "1"
+state = summary["global_sampling_state"]
+assert state["total_successful_updates"] == 12_207
+assert sum(state["exposure_counts"].values()) == 12_207
+assert (len(rows) + 24) // 25 == 489
+print("verified 12,207 updates and 489 uniform decisions")
+PY
+
+test -r "$RUN_DIR_4G/final_holdout_results.json"
+```
+
+Interpret this control against both global Thompson and ordinary per-step
+uniform random. If it matches Thompson, the gain favors temporal batching. If
+it matches per-step random, the gain favors adaptation. An intermediate result
+indicates that temporal batching and adaptive decisions both contribute.
 
 For the four-width inverse-membership policy, the incremental FFN blocks have
 memberships 4, 3, 2, and 1. Normalizing their inverse memberships gives the

@@ -50,6 +50,11 @@ METRICS_COLUMNS = [
     "resolved_sampling_mode",
     "granularity_sampling_mode",
     "global_sampling_distribution",
+    "global_sampling_interval_steps",
+    "global_sampling_window_index",
+    "global_sampling_window_progress",
+    "global_sampling_total_successful_updates",
+    "global_sampling_exposure_counts",
     "correction_mode",
     "membership_correction",
     "granularity",
@@ -222,6 +227,8 @@ RUN_SUMMARY_FIELDS = [
     "requested_granularity_sampling_alias",
     "granularity_sampling_mode",
     "global_sampling_distribution",
+    "global_sampling_interval_steps",
+    "global_sampling_state",
     "granularity_pattern_provenance",
     "granularity_pattern_summary",
     "granularity_mode",
@@ -870,6 +877,10 @@ def build_run_summary(
         "global_sampling_distribution": model.get(
             "global_sampling_distribution"
         ),
+        "global_sampling_interval_steps": model.get(
+            "global_sampling_interval_steps", 1
+        ),
+        "global_sampling_state": None,
         "granularity_pattern_provenance": _granularity_pattern_provenance(config),
         "granularity_pattern_summary": _granularity_pattern_summary(config),
         **resolved_granularity_artifact_fields(model),
@@ -986,6 +997,13 @@ def build_run_summary(
 
     if extra_fields:
         summary.update(extra_fields)
+    if isinstance(summary.get("global_sampling_state"), Mapping):
+        summary["continuation_state"] = {
+            **dict(summary["continuation_state"]),
+            "global_sampling_state": copy_json_mapping(
+                summary["global_sampling_state"]
+            ),
+        }
 
     _require_fields(summary, RUN_SUMMARY_FIELDS, "run_summary.json")
     return summary
@@ -1039,7 +1057,7 @@ def _build_continuation_state(
             elif status == "completed":
                 continuation_status = "completed"
 
-    return {
+    resolved = {
         "run_id": run["run_id"],
         "output_dir": run["output_dir"],
         "latest_checkpoint_path": continuation.get("latest_checkpoint_path"),
@@ -1048,6 +1066,11 @@ def _build_continuation_state(
         "status": continuation_status,
         "resume_count": continuation.get("resume_count", 0),
     }
+    if isinstance(continuation.get("global_sampling_state"), Mapping):
+        resolved["global_sampling_state"] = copy_json_mapping(
+            continuation["global_sampling_state"]
+        )
+    return resolved
 
 
 def _build_warmup_policy(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -2874,6 +2897,11 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "resolved_sampling_mode": None,
         "granularity_sampling_mode": None,
         "global_sampling_distribution": None,
+        "global_sampling_interval_steps": None,
+        "global_sampling_window_index": None,
+        "global_sampling_window_progress": None,
+        "global_sampling_total_successful_updates": None,
+        "global_sampling_exposure_counts": None,
         "correction_mode": None,
         "membership_correction": None,
         "granularity_pattern_summary": None,
@@ -2984,6 +3012,7 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "adaptive_sampler_previous_pattern",
         "adaptive_reward_summary",
         "adaptive_correction_penalty_summary",
+        "global_sampling_exposure_counts",
         "granularities",
         "granularity_prefixes",
         "granularity_prefix_widths",

@@ -1235,6 +1235,14 @@ def _save_model_checkpoint_rank_zero(
             raise ConfigError(str(error)) from error
     else:
         panelgrad_state = None
+    global_sampling_state = run_state.get("global_sampling_state")
+    if uses_uniform_global_sampling_windows(config):
+        global_sampling_state = validate_global_sampling_state(
+            global_sampling_state,
+            config=config,
+        )
+    else:
+        global_sampling_state = None
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -1335,6 +1343,7 @@ def _save_model_checkpoint_rank_zero(
             "adaptive_sampler_state": run_state.get("adaptive_sampler_state"),
             "probabilistic_controller_state": probabilistic_controller_state,
             "panelgrad_state": panelgrad_state,
+            "global_sampling_state": global_sampling_state,
             "adaptive_sampler_previous_loss": run_state.get(
                 "adaptive_sampler_previous_loss"
             ),
@@ -1859,6 +1868,7 @@ def build_initial_continuation_state(config: dict[str, Any]) -> dict[str, Any]:
         "adaptive_sampler_state": _build_initial_adaptive_sampler_state(config),
         "probabilistic_controller_state": None,
         "panelgrad_state": None,
+        "global_sampling_state": build_initial_global_sampling_state(config),
         "adaptive_sampler_previous_loss": None,
         "adaptive_sampler_previous_pattern": None,
         "adaptive_reward_summary": None,
@@ -1914,9 +1924,141 @@ def update_run_continuation_state(
         "step",
         "epoch",
         "batch_index",
+        "global_sampling_state",
     ]:
         if key in state and state[key] is not None:
-            continuation[key] = state[key]
+            continuation[key] = copy.deepcopy(state[key])
+
+
+def uses_uniform_global_sampling_windows(config: Mapping[str, Any]) -> bool:
+    model = config.get("model", {})
+    run = config.get("run", {})
+    return bool(
+        isinstance(model, Mapping)
+        and isinstance(run, Mapping)
+        and model.get("granularity_sampling_mode") == "global"
+        and run.get("sampling_mode") == "nested-random"
+    )
+
+
+def build_initial_global_sampling_state(
+    config: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    if not uses_uniform_global_sampling_windows(config):
+        return None
+    model = config["model"]
+    granularities = [str(label) for label in model.get("granularities", [])]
+    return {
+        "schema_version": 1,
+        "interval_steps": int(model.get("global_sampling_interval_steps", 1)),
+        "held_granularity": None,
+        "window_index": 0,
+        "successful_updates_in_window": 0,
+        "total_successful_updates": 0,
+        "exposure_counts": {label: 0 for label in granularities},
+    }
+
+
+def validate_global_sampling_state(
+    state: Mapping[str, Any] | None,
+    *,
+    config: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Validate the compact continuation state for uniform global windows."""
+
+    if not uses_uniform_global_sampling_windows(config):
+        if state is not None:
+            raise ConfigError(
+                "global sampling window state is valid only for nested-random "
+                "uniform global runs"
+            )
+        return None
+    if not isinstance(state, Mapping):
+        raise ConfigError("Checkpoint global sampling window state is missing")
+
+    required = {
+        "schema_version",
+        "interval_steps",
+        "held_granularity",
+        "window_index",
+        "successful_updates_in_window",
+        "total_successful_updates",
+        "exposure_counts",
+    }
+    missing = required - set(state)
+    if missing:
+        raise ConfigError(
+            "Checkpoint global sampling window state is incomplete: "
+            f"{sorted(missing)}"
+        )
+    normalized = copy.deepcopy(dict(state))
+    integer_fields = (
+        "schema_version",
+        "interval_steps",
+        "window_index",
+        "successful_updates_in_window",
+        "total_successful_updates",
+    )
+    for field in integer_fields:
+        value = normalized[field]
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ConfigError(
+                f"Checkpoint global sampling window {field} must be an integer"
+            )
+    if normalized["schema_version"] != 1:
+        raise ConfigError("Unsupported global sampling window state schema")
+    expected_interval = int(
+        config["model"].get("global_sampling_interval_steps", 1)
+    )
+    if normalized["interval_steps"] != expected_interval:
+        raise ConfigError(
+            "Checkpoint global sampling interval does not match config"
+        )
+    window_index = normalized["window_index"]
+    progress = normalized["successful_updates_in_window"]
+    total = normalized["total_successful_updates"]
+    if window_index < 0 or total < 0 or not 0 <= progress <= expected_interval:
+        raise ConfigError("Checkpoint global sampling window progress is invalid")
+
+    granularities = [
+        str(label) for label in config["model"].get("granularities", [])
+    ]
+    exposures = normalized["exposure_counts"]
+    if not isinstance(exposures, Mapping) or set(exposures) != set(granularities):
+        raise ConfigError(
+            "Checkpoint global sampling exposure labels do not match config"
+        )
+    normalized_exposures: dict[str, int] = {}
+    for label in granularities:
+        count = exposures[label]
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ConfigError(
+                "Checkpoint global sampling exposure counts must be "
+                "nonnegative integers"
+            )
+        normalized_exposures[label] = int(count)
+    normalized["exposure_counts"] = normalized_exposures
+    if sum(normalized_exposures.values()) != total:
+        raise ConfigError(
+            "Checkpoint global sampling exposures do not match successful updates"
+        )
+
+    held = normalized["held_granularity"]
+    if total == 0:
+        if window_index != 0 or progress != 0 or held is not None:
+            raise ConfigError("Checkpoint initial global sampling state is invalid")
+    else:
+        expected_window = (total - 1) // expected_interval
+        expected_progress = ((total - 1) % expected_interval) + 1
+        if window_index != expected_window or progress != expected_progress:
+            raise ConfigError(
+                "Checkpoint global sampling window counters are inconsistent"
+            )
+        if held not in granularities:
+            raise ConfigError(
+                "Checkpoint held global granularity does not match config"
+            )
+    return normalized
 
 
 def _build_initial_adaptive_sampler_state(
@@ -2283,6 +2425,11 @@ def load_checkpoint_state(
             ),
             "probabilistic_controller_state": None,
             "panelgrad_state": None,
+            "global_sampling_state": (
+                build_initial_global_sampling_state(config)
+                if config is not None
+                else None
+            ),
         }
         if output_dir is not None:
             state["output_dir"] = str(output_dir)
@@ -2386,6 +2533,14 @@ def load_checkpoint_state(
             raise ConfigError(str(error)) from error
     elif config is not None:
         panelgrad_state = None
+    global_sampling_state = checkpoint.get("global_sampling_state")
+    if config is not None and uses_uniform_global_sampling_windows(config):
+        global_sampling_state = validate_global_sampling_state(
+            global_sampling_state,
+            config=config,
+        )
+    elif config is not None:
+        global_sampling_state = None
     if config is not None and config.get("dataset", {}).get("mode") == "packed_mmap":
         expected_data_hashes = {
             "corpus_hash": config.get("corpus_hash"),
@@ -2487,6 +2642,7 @@ def load_checkpoint_state(
         "adaptive_sampler_state": checkpoint.get("adaptive_sampler_state"),
         "probabilistic_controller_state": probabilistic_controller_state,
         "panelgrad_state": panelgrad_state,
+        "global_sampling_state": global_sampling_state,
         "adaptive_sampler_previous_loss": checkpoint.get(
             "adaptive_sampler_previous_loss"
         ),

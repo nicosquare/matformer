@@ -264,6 +264,7 @@ def resolve_run_config(
         explicit_override_keys=explicit_override_keys,
     )
     _resolve_fixed_global_sampling_distribution(resolved)
+    _resolve_global_sampling_interval_steps(resolved)
     _resolve_adaptive_sampler_defaults(resolved)
     _resolve_distributed_contract_defaults(resolved)
     _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
@@ -307,6 +308,7 @@ def resolve_all_run_configs(
             explicit_override_keys=explicit_override_keys,
         )
         _resolve_fixed_global_sampling_distribution(resolved)
+        _resolve_global_sampling_interval_steps(resolved)
         _resolve_adaptive_sampler_defaults(resolved)
         _resolve_distributed_contract_defaults(resolved)
         _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
@@ -339,6 +341,7 @@ def resolve_all_run_configs(
             requested_run_sampling_mode=requested_run_sampling_mode,
         )
         _resolve_fixed_global_sampling_distribution(resolved)
+        _resolve_global_sampling_interval_steps(resolved)
         _resolve_adaptive_sampler_defaults(resolved)
         _resolve_distributed_contract_defaults(resolved)
         _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
@@ -833,6 +836,23 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             f"{sorted(VALID_MODEL_GRANULARITY_SAMPLING_MODES)}"
         )
     _resolve_fixed_global_sampling_distribution(copy.deepcopy(dict(config)))
+    interval = model.get("global_sampling_interval_steps", 1)
+    if (
+        isinstance(interval, bool)
+        or not isinstance(interval, int)
+        or interval <= 0
+    ):
+        raise ConfigError(
+            "model.global_sampling_interval_steps must be a positive integer"
+        )
+    if interval != 1 and (
+        granularity_sampling_mode != "global"
+        or run.get("sampling_mode") != "nested-random"
+    ):
+        raise ConfigError(
+            "model.global_sampling_interval_steps is valid only for "
+            "nested-random runs with model.granularity_sampling_mode=global"
+        )
     requested_mode = model.get("requested_correction_mode")
     if requested_mode not in (None, ""):
         if not isinstance(requested_mode, str):
@@ -1956,6 +1976,40 @@ def _resolve_fixed_global_sampling_distribution(config: dict[str, Any]) -> None:
     )
 
 
+def _resolve_global_sampling_interval_steps(config: dict[str, Any]) -> None:
+    """Resolve the uniform-global action hold interval without widening its scope."""
+
+    model = config.get("model")
+    run = config.get("run")
+    if not isinstance(model, dict) or not isinstance(run, Mapping):
+        return
+
+    explicitly_configured = "global_sampling_interval_steps" in model
+    value = model.get("global_sampling_interval_steps", 1)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ConfigError(
+            "model.global_sampling_interval_steps must be a positive integer"
+        )
+
+    eligible = (
+        model.get("granularity_sampling_mode") == "global"
+        and run.get("sampling_mode") == "nested-random"
+    )
+    if explicitly_configured and not eligible:
+        raise ConfigError(
+            "model.global_sampling_interval_steps is valid only for "
+            "nested-random runs with model.granularity_sampling_mode=global"
+        )
+
+    model["global_sampling_interval_steps"] = int(value)
+    provenance = model.get("granularity_pattern_provenance")
+    if isinstance(provenance, dict):
+        if eligible:
+            provenance["global_sampling_interval_steps"] = int(value)
+        else:
+            provenance.pop("global_sampling_interval_steps", None)
+
+
 def _resolve_adaptive_sampler_defaults(config: dict[str, Any]) -> None:
     model = config.setdefault("model", {})
     if not isinstance(model, dict):
@@ -2863,6 +2917,13 @@ def _build_granularity_pattern_provenance(
         provenance["sampling_distribution"] = dict(
             model.get("global_sampling_distribution", {})
         )
+    if (
+        granularity_sampling_mode == "global"
+        and run_sampling_mode == "nested-random"
+    ):
+        interval = model.get("global_sampling_interval_steps", 1)
+        if isinstance(interval, int) and not isinstance(interval, bool):
+            provenance["global_sampling_interval_steps"] = int(interval)
     if requested_granularity_sampling_alias is not None or run.get("granularity") is not None:
         provenance["active_granularity"] = run.get("granularity")
     return provenance

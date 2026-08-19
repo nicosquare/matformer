@@ -1659,6 +1659,12 @@ def run_training(
             "model_variant": config["model"]["variant"],
             "granularities": config["model"]["granularities"],
             "granularity_sampling": training.get("granularity_sampling", "all"),
+            "global_sampling_interval_steps": config["model"].get(
+                "global_sampling_interval_steps", 1
+            ),
+            "global_sampling_state": copy.deepcopy(
+                run_state.get("global_sampling_state")
+            ),
             "resolved_run_mode": resolved_run_mode,
             "resolved_sampling_mode": config["model"].get(
                 "granularity_sampling_mode",
@@ -1862,6 +1868,12 @@ def run_training(
                         artifact_state=run_state,
                     )
                 failure_extra_fields = {
+                    "global_sampling_interval_steps": config["model"].get(
+                        "global_sampling_interval_steps", 1
+                    ),
+                    "global_sampling_state": copy.deepcopy(
+                        run_state.get("global_sampling_state")
+                    ),
                     "corpus_hash": config.get("corpus_hash"),
                     "corpus_permutation_version": config.get(
                         "corpus_permutation_version"
