@@ -121,6 +121,7 @@ class GlobalSamplingHistory:
     seed: int | None
     config_path: Path
     metrics_path: Path
+    target_probabilities: tuple[float, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -257,12 +258,11 @@ def _read_global_sampling_history(
             fixed_distribution, sort_keys=True, separators=(",", ":")
         )
         distribution_id = hashlib.sha256(distribution_json.encode()).hexdigest()[:8]
-        distribution_label = ", ".join(
-            f"{label}={fixed_distribution[label]:g}"
-            for label in ordered_granularities
-        )
         policy_identity = f"fixed_global_{distribution_id}"
-        policy_label = f"Fixed global ({distribution_label})"
+        policy_label = _fixed_global_policy_label(
+            fixed_distribution,
+            ordered_granularities,
+        )
     elif sampling_mode == "adaptive_global" and strategy == "panelgrad":
         panelgrad = model.get("panelgrad")
         if not isinstance(panelgrad, Mapping) or str(
@@ -432,6 +432,11 @@ def _read_global_sampling_history(
         seed=seed,
         config_path=config_path,
         metrics_path=metrics_path,
+        target_probabilities=(
+            tuple(fixed_distribution[label] for label in ordered_granularities)
+            if fixed_distribution is not None
+            else None
+        ),
     )
 
 
@@ -461,6 +466,37 @@ def _fixed_global_distribution(
     ):
         raise ValueError("fixed_global probabilities must sum to 1")
     return distribution
+
+
+def _fixed_global_policy_label(
+    distribution: Mapping[str, float],
+    ordered_granularities: tuple[str, ...],
+) -> str:
+    """Build a compact legend label while retaining exact values in artifacts."""
+
+    arm_count = len(ordered_granularities)
+    inverse_weights = [1.0 / (arm_count - index) for index in range(arm_count)]
+    normalizer = math.fsum(inverse_weights)
+    inverse_membership = {
+        label: weight / normalizer
+        for label, weight in zip(ordered_granularities, inverse_weights)
+    }
+    if all(
+        math.isclose(
+            float(distribution[label]),
+            inverse_membership[label],
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        for label in ordered_granularities
+    ):
+        return "Fixed global (inverse-membership)"
+
+    rounded = ", ".join(
+        f"{label}={100.0 * float(distribution[label]):.1f}%"
+        for label in ordered_granularities
+    )
+    return f"Fixed global ({rounded})"
 
 
 def global_sampling_history_as_timeline(

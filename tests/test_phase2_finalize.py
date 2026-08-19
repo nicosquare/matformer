@@ -1157,9 +1157,9 @@ def test_make_figures_builds_validation_comparison_method_labels():
     )
     assert validation_comparison_display_label(
         "nested-random / concat / adaptive_per_block_ucb"
-    ) == "concat / adaptive per-block ucb"
+    ) == "Concat · UCB per block"
     assert validation_comparison_method_key(standalone_row) == "standalone"
-    assert validation_comparison_display_label("standalone") == "standalone"
+    assert validation_comparison_display_label("standalone") == "Standalone"
 
 
 def test_make_figures_groups_scaling_curves_by_sampling_mode_variant_and_membership_correction():

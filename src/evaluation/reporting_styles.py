@@ -31,6 +31,8 @@ SIZE_PLOT_PANELS_DEFAULT = [
 SIZE_PLOT_PANELS_WITH_SAMPLING = [
     ("nested-random", "slicing", "global"),
     ("nested-random", "concat", "global"),
+    ("nested-random", "slicing", "uniform_global_window"),
+    ("nested-random", "concat", "uniform_global_window"),
     ("nested-random", "slicing", "fixed_global"),
     ("nested-random", "concat", "fixed_global"),
     ("nested-random", "slicing", "per_block"),
@@ -49,6 +51,7 @@ SIZE_PLOT_PANELS_WITH_SAMPLING = [
 
 SCALING_GROUP_COLORS = {
     "nested-random / slicing / global": "tab:blue",
+    "nested-random / slicing / uniform_global_window": "tab:cyan",
     "nested-random / slicing / fixed_global": "tab:green",
     "nested-random / slicing / per_block": "tab:cyan",
     "nested-random / slicing / probabilistic_global_thompson": "tab:blue",
@@ -58,6 +61,7 @@ SCALING_GROUP_COLORS = {
     "nested-random / slicing / probabilistic_per_block_thompson": "tab:cyan",
     "nested-random / slicing / adaptive_per_block_ucb": "tab:olive",
     "nested-random / concat / global": "tab:orange",
+    "nested-random / concat / uniform_global_window": "tab:red",
     "nested-random / concat / fixed_global": "tab:olive",
     "nested-random / concat / per_block": "tab:red",
     "nested-random / concat / probabilistic_global_thompson": "tab:orange",
@@ -79,6 +83,7 @@ SCALING_CORRECTION_STYLES = {
 
 SCALING_SAMPLING_TONES = {
     "global": 0.0,
+    "uniform_global_window": 0.08,
     "fixed_global": 0.12,
     "per_block": 0.28,
     "probabilistic_global_thompson": 0.16,
@@ -91,6 +96,7 @@ SCALING_SAMPLING_TONES = {
 
 SCALING_SAMPLING_MARKERS = {
     "global": "o",
+    "uniform_global_window": "s",
     "fixed_global": "H",
     "per_block": "D",
     "probabilistic_global_thompson": "*",

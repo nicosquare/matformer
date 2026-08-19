@@ -786,7 +786,7 @@ def plot_panelgrad_refresh_diagnostics(
             [refresh.p[granularity_index] for refresh in history.refreshes],
             color=color,
             linewidth=1.8,
-            label=f"p({label})",
+            label=f"sampling p({label})",
         )
         axes[1].plot(
             tokens,
@@ -795,20 +795,23 @@ def plot_panelgrad_refresh_diagnostics(
             linewidth=1.1,
             linestyle="--",
             alpha=0.75,
-            label=f"q({label})",
+            label=f"score q({label})",
         )
 
     score_label = (
-        "Gradient RMS"
+        "Gradient RMS (L2 / sqrt(N))"
         if history.importance_metric == "gradient_rms"
         else "Gradient L2 norm"
     )
-    axes[0].set_ylabel(score_label)
-    axes[0].set_title(f"Whole-active-subnetwork {score_label.lower()}")
+    axes[0].set_yscale("log", nonpositive="clip")
+    axes[0].set_ylabel(f"{score_label}\n(log scale)")
+    axes[0].set_title("Controlled-FFN gradient importance")
     axes[0].legend(loc="center left", bbox_to_anchor=(1.01, 0.5), frameon=False)
     axes[1].set_ylim(-0.02, 1.02)
     axes[1].set_ylabel("Probability")
-    axes[1].set_title("Categorical distributions (solid p, dashed q)")
+    axes[1].set_title(
+        "Score distribution q (dashed) and epsilon-mixed sampling distribution p (solid)"
+    )
     axes[1].legend(
         loc="center left",
         bbox_to_anchor=(1.01, 0.5),
@@ -876,14 +879,14 @@ def plot_panelgrad_refresh_diagnostics(
         cumulative_duration,
         color="tab:red",
         linewidth=1.8,
-        label="cumulative duration",
+        label="cumulative refresh duration",
     )
-    axes[4].set_ylabel("Refresh seconds", color="tab:green")
-    cumulative_axis.set_ylabel("Cumulative seconds", color="tab:red")
+    axes[4].set_ylabel("Refresh duration (s)", color="tab:green")
+    cumulative_axis.set_ylabel("Cumulative refresh duration (s)", color="tab:red")
     axes[4].tick_params(axis="y", labelcolor="tab:green")
     cumulative_axis.tick_params(axis="y", labelcolor="tab:red")
     axes[4].set_title(
-        "Measurement cost — "
+        "PanelGrad measurement overhead — "
         f"{sum(refresh.backward_evaluations for refresh in history.refreshes):,} "
         "backward evaluations, "
         f"{sum(refresh.controller_target_tokens for refresh in history.refreshes):,} "
@@ -1126,7 +1129,7 @@ def plot_global_sampling_exposure_comparison(
         axis.set_ylabel("Exposure (%)")
         seed_label = "unknown" if history.seed is None else str(history.seed)
         axis.set_title(
-            f"{history.policy_label} · seed {seed_label} · {history.run_id}",
+            f"{history.policy_label} · seed {seed_label}",
             fontsize=11,
             loc="left",
         )
@@ -1137,7 +1140,8 @@ def plot_global_sampling_exposure_comparison(
     axes[-1].set_xlabel("Total training tokens")
     axes[-1].ticklabel_format(axis="x", style="sci", scilimits=(0, 0))
     figure.suptitle(
-        f"Global sampling-policy exposure comparison\n{bin_steps}-optimizer-step bins",
+        "Empirical global selection distribution\n"
+        f"{bin_steps}-optimizer-step bins",
         fontsize=15,
         y=0.995,
     )
@@ -1178,10 +1182,19 @@ def plot_global_sampling_cumulative_comparison(
             axis.plot(xs, values[granularity], linewidth=1.35, label=policy_label)
     for axis, granularity in zip(axes, granularities):
         axis.set_ylim(-0.02, 1.02)
-        axis.set_ylabel("Cumulative fraction")
+        axis.set_ylabel("Cumulative\nselected-step share")
         axis.set_title(granularity, fontsize=11)
         axis.grid(True, alpha=0.25)
-    axes[0].legend(loc="center left", bbox_to_anchor=(1.01, 0.5), frameon=False)
+    handles, legend_labels = axes[0].get_legend_handles_labels()
+    if handles:
+        figure.legend(
+            handles,
+            legend_labels,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 0.965),
+            ncol=min(4, len(legend_labels)),
+            frameon=False,
+        )
     axes[-1].set_xlim(
         min(history.actions[0].start_tokens for history in histories),
         max(history.actions[-1].end_tokens for history in histories),
@@ -1189,7 +1202,7 @@ def plot_global_sampling_cumulative_comparison(
     axes[-1].set_xlabel("Total training tokens")
     axes[-1].ticklabel_format(axis="x", style="sci", scilimits=(0, 0))
     figure.suptitle("Cumulative global granularity exposure", fontsize=15, y=0.995)
-    figure.subplots_adjust(left=0.11, right=0.79, top=0.95, bottom=0.07, hspace=0.38)
+    figure.subplots_adjust(left=0.11, right=0.98, top=0.91, bottom=0.07, hspace=0.38)
     figure.savefig(output_path, dpi=dpi, bbox_inches="tight")
     plt.close(figure)
     return output_path
@@ -1202,7 +1215,13 @@ def _write_global_sampling_summary(histories, output_path: Path) -> Path:
         "decisions_per_step", "action_transitions",
     ]
     for label in granularities:
-        fieldnames.extend([f"{label}_steps", f"{label}_fraction"])
+        fieldnames.extend(
+            [
+                f"{label}_steps",
+                f"{label}_fraction",
+                f"{label}_target_probability",
+            ]
+        )
     with output_path.open("w", encoding="utf-8", newline="") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writeheader()
@@ -1226,6 +1245,11 @@ def _write_global_sampling_summary(histories, output_path: Path) -> Path:
             for label in granularities:
                 row[f"{label}_steps"] = counts[label]
                 row[f"{label}_fraction"] = counts[label] / len(history.actions)
+                row[f"{label}_target_probability"] = (
+                    ""
+                    if history.target_probabilities is None
+                    else history.target_probabilities[granularities.index(label)]
+                )
             writer.writerow(row)
     return output_path
 

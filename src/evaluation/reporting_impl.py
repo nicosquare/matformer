@@ -48,6 +48,8 @@ SIZE_PLOT_PANELS_DEFAULT = [
 SIZE_PLOT_PANELS_WITH_SAMPLING = [
     ("nested-random", "slicing", "global"),
     ("nested-random", "concat", "global"),
+    ("nested-random", "slicing", "uniform_global_window"),
+    ("nested-random", "concat", "uniform_global_window"),
     ("nested-random", "slicing", "fixed_global"),
     ("nested-random", "concat", "fixed_global"),
     ("nested-random", "slicing", "per_block"),
@@ -1462,6 +1464,7 @@ def size_plot_panel_title(
     parts = [_humanize_panel_part(sampling_mode), _humanize_panel_part(variant_label)]
     sampling_titles = {
         "global": "Global sampling",
+        "uniform_global_window": "Uniform global windows",
         "per_block": "Per-block sampling",
         "probabilistic_global_thompson": "Bayesian global TS",
         "probabilistic_per_block_thompson": "Bayesian per-block TS",
@@ -1526,6 +1529,8 @@ GLOBAL_TS_IDENTITIES = {
 
 def _size_plot_sampling_family(row: dict[str, Any]) -> str:
     identity = scaling_curve_sampling_label(row) or "global"
+    if re.fullmatch(r"uniform_global_h[1-9][0-9]*", identity):
+        return "uniform_global_window"
     return (
         "probabilistic_global_thompson"
         if identity in GLOBAL_TS_IDENTITIES
@@ -1534,6 +1539,9 @@ def _size_plot_sampling_family(row: dict[str, Any]) -> str:
 
 
 def _size_plot_sampling_display(row: dict[str, Any]) -> str:
+    identity = scaling_curve_sampling_label(row) or "global"
+    if re.fullmatch(r"uniform_global_h[1-9][0-9]*", identity):
+        return display_sampling_label_for_curve(identity) or identity
     labels = {
         "global": "Global sampling",
         "fixed_global": "Fixed non-uniform global",
@@ -1696,7 +1704,7 @@ def compact_size_curve_labels(
         scaling_curve_sampling_label(group[0]) in GLOBAL_TS_IDENTITIES
         for group in all_groups
     )
-    show_sampling_method = panel_sampling_label is None
+    show_sampling_method = panel_sampling_label in (None, "uniform_global_window")
     groups_by_comparison_family: dict[tuple[str, str], list[list[dict[str, Any]]]] = {}
     for group in all_groups:
         comparison_family = (
@@ -2305,6 +2313,43 @@ def compact_validation_contract_labels(
     return labels
 
 
+def concise_validation_comparison_contract_labels(
+    grouped: dict[str, list[dict[str, Any]]],
+) -> dict[str, str]:
+    """Label comparison curves without repeating panel-level information."""
+
+    labels: dict[str, str] = {}
+    size_labels = compact_size_curve_labels(grouped)
+    method_keys = {
+        contract: validation_comparison_method_key(rows[0])
+        for contract, rows in grouped.items()
+    }
+    method_counts: dict[str, int] = {}
+    for method_key in method_keys.values():
+        if method_key is not None:
+            method_counts[method_key] = method_counts.get(method_key, 0) + 1
+
+    for contract, method_key in method_keys.items():
+        if method_key is None:
+            labels[contract] = "Unknown method"
+            continue
+        base = validation_comparison_display_label(method_key)
+        # Standalone width is already encoded by the subplot title, so every
+        # standalone reference intentionally shares one legend entry.
+        if method_key == "standalone" or method_counts[method_key] == 1:
+            labels[contract] = base
+            continue
+        size_label = size_labels.get(contract)
+        if size_label not in (None, "", "Trained model"):
+            labels[contract] = f"{base} · {size_label}"
+        else:
+            labels[contract] = (
+                f"{base} · config "
+                f"{hashlib.sha256(contract.encode()).hexdigest()[:8]}"
+            )
+    return labels
+
+
 def incomplete_validation_label(run_id: str, rows: list[dict[str, Any]]) -> str:
     progress = max(
         (
@@ -2894,7 +2939,7 @@ def _plot_marginal_utility(
                 )
         axis.axhline(0.0, color="0.35", linewidth=0.8, linestyle=":")
         axis.set_title(granularity, fontsize=11)
-        axis.set_ylabel("Marginal utility\nper 1M selected tokens")
+        axis.set_ylabel("-d(loss)/d(selected tokens)\nper 1M tokens")
         axis.grid(True, alpha=0.3)
     axes[-1].set_xlabel("Total training tokens")
     _apply_common_validation_y_limits(axes)
@@ -2907,14 +2952,24 @@ def _plot_marginal_utility(
             list(handles_by_label.values()),
             list(handles_by_label),
             loc="lower center",
-            bbox_to_anchor=(0.5, 0.01),
+            bbox_to_anchor=(0.5, 0.052),
             ncol=min(4, len(handles_by_label)),
             frameon=False,
         )
     figure.suptitle(
-        f"Validation marginal utility over total training tokens — {runs[0].method}"
+        "Validation marginal utility over total training tokens — "
+        f"{runs[0].method}\n"
+        "Five-point OLS over direct exposure: positive improves, zero saturates, "
+        "negative degrades"
     )
-    figure.subplots_adjust(left=0.11, right=0.98, top=0.88, bottom=0.17, hspace=0.45)
+    figure.text(
+        0.5,
+        0.012,
+        "Diagnostic only: shared parameters can improve a width without direct selection.",
+        ha="center",
+        fontsize=9,
+    )
+    figure.subplots_adjust(left=0.11, right=0.98, top=0.84, bottom=0.20, hspace=0.45)
     figure.savefig(output_path, dpi=dpi, bbox_inches="tight")
     plt.close(figure)
     return output_path, ranking_rows
@@ -3107,9 +3162,8 @@ def plot_validation_loss_over_tokens_by_granularity_comparison_figure(
         axes = [axes]
 
     completed_contracts = group_completed_validation_contracts(granularity_rows)
-    contract_labels = compact_validation_contract_labels(
-        completed_contracts,
-        include_method=True,
+    contract_labels = concise_validation_comparison_contract_labels(
+        completed_contracts
     )
     prop_cycle = plt.rcParams.get("axes.prop_cycle")
     colors = list(prop_cycle.by_key().get("color", [])) if prop_cycle else []
@@ -3314,9 +3368,19 @@ def validation_comparison_method_order(rows: list[dict[str, str]]) -> list[str]:
 
 def validation_comparison_display_label(method_key: str) -> str:
     if method_key == "standalone":
-        return "standalone"
+        return "Standalone"
     _, variant_label, sampling_label = method_key.split(" / ")
-    return f"{variant_label} / {display_sampling_label_for_curve(sampling_label) or sampling_label}"
+    sampling_display = {
+        "global": "Uniform",
+        "per_block": "Random per block",
+        "adaptive_per_block_ucb": "UCB per block",
+        "probabilistic_global_thompson": "Thompson global",
+        "probabilistic_per_block_thompson": "Thompson per block",
+    }.get(
+        sampling_label,
+        display_sampling_label_for_curve(sampling_label) or sampling_label,
+    )
+    return f"{variant_label.title()} · {sampling_display}"
 
 
 def validation_comparison_styles(method_keys: list[str]) -> dict[str, dict[str, Any]]:
@@ -4236,6 +4300,8 @@ def scaling_curve_color_group_label(row: dict[str, str]) -> str:
     variant_label = scaling_curve_variant_label(row) or "slicing"
     if family_label == "nested-random":
         sampling_label = scaling_curve_sampling_label(row) or "global"
+        if re.fullmatch(r"uniform_global_h[1-9][0-9]*", sampling_label):
+            sampling_label = "uniform_global_window"
         return f"{family_label} / {variant_label} / {sampling_label}"
 
     return f"{family_label} / {variant_label}"
@@ -4494,6 +4560,14 @@ def panel_sampling_matches(
         return True
     if expected_sampling_label == "global":
         return actual_sampling_label in (None, "global")
+    if expected_sampling_label == "uniform_global_window":
+        return bool(
+            actual_sampling_label
+            and re.fullmatch(
+                r"uniform_global_h[1-9][0-9]*",
+                actual_sampling_label,
+            )
+        )
     if expected_sampling_label == "probabilistic_global_thompson":
         return actual_sampling_label in {
             "probabilistic_global_thompson",
@@ -4529,8 +4603,13 @@ def scaling_curve_style(
         color_group_key or "",
         reporting_styles.SCALING_GROUP_COLORS.get(color_group_key or "", "tab:gray"),
     )
+    tone_sampling_label = sampling_label or "global"
+    marker_sampling_label = sampling_label or ""
+    if re.fullmatch(r"uniform_global_h[1-9][0-9]*", tone_sampling_label):
+        tone_sampling_label = "uniform_global_window"
+        marker_sampling_label = "uniform_global_window"
     sampling_tone = reporting_styles.SCALING_SAMPLING_TONES.get(
-        sampling_label or "global", 0.0
+        tone_sampling_label, 0.0
     )
     style = {
         "linewidth": 1.4,
@@ -4542,7 +4621,7 @@ def scaling_curve_style(
         "markersize": 5,
     }
     style["marker"] = reporting_styles.SCALING_SAMPLING_MARKERS.get(
-        sampling_label or "",
+        marker_sampling_label,
         correction_style["marker"],
     )
     if group_key == "standalone":

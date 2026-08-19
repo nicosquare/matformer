@@ -939,6 +939,62 @@ def test_panelgrad_is_included_in_size_plot_panels(
     ]
 
 
+def test_uniform_global_windows_are_included_in_ppl_vs_size_panels(
+    tmp_path,
+    monkeypatch,
+):
+    from matplotlib.figure import Figure
+
+    from src.evaluation.reporting_impl import plot_metric_vs_size
+    from src.evaluation.reporting_styles import SIZE_PLOT_PANELS_WITH_SAMPLING
+
+    rows = [
+        {
+            "run_id": f"uniform-window-{interval}",
+            "sampling_mode": "nested-random",
+            "model_variant": "slicing",
+            "resolved_sampling_mode": "global",
+            "global_sampling_interval_steps": interval,
+            "correction_mode": "none",
+            "non_embedding_parameters": 100 + interval,
+            "perplexity": 2.0 + interval / 100.0,
+        }
+        for interval in (25, 50)
+    ]
+    saved_figures = []
+    monkeypatch.setattr(
+        Figure,
+        "savefig",
+        lambda figure, output_path, **_kwargs: saved_figures.append(
+            (Path(output_path), figure)
+        ),
+    )
+
+    output_paths = plot_metric_vs_size(
+        rows,
+        metric_name="perplexity",
+        ylabel="Perplexity",
+        output_path=tmp_path / "ppl_vs_size.png",
+        panel_specs=SIZE_PLOT_PANELS_WITH_SAMPLING,
+        include_individual_panels=True,
+        dpi=20,
+    )
+
+    assert [path.name for path in output_paths] == [
+        "ppl_vs_size.png",
+        "ppl_vs_size__nested_random_slicing_uniform_global_window.png",
+    ]
+    main_figure = saved_figures[0][1]
+    [axis] = main_figure.axes
+    assert axis.get_title() == (
+        "Nested-random · Slicing · Uniform global windows"
+    )
+    assert {line.get_label() for line in axis.lines} == {
+        "Uniform global (H=25)",
+        "Uniform global (H=50)",
+    }
+
+
 def test_plot_filters_select_only_uncorrected_slicing_rows():
     from src.evaluation.reporting_impl import filter_plot_rows
 
@@ -1488,6 +1544,7 @@ def test_reporting_defines_distinct_styles_for_each_bayesian_scope():
         != (SCALING_SAMPLING_MARKERS["probabilistic_per_block_thompson"])
     )
     panel_identities = {panel[2] for panel in SIZE_PLOT_PANELS_WITH_SAMPLING}
+    assert "uniform_global_window" in panel_identities
     assert "probabilistic_global_thompson" in panel_identities
     assert "probabilistic_global_thompson_acquisition_only" not in panel_identities
     assert "probabilistic_global_thompson_reset" not in panel_identities
@@ -1495,6 +1552,8 @@ def test_reporting_defines_distinct_styles_for_each_bayesian_scope():
     assert "panelgrad_global" in panel_identities
     assert SCALING_SAMPLING_MARKERS["panelgrad_global"] == "d"
     assert SCALING_SAMPLING_TONES["panelgrad_global"] == pytest.approx(0.42)
+    assert SCALING_SAMPLING_MARKERS["uniform_global_window"] == "s"
+    assert SCALING_SAMPLING_TONES["uniform_global_window"] == pytest.approx(0.08)
     assert "adaptive_per_block_thompson" not in panel_identities
     assert "adaptive_per_block_thompson" not in SCALING_SAMPLING_MARKERS
     assert "adaptive_per_block_thompson" not in SCALING_SAMPLING_TONES
@@ -2521,6 +2580,62 @@ def test_marginal_utility_uses_latest_five_distinct_exposures_without_clipping()
     assert marginal_utility_observations(degrading)[-1][1] == pytest.approx(-1.0)
 
 
+def test_marginal_utility_figure_explains_score_and_shared_parameter_caveat(
+    tmp_path,
+    monkeypatch,
+):
+    from matplotlib.figure import Figure
+
+    from src.evaluation.reporting_impl import (
+        SelectedExposureObservation,
+        SelectedExposureRun,
+        _plot_marginal_utility,
+    )
+
+    observations = tuple(
+        SelectedExposureObservation(
+            total_tokens=index * 1_000_000,
+            selected_exposure_tokens=index * 1_000_000,
+            loss=10.0 - index,
+        )
+        for index in range(1, 7)
+    )
+    contract_row = {
+        "sampling_mode": "nested-random",
+        "model_family": "nested",
+        "model_variant": "cat_llama",
+        "resolved_sampling_mode": "global",
+        "correction_mode": "none",
+    }
+    run = SelectedExposureRun(
+        run_id="uniform-run",
+        run_seed="42",
+        method="nested-random / concat / global",
+        contract="uniform-contract",
+        contract_row=contract_row,
+        ordered_granularities=("micro",),
+        observations={"micro": observations},
+    )
+    saved_figures = []
+    monkeypatch.setattr(
+        Figure,
+        "savefig",
+        lambda figure, _output_path, **_kwargs: saved_figures.append(figure),
+    )
+
+    _plot_marginal_utility([run], tmp_path / "utility.png", dpi=30)
+
+    [figure] = saved_figures
+    assert figure.axes[0].get_ylabel() == (
+        "-d(loss)/d(selected tokens)\nper 1M tokens"
+    )
+    assert "Five-point OLS over direct exposure" in figure._suptitle.get_text()
+    assert any(
+        "shared parameters can improve a width" in text.get_text()
+        for text in figure.texts
+    )
+
+
 def test_completed_global_run_generates_saturation_figures_and_ranking(tmp_path):
     from src.evaluation.reporting_impl import generate_saturation_diagnostics
 
@@ -2894,10 +3009,27 @@ def test_panelgrad_refresh_diagnostics_plot_epsilon_over_tokens(tmp_path, monkey
 
     [figure] = saved_figures
     epsilon_axis = figure.axes[2]
-    assert figure.axes[0].get_ylabel() == "Gradient RMS"
+    assert figure.axes[0].get_yscale() == "log"
+    assert figure.axes[0].get_ylabel() == (
+        "Gradient RMS (L2 / sqrt(N))\n(log scale)"
+    )
+    assert figure.axes[0].get_title() == "Controlled-FFN gradient importance"
+    assert figure.axes[1].get_title() == (
+        "Score distribution q (dashed) and epsilon-mixed sampling "
+        "distribution p (solid)"
+    )
+    assert [line.get_label() for line in figure.axes[1].lines[:2]] == [
+        "sampling p(micro)",
+        "score q(micro)",
+    ]
     assert epsilon_axis.get_title() == "Refresh-boundary exploration schedule"
     assert list(epsilon_axis.lines[0].get_xdata()) == [10, 30]
     assert list(epsilon_axis.lines[0].get_ydata()) == pytest.approx([0.5, 0.3])
+    assert figure.axes[4].get_title().startswith(
+        "PanelGrad measurement overhead"
+    )
+    assert figure.axes[4].get_ylabel() == "Refresh duration (s)"
+    assert figure.axes[5].get_ylabel() == "Cumulative refresh duration (s)"
 
 
 def test_generate_figures_writes_panelgrad_action_exposure_and_refresh_plots(tmp_path):
@@ -2951,7 +3083,10 @@ def test_global_sampling_histories_use_committed_metrics_actions_for_all_policie
         identity for identity in histories if identity.startswith("fixed_global_")
     ]
     assert histories[fixed_identity].policy_label == (
-        "Fixed global (micro=0.1, medium=0.3, full=0.6)"
+        "Fixed global (micro=10.0%, medium=30.0%, full=60.0%)"
+    )
+    assert histories[fixed_identity].target_probabilities == pytest.approx(
+        (0.1, 0.3, 0.6)
     )
     assert [
         action.sampled_probability for action in histories[fixed_identity].actions
@@ -3058,7 +3193,10 @@ def test_grouped_sampling_exposure_uses_stacked_actual_token_spans(
     assert axis.get_xlim() == pytest.approx((0.0, 35.0))
     assert axis.get_ylim() == pytest.approx((0.0, 100.0))
     assert "seed 7" in axis.get_title(loc="left")
-    assert "in-progress-seed-7" in axis.get_title(loc="left")
+    assert "in-progress-seed-7" not in axis.get_title(loc="left")
+    assert exposure_figure._suptitle.get_text() == (
+        "Empirical global selection distribution\n2-optimizer-step bins"
+    )
     assert [patch.get_width() for patch in axis.containers[0].patches] == pytest.approx(
         [20.0, 15.0]
     )
@@ -3074,6 +3212,12 @@ def test_grouped_sampling_exposure_uses_stacked_actual_token_spans(
     )
     [cumulative_figure] = saved_figures
     assert cumulative_figure.axes[-1].get_xlim() == pytest.approx((0.0, 35.0))
+    assert all(
+        axis.get_ylabel() == "Cumulative\nselected-step share"
+        for axis in cumulative_figure.axes
+    )
+    assert not any(axis.get_legend() for axis in cumulative_figure.axes)
+    assert len(cumulative_figure.legends) == 1
 
 
 def test_generate_figures_writes_unified_global_policy_comparisons(tmp_path):
@@ -3114,7 +3258,7 @@ def test_generate_figures_writes_unified_global_policy_comparisons(tmp_path):
         rows = list(csv.DictReader(file))
     assert {row["policy"] for row in rows} == {
         "Uniform global",
-        "Fixed global (micro=0.1, medium=0.3, full=0.6)",
+        "Fixed global (micro=10.0%, medium=30.0%, full=60.0%)",
         "Thompson global",
         "PanelGrad (metric=Gradient RMS)",
     }
@@ -3123,9 +3267,62 @@ def test_generate_figures_writes_unified_global_policy_comparisons(tmp_path):
         row["policy"]: row["policy_decisions"] for row in rows
     } == {
         "PanelGrad (metric=Gradient RMS)": "4",
-        "Fixed global (micro=0.1, medium=0.3, full=0.6)": "4",
+        "Fixed global (micro=10.0%, medium=30.0%, full=60.0%)": "4",
         "Thompson global": "2",
         "Uniform global": "4",
+    }
+    fixed_row = next(row for row in rows if row["policy"].startswith("Fixed global"))
+    assert [
+        fixed_row[f"{label}_target_probability"]
+        for label in ("micro", "medium", "full")
+    ] == ["0.1", "0.3", "0.6"]
+
+
+def test_inverse_membership_fixed_global_uses_compact_policy_label():
+    from src.evaluation.reporting_io import _fixed_global_policy_label
+
+    labels = ("g125", "g250", "g375", "g500", "g625", "g750", "g875", "g1000")
+    weights = [1.0 / membership for membership in range(8, 0, -1)]
+    normalizer = sum(weights)
+    distribution = {
+        label: weight / normalizer for label, weight in zip(labels, weights)
+    }
+
+    assert (
+        _fixed_global_policy_label(distribution, labels)
+        == "Fixed global (inverse-membership)"
+    )
+
+
+def test_validation_comparison_labels_are_concise_and_deduplicate_standalone():
+    from src.evaluation.reporting_impl import (
+        concise_validation_comparison_contract_labels,
+    )
+
+    standalone = {
+        "sampling_mode": "standalone",
+        "resolved_run_mode": "standalone",
+        "model_family": "standalone",
+        "model_variant": "slicing",
+    }
+    slicing_uniform = {
+        "sampling_mode": "nested-random",
+        "model_family": "nested",
+        "model_variant": "matformer_llama",
+        "resolved_sampling_mode": "global",
+    }
+    labels = concise_validation_comparison_contract_labels(
+        {
+            "standalone-micro": [{**standalone, "granularity": "micro"}],
+            "standalone-full": [{**standalone, "granularity": "full"}],
+            "slicing-uniform": [slicing_uniform],
+        }
+    )
+
+    assert labels == {
+        "standalone-micro": "Standalone",
+        "standalone-full": "Standalone",
+        "slicing-uniform": "Slicing · Uniform",
     }
 
 
