@@ -1229,7 +1229,19 @@ def _validate_distributed_and_prepared_corpus_contract(
             "dataset.mode=packed_mmap requires dataset.prepared_corpus_dir"
         )
     if config["run"]["model_family"] == "nested":
-        if tuple(model.get("granularities", ())) != PRODUCTION_GRANULARITY_ORDER:
+        granularities = tuple(model.get("granularities", ()))
+        if dataset.get("dataset_phase") == "prepared_100m":
+            production_subset = tuple(
+                label
+                for label in PRODUCTION_GRANULARITY_ORDER
+                if label in granularities
+            )
+            if not granularities or granularities != production_subset:
+                raise ConfigError(
+                    "100M packed-mmap nested runs require an ordered subset of "
+                    f"production granularities {list(PRODUCTION_GRANULARITY_ORDER)}"
+                )
+        elif granularities != PRODUCTION_GRANULARITY_ORDER:
             raise ConfigError(
                 "10B packed-mmap nested runs require ordered granularities "
                 f"{list(PRODUCTION_GRANULARITY_ORDER)}"
@@ -1238,14 +1250,14 @@ def _validate_distributed_and_prepared_corpus_contract(
         if any(
             not math.isclose(
                 float(prefixes.get(label, -1.0)),
-                expected,
+                PRODUCTION_GRANULARITY_PREFIXES[label],
                 rel_tol=0.0,
                 abs_tol=1e-12,
             )
-            for label, expected in PRODUCTION_GRANULARITY_PREFIXES.items()
+            for label in granularities
         ):
             raise ConfigError(
-                "10B packed-mmap runs require 0.125-width granularity prefixes"
+                "packed-mmap runs require canonical production granularity prefixes"
             )
     try:
         from src.training.packed_corpus import load_corpus_manifest

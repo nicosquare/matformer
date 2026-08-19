@@ -3071,6 +3071,13 @@ def test_panelgrad_refresh_terminal_summary_and_compact_fields_are_auditable(tmp
             "active_epsilon": refresh["active_epsilon"],
             "epsilon_schedule_step": refresh["epsilon_schedule_step"],
             "duration_seconds": 0.25,
+            "controller_source_example_count": 3,
+            "controller_packed_sequence_count": 2,
+            "controller_batch_count": 2,
+            "controller_granularity_count": 2,
+            "controller_target_count": 6,
+            "controller_packed_sequence_evaluation_count": 4,
+            "controller_target_evaluation_count": 12,
             "backward_evaluation_count": 4,
         },
         {
@@ -3108,13 +3115,24 @@ def test_panelgrad_refresh_terminal_summary_and_compact_fields_are_auditable(tmp
     ]
     assert summary["exposure_counts"][action["global_granularity"]] == 1
     assert summary["cumulative_measurement_duration_seconds"] == 0.25
+    assert summary["controller_source_example_count"] == 3
+    assert summary["controller_packed_sequence_count"] == 2
+    assert summary["controller_batch_count"] == 2
+    assert summary["controller_granularity_count"] == 2
     assert summary["cumulative_backward_evaluations"] == 4
+    assert summary["cumulative_controller_packed_sequence_evaluations"] == 4
+    assert summary["cumulative_controller_target_evaluations"] == 12
     assert summary["controller_metrics_hash"]
     assert compact["controller_strategy"] == "panelgrad"
     assert compact["controller_importance_metric"] == "gradient_rms"
     assert compact["controller_sampled_probability"] == action["probability"]
     assert compact["controller_phase"] == "terminal_partial"
     assert "active_epsilon" not in compact
+
+    inconsistent = copy.deepcopy(events[0])
+    inconsistent["backward_evaluation_count"] += 1
+    with pytest.raises(ArtifactError, match="backward evaluation count"):
+        append_controller_events(tmp_path / "inconsistent.jsonl", [inconsistent])
 
 
 def test_panelgrad_l2_summary_and_compact_fields_keep_metric_identity(tmp_path):

@@ -2319,6 +2319,92 @@ def test_100m_prepared_slicing_preflight_resolves_matched_one_gpu_contract(
     assert panelgrad_rms["model"]["panelgrad"]["epsilon"] == 0.1
 
 
+def test_100m_prepared_slicing_accepts_ordered_production_width_subset(
+    tmp_path, monkeypatch
+):
+    import src.training.fineweb_tokenizer as fineweb_tokenizer
+    import src.training.packed_corpus as packed_corpus
+
+    monkeypatch.delenv("WORLD_SIZE", raising=False)
+    monkeypatch.setattr(
+        packed_corpus,
+        "load_corpus_manifest",
+        lambda *args, **kwargs: _production_manifest(),
+    )
+    monkeypatch.setattr(
+        fineweb_tokenizer,
+        "load_tokenizer_manifest",
+        lambda *args, **kwargs: {
+            "tokenizer_name": "fineweb_sentencepiece_bpe_256k",
+            "manifest_hash": "tokenizer-hash",
+            "sentencepiece_model_sha256": "model-hash",
+            "vocab_size": 256000,
+        },
+    )
+    common = [
+        "dataset.prepared_corpus_dir=/prepared/fineweb",
+        "model.tokenizer_dir=/prepared/tokenizer",
+        "model.granularities=[g250,g500,g750,g1000]",
+        (
+            "model.granularity_prefixes="
+            "{g250: 0.25, g500: 0.50, g750: 0.75, g1000: 1.00}"
+        ),
+        "run.run_id=slicing-100m-prepared-four-width",
+    ]
+
+    resolved = resolve_run_config(
+        "configs/production/slicing_100m_prepared.yaml",
+        output_dir=tmp_path / "slicing-100m-prepared-four-width",
+        overrides=common
+        + [
+            "model.granularity_sampling_mode=fixed_global",
+            (
+                "model.global_sampling_distribution="
+                "{g250: 0.12, g500: 0.16, g750: 0.24, g1000: 0.48}"
+            ),
+        ],
+    )
+    assert resolved["model"]["granularities"] == [
+        "g250",
+        "g500",
+        "g750",
+        "g1000",
+    ]
+    assert resolved["model"]["global_sampling_distribution"] == {
+        "g250": 0.12,
+        "g500": 0.16,
+        "g750": 0.24,
+        "g1000": 0.48,
+    }
+    assert resolved["training"]["derived_max_steps"] == 12_207
+
+    with pytest.raises(ConfigError, match="strictly nested widths"):
+        resolve_run_config(
+            "configs/production/slicing_100m_prepared.yaml",
+            output_dir=tmp_path / "slicing-100m-prepared-four-width",
+            overrides=[
+                *common[:2],
+                "model.granularities=[g500,g250,g750,g1000]",
+                common[3],
+                common[4],
+            ],
+        )
+
+    with pytest.raises(ConfigError, match="canonical production.*prefixes"):
+        resolve_run_config(
+            "configs/production/slicing_100m_prepared.yaml",
+            output_dir=tmp_path / "slicing-100m-prepared-four-width",
+            overrides=[
+                *common[:3],
+                (
+                    "model.granularity_prefixes="
+                    "{g250: 0.25, g500: 0.51, g750: 0.75, g1000: 1.00}"
+                ),
+                common[4],
+            ],
+        )
+
+
 def test_packed_preflight_rejects_oversized_misaligned_and_mismatched_source(
     tmp_path, monkeypatch
 ):

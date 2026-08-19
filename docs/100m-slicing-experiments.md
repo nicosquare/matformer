@@ -373,11 +373,129 @@ PanelGrad curve:
   --override 'model.panelgrad={"importance_metric":"gradient_l2","refresh_interval_steps":25,"eta":1.0e-12,"temperature":1.0,"epsilon_schedule":{"type":"linear","start":0.5,"end":0.1,"duration_steps":12207}}'
 ```
 
-With eight granularities and a 128-example controller panel, each PanelGrad
-refresh performs 128 controller backward evaluations at batch size eight.
-There are 489 refreshes, so each complete PanelGrad run records 62,592
-measurement backward evaluations in addition to its 12,207 ordinary training
-updates.
+PanelGrad calculates measurement cost from the materialized controller loader,
+not from the 128 source-document count. Every refresh records source documents,
+packed sequences, batches, resolved granularities, evaluated targets, and
+backward evaluations. Inspect the calculated totals after completion with:
+
+```bash
+jq '{refresh_count, cumulative_backward_evaluations,
+     cumulative_controller_packed_sequence_evaluations,
+     cumulative_controller_target_evaluations}' \
+  "$RUN_DIR/controller_summary.json"
+```
+
+### 6.4 Optional four-width comparison
+
+To repeat the same comparison with four equally spaced FFN widths, use
+`g250`, `g500`, `g750`, and `g1000`, corresponding to fractions 0.25, 0.50,
+0.75, and 1.00. Keep the tokenizer, prepared corpus, optimizer, token budget,
+and seed from Section 3, but write the runs beneath a separate output root:
+
+```bash
+export OUT_4G="/nfs-stor/$USER/results/elasticnn/slicing-100m-prepared-4g-v1"
+mkdir -p "$OUT_4G"
+test -w "$OUT_4G"
+
+FOUR_GRANULARITY_OVERRIDES=(
+  "${CONFIG_OVERRIDES[@]}"
+  --override 'model.granularities=[g250,g500,g750,g1000]'
+  --override 'model.granularity_prefixes={g250: 0.25, g500: 0.50, g750: 0.75, g1000: 1.00}'
+)
+
+SLURM_COMMON_4G=(
+  --config "$BASE"
+  --output-root "$OUT_4G"
+  --python-bin "$PYTHON_BIN"
+  "${FOUR_GRANULARITY_OVERRIDES[@]}"
+)
+```
+
+Confirm the isolated contract before submitting jobs:
+
+```bash
+"$PYTHON_BIN" train.py \
+  --config "$BASE" \
+  --output-root "$OUT_4G" \
+  --override "run.run_id=preflight-100m-slicing-4g-random-global-s$EXPERIMENT_SEED" \
+  "${FOUR_GRANULARITY_OVERRIDES[@]}" \
+  --override "model.granularity_sampling_mode=global" \
+  --preflight
+```
+
+The preflight must report the four ordered granularities and retain 8,192
+tokens per optimizer step, 12,207 total updates, and 1,000 warmup updates.
+
+Define one small submission helper, then submit the matched matrix. Slurm
+resource options remain before the script path so they are not forwarded to
+`train.py`:
+
+```bash
+submit_4g() {
+  local job_name="$1"
+  local mode="$2"
+  local run_id="$3"
+  shift 3
+  "${SBATCH[@]}" --time=24:00:00 --gres=gpu:1 \
+    --job-name="$job_name" \
+    scripts/slurm_dmodel256_pilot.sh \
+    --mode "$mode" \
+    --run-id "$run_id" \
+    "${SLURM_COMMON_4G[@]}" \
+    "$@"
+}
+
+submit_4g 100m-4g-random-global nested-random \
+  "100m-prepared-slicing-4g-random-global-s$EXPERIMENT_SEED" \
+  --override "model.granularity_sampling_mode=global"
+
+submit_4g 100m-4g-fixed-global nested-random \
+  "100m-prepared-slicing-4g-fixed-global-inverse-membership-s$EXPERIMENT_SEED" \
+  --override "model.granularity_sampling_mode=fixed_global" \
+  --override 'model.global_sampling_distribution={g250: 0.12, g500: 0.16, g750: 0.24, g1000: 0.48}'
+
+submit_4g 100m-4g-nested-all nested-all \
+  "100m-prepared-slicing-4g-nested-all-s$EXPERIMENT_SEED"
+
+for GRANULARITY in g250 g500 g750 g1000; do
+  submit_4g "100m-4g-standalone-$GRANULARITY" standalone \
+    "100m-prepared-slicing-4g-standalone-$GRANULARITY-s$EXPERIMENT_SEED" \
+    --granularity "$GRANULARITY"
+done
+
+submit_4g 100m-4g-ts-global nested-random \
+  "100m-prepared-slicing-4g-ts-global-s$EXPERIMENT_SEED" \
+  --override "model.granularity_sampling_mode=adaptive_global" \
+  --override "model.adaptive_sampler_strategy=thompson" \
+  --override 'model.adaptive_controller={"preset":"bayesian_thompson","decision_interval_steps":25,"prior_mean":0.0,"prior_covariance":1.0,"observation_noise_variance":0.01,"process_noise_covariance":0.0001,"reset":{"enabled":false}}'
+
+submit_4g 100m-4g-panelgrad-rms nested-random \
+  "100m-prepared-slicing-4g-panelgrad-rms-eps0p1-s$EXPERIMENT_SEED" \
+  --override "model.granularity_sampling_mode=adaptive_global" \
+  --override "model.adaptive_sampler_strategy=panelgrad" \
+  --override 'model.panelgrad={"importance_metric":"gradient_rms","refresh_interval_steps":25,"eta":1.0e-12,"temperature":1.0,"epsilon":0.1}'
+
+submit_4g 100m-4g-panelgrad-l2 nested-random \
+  "100m-prepared-slicing-4g-panelgrad-l2-eps0p5-to0p1-s$EXPERIMENT_SEED" \
+  --override "model.granularity_sampling_mode=adaptive_global" \
+  --override "model.adaptive_sampler_strategy=panelgrad" \
+  --override 'model.panelgrad={"importance_metric":"gradient_l2","refresh_interval_steps":25,"eta":1.0e-12,"temperature":1.0,"epsilon_schedule":{"type":"linear","start":0.5,"end":0.1,"duration_steps":12207}}'
+```
+
+For the four-width inverse-membership policy, the incremental FFN blocks have
+memberships 4, 3, 2, and 1. Normalizing their inverse memberships gives the
+exact probabilities 0.12, 0.16, 0.24, and 0.48 used above. Generate figures
+only from the isolated four-width root:
+
+```bash
+export GROUP_DIR_4G="$OUT_4G/matformer_llama_148m_100m_tokens"
+
+"$PYTHON_BIN" scripts/make_figures.py \
+  --input "$GROUP_DIR_4G" \
+  --output "$GROUP_DIR_4G/figures" \
+  --variant slicing \
+  --correction none
+```
 
 ## 7. Replicate only the decision-critical runs
 

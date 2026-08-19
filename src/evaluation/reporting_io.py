@@ -793,6 +793,13 @@ def _normalize_panelgrad_refresh(
         event.get("controller_target_count"),
         f"{prefix} controller_target_count",
     )
+    controller_target_evaluations = _nonnegative_int(
+        event.get(
+            "controller_target_evaluation_count",
+            controller_target_count * len(ordered_granularities),
+        ),
+        f"{prefix} controller_target_evaluation_count",
+    )
     active_epsilon = _finite_float(
         event.get("active_epsilon", fallback_epsilon),
         f"{prefix} active_epsilon",
@@ -824,7 +831,7 @@ def _normalize_panelgrad_refresh(
         ),
         duration_seconds=duration_seconds,
         backward_evaluations=backward_evaluations,
-        controller_target_tokens=controller_target_count * backward_evaluations,
+        controller_target_tokens=controller_target_evaluations,
     )
 
 

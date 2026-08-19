@@ -240,8 +240,9 @@ def _write_panelgrad_history_run(
             "active_epsilon": active_epsilon,
             "epsilon_schedule_step": epsilon_schedule_step,
             "duration_seconds": duration,
-            "backward_evaluation_count": 3,
+            "backward_evaluation_count": 6,
             "controller_target_count": 30,
+            "controller_target_evaluation_count": 90,
             **(
                 {
                     "importance_metric": resolved_metric,

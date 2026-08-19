@@ -454,12 +454,20 @@ def test_measurement_isolates_model_runtime_rng_gradients_and_optimization_state
     torch_state = torch.get_rng_state().clone()
     training_cursor = {"epoch": 3, "batch_index": 7}
 
-    measure_panelgrad_gradients(
+    measurement = measure_panelgrad_gradients(
         model,
         _panel_batches(2),
         ["small", "full"],
         device="cpu",
     )
+
+    assert measurement["controller_packed_sequence_count"] == 4
+    assert measurement["controller_batch_count"] == 2
+    assert measurement["controller_granularity_count"] == 2
+    assert measurement["controller_target_count"] == 12
+    assert measurement["controller_packed_sequence_evaluation_count"] == 8
+    assert measurement["controller_target_evaluation_count"] == 24
+    assert measurement["backward_evaluation_count"] == 4
 
     assert model.training is True
     assert model.current_granularity == "small"

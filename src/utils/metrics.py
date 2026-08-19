@@ -1853,6 +1853,32 @@ def build_controller_summary(
         total_duration = sum(
             float(event.get("duration_seconds", 0.0)) for event in completed
         )
+
+        def granularity_count(event: Mapping[str, Any]) -> int:
+            return int(
+                event.get("controller_granularity_count")
+                or len(event.get("measurements", ()))
+            )
+
+        def packed_sequence_evaluations(event: Mapping[str, Any]) -> int:
+            recorded = event.get("controller_packed_sequence_evaluation_count")
+            if recorded is not None:
+                return int(recorded)
+            return int(
+                event.get(
+                    "controller_packed_sequence_count",
+                    event.get("controller_example_count", 0),
+                )
+            ) * granularity_count(event)
+
+        def target_evaluations(event: Mapping[str, Any]) -> int:
+            recorded = event.get("controller_target_evaluation_count")
+            if recorded is not None:
+                return int(recorded)
+            return int(event.get("controller_target_count", 0)) * granularity_count(
+                event
+            )
+
         epsilon_history = [
             {
                 "refresh_index": event.get("window_index"),
@@ -1861,6 +1887,7 @@ def build_controller_summary(
             }
             for event in completed
         ]
+        latest_cost = completed[-1] if completed else {}
         journal_path = Path(controller_metrics_path)
         return {
             "schema_version": state.get("schema_version"),
@@ -1894,9 +1921,27 @@ def build_controller_summary(
             "terminal": state.get("terminal"),
             "warmup": state.get("warmup"),
             "cumulative_measurement_duration_seconds": total_duration,
+            "controller_source_example_count": latest_cost.get(
+                "controller_source_example_count"
+            ),
+            "controller_packed_sequence_count": latest_cost.get(
+                "controller_packed_sequence_count",
+                latest_cost.get("controller_example_count"),
+            ),
+            "controller_batch_count": latest_cost.get("controller_batch_count"),
+            "controller_granularity_count": latest_cost.get(
+                "controller_granularity_count",
+                granularity_count(latest_cost) if latest_cost else None,
+            ),
             "cumulative_backward_evaluations": sum(
                 int(event.get("backward_evaluation_count", 0))
                 for event in completed
+            ),
+            "cumulative_controller_packed_sequence_evaluations": sum(
+                packed_sequence_evaluations(event) for event in completed
+            ),
+            "cumulative_controller_target_evaluations": sum(
+                target_evaluations(event) for event in completed
             ),
             "controller_metrics_path": str(journal_path),
             "controller_metrics_hash": (
@@ -2500,6 +2545,62 @@ def _validate_controller_event(event: Mapping[str, Any]) -> None:
             ) and "importance_scores" not in event:
                 raise ArtifactError(
                     "PanelGrad refresh event missing importance_scores"
+                )
+            measurements = event["measurements"]
+            granularity_count = len(measurements)
+
+            def checked_count(field: str) -> int | None:
+                value = event.get(field)
+                if value is None:
+                    return None
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    raise ArtifactError(
+                        f"PanelGrad refresh {field} must be a nonnegative integer"
+                    )
+                return value
+
+            recorded_granularity_count = checked_count(
+                "controller_granularity_count"
+            )
+            if (
+                recorded_granularity_count is not None
+                and recorded_granularity_count != granularity_count
+            ):
+                raise ArtifactError(
+                    "PanelGrad refresh controller granularity count disagrees "
+                    "with measurements"
+                )
+            batch_count = checked_count("controller_batch_count")
+            backward_count = checked_count("backward_evaluation_count")
+            if (
+                batch_count is not None
+                and backward_count != batch_count * granularity_count
+            ):
+                raise ArtifactError(
+                    "PanelGrad refresh backward evaluation count is inconsistent"
+                )
+            packed_count = checked_count("controller_packed_sequence_count")
+            packed_evaluations = checked_count(
+                "controller_packed_sequence_evaluation_count"
+            )
+            if (
+                packed_count is not None
+                and packed_evaluations != packed_count * granularity_count
+            ):
+                raise ArtifactError(
+                    "PanelGrad refresh packed-sequence evaluation count is inconsistent"
+                )
+            target_count = checked_count("controller_target_count")
+            target_evaluations = checked_count(
+                "controller_target_evaluation_count"
+            )
+            if (
+                target_count is not None
+                and target_evaluations is not None
+                and target_evaluations != target_count * granularity_count
+            ):
+                raise ArtifactError(
+                    "PanelGrad refresh target evaluation count is inconsistent"
                 )
         if event_type == "panelgrad_refresh_failed" and event.get(
             "new_distribution_installed"

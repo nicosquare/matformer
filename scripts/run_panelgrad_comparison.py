@@ -132,13 +132,28 @@ def _measurement_cost(result, controller_summary):
             controller_summary.get("cumulative_backward_evaluations", 0)
         ),
         "controller_target_tokens": sum(
-            int(event["controller_target_count"])
-            * int(event["backward_evaluation_count"])
+            int(
+                event.get(
+                    "controller_target_evaluation_count",
+                    int(event["controller_target_count"])
+                    * len(event["measurements"]),
+                )
+            )
             for event in refresh_events
         ),
         "controller_examples": sum(
-            int(event["controller_example_count"])
-            * int(event["backward_evaluation_count"])
+            int(
+                event.get(
+                    "controller_packed_sequence_evaluation_count",
+                    int(
+                        event.get(
+                            "controller_packed_sequence_count",
+                            event["controller_example_count"],
+                        )
+                    )
+                    * len(event["measurements"]),
+                )
+            )
             for event in refresh_events
         ),
         "duration_seconds": float(

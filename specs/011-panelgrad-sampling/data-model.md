@@ -60,8 +60,13 @@ References the existing four-role partition.
 - **controller_manifest_hash**
 - **ordinary_validation_manifest_hash**
 - **final_holdout_manifest_hash**
-- **controller_example_count**: `128`
-- **controller_target_count**: valid causal targets used by a refresh
+- **controller_source_example_count**: source rows in the fixed controller role
+- **controller_packed_sequence_count**: materialized packed sequences used by a refresh
+- **controller_batch_count**: materialized controller batches used per granularity
+- **controller_target_count**: valid causal targets used per granularity
+- **controller_packed_sequence_evaluation_count**: calculated as packed sequences times resolved granularities
+- **controller_target_evaluation_count**: calculated as valid targets times resolved granularities
+- **backward_evaluation_count**: calculated as controller batches times resolved granularities
 - **selection seeds and source provenance**: inherited from existing role manifests
 
 The four roles remain pairwise disjoint. PanelGrad consumes only the controller role for decisions and never consumes the final holdout during training.

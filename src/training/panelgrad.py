@@ -351,6 +351,19 @@ def _materialize_controller_panel(dataloader) -> tuple[list[dict[str, Any]], int
     return batches, target_count, example_count
 
 
+def _controller_source_example_count(dataloader) -> int | None:
+    """Return the loader's source-row count when its dataset is sized."""
+
+    dataset = getattr(dataloader, "dataset", None)
+    if dataset is None:
+        return None
+    try:
+        count = int(len(dataset))
+    except (TypeError, ValueError):
+        return None
+    return count if count >= 0 else None
+
+
 def _controlled_gradient_squared_norm(
     model,
     granularity: str,
@@ -509,15 +522,30 @@ def measure_panelgrad_gradients(
         model.train(was_training)
         restore_rng_state(rng_state)
 
-    return {
+    controller_batch_count = len(batches)
+    granularity_count = len(ordered)
+    source_example_count = _controller_source_example_count(dataloader)
+    cost = {
         "ordered_granularities": ordered,
         "measurements": measurements,
+        # Compatibility alias: schema-v1 artifacts used this name for the
+        # number of materialized packed sequences, not source documents.
         "controller_example_count": example_count,
+        "controller_packed_sequence_count": example_count,
+        "controller_batch_count": controller_batch_count,
+        "controller_granularity_count": granularity_count,
         "controller_target_count": target_count,
-        "backward_evaluation_count": len(batches) * len(ordered),
+        "controller_packed_sequence_evaluation_count": (
+            example_count * granularity_count
+        ),
+        "controller_target_evaluation_count": target_count * granularity_count,
+        "backward_evaluation_count": controller_batch_count * granularity_count,
         "duration_seconds": time.perf_counter() - started_at,
         "controlled_support_hash": support["controlled_support_hash"],
     }
+    if source_example_count is not None:
+        cost["controller_source_example_count"] = source_example_count
+    return cost
 
 
 class PanelGradController:
@@ -723,7 +751,13 @@ class PanelGradController:
                     if key
                     in {
                         "controller_example_count",
+                        "controller_source_example_count",
+                        "controller_packed_sequence_count",
+                        "controller_batch_count",
+                        "controller_granularity_count",
                         "controller_target_count",
+                        "controller_packed_sequence_evaluation_count",
+                        "controller_target_evaluation_count",
                         "backward_evaluation_count",
                         "duration_seconds",
                     }
