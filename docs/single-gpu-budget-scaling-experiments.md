@@ -1,0 +1,513 @@
+# Variable-budget single-GPU slicing experiments
+
+This guide reproduces the prepared-corpus slicing comparison at a nominal
+`XXXM` token budget selected through `BUDGET_M`. It is intended to answer two
+questions without changing the one-GPU optimizer geometry:
+
+1. Does holding a uniformly sampled global granularity for several updates
+   remain beneficial as the training budget grows?
+2. Does the nested model approach or fall farther behind independently trained
+   standalone widths?
+
+The core comparison is uniform global sampling with `H=1`, `H=5`, `H=25`, and
+`H=50`. Global Thompson sampling and both established PanelGrad configurations
+are included as comparison policies. Commands are provided for the production
+eight-width grid and the optional four-width grid.
+
+Token budget changes do not change model memory use. Every command requests
+one GPU, but larger budgets may require resubmitting an interrupted job because
+of the Slurm wall-time limit. Resume only with the identical run ID, budget,
+configuration, seed, and one-GPU topology.
+
+## 1. Set the budget and shared contract
+
+Run all commands from the repository root. Activate the validated environment
+and load the private tokenizer, corpus, and output paths:
+
+```bash
+conda activate elasticnn
+set -a
+source .env
+set +a
+
+export PYTHON_BIN="$(command -v python)"
+export BASE=configs/production/slicing_100m_prepared.yaml
+export EXPERIMENT_SEED=42
+
+# Change this one variable to select the nominal budget in millions of tokens.
+export BUDGET_M=200
+
+# Adjust the allocation limit for the local cluster. Training still uses one GPU.
+export WALLTIME=24:00:00
+
+# Use new, budget-isolated roots. Do not mix these runs with the 100M suite.
+export OUT_8G="/nfs-stor/$USER/results/elasticnn/slicing-${BUDGET_M}m-prepared-8g-v1"
+export OUT_4G="/nfs-stor/$USER/results/elasticnn/slicing-${BUDGET_M}m-prepared-4g-v1"
+```
+
+Convert the nominal budget to the largest complete one-GPU optimizer-step
+budget at 8,192 tokens per update. This produces the existing exact 100M value
+of 99,999,744 tokens when `BUDGET_M=100`.
+
+```bash
+case "$BUDGET_M" in
+  [1-9]|[1-9][0-9]*) ;;
+  *) echo "BUDGET_M must be a positive integer" >&2; exit 2 ;;
+esac
+
+export TOKENS_PER_STEP=8192
+export REQUESTED_TOKEN_BUDGET=$((BUDGET_M * 1000000))
+export TOKEN_BUDGET=$((REQUESTED_TOKEN_BUDGET / TOKENS_PER_STEP * TOKENS_PER_STEP))
+export DERIVED_MAX_STEPS=$((TOKEN_BUDGET / TOKENS_PER_STEP))
+
+printf 'Nominal=%sM exact_tokens=%s optimizer_steps=%s\n' \
+  "$BUDGET_M" "$TOKEN_BUDGET" "$DERIVED_MAX_STEPS"
+```
+
+The packed corpus must contain at least `TOKEN_BUDGET` optimizer-training
+tokens. Preflight will reject a budget beyond the prepared corpus. Keep batch
+size eight, accumulation one, and expected world size one: changing any of
+them changes the step count and no longer reproduces this comparison.
+
+Create the output roots and shared override arrays:
+
+```bash
+mkdir -p "$OUT_8G" "$OUT_4G" logs
+test -r "$TOKENIZER/tokenizer_manifest.json"
+test -r "$CORPUS/corpus_manifest.json"
+test -w "$OUT_8G"
+test -w "$OUT_4G"
+
+COMMON_OVERRIDES=(
+  --override "run.seed=$EXPERIMENT_SEED"
+  --override "dataset.prepared_corpus_dir=$CORPUS"
+  --override "model.tokenizer_dir=$TOKENIZER"
+)
+
+EIGHT_GRANULARITY_OVERRIDES=(
+  "${COMMON_OVERRIDES[@]}"
+)
+
+FOUR_GRANULARITY_OVERRIDES=(
+  "${COMMON_OVERRIDES[@]}"
+  --override 'model.granularities=[g250,g500,g750,g1000]'
+  --override 'model.granularity_prefixes={g250: 0.25, g500: 0.50, g750: 0.75, g1000: 1.00}'
+)
+
+SBATCH=(sbatch)
+if [[ -n "${SLURM_EXCLUDE:-}" ]]; then
+  SBATCH+=(--exclude="$SLURM_EXCLUDE")
+fi
+```
+
+The base configuration retains AdamW, learning rate `1e-3`, 1,000 warmup
+updates, and cosine decay. Because `training.token_budget` determines the
+training horizon, cosine decay now ends at `DERIVED_MAX_STEPS`. This is a new
+longer-horizon run from initialization, not a continuation of a completed
+100M cosine schedule.
+
+## 2. Define the policy configurations
+
+Thompson and both PanelGrad policies retain their existing 25-update decision
+or refresh interval. The scheduled PanelGrad configuration must use the
+variable `DERIVED_MAX_STEPS`; hard-coding 12,207 would finish its epsilon
+schedule at 100M even in a longer run.
+
+```bash
+export THOMPSON_CONTROLLER='{"preset":"bayesian_thompson","decision_interval_steps":25,"prior_mean":0.0,"prior_covariance":1.0,"observation_noise_variance":0.01,"process_noise_covariance":0.0001,"reset":{"enabled":false}}'
+
+export PANELGRAD_RMS='{"importance_metric":"gradient_rms","refresh_interval_steps":25,"eta":1.0e-12,"temperature":1.0,"epsilon":0.1}'
+
+export PANELGRAD_L2="{\"importance_metric\":\"gradient_l2\",\"refresh_interval_steps\":25,\"eta\":1.0e-12,\"temperature\":1.0,\"epsilon_schedule\":{\"type\":\"linear\",\"start\":0.5,\"end\":0.1,\"duration_steps\":$((BUDGET_M * 1000000 / 8192))}}"
+```
+
+PanelGrad performs controller-gradient measurements in addition to ordinary
+training. It remains a one-GPU run, but its wall-clock cost is higher than
+uniform global or Thompson sampling.
+
+## 3. Run preflights
+
+First verify the eight-width uniform-window contract:
+
+```bash
+"$PYTHON_BIN" train.py \
+  --config "$BASE" \
+  --output-root "$OUT_8G" \
+  --override "run.run_id=preflight-${BUDGET_M}m-8g-uniform-window25-s$EXPERIMENT_SEED" \
+  "${EIGHT_GRANULARITY_OVERRIDES[@]}" \
+  --override "training.token_budget=$((BUDGET_M * 1000000 / 8192 * 8192))" \
+  --override "model.granularity_sampling_mode=global" \
+  --override "model.global_sampling_interval_steps=25" \
+  --preflight
+```
+
+Then verify the policies whose configuration changes with the budget:
+
+```bash
+"$PYTHON_BIN" train.py \
+  --config "$BASE" \
+  --output-root "$OUT_8G" \
+  --override "run.run_id=preflight-${BUDGET_M}m-8g-ts-global-s$EXPERIMENT_SEED" \
+  "${EIGHT_GRANULARITY_OVERRIDES[@]}" \
+  --override "training.token_budget=$((BUDGET_M * 1000000 / 8192 * 8192))" \
+  --override "model.granularity_sampling_mode=adaptive_global" \
+  --override "model.adaptive_sampler_strategy=thompson" \
+  --override "model.adaptive_controller=$THOMPSON_CONTROLLER" \
+  --preflight
+
+"$PYTHON_BIN" train.py \
+  --config "$BASE" \
+  --output-root "$OUT_8G" \
+  --override "run.run_id=preflight-${BUDGET_M}m-8g-panelgrad-l2-s$EXPERIMENT_SEED" \
+  "${EIGHT_GRANULARITY_OVERRIDES[@]}" \
+  --override "training.token_budget=$((BUDGET_M * 1000000 / 8192 * 8192))" \
+  --override "model.granularity_sampling_mode=adaptive_global" \
+  --override "model.adaptive_sampler_strategy=panelgrad" \
+  --override "model.panelgrad=$PANELGRAD_L2" \
+  --preflight
+```
+
+Finally verify the four-width override independently:
+
+```bash
+"$PYTHON_BIN" train.py \
+  --config "$BASE" \
+  --output-root "$OUT_4G" \
+  --override "run.run_id=preflight-${BUDGET_M}m-4g-uniform-window25-s$EXPERIMENT_SEED" \
+  "${FOUR_GRANULARITY_OVERRIDES[@]}" \
+  --override "training.token_budget=$((BUDGET_M * 1000000 / 8192 * 8192))" \
+  --override "model.granularity_sampling_mode=global" \
+  --override "model.global_sampling_interval_steps=25" \
+  --preflight
+```
+
+Every preflight must report:
+
+- `effective_world_size: 1`
+- `expected_tokens_per_step: 8192`
+- `token_budget: $TOKEN_BUDGET`
+- `derived_max_steps: $DERIVED_MAX_STEPS`
+- `resolved_warmup_steps: 1000`
+- eight or four ordered granularities, as appropriate
+- the expected uniform, Thompson, or PanelGrad policy identity
+
+The L2 PanelGrad preflight must additionally report an epsilon-schedule
+duration equal to `DERIVED_MAX_STEPS`.
+
+## 4. Define the one-GPU submission helper
+
+The helper selects the correct output root and granularity overrides while
+always requesting exactly one GPU:
+
+```bash
+submit_budget_run() {
+  local scope="$1"
+  local job_name="$2"
+  local mode="$3"
+  local run_id="$4"
+  shift 4
+
+  case "${BUDGET_M:-}" in
+    [1-9]|[1-9][0-9]*)
+      ;;
+    *)
+      echo "Export BUDGET_M as a positive integer before submitting" >&2
+      return 2
+      ;;
+  esac
+
+  local exact_token_budget=$((BUDGET_M * 1000000 / 8192 * 8192))
+  if [[ "$run_id" != "${BUDGET_M}m-"* ]]; then
+    echo "run ID must begin with ${BUDGET_M}m-; got: $run_id" >&2
+    return 2
+  fi
+
+  local output_root
+  local -a scope_overrides
+  case "$scope" in
+    8g)
+      output_root="$OUT_8G"
+      scope_overrides=("${EIGHT_GRANULARITY_OVERRIDES[@]}")
+      ;;
+    4g)
+      output_root="$OUT_4G"
+      scope_overrides=("${FOUR_GRANULARITY_OVERRIDES[@]}")
+      ;;
+    *)
+      echo "scope must be 8g or 4g" >&2
+      return 2
+      ;;
+  esac
+
+  "${SBATCH[@]}" --time="$WALLTIME" --gres=gpu:1 \
+    --job-name="$job_name" \
+    scripts/slurm_dmodel256_pilot.sh \
+    --mode "$mode" \
+    --run-id "$run_id" \
+    --config "$BASE" \
+    --output-root "$output_root" \
+    --python-bin "$PYTHON_BIN" \
+    "${scope_overrides[@]}" \
+    --override "training.token_budget=$exact_token_budget" \
+    "$@"
+}
+```
+
+The helper intentionally derives `training.token_budget` again for every
+submission instead of trusting an inherited `TOKEN_BUDGET`. It also rejects a
+missing budget or malformed run ID before calling `sbatch`. Consequently,
+`export BUDGET_M=200` is the only budget input required at submission time.
+
+## 5. Submit the uniform-window sweep
+
+Submit the eight-width H sweep:
+
+```bash
+for H in 1 5 25 50; do
+  if [[ "$H" == 1 ]]; then
+    POLICY_ID=random-global
+  else
+    POLICY_ID="uniform-window$H"
+  fi
+
+  submit_budget_run 8g "${BUDGET_M}m-8g-$POLICY_ID" nested-random \
+    "${BUDGET_M}m-prepared-slicing-$POLICY_ID-s$EXPERIMENT_SEED" \
+    --override "model.granularity_sampling_mode=global" \
+    --override "model.global_sampling_interval_steps=$H"
+done
+```
+
+Submit the matched four-width sweep:
+
+```bash
+for H in 1 5 25 50; do
+  if [[ "$H" == 1 ]]; then
+    POLICY_ID=random-global
+  else
+    POLICY_ID="uniform-window$H"
+  fi
+
+  submit_budget_run 4g "${BUDGET_M}m-4g-$POLICY_ID" nested-random \
+    "${BUDGET_M}m-prepared-slicing-4g-$POLICY_ID-s$EXPERIMENT_SEED" \
+    --override "model.granularity_sampling_mode=global" \
+    --override "model.global_sampling_interval_steps=$H"
+done
+```
+
+`H=1` preserves ordinary per-update uniform global sampling. For `H>1`, a
+new independent uniform action is drawn at successful optimizer updates
+1, `H+1`, `2H+1`, and so on. The number of decisions is
+`ceil(DERIVED_MAX_STEPS / H)`; adjacent windows can select the same width.
+
+## 6. Submit Thompson and PanelGrad comparisons
+
+Submit the three comparison policies for the eight-width grid:
+
+```bash
+submit_budget_run 8g "${BUDGET_M}m-8g-ts-global" nested-random \
+  "${BUDGET_M}m-prepared-slicing-ts-global-s$EXPERIMENT_SEED" \
+  --override "model.granularity_sampling_mode=adaptive_global" \
+  --override "model.adaptive_sampler_strategy=thompson" \
+  --override "model.adaptive_controller=$THOMPSON_CONTROLLER"
+
+submit_budget_run 8g "${BUDGET_M}m-8g-panelgrad-rms" nested-random \
+  "${BUDGET_M}m-prepared-slicing-panelgrad-rms-eps0p1-s$EXPERIMENT_SEED" \
+  --override "model.granularity_sampling_mode=adaptive_global" \
+  --override "model.adaptive_sampler_strategy=panelgrad" \
+  --override "model.panelgrad=$PANELGRAD_RMS"
+
+submit_budget_run 8g "${BUDGET_M}m-8g-panelgrad-l2" nested-random \
+  "${BUDGET_M}m-prepared-slicing-panelgrad-l2-eps0p5-to0p1-s$EXPERIMENT_SEED" \
+  --override "model.granularity_sampling_mode=adaptive_global" \
+  --override "model.adaptive_sampler_strategy=panelgrad" \
+  --override "model.panelgrad=$PANELGRAD_L2"
+```
+
+Submit the same comparison policies for the four-width grid:
+
+```bash
+submit_budget_run 4g "${BUDGET_M}m-4g-ts-global" nested-random \
+  "${BUDGET_M}m-prepared-slicing-4g-ts-global-s$EXPERIMENT_SEED" \
+  --override "model.granularity_sampling_mode=adaptive_global" \
+  --override "model.adaptive_sampler_strategy=thompson" \
+  --override "model.adaptive_controller=$THOMPSON_CONTROLLER"
+
+submit_budget_run 4g "${BUDGET_M}m-4g-panelgrad-rms" nested-random \
+  "${BUDGET_M}m-prepared-slicing-4g-panelgrad-rms-eps0p1-s$EXPERIMENT_SEED" \
+  --override "model.granularity_sampling_mode=adaptive_global" \
+  --override "model.adaptive_sampler_strategy=panelgrad" \
+  --override "model.panelgrad=$PANELGRAD_RMS"
+
+submit_budget_run 4g "${BUDGET_M}m-4g-panelgrad-l2" nested-random \
+  "${BUDGET_M}m-prepared-slicing-4g-panelgrad-l2-eps0p5-to0p1-s$EXPERIMENT_SEED" \
+  --override "model.granularity_sampling_mode=adaptive_global" \
+  --override "model.adaptive_sampler_strategy=panelgrad" \
+  --override "model.panelgrad=$PANELGRAD_L2"
+```
+
+Thompson evaluates its controller panel every 25 successful updates.
+PanelGrad refreshes controller-gradient measurements at the same cadence.
+Uniform H=25 is therefore the no-controller temporal-batching control.
+
+## 7. Submit standalone references
+
+For the complete eight-width comparison, submit one independent run per
+width:
+
+```bash
+for GRANULARITY in g125 g250 g375 g500 g625 g750 g875 g1000; do
+  submit_budget_run 8g "${BUDGET_M}m-8g-standalone-$GRANULARITY" standalone \
+    "${BUDGET_M}m-prepared-slicing-standalone-$GRANULARITY-s$EXPERIMENT_SEED" \
+    --granularity "$GRANULARITY"
+done
+```
+
+For the isolated four-width comparison:
+
+```bash
+for GRANULARITY in g250 g500 g750 g1000; do
+  submit_budget_run 4g "${BUDGET_M}m-4g-standalone-$GRANULARITY" standalone \
+    "${BUDGET_M}m-prepared-slicing-4g-standalone-$GRANULARITY-s$EXPERIMENT_SEED" \
+    --granularity "$GRANULARITY"
+done
+```
+
+If compute is constrained and the immediate question is how the standalone
+gap evolves, start with the smallest, a middle, and the full width:
+
+- eight widths: `g125`, `g500`, and `g1000`
+- four widths: `g250`, `g500`, and `g1000`
+
+The complete standalone set is required for a full perplexity-versus-size
+curve.
+
+## 8. Optional joint-training references
+
+Nested-all is substantially more compute-intensive per optimizer update, but
+it uses the same one-GPU memory contract and can be included as a high-compute
+reference:
+
+```bash
+submit_budget_run 8g "${BUDGET_M}m-8g-nested-all" nested-all \
+  "${BUDGET_M}m-prepared-slicing-nested-all-s$EXPERIMENT_SEED"
+
+submit_budget_run 4g "${BUDGET_M}m-4g-nested-all" nested-all \
+  "${BUDGET_M}m-prepared-slicing-4g-nested-all-s$EXPERIMENT_SEED"
+```
+
+Do not use nested-all as a matched-compute substitute for the global sampling
+policies: it evaluates and backpropagates all configured widths each update.
+
+## 9. Monitor, resume, and verify
+
+```bash
+squeue --me
+tail -f logs/matformer_dmodel256_<job-id>.out
+tail -f logs/matformer_dmodel256_<job-id>.err
+```
+
+If a job reaches its wall-time limit, resubmit its exact `submit_budget_run`
+command. The checkpoint continuation preserves optimizer, scheduler, policy,
+RNG, exposure, and successful-update state. Never submit the same run ID
+concurrently.
+
+After a run finishes, resolve its directory and verify the variable budget:
+
+```bash
+export RUN_ID="${BUDGET_M}m-prepared-slicing-uniform-window25-s$EXPERIMENT_SEED"
+export RUN_DIR="$(find "$OUT_8G" -type d -name "$RUN_ID" -print -quit)"
+test -n "$RUN_DIR"
+
+"$PYTHON_BIN" - "$RUN_DIR" "$TOKEN_BUDGET" "$DERIVED_MAX_STEPS" <<'PY'
+import csv
+import json
+import pathlib
+import sys
+
+run_dir = pathlib.Path(sys.argv[1])
+expected_tokens = int(sys.argv[2])
+expected_steps = int(sys.argv[3])
+
+config = json.loads((run_dir / "config.json").read_text())
+summary = json.loads((run_dir / "run_summary.json").read_text())
+rows = [
+    row
+    for row in csv.DictReader((run_dir / "metrics.csv").open())
+    if row["split"] == "train"
+]
+
+assert config["training"]["effective_world_size"] == 1
+assert config["training"]["expected_tokens_per_step"] == 8192
+assert config["training"]["token_budget"] == expected_tokens
+assert config["training"]["derived_max_steps"] == expected_steps
+assert config["training"]["resolved_warmup_steps"] == 1000
+assert config["model"]["global_sampling_interval_steps"] == 25
+assert summary["status"] == "completed"
+assert summary["tokens_seen"] == expected_tokens
+assert len(rows) == expected_steps
+
+state = summary["global_sampling_state"]
+assert state["total_successful_updates"] == expected_steps
+assert sum(state["exposure_counts"].values()) == expected_steps
+decision_count = (expected_steps + 24) // 25
+assert state["window_index"] == decision_count - 1
+assert state["successful_updates_in_window"] == (expected_steps - 1) % 25 + 1
+assert not summary.get("unresolved_artifact_failures")
+assert (run_dir / "final_holdout_results.json").is_file()
+
+print(
+    "verified",
+    summary["run_id"],
+    expected_tokens,
+    "tokens,",
+    expected_steps,
+    "updates, and",
+    decision_count,
+    "H=25 decisions",
+)
+PY
+```
+
+Within a budget and width grid, require identical optimizer-training,
+ordinary-validation, controller, and final-holdout role hashes before comparing
+policies. Across different budgets, the optimizer-training manifest is expected
+to differ because it contains a different number of packed training rows; the
+validation, controller, and final-holdout roles must remain fixed.
+
+## 10. Generate budget-isolated figures
+
+The run directory family uses the rounded budget slug generated by the
+configuration system. For integer `BUDGET_M`, it is `${BUDGET_M}m_tokens`:
+
+```bash
+export GROUP_DIR_8G="$OUT_8G/matformer_llama_148m_${BUDGET_M}m_tokens"
+export GROUP_DIR_4G="$OUT_4G/matformer_llama_148m_${BUDGET_M}m_tokens"
+
+"$PYTHON_BIN" scripts/make_figures.py \
+  --input "$GROUP_DIR_8G" \
+  --output "$GROUP_DIR_8G/figures" \
+  --variant slicing \
+  --correction none
+
+"$PYTHON_BIN" scripts/make_figures.py \
+  --input "$GROUP_DIR_4G" \
+  --output "$GROUP_DIR_4G/figures" \
+  --variant slicing \
+  --correction none
+```
+
+Use the reserved `final_holdout_results.json` values for final policy and
+standalone comparisons. Use ordinary validation checkpoints to study when the
+H-policy and standalone gaps grow, shrink, or cross during training.
+
+For each width grid, compare:
+
+- H=1 versus H=5, H=25, and H=50 at matched tokens
+- H=25 versus Thompson to separate temporal batching from adaptation
+- the best uniform H versus PanelGrad, reporting controller-measurement cost
+- every nested width versus its same-budget standalone run
+
+Do not compare the endpoint of a new longer cosine schedule with a resumed
+100M checkpoint as though they were the same training schedule. To measure how
+gaps evolve with tokens, compare checkpoints from policies trained with the
+same longer horizon and optimizer contract.
