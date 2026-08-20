@@ -218,6 +218,60 @@ def _real_gloo_gradient_journal_worker(
         torch.distributed.destroy_process_group()
 
 
+def _real_gloo_terminal_validation_worker(rank, world_size, init_path, result_dir):
+    os.environ["GLOO_SOCKET_IFNAME"] = "lo"
+    torch.distributed.init_process_group(
+        "gloo",
+        init_method=f"file://{init_path}",
+        rank=rank,
+        world_size=world_size,
+    )
+    try:
+        context = DistributedContext(
+            enabled=True,
+            rank=rank,
+            local_rank=rank,
+            world_size=world_size,
+            strategy="fsdp",
+            device="cpu",
+        )
+        local_metrics = (
+            [{"split": "validation", "step": 4}] if rank == 0 else []
+        )
+
+        def unexpected_validation(*args, **kwargs):
+            raise AssertionError("rank entered duplicate terminal validation")
+
+        training_steps._runtime_granularity_artifacts = lambda *args: ({}, {})
+        training_steps.evaluate_validation_per_granularity = unexpected_validation
+        status = {"ok": True}
+        try:
+            training_steps.append_final_validation_if_needed(
+                local_metrics,
+                {
+                    "evaluation": {"validation": {"run_at_completion": True}},
+                    "training": {},
+                    "run": {},
+                },
+                model=None,
+                eval_dataloader=None,
+                granularities=["full"],
+                device=torch.device("cpu"),
+                step=4,
+                tokens_seen=16,
+                content_tokens_seen=16,
+                start_time=0.0,
+                distributed_context=context,
+            )
+        except Exception as error:
+            status = {"ok": False, "error": str(error)}
+        Path(result_dir, f"rank-{rank}.json").write_text(
+            json.dumps(status, sort_keys=True), encoding="utf-8"
+        )
+    finally:
+        torch.distributed.destroy_process_group()
+
+
 def test_cpu_resolves_requested_bf16_and_checkpointing_to_none():
     config = {
         "training": {
@@ -778,6 +832,27 @@ def test_real_two_process_gloo_rank_zero_controller_commit(tmp_path):
     assert records[0] == records[1]
     assert records[0]["sample_count"] == 1
     assert records[0]["global_granularity"] in ("small", "full")
+
+
+def test_real_two_process_terminal_validation_decision_uses_any_rank_evidence(
+    tmp_path,
+):
+    init_path = tmp_path / "terminal-validation-gloo-init"
+    result_dir = tmp_path / "terminal-validation-results"
+    result_dir.mkdir()
+
+    torch.multiprocessing.spawn(
+        _real_gloo_terminal_validation_worker,
+        args=(2, str(init_path), str(result_dir)),
+        nprocs=2,
+        join=True,
+    )
+
+    statuses = [
+        json.loads((result_dir / f"rank-{rank}.json").read_text(encoding="utf-8"))
+        for rank in range(2)
+    ]
+    assert statuses == [{"ok": True}, {"ok": True}]
 
 
 @pytest.mark.parametrize("inject_failure", [False, True])

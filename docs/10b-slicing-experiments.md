@@ -75,6 +75,7 @@ set +a
 export PYTHON_BIN="$(command -v python)"
 export BASE=configs/production/slicing_10b_base.yaml
 export BAYES=configs/production/slicing_10b_bayesian.yaml
+export SLURM_EXCLUDE='gpu-[05,50,51]'
 
 mkdir -p "$OUT" logs
 test -r "$TOKENIZER/tokenizer_manifest.json"

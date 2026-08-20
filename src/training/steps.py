@@ -1499,6 +1499,18 @@ def append_final_validation_if_needed(
             has_final_validation
             or metrics_journal.has_validation_at_step(step)
         )
+    if distributed_context is not None and distributed_context.enabled:
+        # Only rank zero reloads the durable metrics journal. Reduce the local
+        # evidence before branching so every FSDP rank either skips or enters
+        # completion validation together, including after resume.
+        has_final_validation = (
+            sum_int(
+                int(has_final_validation),
+                device=device,
+                context=distributed_context,
+            )
+            > 0
+        )
     if has_final_validation:
         return
 

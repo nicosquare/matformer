@@ -167,6 +167,17 @@ for matched uniform-global runs without changing sampling or optimization.
 
 ---
 
+## Phase 10: Distributed Completion Finalization
+
+**Purpose**: Keep all ranks on the same terminal-validation path when only rank
+zero owns the durable metrics journal, so completed FSDP runs can exit cleanly
+and launch final-holdout evaluation.
+
+- [X] T058 Add a real two-process Gloo regression proving ranks with different local knowledge of completion-step validation make one shared skip/run decision in `tests/test_distributed.py`
+- [X] T059 Synchronize the completion-step validation-exists predicate before branching, then run focused training and distributed regressions in `src/training/steps.py` and `tests/test_distributed.py`
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies
