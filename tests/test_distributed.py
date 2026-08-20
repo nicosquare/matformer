@@ -11,6 +11,10 @@ import src.training.distributed as distributed
 import src.training.checkpointing as training_checkpointing
 import src.training.steps as training_steps
 from src.training.panelgrad import PanelGradController
+from src.training.gradient_interference import (
+    append_snapshot_record,
+    snapshot_records_equivalent,
+)
 from src.training.distributed import (
     DistributedContext,
     broadcast_object,
@@ -101,6 +105,114 @@ def _real_gloo_controller_worker(rank, world_size, init_path, result_dir):
                 sort_keys=True,
             ),
             encoding="utf-8",
+        )
+    finally:
+        torch.distributed.destroy_process_group()
+
+
+def _gradient_snapshot_record(duration_seconds):
+    return {
+        "schema_version": 1,
+        "event_type": "gradient_interference_snapshot",
+        "snapshot_id": "a" * 64,
+        "run_id": "distributed-gradient-probe",
+        "step": 0,
+        "tokens_seen": 0,
+        "milestone_reasons": ["trajectory_fraction:0"],
+        "fixed_probe_manifest_hash": "probe",
+        "controlled_support_hash": "support",
+        "diagnostic_contract_hash": "contract",
+        "semantics": {
+            "gradient": "raw_pre_correction_pre_clipping",
+            "loss_aggregation": "target_token_weighted_fixed_probe",
+            "shared_support": "smaller_nested_controlled_ffn_support",
+            "layerwise": True,
+        },
+        "granularities": [
+            {
+                "granularity": label,
+                "controlled_parameter_count": 1,
+                "aggregate_loss": 1.0,
+                "gradient_squared_norm": 1.0,
+                "gradient_norm": 1.0,
+            }
+            for label in ("small", "full")
+        ],
+        "pairs": [
+            {
+                "left_granularity": "small",
+                "right_granularity": "full",
+                "distance": 0.0,
+                "shared_parameter_count": 1,
+                "dot_product": 1.0,
+                "left_shared_squared_norm": 1.0,
+                "right_shared_squared_norm": 1.0,
+                "left_shared_norm": 1.0,
+                "right_shared_norm": 1.0,
+                "cosine": 1.0,
+                "has_zero_norm": False,
+                "zero_norm": {"left": False, "right": False},
+                "layer_contributions": [
+                    {
+                        "layer": "layer_0000",
+                        "module_name": "layers.0.mlp",
+                        "shared_parameter_count": 1,
+                        "dot_product": 1.0,
+                        "left_shared_squared_norm": 1.0,
+                        "right_shared_squared_norm": 1.0,
+                    }
+                ],
+            }
+        ],
+        "cost": {
+            "packed_sequences": 2,
+            "batches": 1,
+            "targets": 6,
+            "packed_sequence_evaluations": 4,
+            "target_evaluations": 12,
+            "backward_evaluations": 2,
+            "duration_seconds": duration_seconds,
+        },
+    }
+
+
+def _real_gloo_gradient_journal_worker(
+    rank, world_size, init_path, result_dir, journal_path, inject_failure
+):
+    os.environ["GLOO_SOCKET_IFNAME"] = "lo"
+    torch.distributed.init_process_group(
+        "gloo",
+        init_method=f"file://{init_path}",
+        rank=rank,
+        world_size=world_size,
+    )
+    try:
+        context = DistributedContext(
+            enabled=True,
+            rank=rank,
+            local_rank=rank,
+            world_size=world_size,
+            strategy="fsdp",
+            device="cpu",
+        )
+        local_record = _gradient_snapshot_record(0.1 + rank)
+        gathered = distributed.gather_objects(local_record, context=context)
+        status = None
+        if rank == 0:
+            try:
+                assert all(
+                    snapshot_records_equivalent(gathered[0], record)
+                    for record in gathered[1:]
+                )
+                if inject_failure:
+                    raise OSError("injected rank-zero artifact failure")
+                append_snapshot_record(journal_path, gathered[0])
+                status = {"ok": True}
+            except Exception as error:
+                status = {"ok": False, "error": str(error)}
+        status = broadcast_object(status, context=context, src=0)
+        Path(result_dir, f"rank-{rank}.json").write_text(
+            json.dumps(status, sort_keys=True), encoding="utf-8"
         )
     finally:
         torch.distributed.destroy_process_group()
@@ -666,6 +778,41 @@ def test_real_two_process_gloo_rank_zero_controller_commit(tmp_path):
     assert records[0] == records[1]
     assert records[0]["sample_count"] == 1
     assert records[0]["global_granularity"] in ("small", "full")
+
+
+@pytest.mark.parametrize("inject_failure", [False, True])
+def test_real_two_process_gradient_snapshot_has_one_journal_and_shared_status(
+    tmp_path, inject_failure
+):
+    init_path = tmp_path / "gradient-gloo-init"
+    result_dir = tmp_path / "gradient-results"
+    result_dir.mkdir()
+    journal_path = tmp_path / "gradient_interference.jsonl"
+
+    torch.multiprocessing.spawn(
+        _real_gloo_gradient_journal_worker,
+        args=(
+            2,
+            str(init_path),
+            str(result_dir),
+            str(journal_path),
+            inject_failure,
+        ),
+        nprocs=2,
+        join=True,
+    )
+
+    statuses = [
+        json.loads((result_dir / f"rank-{rank}.json").read_text(encoding="utf-8"))
+        for rank in range(2)
+    ]
+    assert statuses[0] == statuses[1]
+    assert statuses[0]["ok"] is not inject_failure
+    if inject_failure:
+        assert "injected rank-zero artifact failure" in statuses[0]["error"]
+        assert not journal_path.exists()
+    else:
+        assert len(journal_path.read_text(encoding="utf-8").splitlines()) == 1
 
 
 @pytest.mark.parametrize(

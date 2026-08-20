@@ -53,6 +53,11 @@ from src.training.panelgrad import (
     uses_panelgrad,
     validate_panelgrad_state,
 )
+from src.training.gradient_interference import (
+    GradientInterferenceError,
+    uses_gradient_interference,
+    validate_gradient_interference_state,
+)
 from src.utils.config import (
     BAYESIAN_CONTROLLER_METHOD_FAMILY,
     BAYESIAN_CONTROLLER_METHOD_VERSION,
@@ -1235,6 +1240,17 @@ def _save_model_checkpoint_rank_zero(
             raise ConfigError(str(error)) from error
     else:
         panelgrad_state = None
+    gradient_interference_state = run_state.get("gradient_interference_state")
+    if uses_gradient_interference(config):
+        try:
+            gradient_interference_state = validate_gradient_interference_state(
+                gradient_interference_state,
+                config=config,
+            )
+        except GradientInterferenceError as error:
+            raise ConfigError(str(error)) from error
+    else:
+        gradient_interference_state = None
     global_sampling_state = run_state.get("global_sampling_state")
     if uses_uniform_global_sampling_windows(config):
         global_sampling_state = validate_global_sampling_state(
@@ -1343,6 +1359,7 @@ def _save_model_checkpoint_rank_zero(
             "adaptive_sampler_state": run_state.get("adaptive_sampler_state"),
             "probabilistic_controller_state": probabilistic_controller_state,
             "panelgrad_state": panelgrad_state,
+            "gradient_interference_state": gradient_interference_state,
             "global_sampling_state": global_sampling_state,
             "adaptive_sampler_previous_loss": run_state.get(
                 "adaptive_sampler_previous_loss"
@@ -1533,6 +1550,15 @@ def save_model_checkpoint(
         if len(set(panelgrad_hashes)) != 1:
             raise ConfigError(
                 "PanelGrad state hashes differ across ranks at checkpoint"
+            )
+    if uses_gradient_interference(config):
+        local_hash = _controller_state_hash(
+            run_state.get("gradient_interference_state")
+        )
+        diagnostic_hashes = gather_objects(local_hash, context=distributed_context)
+        if len(set(diagnostic_hashes)) != 1:
+            raise ConfigError(
+                "gradient-interference state hashes differ across ranks at checkpoint"
             )
 
     status: dict[str, Any] | None = None
@@ -1868,6 +1894,7 @@ def build_initial_continuation_state(config: dict[str, Any]) -> dict[str, Any]:
         "adaptive_sampler_state": _build_initial_adaptive_sampler_state(config),
         "probabilistic_controller_state": None,
         "panelgrad_state": None,
+        "gradient_interference_state": None,
         "global_sampling_state": build_initial_global_sampling_state(config),
         "adaptive_sampler_previous_loss": None,
         "adaptive_sampler_previous_pattern": None,
@@ -2425,6 +2452,7 @@ def load_checkpoint_state(
             ),
             "probabilistic_controller_state": None,
             "panelgrad_state": None,
+            "gradient_interference_state": None,
             "global_sampling_state": (
                 build_initial_global_sampling_state(config)
                 if config is not None
@@ -2533,6 +2561,17 @@ def load_checkpoint_state(
             raise ConfigError(str(error)) from error
     elif config is not None:
         panelgrad_state = None
+    gradient_interference_state = checkpoint.get("gradient_interference_state")
+    if config is not None and uses_gradient_interference(config):
+        try:
+            gradient_interference_state = validate_gradient_interference_state(
+                gradient_interference_state,
+                config=config,
+            )
+        except GradientInterferenceError as error:
+            raise ConfigError(str(error)) from error
+    elif config is not None:
+        gradient_interference_state = None
     global_sampling_state = checkpoint.get("global_sampling_state")
     if config is not None and uses_uniform_global_sampling_windows(config):
         global_sampling_state = validate_global_sampling_state(
@@ -2642,6 +2681,7 @@ def load_checkpoint_state(
         "adaptive_sampler_state": checkpoint.get("adaptive_sampler_state"),
         "probabilistic_controller_state": probabilistic_controller_state,
         "panelgrad_state": panelgrad_state,
+        "gradient_interference_state": gradient_interference_state,
         "global_sampling_state": global_sampling_state,
         "adaptive_sampler_previous_loss": checkpoint.get(
             "adaptive_sampler_previous_loss"

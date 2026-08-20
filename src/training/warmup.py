@@ -245,6 +245,7 @@ def run_pre_nested_warmup_phase(
     stage_name: str = "training",
     metrics_journal=None,
     warmup_event_callback=None,
+    successful_step_callback=None,
 ) -> list[dict[str, Any]]:
     run_state = run_state if run_state is not None else build_initial_continuation_state(config)
     warmup = config["training"].get("pre_nested_warmup", {})
@@ -399,47 +400,47 @@ def run_pre_nested_warmup_phase(
         return str(schedule[window_index])
 
     def record_successful_warmup_step(*, step: int, tokens_seen: int) -> None:
-        del tokens_seen
-        if policy != "balanced_global":
-            return
-        completed_steps = int(step)
-        completed_windows = completed_steps // int(interval)
-        window_offset = completed_steps % int(interval)
-        counts = {str(label): 0 for label in config["model"]["granularities"]}
-        counts.update(Counter(schedule[:completed_windows]))
-        warmup_state.update(
-            completed_steps=completed_steps,
-            current_window_index=completed_windows,
-            current_window_offset=window_offset,
-            per_granularity_counts=counts,
-        )
-        run_state["pre_nested_warmup_state"] = copy.deepcopy(warmup_state)
-        update_pre_nested_warmup_state(config, warmup_state)
-        if window_offset == 0 and warmup_event_callback is not None:
-            completed_window_index = completed_windows - 1
-            warmup_event_callback(
-                {
-                    "schema_version": 1,
-                    "event_type": "warmup_window_completed",
-                    "phase": "warmup",
-                    "schedule_hash": warmup_state["schedule_hash"],
-                    "schedule_seed": warmup_state["schedule_seed"],
-                    "action_interval_steps": int(interval),
-                    "requested_warmup_steps": warmup_target_steps,
-                    "action": _warmup_action(
-                        config,
-                        schedule[completed_window_index],
-                    ),
-                    "warmup_window_index": completed_window_index,
-                    "window_index": completed_window_index,
-                    "boundary_step": completed_steps,
-                    "boundary_step_start": completed_window_index * int(interval),
-                    "boundary_step_end": completed_steps,
-                    "completed_optimizer_steps": int(interval),
-                    "posterior_updated": False,
-                }
+        if policy == "balanced_global":
+            completed_steps = int(step)
+            completed_windows = completed_steps // int(interval)
+            window_offset = completed_steps % int(interval)
+            counts = {str(label): 0 for label in config["model"]["granularities"]}
+            counts.update(Counter(schedule[:completed_windows]))
+            warmup_state.update(
+                completed_steps=completed_steps,
+                current_window_index=completed_windows,
+                current_window_offset=window_offset,
+                per_granularity_counts=counts,
             )
             run_state["pre_nested_warmup_state"] = copy.deepcopy(warmup_state)
+            update_pre_nested_warmup_state(config, warmup_state)
+            if window_offset == 0 and warmup_event_callback is not None:
+                completed_window_index = completed_windows - 1
+                warmup_event_callback(
+                    {
+                        "schema_version": 1,
+                        "event_type": "warmup_window_completed",
+                        "phase": "warmup",
+                        "schedule_hash": warmup_state["schedule_hash"],
+                        "schedule_seed": warmup_state["schedule_seed"],
+                        "action_interval_steps": int(interval),
+                        "requested_warmup_steps": warmup_target_steps,
+                        "action": _warmup_action(
+                            config,
+                            schedule[completed_window_index],
+                        ),
+                        "warmup_window_index": completed_window_index,
+                        "window_index": completed_window_index,
+                        "boundary_step": completed_steps,
+                        "boundary_step_start": completed_window_index * int(interval),
+                        "boundary_step_end": completed_steps,
+                        "completed_optimizer_steps": int(interval),
+                        "posterior_updated": False,
+                    }
+                )
+                run_state["pre_nested_warmup_state"] = copy.deepcopy(warmup_state)
+        if successful_step_callback is not None:
+            successful_step_callback(step=step, tokens_seen=tokens_seen)
 
     # Import lazily to avoid a module-level cycle with src.training.steps.
     from src.training.steps import train_for_steps

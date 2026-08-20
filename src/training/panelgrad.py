@@ -17,6 +17,11 @@ from src.evaluation.validation import (
 )
 from src.models.ffn import CatLlamaMLP, ControlledFFNSupportEntry, ModifiedLlamaMLP
 from src.training.distributed import autocast_context
+from src.training.gradient_probe import (
+    ControlledGradientProbeError,
+    measure_controlled_gradients,
+    resolve_controlled_ffn_support as resolve_probe_controlled_ffn_support,
+)
 from src.utils.reproducibility import capture_rng_state, restore_rng_state, stable_hash
 
 
@@ -240,7 +245,7 @@ def _controlled_mlps(model) -> list[tuple[str, ModifiedLlamaMLP | CatLlamaMLP]]:
     ]
 
 
-def resolve_controlled_ffn_support(
+def _legacy_resolve_controlled_ffn_support(
     model,
     granularities: Sequence[str],
 ) -> dict[str, Any]:
@@ -304,6 +309,18 @@ def resolve_controlled_ffn_support(
     }
     identity["controlled_support_hash"] = stable_hash(identity)
     return identity
+
+
+def resolve_controlled_ffn_support(
+    model,
+    granularities: Sequence[str],
+) -> dict[str, Any]:
+    """PanelGrad-compatible wrapper around the neutral support resolver."""
+
+    try:
+        return resolve_probe_controlled_ffn_support(model, granularities)
+    except ControlledGradientProbeError as error:
+        raise PanelGradError(str(error)) from error
 
 
 def _capture_runtime_granularity_state(model) -> dict[str, Any]:
@@ -417,7 +434,7 @@ def _controlled_gradient_squared_norm(
     return squared_norm, measured_count
 
 
-def measure_panelgrad_gradients(
+def _legacy_measure_panelgrad_gradients(
     model,
     dataloader,
     granularities: Sequence[str],
@@ -546,6 +563,31 @@ def measure_panelgrad_gradients(
     if source_example_count is not None:
         cost["controller_source_example_count"] = source_example_count
     return cost
+
+
+def measure_panelgrad_gradients(
+    model,
+    dataloader,
+    granularities: Sequence[str],
+    *,
+    device: torch.device | str,
+    config: Mapping[str, Any] | None = None,
+    support_identity: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Measure PanelGrad through the sampling-neutral fixed-probe component."""
+
+    try:
+        return measure_controlled_gradients(
+            model,
+            dataloader,
+            granularities,
+            device=device,
+            config=config,
+            support_identity=support_identity,
+            retain_gradients=False,
+        )
+    except ControlledGradientProbeError as error:
+        raise PanelGradError(str(error)) from error
 
 
 class PanelGradController:

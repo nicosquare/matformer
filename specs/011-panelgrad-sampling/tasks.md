@@ -150,6 +150,23 @@ sampling lifecycle.
 
 ---
 
+## Phase 9: Gradient-Interference Diagnostic
+
+**Purpose**: Add an opt-in, milestone-based raw-gradient compatibility journal
+for matched uniform-global runs without changing sampling or optimization.
+
+- [X] T049 Add disabled-by-default gradient-interference configuration, exact milestone resolution/reasons, compatibility validation, and configuration tests in `src/utils/config.py` and `tests/test_gradient_interference.py`
+- [X] T050 Add a neutral controlled-gradient probe with exact nested shared-support statistics, float64 accumulation, finite serialization, and success/failure restoration tests in `src/training/gradient_probe.py`, `src/training/panelgrad.py`, and `tests/test_gradient_interference.py`
+- [X] T051 Add a versioned `gradient_interference.jsonl` schema, stable snapshot IDs, durable append, compact journal state, and journal reconciliation in `src/training/gradient_interference.py` and `tests/test_gradient_interference.py`
+- [X] T052 Integrate step-zero and post-commit milestone measurement, replicated controller-role data, distributed rank-zero commits, and failure propagation in `src/training/data.py`, `src/training/run.py`, and `src/training/steps.py`
+- [X] T053 Persist and validate diagnostic provenance through continuation checkpoints in `src/training/checkpointing.py` and `tests/test_gradient_interference.py`
+- [X] T054 Add compact path/hash/coverage/cost fields to `run_summary.json` without changing existing controller, metrics, action, validation, or window artifacts in `src/training/run.py` and `tests/test_artifacts.py`
+- [X] T055 Cover resume reconciliation, tail truncation, corruption/duplicate/missing-history rejection, and retry of a due uncommitted restored step in `tests/test_gradient_interference.py`
+- [X] T056 Cover distributed replicated batches, matching backward counts/results, one rank-zero journal, and propagated append failure in `tests/test_distributed.py`
+- [X] T057 Run focused gradient-interference tests plus existing PanelGrad, checkpoint, global-window, training-smoke, artifact, distributed, and full-suite regressions
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies

@@ -24,6 +24,8 @@ import torch
 import src.training.checkpointing as training_checkpointing
 import src.training.data as training_data
 import src.training.distributed as training_distributed
+import src.training.gradient_interference as training_gradient_interference
+import src.training.gradient_probe as training_gradient_probe
 import src.training.modeling as training_modeling
 import src.training.monitoring as training_monitoring
 import src.training.panelgrad as training_panelgrad
@@ -172,7 +174,10 @@ def prepare_controller_data_roles(
         )
         controller_sampler = (
             None
-            if training_panelgrad.uses_panelgrad(config)
+            if (
+                training_panelgrad.uses_panelgrad(config)
+                or training_gradient_interference.uses_gradient_interference(config)
+            )
             else training_data.DistributedValidationSampler(
                 role_datasets["controller"],
                 rank,
@@ -311,6 +316,13 @@ def _attach_probabilistic_role_provenance(
         evaluation["adaptive_controller"]["manifest_hash"] = manifest_hashes[
             "controller"
         ]
+    diagnostic = evaluation.get("gradient_interference")
+    if isinstance(diagnostic, dict) and diagnostic.get("enabled", False):
+        diagnostic["fixed_probe_manifest_hash"] = manifest_hashes["controller"]
+        if isinstance(diagnostic.get("fixed_probe_contract"), dict):
+            diagnostic["fixed_probe_contract"]["manifest_hash"] = manifest_hashes[
+                "controller"
+            ]
     evaluation.setdefault("final_holdout", {})["manifest_hash"] = manifest_hashes[
         "final_holdout"
     ]
@@ -850,6 +862,8 @@ def run_training(
     probabilistic_controller = None
     panelgrad_controller = None
     panelgrad_support_identity = None
+    gradient_interference_state = None
+    gradient_interference_records: list[dict[str, Any]] = []
     controller_events: list[dict[str, Any]] = []
     controller_summary = None
     controller_summary_path = None
@@ -889,13 +903,17 @@ def run_training(
                     config,
                     parameter_counts_by_granularity,
                 )
-            if training_panelgrad.uses_panelgrad(config):
+            if (
+                training_panelgrad.uses_panelgrad(config)
+                or training_gradient_interference.uses_gradient_interference(config)
+            ):
                 panelgrad_support_identity = (
-                    training_panelgrad.resolve_controlled_ffn_support(
+                    training_gradient_probe.resolve_controlled_ffn_support(
                         model,
                         config["model"]["granularities"],
                     )
                 )
+            if training_panelgrad.uses_panelgrad(config):
                 config["model"]["panelgrad"]["controlled_support_counts"] = (
                     copy.deepcopy(
                         panelgrad_support_identity["controlled_support_counts"]
@@ -904,9 +922,18 @@ def run_training(
                 config["model"]["panelgrad"]["controlled_support_hash"] = str(
                     panelgrad_support_identity["controlled_support_hash"]
                 )
+            if training_gradient_interference.uses_gradient_interference(config):
+                diagnostic = config["evaluation"]["gradient_interference"]
+                diagnostic["controlled_support_hash"] = str(
+                    panelgrad_support_identity["controlled_support_hash"]
+                )
             model = model.to(device)
 
-        if parameter_counts_by_granularity:
+        if (
+            parameter_counts_by_granularity
+            or training_panelgrad.uses_panelgrad(config)
+            or training_gradient_interference.uses_gradient_interference(config)
+        ):
             with training_monitoring.heartbeat_stage(
                 heartbeat_writer,
                 "artifact_writing",
@@ -1018,6 +1045,11 @@ def run_training(
                         f"{config['validation_manifest_hash']}",
                         flush=True,
                     )
+        if training_gradient_interference.uses_gradient_interference(config):
+            write_config_artifact(
+                config,
+                distributed_context=distributed_context,
+            )
         optimizer, scheduler = training_steps.build_optimizer_and_scheduler(
             model,
             training,
@@ -1075,6 +1107,73 @@ def run_training(
             controller_events = read_controller_events(
                 output_dir / "controller_metrics.jsonl"
             )
+        if training_gradient_interference.uses_gradient_interference(config):
+            if panelgrad_support_identity is None:
+                raise ConfigError(
+                    "gradient-interference controlled FFN support was not resolved"
+                )
+            saved_diagnostic_state = run_state.get("gradient_interference_state")
+            if saved_diagnostic_state is None:
+                gradient_interference_state = (
+                    training_gradient_interference.build_gradient_interference_state(
+                        config,
+                        fixed_probe_manifest_hash=str(
+                            config["controller_manifest_hash"]
+                        ),
+                        controlled_support_hash=str(
+                            panelgrad_support_identity["controlled_support_hash"]
+                        ),
+                    )
+                )
+            else:
+                gradient_interference_state = (
+                    training_gradient_interference.validate_gradient_interference_state(
+                        saved_diagnostic_state,
+                        config=config,
+                    )
+                )
+            reconciliation = None
+            if training_distributed.should_write_shared_artifact(distributed_context):
+                try:
+                    gradient_interference_records = (
+                        training_gradient_interference.reconcile_snapshot_journal(
+                            gradient_interference_state,
+                            config=config,
+                            restored_step=int(
+                                run_state.get("last_completed_step", 0)
+                            ),
+                        )
+                    )
+                    reconciliation = {
+                        "ok": True,
+                        "state": gradient_interference_state,
+                        "records": gradient_interference_records,
+                    }
+                except Exception as error:
+                    reconciliation = {
+                        "ok": False,
+                        "error_type": type(error).__name__,
+                        "error": str(error),
+                    }
+            reconciliation = training_distributed.broadcast_object(
+                reconciliation,
+                context=distributed_context,
+                src=0,
+            )
+            if not reconciliation.get("ok", False):
+                raise training_gradient_interference.GradientInterferenceError(
+                    "gradient-interference journal reconciliation failed: "
+                    f"{reconciliation.get('error')}"
+                )
+            gradient_interference_state = copy.deepcopy(
+                reconciliation["state"]
+            )
+            gradient_interference_records = copy.deepcopy(
+                reconciliation["records"]
+            )
+            run_state["gradient_interference_state"] = copy.deepcopy(
+                gradient_interference_state
+            )
         training_monitoring.emit_run_start_continuation_state(
             heartbeat_writer,
             run_state,
@@ -1110,6 +1209,107 @@ def run_training(
                 panelgrad_controller.record_journal_commit(commit)
                 run_state["panelgrad_state"] = panelgrad_controller.state_dict()
             controller_events.append(copy.deepcopy(dict(event)))
+
+        def measure_gradient_interference_if_due(
+            *, step: int, tokens_seen: int
+        ) -> None:
+            nonlocal gradient_interference_state, gradient_interference_records
+            if gradient_interference_state is None:
+                return
+            if not training_gradient_interference.milestone_due(
+                config, gradient_interference_state, step
+            ):
+                return
+            local_result: dict[str, Any]
+            try:
+                record = training_gradient_interference.measure_gradient_interference(
+                    model,
+                    _controller_dataloader,
+                    config["model"]["granularities"],
+                    device=device,
+                    config=config,
+                    support_identity=panelgrad_support_identity,
+                    step=step,
+                    tokens_seen=tokens_seen,
+                )
+                local_result = {"ok": True, "record": record}
+            except Exception as error:
+                local_result = {
+                    "ok": False,
+                    "error_type": type(error).__name__,
+                    "error": str(error),
+                }
+            gathered = training_distributed.gather_objects(
+                local_result,
+                context=distributed_context,
+            )
+            commit_result = None
+            if training_distributed.should_write_shared_artifact(
+                distributed_context
+            ):
+                try:
+                    failures = [item for item in gathered if not item.get("ok", False)]
+                    if failures:
+                        raise training_gradient_interference.GradientInterferenceError(
+                            "gradient-interference measurement failed on a rank: "
+                            f"{failures[0].get('error')}"
+                        )
+                    authoritative_record = gathered[0]["record"]
+                    if any(
+                        not training_gradient_interference.snapshot_records_equivalent(
+                            authoritative_record, item["record"]
+                        )
+                        for item in gathered[1:]
+                    ):
+                        raise training_gradient_interference.GradientInterferenceError(
+                            "gradient-interference results differ across ranks"
+                        )
+                    commit = training_gradient_interference.append_snapshot_record(
+                        gradient_interference_state["journal"]["path"],
+                        authoritative_record,
+                        artifact_io=config,
+                        heartbeat_writer=heartbeat_writer,
+                        artifact_state=run_state,
+                    )
+                    committed_state = copy.deepcopy(gradient_interference_state)
+                    training_gradient_interference.record_snapshot_commit(
+                        committed_state,
+                        authoritative_record,
+                        commit,
+                    )
+                    commit_result = {
+                        "ok": True,
+                        "record": authoritative_record,
+                        "state": committed_state,
+                    }
+                except Exception as error:
+                    commit_result = {
+                        "ok": False,
+                        "error_type": type(error).__name__,
+                        "error": str(error),
+                    }
+            commit_result = training_distributed.broadcast_object(
+                commit_result,
+                context=distributed_context,
+                src=0,
+            )
+            if not commit_result.get("ok", False):
+                raise training_gradient_interference.GradientInterferenceError(
+                    "gradient-interference snapshot commit failed: "
+                    f"{commit_result.get('error')}"
+                )
+            gradient_interference_state = copy.deepcopy(commit_result["state"])
+            gradient_interference_records.append(
+                copy.deepcopy(commit_result["record"])
+            )
+            run_state["gradient_interference_state"] = copy.deepcopy(
+                gradient_interference_state
+            )
+
+        measure_gradient_interference_if_due(
+            step=int(run_state.get("last_completed_step", 0)),
+            tokens_seen=int(run_state.get("tokens_seen", 0)),
+        )
 
         def commit_warmup_event(event: Mapping[str, Any]) -> None:
             if probabilistic_controller is None and panelgrad_controller is not None:
@@ -1158,6 +1358,7 @@ def run_training(
                     monitoring_session=monitoring_session,
                     metrics_journal=metrics_journal,
                     warmup_event_callback=commit_warmup_event,
+                    successful_step_callback=measure_gradient_interference_if_due,
                 )
             )
         else:
@@ -1539,6 +1740,7 @@ def run_training(
                     panelgrad_controller=panelgrad_controller,
                     panelgrad_refresh_callback=refresh_panelgrad_if_due,
                     panelgrad_completion_callback=finish_panelgrad_training,
+                    successful_step_callback=measure_gradient_interference_if_due,
                 )
             )
         elif panelgrad_controller is not None:
@@ -1546,6 +1748,19 @@ def run_training(
                 step=int(run_state.get("last_completed_step", 0)),
                 tokens_seen=int(run_state.get("tokens_seen", 0)),
             )
+        if gradient_interference_state is not None:
+            expected_diagnostic_steps = list(
+                config["evaluation"]["gradient_interference"]["resolved_steps"]
+            )
+            measured_diagnostic_steps = list(
+                gradient_interference_state["completed_steps"]
+            )
+            if measured_diagnostic_steps != expected_diagnostic_steps:
+                raise training_gradient_interference.GradientInterferenceError(
+                    "gradient-interference journal coverage is incomplete: "
+                    f"expected={expected_diagnostic_steps}, "
+                    f"measured={measured_diagnostic_steps}"
+                )
         metrics_rows = metrics_journal.summary_rows()
         extraction_metadata_path = None
         metrics_path = None
@@ -1751,6 +1966,10 @@ def run_training(
             "unresolved_artifact_failures": list(
                 run_state.get("unresolved_artifact_failures", [])
             ),
+            **training_gradient_interference.summary_fields(
+                config,
+                gradient_interference_state,
+            ),
         }
         if controller_summary is not None:
             extra_summary_fields.update(
@@ -1922,6 +2141,10 @@ def run_training(
                         controller_summary.get("controller_metrics_hash")
                         if controller_summary is not None
                         else None
+                    ),
+                    **training_gradient_interference.summary_fields(
+                        config,
+                        gradient_interference_state,
                     ),
                     **_controller_warmup_run_summary_fields(controller_summary),
                 }

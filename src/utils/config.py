@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
 import os
@@ -664,7 +665,7 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
     _require_fields(
         evaluation,
         "evaluation",
-        ["validation", "test"],
+        ["validation", "test", "gradient_interference"],
     )
     validation = evaluation.get("validation")
     if not isinstance(validation, Mapping):
@@ -693,6 +694,7 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         ["source", "examples"],
     )
     _require_fields(test_evaluation, "evaluation.test", ["enabled"])
+    _validate_gradient_interference_configuration(config)
     _require_fields(
         monitoring,
         "monitoring",
@@ -1211,23 +1213,33 @@ def _validate_distributed_and_prepared_corpus_contract(
         raise ConfigError(
             "adaptive_per_block + ucb is unsupported when world size exceeds one"
         )
-    if (
-        expected_world_size > 1
-        and model.get("granularity_sampling_mode") == "adaptive_global"
-        and model.get("adaptive_sampler_strategy") == "panelgrad"
+    diagnostic_enabled = bool(
+        config.get("evaluation", {})
+        .get("gradient_interference", {})
+        .get("enabled", False)
+    )
+    if expected_world_size > 1 and (
+        (
+            model.get("granularity_sampling_mode") == "adaptive_global"
+            and model.get("adaptive_sampler_strategy") == "panelgrad"
+        )
+        or diagnostic_enabled
     ):
         fsdp = distributed.get("fsdp", {})
         if not isinstance(fsdp, Mapping):
             raise ConfigError(
-                "distributed PanelGrad requires training.distributed.fsdp mapping"
+                "distributed controlled-gradient probing requires "
+                "training.distributed.fsdp mapping"
             )
         if fsdp.get("use_orig_params", True) is not True:
             raise ConfigError(
-                "distributed PanelGrad requires fsdp.use_orig_params=true"
+                "distributed controlled-gradient probing requires "
+                "fsdp.use_orig_params=true"
             )
         if bool(fsdp.get("cpu_offload", False)):
             raise ConfigError(
-                "distributed PanelGrad does not support FSDP CPU offload"
+                "distributed controlled-gradient probing does not support "
+                "FSDP CPU offload"
             )
 
     mode = dataset.get("mode", "raw_tokenized")
@@ -3761,11 +3773,273 @@ def _resolve_evaluation_defaults(config: dict[str, Any]) -> None:
     if test_evaluation["enabled"]:
         raise ConfigError("evaluation.test.enabled must be false")
 
+    _resolve_gradient_interference_defaults(config)
+
     training.pop("eval_interval", None)
     training.pop("eval_batches", None)
     evaluation.pop("final_validation", None)
     evaluation["validation"] = validation
     evaluation["test"] = test_evaluation
+
+
+def _resolve_gradient_interference_defaults(config: dict[str, Any]) -> None:
+    """Resolve the opt-in H-window raw-gradient compatibility diagnostic."""
+
+    evaluation = config.setdefault("evaluation", {})
+    raw = evaluation.get("gradient_interference", {})
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, Mapping):
+        raise ConfigError("evaluation.gradient_interference must be a mapping")
+    diagnostic = copy.deepcopy(dict(raw))
+    user_fields = {
+        "enabled",
+        "trajectory_fractions",
+        "include_warmup_completion",
+        "layerwise",
+    }
+    resolved_fields = {
+        "schema_version",
+        "event_type",
+        "artifact_path",
+        "resolved_steps",
+        "resolved_milestones",
+        "milestone_reasons",
+        "fixed_probe_contract",
+        "fixed_probe_manifest_hash",
+        "controlled_support_hash",
+        "diagnostic_contract_hash",
+        "gradient_semantics",
+        "loss_aggregation",
+        "shared_support",
+    }
+    unknown = sorted(set(diagnostic) - user_fields - resolved_fields)
+    if unknown:
+        raise ConfigError(
+            "Unknown evaluation.gradient_interference fields: " f"{unknown}"
+        )
+
+    diagnostic["enabled"] = _normalize_bool(
+        diagnostic.get("enabled", False),
+        "evaluation.gradient_interference.enabled",
+    )
+    raw_fractions = diagnostic.get(
+        "trajectory_fractions", [0.0, 0.25, 0.5, 0.75, 1.0]
+    )
+    if not isinstance(raw_fractions, list) or not raw_fractions:
+        raise ConfigError(
+            "evaluation.gradient_interference.trajectory_fractions must be a "
+            "non-empty list"
+        )
+    fractions: list[float] = []
+    for index, raw_fraction in enumerate(raw_fractions):
+        if isinstance(raw_fraction, bool) or not isinstance(raw_fraction, (int, float)):
+            raise ConfigError(
+                "evaluation.gradient_interference.trajectory_fractions "
+                f"entry {index} must be numeric"
+            )
+        fraction = float(raw_fraction)
+        if not math.isfinite(fraction) or not 0.0 <= fraction <= 1.0:
+            raise ConfigError(
+                "evaluation.gradient_interference.trajectory_fractions must "
+                "contain only finite values between zero and one"
+            )
+        fractions.append(fraction)
+    diagnostic["trajectory_fractions"] = fractions
+    diagnostic["include_warmup_completion"] = _normalize_bool(
+        diagnostic.get("include_warmup_completion", True),
+        "evaluation.gradient_interference.include_warmup_completion",
+    )
+    diagnostic["layerwise"] = _normalize_bool(
+        diagnostic.get("layerwise", True),
+        "evaluation.gradient_interference.layerwise",
+    )
+
+    max_steps = _nonnegative_int(
+        config.get("training", {}).get("max_steps"), "training.max_steps"
+    )
+    reasons_by_step: dict[int, list[str]] = {}
+    for fraction in fractions:
+        step = int(math.ceil(fraction * max_steps))
+        reason = f"trajectory_fraction:{format(fraction, '.17g')}"
+        reasons_by_step.setdefault(step, [])
+        if reason not in reasons_by_step[step]:
+            reasons_by_step[step].append(reason)
+    if diagnostic["include_warmup_completion"]:
+        warmup_step = _nonnegative_int(
+            config.get("training", {}).get("resolved_warmup_steps"),
+            "training.resolved_warmup_steps",
+        )
+        reasons_by_step.setdefault(warmup_step, [])
+        if "warmup_completion" not in reasons_by_step[warmup_step]:
+            reasons_by_step[warmup_step].append("warmup_completion")
+
+    resolved_steps = sorted(reasons_by_step)
+    resolved_milestones = [
+        {"step": step, "reasons": list(reasons_by_step[step])}
+        for step in resolved_steps
+    ]
+    diagnostic.update(
+        {
+            "schema_version": 1,
+            "event_type": "gradient_interference_snapshot",
+            "artifact_path": "gradient_interference.jsonl",
+            "resolved_steps": resolved_steps,
+            "resolved_milestones": resolved_milestones,
+            "milestone_reasons": {
+                str(step): list(reasons_by_step[step]) for step in resolved_steps
+            },
+            "gradient_semantics": "raw_pre_correction_pre_clipping",
+            "loss_aggregation": "target_token_weighted_fixed_probe",
+            "shared_support": "smaller_nested_controlled_ffn_support",
+            "fixed_probe_manifest_hash": diagnostic.get(
+                "fixed_probe_manifest_hash", "pending"
+            ),
+            "controlled_support_hash": diagnostic.get(
+                "controlled_support_hash", "pending"
+            ),
+        }
+    )
+
+    if diagnostic["enabled"]:
+        run = config.get("run", {})
+        model = config.get("model", {})
+        dataset = config.get("dataset", {})
+        granularities = model.get("granularities", [])
+        if run.get("model_family") != "nested":
+            raise ConfigError(
+                "gradient interference requires a nested model run"
+            )
+        if run.get("sampling_mode") != "nested-random":
+            raise ConfigError(
+                "gradient interference requires run.sampling_mode=nested-random"
+            )
+        if model.get("granularity_sampling_mode") != "global":
+            raise ConfigError(
+                "gradient interference requires uniform global sampling"
+            )
+        if not isinstance(granularities, list) or len(granularities) < 2:
+            raise ConfigError(
+                "gradient interference requires at least two granularities"
+            )
+        if not bool(dataset.get("fixed_four_role_partition", False)):
+            raise ConfigError(
+                "gradient interference requires dataset.fixed_four_role_partition=true"
+            )
+        fixed_probe = _resolve_fixed_controller_data_role(
+            evaluation,
+            "adaptive_controller",
+            {
+                "enabled": True,
+                "source": "configured_dataset_split",
+                "examples": 128,
+                "objective_weights": "uniform",
+                "fixed_manifest": True,
+            },
+            method_name="gradient interference",
+        )
+        _resolve_fixed_controller_data_role(
+            evaluation,
+            "final_holdout",
+            {
+                "enabled": True,
+                "source": "configured_dataset_split",
+                "examples": 512,
+                "fixed_manifest": True,
+                "evaluate_during_training": False,
+            },
+            method_name="gradient interference",
+        )
+        fixed_probe.setdefault("manifest_hash", "pending")
+        diagnostic["fixed_probe_contract"] = fixed_probe
+    else:
+        diagnostic["fixed_probe_contract"] = diagnostic.get(
+            "fixed_probe_contract", None
+        )
+
+    contract_payload = {
+        key: diagnostic[key]
+        for key in (
+            "schema_version",
+            "event_type",
+            "trajectory_fractions",
+            "include_warmup_completion",
+            "layerwise",
+            "resolved_milestones",
+            "gradient_semantics",
+            "loss_aggregation",
+            "shared_support",
+        )
+    }
+    diagnostic["diagnostic_contract_hash"] = hashlib.sha256(
+        json.dumps(
+            contract_payload, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    evaluation["gradient_interference"] = diagnostic
+
+
+def _validate_gradient_interference_configuration(
+    config: Mapping[str, Any],
+) -> None:
+    evaluation = config.get("evaluation", {})
+    diagnostic = evaluation.get("gradient_interference")
+    if not isinstance(diagnostic, Mapping):
+        raise ConfigError("evaluation.gradient_interference must be a mapping")
+    required = {
+        "enabled",
+        "trajectory_fractions",
+        "include_warmup_completion",
+        "layerwise",
+        "schema_version",
+        "event_type",
+        "artifact_path",
+        "resolved_steps",
+        "resolved_milestones",
+        "milestone_reasons",
+        "diagnostic_contract_hash",
+        "gradient_semantics",
+        "loss_aggregation",
+        "shared_support",
+    }
+    missing = sorted(required - set(diagnostic))
+    if missing:
+        raise ConfigError(
+            "evaluation.gradient_interference is missing resolved fields: "
+            f"{missing}"
+        )
+    if diagnostic.get("schema_version") != 1:
+        raise ConfigError("gradient interference schema_version must be 1")
+    if diagnostic.get("event_type") != "gradient_interference_snapshot":
+        raise ConfigError("gradient interference event_type is invalid")
+    if diagnostic.get("artifact_path") != "gradient_interference.jsonl":
+        raise ConfigError("gradient interference artifact_path is invalid")
+    steps = diagnostic.get("resolved_steps")
+    milestones = diagnostic.get("resolved_milestones")
+    if (
+        not isinstance(steps, list)
+        or any(isinstance(step, bool) or not isinstance(step, int) or step < 0 for step in steps)
+        or steps != sorted(set(steps))
+        or not isinstance(milestones, list)
+        or [item.get("step") for item in milestones if isinstance(item, Mapping)]
+        != steps
+        or len(milestones) != len(steps)
+        or any(
+            not isinstance(item, Mapping)
+            or not isinstance(item.get("reasons"), list)
+            or not item["reasons"]
+            or any(not isinstance(reason, str) or not reason for reason in item["reasons"])
+            for item in milestones
+        )
+    ):
+        raise ConfigError("gradient interference milestone schedule is invalid")
+    contract_hash = diagnostic.get("diagnostic_contract_hash")
+    if not isinstance(contract_hash, str) or len(contract_hash) != 64:
+        raise ConfigError("gradient interference diagnostic_contract_hash is invalid")
+    for field in ("fixed_probe_manifest_hash", "controlled_support_hash"):
+        value = diagnostic.get(field, "pending")
+        if value != "pending" and (not isinstance(value, str) or not value):
+            raise ConfigError(f"gradient interference {field} is invalid")
 
 
 def _resolve_monitoring_defaults(config: dict[str, Any]) -> None:

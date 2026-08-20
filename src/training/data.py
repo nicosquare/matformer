@@ -79,10 +79,16 @@ def uses_controller_panel(config: Mapping[str, Any]) -> bool:
     fixed_comparison_roles = bool(
         config.get("dataset", {}).get("fixed_four_role_partition", False)
     )
+    gradient_interference = bool(
+        config.get("evaluation", {})
+        .get("gradient_interference", {})
+        .get("enabled", False)
+    )
     return (
         uses_thompson_controller
         or uses_panelgrad_controller
         or fixed_comparison_roles
+        or gradient_interference
     )
 
 
@@ -766,7 +772,15 @@ def build_packed_mmap_dataloaders(
     ) if world_size > 1 else None
     controller_sampler = (
         DistributedValidationSampler(role_datasets["controller"], rank, world_size)
-        if world_size > 1 and not uses_panelgrad_controller_panel(config)
+        if (
+            world_size > 1
+            and not uses_panelgrad_controller_panel(config)
+            and not bool(
+                config.get("evaluation", {})
+                .get("gradient_interference", {})
+                .get("enabled", False)
+            )
+        )
         else None
     )
     validation_loader = build_language_model_dataloader(
