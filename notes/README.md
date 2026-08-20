@@ -21,6 +21,7 @@ configuration.
 
 | Note | Status | Still necessary? | Recommended treatment |
 | --- | --- | --- | --- |
+| [H-window gradient-interference diagnostic](h-window-gradient-interference-diagnostic_2026-08-20.md) | Active diagnostic proposal | Yes while evaluating uniform persistence | Inventories existing pipeline artifacts, limits additions to missing diagnostic evidence, and defines shared-support gradient measurements plus a partial-Adam-adaptation explanation for H=1 outperforming H=5. |
 | [MatFormer reproduction specification](step_1.md) | Foundational brief, partially superseded | Historical reference | Keep for project origin and paper-reproduction intent. Use `specs/001-matformer-lm-reproduction/` for implemented requirements. |
 | [Granularity sampling discussion](granularity_sampling_discussion_2026-06-09.md) | Superseded early ideation | No for current decisions | Archive or remove after confirming no external references depend on it. Its useful Bayesian direction is represented by feature 010 and the current discussion. |
 | `adaptive_per_block_proposal.md` | Superseded heuristic proposal; currently deleted in the working tree | No | The proposal used training-batch loss and the legacy pseudo-Thompson path. Its pending deletion is consistent with the current method history; do not restore it as active guidance. |
