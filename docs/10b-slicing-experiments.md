@@ -373,7 +373,102 @@ python -c 'import json, pathlib, sys; p=pathlib.Path(sys.argv[1]); s=json.loads(
 test -r "$RUN_DIR/final_holdout_results.json"
 ```
 
-## 8. Fixed scientific and data contract
+## 8. Generate production-only figures
+
+Generate figures only after the production runs being compared have completed
+and their automatic final-holdout evaluations have succeeded. The resolved 10B
+output group is:
+
+```bash
+export GROUP_DIR="$OUT/matformer_llama_148m_10b_tokens"
+test -d "$GROUP_DIR"
+```
+
+Do not pass `OUT` or `GROUP_DIR` directly to the figure generator. The output
+group also contains the `smoke-10b-*` runs from section 5, which intentionally
+stop after one optimizer update and must not enter production comparisons.
+Build a temporary, production-only view containing completed documented
+`10b-*` runs and only the compact artifacts needed for reporting:
+
+```bash
+export FIGURE_INPUT="$(mktemp -d "${TMPDIR:-/tmp}/matformer-10b-figures.XXXXXX")"
+trap 'rm -rf -- "$FIGURE_INPUT"' EXIT
+
+for RUN_DIR in "$GROUP_DIR"/10b-*; do
+  test -d "$RUN_DIR" || continue
+  test -r "$RUN_DIR/scaling_results.csv" || continue
+  test -r "$RUN_DIR/final_holdout_results.json" || continue
+
+  RUN_ID="$(basename "$RUN_DIR")"
+  FIGURE_RUN_DIR="$FIGURE_INPUT/$RUN_ID"
+  mkdir -p "$FIGURE_RUN_DIR"
+
+  for ARTIFACT in \
+    config.json \
+    run_summary.json \
+    metrics.csv \
+    scaling_results.csv \
+    task_results.csv \
+    consistency_results.csv \
+    controller_metrics.jsonl \
+    controller_summary.json \
+    final_holdout_results.json
+  do
+    if test -r "$RUN_DIR/$ARTIFACT"; then
+      cp "$RUN_DIR/$ARTIFACT" "$FIGURE_RUN_DIR/$ARTIFACT"
+    fi
+  done
+done
+
+test -n "$(find "$FIGURE_INPUT" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+find "$FIGURE_INPUT" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
+```
+
+Requiring both `scaling_results.csv` and `final_holdout_results.json` limits
+this view to runs that completed training artifact writing and the reserved
+final-holdout evaluation described in section 7.
+
+Generate the plain-slicing figures in their own directory:
+
+```bash
+"$PYTHON_BIN" scripts/make_figures.py \
+  --input "$FIGURE_INPUT" \
+  --output "$GROUP_DIR/figures/plain" \
+  --variant slicing \
+  --correction none
+```
+
+After the GMC production runs complete, generate their figures separately so
+plain and corrected runs are never combined implicitly:
+
+```bash
+"$PYTHON_BIN" scripts/make_figures.py \
+  --input "$FIGURE_INPUT" \
+  --output "$GROUP_DIR/figures/gmc" \
+  --variant slicing \
+  --correction gmc
+```
+
+By default, size reporting writes combined perplexity panels with the
+equivalent loss scale on the right. Add `--individual-size-panels` when one PNG
+per size panel is useful. Global sampling policies also produce grouped
+100%-stacked exposure timelines and a summary CSV. To add exact early/late
+action views, rerun the relevant command with, for example,
+`--sampling-zoom-steps 250`.
+
+Inspect the generated files with:
+
+```bash
+find "$GROUP_DIR/figures" -type f -print | sort
+```
+
+Rerunning a command refreshes its selected output directory and removes stale
+generator-owned plots there. Keep `plain` and `gmc` as separate output
+directories. Use `final_holdout_results.json` as the primary method-selection
+surface; ordinary-validation plots are learning curves and checkpoint-selection
+evidence, not a substitute for the reserved final holdout.
+
+## 9. Fixed scientific and data contract
 
 For four GPUs, each rank consumes eight 1,024-token sequences per microstep:
 32,768 global tokens per microstep, accumulation 32, and 1,048,576 nominal

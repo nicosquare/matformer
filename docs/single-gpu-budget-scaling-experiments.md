@@ -125,6 +125,54 @@ PanelGrad performs controller-gradient measurements in addition to ordinary
 training. It remains a one-GPU run, but its wall-clock cost is higher than
 uniform global or Thompson sampling.
 
+### Optional gradient-interference diagnostic
+
+The uniform-global H-window runs can additionally measure raw-gradient
+compatibility between every pair of nested granularities on the fixed
+controller probe. The diagnostic is disabled by default. Set the opt-in flag
+before defining the following arrays to enable it:
+
+```bash
+# Change to 1 for the diagnostic sweep; leave at 0 for ordinary runs.
+export ENABLE_GRADIENT_INTERFERENCE=0
+
+GRADIENT_INTERFERENCE_OVERRIDES=()
+GRADIENT_INTERFERENCE_RUN_SLUG=""
+if [[ "${ENABLE_GRADIENT_INTERFERENCE:-0}" == 1 ]]; then
+  GRADIENT_INTERFERENCE_OVERRIDES=(
+    --override 'evaluation.gradient_interference.enabled=true'
+    --override 'evaluation.gradient_interference.trajectory_fractions=[0.0,0.25,0.5,0.75,1.0]'
+    --override 'evaluation.gradient_interference.include_warmup_completion=true'
+    --override 'evaluation.gradient_interference.layerwise=true'
+  )
+  GRADIENT_INTERFERENCE_RUN_SLUG="-gradient-interference"
+fi
+```
+
+The separate run slug prevents an enabled diagnostic run from colliding with
+or attempting to resume an existing ordinary run with a different immutable
+configuration. For stronger isolation, also use diagnostic-specific `OUT_8G`
+and `OUT_4G` roots.
+
+Apply `GRADIENT_INTERFERENCE_OVERRIDES` only to `nested-random` runs with
+uniform global sampling. It is intentionally incompatible with Thompson,
+PanelGrad, standalone, nested-all, fixed-global, adaptive, and per-block runs,
+so the comparison-policy and reference commands below do not include this
+array. The production base already supplies the required fixed four-role
+partition, enabled 128-example controller probe, and fixed manifest.
+
+Milestones are successful optimizer-update counts. They are the sorted,
+deduplicated union of `ceil(fraction * DERIVED_MAX_STEPS)` and the resolved
+warmup-completion step. For `BUDGET_M=20`, the exact budget is 19,996,672
+tokens and 2,441 updates, giving diagnostic steps
+`0, 611, 1000, 1221, 1831, 2441`.
+
+Each eight-width snapshot evaluates the complete fixed probe once per width.
+With 128 packed probe sequences and batch size eight, this is 128 backward
+evaluations per snapshot, or 768 across the six 20M snapshots. The journal
+records actual batches, targets, backward evaluations, and duration so this
+cost can be reported separately from training.
+
 ## 3. Run preflights
 
 First verify the eight-width uniform-window contract:
@@ -133,8 +181,9 @@ First verify the eight-width uniform-window contract:
 "$PYTHON_BIN" train.py \
   --config "$BASE" \
   --output-root "$OUT_8G" \
-  --override "run.run_id=preflight-${BUDGET_M}m-8g-uniform-window25-s$EXPERIMENT_SEED" \
+  --override "run.run_id=preflight-${BUDGET_M}m-8g-uniform-window25${GRADIENT_INTERFERENCE_RUN_SLUG}-s$EXPERIMENT_SEED" \
   "${EIGHT_GRANULARITY_OVERRIDES[@]}" \
+  "${GRADIENT_INTERFERENCE_OVERRIDES[@]}" \
   --override "training.token_budget=$((BUDGET_M * 1000000 / 8192 * 8192))" \
   --override "model.granularity_sampling_mode=global" \
   --override "model.global_sampling_interval_steps=25" \
@@ -173,8 +222,9 @@ Finally verify the four-width override independently:
 "$PYTHON_BIN" train.py \
   --config "$BASE" \
   --output-root "$OUT_4G" \
-  --override "run.run_id=preflight-${BUDGET_M}m-4g-uniform-window25-s$EXPERIMENT_SEED" \
+  --override "run.run_id=preflight-${BUDGET_M}m-4g-uniform-window25${GRADIENT_INTERFERENCE_RUN_SLUG}-s$EXPERIMENT_SEED" \
   "${FOUR_GRANULARITY_OVERRIDES[@]}" \
+  "${GRADIENT_INTERFERENCE_OVERRIDES[@]}" \
   --override "training.token_budget=$((BUDGET_M * 1000000 / 8192 * 8192))" \
   --override "model.granularity_sampling_mode=global" \
   --override "model.global_sampling_interval_steps=25" \
@@ -193,6 +243,12 @@ Every preflight must report:
 
 The L2 PanelGrad preflight must additionally report an epsilon-schedule
 duration equal to `DERIVED_MAX_STEPS`.
+
+When the optional diagnostic is enabled, each uniform-window preflight must
+also report `gradient_interference.enabled: true`, the expected resolved
+milestones and reasons, layerwise measurement enabled, and the fixed raw
+pre-correction/pre-clipping gradient semantics. A diagnostic-enabled preflight
+for an incompatible policy must fail rather than silently disable measurement.
 
 ## 4. Define the one-GPU submission helper
 
@@ -270,8 +326,9 @@ for H in 1 5 25 50; do
     POLICY_ID="uniform-window$H"
   fi
 
-  submit_budget_run 8g "${BUDGET_M}m-8g-$POLICY_ID" nested-random \
-    "${BUDGET_M}m-prepared-slicing-$POLICY_ID-s$EXPERIMENT_SEED" \
+  submit_budget_run 8g "${BUDGET_M}m-8g-$POLICY_ID$GRADIENT_INTERFERENCE_RUN_SLUG" nested-random \
+    "${BUDGET_M}m-prepared-slicing-$POLICY_ID$GRADIENT_INTERFERENCE_RUN_SLUG-s$EXPERIMENT_SEED" \
+    "${GRADIENT_INTERFERENCE_OVERRIDES[@]}" \
     --override "model.granularity_sampling_mode=global" \
     --override "model.global_sampling_interval_steps=$H"
 done
@@ -287,8 +344,9 @@ for H in 1 5 25 50; do
     POLICY_ID="uniform-window$H"
   fi
 
-  submit_budget_run 4g "${BUDGET_M}m-4g-$POLICY_ID" nested-random \
-    "${BUDGET_M}m-prepared-slicing-4g-$POLICY_ID-s$EXPERIMENT_SEED" \
+  submit_budget_run 4g "${BUDGET_M}m-4g-$POLICY_ID$GRADIENT_INTERFERENCE_RUN_SLUG" nested-random \
+    "${BUDGET_M}m-prepared-slicing-4g-$POLICY_ID$GRADIENT_INTERFERENCE_RUN_SLUG-s$EXPERIMENT_SEED" \
+    "${GRADIENT_INTERFERENCE_OVERRIDES[@]}" \
     --override "model.granularity_sampling_mode=global" \
     --override "model.global_sampling_interval_steps=$H"
 done
@@ -414,7 +472,7 @@ concurrently.
 After a run finishes, resolve its directory and verify the variable budget:
 
 ```bash
-export RUN_ID="${BUDGET_M}m-prepared-slicing-uniform-window25-s$EXPERIMENT_SEED"
+export RUN_ID="${BUDGET_M}m-prepared-slicing-uniform-window25${GRADIENT_INTERFERENCE_RUN_SLUG}-s$EXPERIMENT_SEED"
 export RUN_DIR="$(find "$OUT_8G" -type d -name "$RUN_ID" -print -quit)"
 test -n "$RUN_DIR"
 
@@ -455,6 +513,31 @@ assert state["successful_updates_in_window"] == (expected_steps - 1) % 25 + 1
 assert not summary.get("unresolved_artifact_failures")
 assert (run_dir / "final_holdout_results.json").is_file()
 
+diagnostic = config["evaluation"]["gradient_interference"]
+if diagnostic["enabled"]:
+    expected_diagnostic_steps = diagnostic["resolved_steps"]
+    journal_path = run_dir / "gradient_interference.jsonl"
+    records = [
+        json.loads(line)
+        for line in journal_path.read_text().splitlines()
+        if line.strip()
+    ]
+    assert [record["step"] for record in records] == expected_diagnostic_steps
+    assert summary["gradient_interference_snapshot_count"] == len(
+        expected_diagnostic_steps
+    )
+    assert (
+        summary["gradient_interference_measured_steps"]
+        == expected_diagnostic_steps
+    )
+    assert (
+        summary["gradient_interference_expected_steps"]
+        == expected_diagnostic_steps
+    )
+    assert summary["gradient_interference_measurement_cost"][
+        "backward_evaluations"
+    ] > 0
+
 print(
     "verified",
     summary["run_id"],
@@ -473,6 +556,10 @@ ordinary-validation, controller, and final-holdout role hashes before comparing
 policies. Across different budgets, the optimizer-training manifest is expected
 to differ because it contains a different number of packed training rows; the
 validation, controller, and final-holdout roles must remain fixed.
+
+The current `scripts/make_figures.py` flow does not consume
+`gradient_interference.jsonl`; analyze that journal separately while using the
+existing figures for loss, perplexity, and exposure comparisons.
 
 ## 10. Generate budget-isolated figures
 
