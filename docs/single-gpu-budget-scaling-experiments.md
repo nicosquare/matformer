@@ -557,9 +557,27 @@ policies. Across different budgets, the optimizer-training manifest is expected
 to differ because it contains a different number of packed training rows; the
 validation, controller, and final-holdout roles must remain fixed.
 
-The current `scripts/make_figures.py` flow does not consume
-`gradient_interference.jsonl`; analyze that journal separately while using the
-existing figures for loss, perplexity, and exposure comparisons.
+`scripts/make_figures.py` automatically discovers completed runs whose saved
+`config.json` enables the diagnostic. It writes one grouped H-policy comparison
+per compatible contract as
+`gradient_interference_cosine_trajectories__<contract>.png` and one six-panel
+milestone matrix per run as
+`gradient_interference_cosine_heatmaps__<run-id>.png`. The ordinary figure
+commands below need no additional flag; `--variant`, `--correction`, and `--dpi`
+also apply to these diagnostic figures.
+
+Reporting silently ignores disabled runs, stray journals attached to disabled
+configs, and incomplete runs. A completed enabled run must have all resolved
+milestones in `gradient_interference.jsonl` plus a completed `run_summary.json`
+with matching coverage and journal hash. Run, fixed-probe, controlled-support,
+and diagnostic-contract identities must agree across the saved config, summary,
+and every snapshot. Invalid completed artifacts fail figure generation instead
+of producing a partial or misleading comparison.
+
+Keep ordinary and diagnostic runs in separate output roots when practical.
+This makes the extra probe cost and stricter completed-artifact checks explicit,
+avoids accidental run-ID/continuation collisions, and keeps ordinary figure
+generation independent of a diagnostic run that is still in progress.
 
 ## 10. Generate budget-isolated figures
 

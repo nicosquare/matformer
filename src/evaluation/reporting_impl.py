@@ -1559,12 +1559,22 @@ def _size_plot_group_sort_key(rows: list[dict[str, Any]]) -> tuple[Any, ...]:
     reset_rank = {"no_reset": 0, "full_prior": 1, "acquisition_only": 2}
     q_value = to_float_or_none(row.get("controller_process_noise_covariance"))
     panelgrad_temperature = to_float_or_none(row.get("panelgrad_temperature"))
+    sampling_identity = scaling_curve_sampling_label(row) or "global"
+    uniform_window_match = re.fullmatch(
+        r"uniform_global_h([1-9][0-9]*)", sampling_identity
+    )
+    uniform_interval = (
+        int(uniform_window_match.group(1))
+        if uniform_window_match is not None
+        else (1 if sampling_identity == "global" else math.inf)
+    )
     return (
         reset_rank.get(_reset_mode_key(row), 9),
         q_value if q_value is not None else math.inf,
         panelgrad_temperature
         if panelgrad_temperature is not None
         else math.inf,
+        uniform_interval,
         size_plot_experiment_contract(row),
     )
 
@@ -1864,9 +1874,15 @@ def plot_metric_vs_size_panel(
         for row in rows
         if scaling_curve_family_label(row) == sampling_mode
         and scaling_curve_variant_label(row) == variant_label
-        and panel_sampling_matches(
-            scaling_curve_sampling_label(row),
-            sampling_label,
+        and (
+            panel_sampling_matches(
+                scaling_curve_sampling_label(row),
+                sampling_label,
+            )
+            or (
+                sampling_label == "uniform_global_window"
+                and scaling_curve_sampling_label(row) == "global"
+            )
         )
     ]
     panel_title = size_plot_panel_title(
@@ -1907,13 +1923,30 @@ def plot_metric_vs_size_panel(
             curve_index,
             style_config,
         )
+        is_h1_reference = (
+            sampling_label == "uniform_global_window"
+            and scaling_curve_sampling_label(group_rows_for_label[0]) == "global"
+        )
+        if is_h1_reference:
+            style.update(
+                {
+                    "color": "#555555",
+                    "linestyle": ":",
+                    "linewidth": 1.8,
+                    "marker": "o",
+                }
+            )
         aggregate = aggregate_size_curve(group_rows_for_label, metric_name)
         if not aggregate["xs"]:
             continue
         axis.plot(
             aggregate["xs"],
             aggregate["means"],
-            label=legend_labels[contract],
+            label=(
+                "Global sampling (H=1 reference)"
+                if is_h1_reference
+                else legend_labels[contract]
+            ),
             **style,
         )
         if any(aggregate["band_mask"]):

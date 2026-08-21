@@ -995,6 +995,52 @@ def test_uniform_global_windows_are_included_in_ppl_vs_size_panels(
     }
 
 
+def test_uniform_global_window_panel_repeats_h1_as_dotted_reference():
+    import matplotlib.pyplot as plt
+
+    from src.evaluation.reporting_impl import plot_metric_vs_size_panel
+
+    rows = [
+        {
+            "run_id": f"uniform-window-{interval}",
+            "sampling_mode": "nested-random",
+            "model_variant": "slicing",
+            "resolved_sampling_mode": "global",
+            "global_sampling_interval_steps": interval,
+            "correction_mode": "none",
+            "non_embedding_parameters": 100 + interval,
+            "perplexity": 2.0 + interval / 100.0,
+        }
+        for interval in (1, 5, 25, 50)
+    ]
+    figure, axis = plt.subplots()
+
+    plot_metric_vs_size_panel(
+        axis,
+        rows,
+        metric_name="perplexity",
+        ylabel="Perplexity",
+        sampling_mode="nested-random",
+        variant_label="slicing",
+        sampling_label="uniform_global_window",
+    )
+
+    lines = {line.get_label(): line for line in axis.lines}
+    assert list(lines) == [
+        "Global sampling (H=1 reference)",
+        "Uniform global (H=5)",
+        "Uniform global (H=25)",
+        "Uniform global (H=50)",
+    ]
+    assert lines["Global sampling (H=1 reference)"].get_linestyle() == ":"
+    assert all(
+        line.get_linestyle() != ":"
+        for label, line in lines.items()
+        if label != "Global sampling (H=1 reference)"
+    )
+    plt.close(figure)
+
+
 def test_plot_filters_select_only_uncorrected_slicing_rows():
     from src.evaluation.reporting_impl import filter_plot_rows
 

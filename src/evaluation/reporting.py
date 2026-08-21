@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import math
 import re
 from pathlib import Path
@@ -13,6 +14,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib.colors import BoundaryNorm, ListedColormap, to_rgb
 from matplotlib.collections import PolyCollection
 
@@ -33,7 +35,10 @@ __all__ = [
     "flatten_axes",
     "finalize_side_legend_figure",
     "granularity_sort_key",
+    "gradient_interference_cosine_heatmaps_filename",
+    "gradient_interference_cosine_trajectories_filename",
     "generate_figures",
+    "generate_gradient_interference_figures",
     "generate_global_sampling_policy_figures",
     "global_sampling_bin_series",
     "metric_row_limits_for_panel_specs",
@@ -48,6 +53,8 @@ __all__ = [
     "plot_global_sampling_exposure",
     "plot_global_sampling_exposure_comparison",
     "plot_global_sampling_zoom",
+    "plot_gradient_interference_cosine_heatmaps",
+    "plot_gradient_interference_cosine_trajectories",
     "plot_panelgrad_cumulative_exposure_share",
     "plot_panelgrad_refresh_diagnostics",
     "resolve_plot_style",
@@ -1391,6 +1398,313 @@ def generate_global_sampling_policy_figures(
     return paths
 
 
+def gradient_interference_cosine_trajectories_filename(contract: str) -> str:
+    return f"gradient_interference_cosine_trajectories__{contract[:12]}.png"
+
+
+def gradient_interference_cosine_heatmaps_filename(run_id: str) -> str:
+    return (
+        "gradient_interference_cosine_heatmaps__"
+        f"{safe_filename_fragment(run_id)}.png"
+    )
+
+
+def _gradient_interval_color(interval_steps: int) -> Any:
+    fixed = {
+        1: "#1f77b4",
+        5: "#ff7f0e",
+        25: "#2ca02c",
+        50: "#d62728",
+    }
+    if interval_steps in fixed:
+        return fixed[interval_steps]
+    color_index = int(
+        hashlib.sha256(str(interval_steps).encode("utf-8")).hexdigest()[:8], 16
+    ) % 20
+    return plt.get_cmap("tab20")(color_index)
+
+
+def plot_gradient_interference_cosine_trajectories(
+    histories: list[Any] | tuple[Any, ...],
+    output_path: str | Path,
+    *,
+    dpi: int = 300,
+) -> Path:
+    """Compare every unordered granularity-pair cosine across H policies."""
+
+    if not histories:
+        raise ValueError("gradient-interference trajectory histories are empty")
+    histories = sorted(
+        histories,
+        key=lambda history: (
+            history.sampling_interval_steps,
+            history.seed,
+            history.run_id,
+        ),
+    )
+    first = histories[0]
+    expected_pairs = first.unordered_pairs
+    if any(
+        history.comparison_contract != first.comparison_contract
+        or history.unordered_pairs != expected_pairs
+        for history in histories
+    ):
+        raise ValueError("gradient-interference trajectory histories are incompatible")
+    reference_milestones = tuple(
+        (snapshot.step, snapshot.tokens_seen, snapshot.milestone_reasons)
+        for snapshot in first.snapshots
+    )
+    if any(
+        tuple(
+            (snapshot.step, snapshot.tokens_seen, snapshot.milestone_reasons)
+            for snapshot in history.snapshots
+        )
+        != reference_milestones
+        for history in histories[1:]
+    ):
+        raise ValueError(
+            "gradient-interference histories are not milestone/token aligned"
+        )
+
+    column_count = 4
+    row_count = max(1, math.ceil(len(expected_pairs) / column_count))
+    figure, axes = plt.subplots(
+        row_count,
+        column_count,
+        figsize=(16, 2.45 * row_count),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
+        constrained_layout=True,
+    )
+    axes_list = list(axes.flat)
+    by_interval: dict[int, list[Any]] = {}
+    for history in histories:
+        by_interval.setdefault(history.sampling_interval_steps, []).append(history)
+
+    for pair_index, pair in enumerate(expected_pairs):
+        axis = axes_list[pair_index]
+        axis.axhline(0.0, color="#777777", linewidth=0.7, linestyle=":", zorder=0)
+        for interval_steps, replications in sorted(by_interval.items()):
+            color = _gradient_interval_color(interval_steps)
+            reference_x = tuple(
+                snapshot.tokens_seen for snapshot in replications[0].snapshots
+            )
+            for replication in replications[1:]:
+                if tuple(snapshot.tokens_seen for snapshot in replication.snapshots) != reference_x:
+                    raise ValueError(
+                        "gradient-interference seed replications are not token-aligned "
+                        f"for H={interval_steps}"
+                    )
+            seed_values: list[list[float]] = []
+            for replication in replications:
+                values = [
+                    (
+                        math.nan
+                        if snapshot.pairs[pair_index].cosine is None
+                        else float(snapshot.pairs[pair_index].cosine)
+                    )
+                    for snapshot in replication.snapshots
+                ]
+                seed_values.append(values)
+                if len(replications) > 1:
+                    axis.plot(
+                        reference_x,
+                        values,
+                        color=color,
+                        linewidth=0.85,
+                        alpha=0.22,
+                        marker="o",
+                        markersize=2.6,
+                    )
+            mean_values = []
+            for milestone_index in range(len(reference_x)):
+                finite_values = [
+                    values[milestone_index]
+                    for values in seed_values
+                    if math.isfinite(values[milestone_index])
+                ]
+                mean_values.append(
+                    sum(finite_values) / len(finite_values)
+                    if finite_values
+                    else math.nan
+                )
+            axis.plot(
+                reference_x,
+                mean_values,
+                color=color,
+                linewidth=2.0,
+                marker="o",
+                markersize=3.8,
+                label=f"H={interval_steps}",
+            )
+        axis.set_title(f"{pair[0]} vs {pair[1]}", fontsize=9)
+        axis.set_ylim(-1.0, 1.0)
+        axis.grid(axis="y", alpha=0.18, linewidth=0.5)
+        if pair_index % column_count == 0:
+            axis.set_ylabel("Cosine")
+        if pair_index // column_count == row_count - 1:
+            axis.set_xlabel("Tokens seen")
+
+    for axis in axes_list[len(expected_pairs) :]:
+        axis.set_visible(False)
+    handles, labels = axes_list[0].get_legend_handles_labels()
+    if handles:
+        figure.legend(
+            handles,
+            labels,
+            title="H = consecutive optimizer steps per sampled width",
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.01),
+            ncol=len(handles),
+            frameon=True,
+            handlelength=2.8,
+            columnspacing=1.6,
+            borderaxespad=0.0,
+        )
+    figure.suptitle(
+        "Pairwise controlled-gradient cosine trajectories",
+        fontsize=15,
+    )
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    plt.close(figure)
+    return output_path
+
+
+def _format_gradient_milestone_title(snapshot: Any) -> str:
+    if snapshot.tokens_seen >= 1_000_000:
+        token_label = f"{snapshot.tokens_seen / 1_000_000:g}M tokens"
+    else:
+        token_label = f"{snapshot.tokens_seen:,} tokens"
+    reasons = ", ".join(snapshot.milestone_reasons)
+    return f"step {snapshot.step} · {token_label}\n{reasons}"
+
+
+def plot_gradient_interference_cosine_heatmaps(
+    history: Any,
+    output_path: str | Path,
+    *,
+    dpi: int = 300,
+) -> Path:
+    """Render symmetric milestone cosine matrices for one diagnostic run."""
+
+    column_count = 3
+    row_count = max(1, math.ceil(len(history.snapshots) / column_count))
+    figure, axes = plt.subplots(
+        row_count,
+        column_count,
+        figsize=(13.5, 4.35 * row_count),
+        squeeze=False,
+        constrained_layout=True,
+    )
+    axes_list = list(axes.flat)
+    granularity_count = len(history.ordered_granularities)
+    colormap = plt.get_cmap("coolwarm").copy()
+    colormap.set_bad("#eeeeee")
+    image = None
+    for snapshot_index, snapshot in enumerate(history.snapshots):
+        axis = axes_list[snapshot_index]
+        matrix = np.full((granularity_count, granularity_count), np.nan, dtype=float)
+        for pair in snapshot.pairs:
+            left_index = history.ordered_granularities.index(pair.left_granularity)
+            right_index = history.ordered_granularities.index(pair.right_granularity)
+            if pair.cosine is not None and not pair.has_zero_norm:
+                matrix[left_index, right_index] = pair.cosine
+                matrix[right_index, left_index] = pair.cosine
+        image = axis.imshow(
+            np.ma.masked_invalid(matrix),
+            cmap=colormap,
+            vmin=-1.0,
+            vmax=1.0,
+            interpolation="nearest",
+        )
+        axis.set_title(_format_gradient_milestone_title(snapshot), fontsize=9)
+        axis.set_xticks(range(granularity_count))
+        axis.set_xticklabels(
+            history.ordered_granularities,
+            rotation=45,
+            ha="right",
+            fontsize=8,
+        )
+        axis.set_yticks(range(granularity_count))
+        axis.set_yticklabels(history.ordered_granularities, fontsize=8)
+    for axis in axes_list[len(history.snapshots) :]:
+        axis.set_visible(False)
+    if image is not None:
+        colorbar = figure.colorbar(
+            image,
+            ax=[axis for axis in axes_list[: len(history.snapshots)]],
+            shrink=0.82,
+            pad=0.02,
+        )
+        colorbar.set_label("Cosine")
+    figure.suptitle(
+        f"Controlled-gradient cosine milestones · {history.run_id}",
+        fontsize=14,
+    )
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    plt.close(figure)
+    return output_path
+
+
+def generate_gradient_interference_figures(
+    input_root: str | Path,
+    output_dir: str | Path,
+    *,
+    dpi: int = 300,
+    variants: list[str] | tuple[str, ...] | None = None,
+    corrections: list[str] | tuple[str, ...] | None = None,
+) -> list[Path]:
+    """Discover eligible journals and render grouped and per-run diagnostics."""
+
+    from . import reporting_io
+    from .reporting_impl import filter_plot_rows
+
+    output_dir = Path(output_dir)
+    histories = []
+    for history in reporting_io.iter_gradient_interference_histories(input_root):
+        keep = filter_plot_rows(
+            [
+                {
+                    "model_variant": history.model_variant,
+                    "correction_mode": history.correction_mode,
+                    "membership_correction": history.membership_correction,
+                }
+            ],
+            variants=variants,
+            corrections=corrections,
+        )
+        if keep:
+            histories.append(history)
+
+    paths: list[Path] = []
+    groups: dict[str, list[Any]] = {}
+    for history in histories:
+        groups.setdefault(history.comparison_contract, []).append(history)
+        paths.append(
+            plot_gradient_interference_cosine_heatmaps(
+                history,
+                output_dir
+                / gradient_interference_cosine_heatmaps_filename(history.run_id),
+                dpi=dpi,
+            )
+        )
+    for contract, group in sorted(groups.items()):
+        paths.append(
+            plot_gradient_interference_cosine_trajectories(
+                group,
+                output_dir
+                / gradient_interference_cosine_trajectories_filename(contract),
+                dpi=dpi,
+            )
+        )
+    return paths
+
+
 def generate_figures(
     input_root: str | Path,
     output_dir: str | Path,
@@ -1670,6 +1984,16 @@ def generate_figures(
                 )
             )
 
+    figure_paths.extend(
+        generate_gradient_interference_figures(
+            input_root,
+            output_dir,
+            dpi=dpi,
+            variants=variants,
+            corrections=corrections,
+        )
+    )
+
     return figure_paths
 
 
@@ -1681,6 +2005,7 @@ def _remove_stale_generator_artifacts(
     """Remove superseded figure-generator outputs before rendering."""
 
     stale_patterns = [
+        "gradient_interference_*.png",
         "loss_vs_size.png",
         "loss_vs_size__*.png",
         "selected_granularity_over_tokens_*.png",

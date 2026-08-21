@@ -24,6 +24,10 @@ __all__ = [
     "ControllerSelectionWindow",
     "GlobalSamplingAction",
     "GlobalSamplingHistory",
+    "GradientInterferenceHistory",
+    "GradientInterferencePair",
+    "GradientInterferenceReportingError",
+    "GradientInterferenceSnapshot",
     "PanelGradAction",
     "PanelGradHistory",
     "PanelGradRefresh",
@@ -36,6 +40,7 @@ __all__ = [
     "global_sampling_interval_steps_from_saved_config",
     "iter_controller_granularity_timelines",
     "iter_global_sampling_histories",
+    "iter_gradient_interference_histories",
     "iter_panelgrad_histories",
     "iter_csv_artifact_rows",
     "membership_correction_from_saved_config",
@@ -172,6 +177,588 @@ class PanelGradHistory:
     config_path: Path
     metrics_path: Path
     journal_path: Path
+
+
+class GradientInterferenceReportingError(ValueError):
+    """A completed diagnostic run has unusable reporting artifacts."""
+
+
+@dataclass(frozen=True)
+class GradientInterferencePair:
+    """One compact unordered-granularity cosine measurement."""
+
+    left_granularity: str
+    right_granularity: str
+    cosine: float | None
+    has_zero_norm: bool
+
+
+@dataclass(frozen=True)
+class GradientInterferenceSnapshot:
+    """Plot-ready values retained from one diagnostic milestone."""
+
+    step: int
+    tokens_seen: int
+    milestone_reasons: tuple[str, ...]
+    pairs: tuple[GradientInterferencePair, ...]
+
+
+@dataclass(frozen=True)
+class GradientInterferenceHistory:
+    """A complete diagnostic run with large journal fields discarded."""
+
+    run_id: str
+    ordered_granularities: tuple[str, ...]
+    unordered_pairs: tuple[tuple[str, str], ...]
+    token_budget: int
+    sampling_interval_steps: int
+    seed: int
+    comparison_contract: str
+    diagnostic_contract_hash: str
+    fixed_probe_manifest_hash: str
+    controlled_support_hash: str
+    snapshots: tuple[GradientInterferenceSnapshot, ...]
+    model_variant: str | None
+    correction_mode: str | None
+    membership_correction: bool | None
+    config_path: Path
+    summary_path: Path
+    journal_path: Path
+
+
+def iter_gradient_interference_histories(
+    input_root: str | Path,
+) -> Iterator[GradientInterferenceHistory]:
+    """Yield complete, enabled diagnostic runs as compact streaming histories.
+
+    Discovery begins from saved configurations so a stray journal can never
+    activate reporting. Incomplete runs are intentionally silent. Once a run
+    claims completion, every artifact and identity is treated as required.
+    """
+
+    input_root = Path(input_root)
+    seen_replications: dict[tuple[str, int, int], Path] = {}
+    for config_path in sorted(input_root.rglob("config.json")):
+        try:
+            with config_path.open("r", encoding="utf-8") as config_file:
+                config = json.load(config_file)
+        except (OSError, json.JSONDecodeError):
+            # A malformed config cannot establish that the opt-in diagnostic
+            # was enabled. Other reporting readers retain their own behavior.
+            continue
+        if not isinstance(config, Mapping):
+            continue
+        diagnostic = config.get("evaluation", {}).get("gradient_interference", {})
+        if not isinstance(diagnostic, Mapping) or not diagnostic.get("enabled", False):
+            continue
+
+        run = config.get("run")
+        run_id = (
+            str(run.get("run_id") or config_path.parent.name).strip()
+            if isinstance(run, Mapping)
+            else config_path.parent.name
+        )
+        artifact_name = str(diagnostic.get("artifact_path") or "gradient_interference.jsonl")
+        journal_path = config_path.parent / artifact_name
+        summary_path = config_path.parent / "run_summary.json"
+        expected_count = len(diagnostic.get("resolved_steps", ()))
+
+        if not summary_path.is_file():
+            # A partial journal without a summary is an in-progress run. A full
+            # journal proves that training reached every milestone, so losing
+            # its completion summary is an attributable reporting failure.
+            if _nonempty_line_count(journal_path) < expected_count:
+                continue
+            raise _gradient_reporting_error(
+                run_id, summary_path, "completed diagnostic journal has no run_summary.json"
+            )
+        try:
+            with summary_path.open("r", encoding="utf-8") as summary_file:
+                summary = json.load(summary_file)
+        except (OSError, json.JSONDecodeError) as error:
+            raise _gradient_reporting_error(
+                run_id, summary_path, f"invalid run summary: {error}"
+            ) from error
+        if not isinstance(summary, Mapping):
+            raise _gradient_reporting_error(run_id, summary_path, "run summary is not a JSON object")
+        if str(summary.get("status") or "").strip().lower() != "completed":
+            continue
+
+        try:
+            history = _read_gradient_interference_history(
+                config=config,
+                summary=summary,
+                config_path=config_path,
+                summary_path=summary_path,
+                journal_path=journal_path,
+            )
+        except GradientInterferenceReportingError:
+            raise
+        except (OSError, TypeError, ValueError, KeyError) as error:
+            raise _gradient_reporting_error(run_id, config_path, str(error)) from error
+        replication_key = (
+            history.comparison_contract,
+            history.sampling_interval_steps,
+            history.seed,
+        )
+        previous_path = seen_replications.get(replication_key)
+        if previous_path is not None:
+            raise GradientInterferenceReportingError(
+                "Duplicate gradient-interference diagnostic runs for comparison "
+                f"contract {history.comparison_contract}, H={history.sampling_interval_steps}, "
+                f"seed={history.seed}: {previous_path} and {config_path}"
+            )
+        seen_replications[replication_key] = config_path
+        yield history
+
+
+def _nonempty_line_count(path: Path) -> int:
+    if not path.is_file():
+        return 0
+    try:
+        with path.open("r", encoding="utf-8") as artifact:
+            return sum(1 for line in artifact if line.strip())
+    except OSError:
+        return 0
+
+
+def _gradient_reporting_error(
+    run_id: str, artifact_path: Path, message: str
+) -> GradientInterferenceReportingError:
+    return GradientInterferenceReportingError(
+        f"Gradient-interference reporting failed for run {run_id!r}, "
+        f"artifact {artifact_path}: {message}"
+    )
+
+
+def _read_gradient_interference_history(
+    *,
+    config: Mapping[str, Any],
+    summary: Mapping[str, Any],
+    config_path: Path,
+    summary_path: Path,
+    journal_path: Path,
+) -> GradientInterferenceHistory:
+    from src.training.gradient_interference import (
+        GradientInterferenceError,
+        snapshot_id,
+        validate_snapshot_record,
+    )
+
+    run = _required_mapping(config.get("run"), "config.run")
+    model = _required_mapping(config.get("model"), "config.model")
+    training = _required_mapping(config.get("training"), "config.training")
+    evaluation = _required_mapping(config.get("evaluation"), "config.evaluation")
+    diagnostic = _required_mapping(
+        evaluation.get("gradient_interference"),
+        "config.evaluation.gradient_interference",
+    )
+    run_id = str(run.get("run_id") or "").strip()
+    if not run_id:
+        raise _gradient_reporting_error(run_id, config_path, "config.run.run_id is empty")
+
+    raw_granularities = model.get("granularities")
+    if not isinstance(raw_granularities, list) or len(raw_granularities) < 2:
+        raise _gradient_reporting_error(
+            run_id, config_path, "config.model.granularities must contain at least two labels"
+        )
+    ordered_granularities = tuple(str(label) for label in raw_granularities)
+    if any(not label for label in ordered_granularities) or len(
+        set(ordered_granularities)
+    ) != len(ordered_granularities):
+        raise _gradient_reporting_error(
+            run_id, config_path, "config.model.granularities contains empty or duplicate labels"
+        )
+    unordered_pairs = tuple(
+        (ordered_granularities[left], ordered_granularities[right])
+        for left in range(len(ordered_granularities))
+        for right in range(left + 1, len(ordered_granularities))
+    )
+    token_budget = _positive_int(training.get("token_budget"), "config.training.token_budget")
+    interval_steps = _positive_int(
+        model.get("global_sampling_interval_steps", 1),
+        "config.model.global_sampling_interval_steps",
+    )
+    seed = _signed_int(run.get("seed"), "config.run.seed")
+
+    expected_milestones = diagnostic.get("resolved_milestones")
+    if not isinstance(expected_milestones, list) or not expected_milestones:
+        raise _gradient_reporting_error(
+            run_id, config_path, "resolved diagnostic milestones are missing"
+        )
+    expected_steps = [
+        item.get("step") if isinstance(item, Mapping) else None
+        for item in expected_milestones
+    ]
+    expected_reasons = [
+        item.get("reasons") if isinstance(item, Mapping) else None
+        for item in expected_milestones
+    ]
+    if (
+        any(isinstance(step, bool) or not isinstance(step, int) or step < 0 for step in expected_steps)
+        or expected_steps != sorted(set(expected_steps))
+        or any(
+            not isinstance(reasons, list)
+            or not reasons
+            or any(not isinstance(reason, str) or not reason for reason in reasons)
+            for reasons in expected_reasons
+        )
+        or diagnostic.get("resolved_steps") != expected_steps
+    ):
+        raise _gradient_reporting_error(
+            run_id, config_path, "resolved diagnostic milestones are invalid"
+        )
+
+    summary_expected = summary.get("gradient_interference_expected_steps")
+    summary_measured = summary.get("gradient_interference_measured_steps")
+    summary_count = summary.get("gradient_interference_snapshot_count")
+    if (
+        summary.get("run_id") != run_id
+        or summary_expected != expected_steps
+        or summary_measured != expected_steps
+        or isinstance(summary_count, bool)
+        or not isinstance(summary_count, int)
+        or summary_count != len(expected_steps)
+        or _nonnegative_int(summary.get("tokens_seen"), "run_summary.tokens_seen")
+        < token_budget
+    ):
+        raise _gradient_reporting_error(
+            run_id,
+            summary_path,
+            "completed run summary has mismatched identity or incomplete diagnostic coverage",
+        )
+    recorded_path = summary.get("gradient_interference_path")
+    if not isinstance(recorded_path, str) or Path(recorded_path).name != journal_path.name:
+        raise _gradient_reporting_error(
+            run_id, summary_path, "gradient-interference journal path does not match config"
+        )
+    expected_hash = summary.get("gradient_interference_journal_hash")
+    if not isinstance(expected_hash, str) or len(expected_hash) != 64:
+        raise _gradient_reporting_error(
+            run_id, summary_path, "gradient-interference journal hash is invalid"
+        )
+    if not journal_path.is_file():
+        raise _gradient_reporting_error(run_id, journal_path, "journal is missing")
+    actual_hash = _sha256_file(journal_path)
+    if actual_hash != expected_hash:
+        raise _gradient_reporting_error(run_id, journal_path, "journal hash mismatch")
+
+    fixed_probe_hash = _required_identity_hash(
+        diagnostic, "fixed_probe_manifest_hash", run_id, config_path
+    )
+    controlled_support_hash = _required_identity_hash(
+        diagnostic, "controlled_support_hash", run_id, config_path
+    )
+    diagnostic_contract_hash = _required_identity_hash(
+        diagnostic, "diagnostic_contract_hash", run_id, config_path
+    )
+    snapshots: list[GradientInterferenceSnapshot] = []
+    snapshot_ids: set[str] = set()
+    previous_tokens = -1
+    with journal_path.open("r", encoding="utf-8") as journal_file:
+        for line_number, line in enumerate(journal_file, start=1):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise _gradient_reporting_error(
+                    run_id, journal_path, f"invalid JSON on line {line_number}: {error.msg}"
+                ) from error
+            if not isinstance(record, Mapping):
+                raise _gradient_reporting_error(
+                    run_id, journal_path, f"line {line_number} is not a JSON object"
+                )
+            try:
+                validate_snapshot_record(
+                    record, expected_granularity_count=len(ordered_granularities)
+                )
+            except (GradientInterferenceError, TypeError, ValueError) as error:
+                raise _gradient_reporting_error(
+                    run_id, journal_path, f"schema failure on line {line_number}: {error}"
+                ) from error
+            if len(snapshots) >= len(expected_steps):
+                raise _gradient_reporting_error(
+                    run_id, journal_path, "journal contains unexpected extra snapshots"
+                )
+            expected_step = expected_steps[len(snapshots)]
+            expected_reason_list = expected_reasons[len(snapshots)]
+            step = _record_nonnegative_int(record.get("step"), "step", run_id, journal_path, line_number)
+            tokens_seen = _record_nonnegative_int(
+                record.get("tokens_seen"), "tokens_seen", run_id, journal_path, line_number
+            )
+            identifier = str(record.get("snapshot_id") or "")
+            if identifier in snapshot_ids or step != expected_step:
+                raise _gradient_reporting_error(
+                    run_id, journal_path, f"duplicate or unexpected snapshot on line {line_number}"
+                )
+            if identifier != snapshot_id(config, step):
+                raise _gradient_reporting_error(
+                    run_id, journal_path, f"snapshot identity mismatch on line {line_number}"
+                )
+            if tokens_seen < previous_tokens:
+                raise _gradient_reporting_error(
+                    run_id, journal_path, f"tokens_seen decreases on line {line_number}"
+                )
+            if record.get("milestone_reasons") != expected_reason_list:
+                raise _gradient_reporting_error(
+                    run_id, journal_path, f"milestone reasons mismatch on line {line_number}"
+                )
+            _validate_snapshot_identities(
+                record,
+                run_id=run_id,
+                fixed_probe_hash=fixed_probe_hash,
+                controlled_support_hash=controlled_support_hash,
+                diagnostic_contract_hash=diagnostic_contract_hash,
+                diagnostic=diagnostic,
+                artifact_path=journal_path,
+                line_number=line_number,
+            )
+            measurements = record["granularities"]
+            if [item.get("granularity") for item in measurements if isinstance(item, Mapping)] != list(ordered_granularities):
+                raise _gradient_reporting_error(
+                    run_id, journal_path, f"granularity ordering mismatch on line {line_number}"
+                )
+            pairs = _compact_gradient_pairs(
+                record["pairs"],
+                expected_pairs=unordered_pairs,
+                run_id=run_id,
+                journal_path=journal_path,
+                line_number=line_number,
+            )
+            snapshot_ids.add(identifier)
+            previous_tokens = tokens_seen
+            snapshots.append(
+                GradientInterferenceSnapshot(
+                    step=step,
+                    tokens_seen=tokens_seen,
+                    milestone_reasons=tuple(expected_reason_list),
+                    pairs=pairs,
+                )
+            )
+    if len(snapshots) != len(expected_steps):
+        raise _gradient_reporting_error(
+            run_id, journal_path, "journal is missing resolved milestones"
+        )
+
+    comparison_contract = _gradient_comparison_contract(
+        config,
+        ordered_granularities=ordered_granularities,
+        diagnostic_contract_hash=diagnostic_contract_hash,
+        fixed_probe_hash=fixed_probe_hash,
+        controlled_support_hash=controlled_support_hash,
+    )
+    return GradientInterferenceHistory(
+        run_id=run_id,
+        ordered_granularities=ordered_granularities,
+        unordered_pairs=unordered_pairs,
+        token_budget=token_budget,
+        sampling_interval_steps=interval_steps,
+        seed=seed,
+        comparison_contract=comparison_contract,
+        diagnostic_contract_hash=diagnostic_contract_hash,
+        fixed_probe_manifest_hash=fixed_probe_hash,
+        controlled_support_hash=controlled_support_hash,
+        snapshots=tuple(snapshots),
+        model_variant=model_variant_from_saved_config(dict(config)),
+        correction_mode=correction_mode_from_saved_config(dict(config)),
+        membership_correction=membership_correction_from_saved_config(dict(config)),
+        config_path=config_path,
+        summary_path=summary_path,
+        journal_path=journal_path,
+    )
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as artifact:
+        for chunk in iter(lambda: artifact.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _required_identity_hash(
+    mapping: Mapping[str, Any], field: str, run_id: str, artifact_path: Path
+) -> str:
+    value = mapping.get(field)
+    if not isinstance(value, str) or not value or value == "pending":
+        raise _gradient_reporting_error(
+            run_id, artifact_path, f"{field} is unresolved"
+        )
+    return value
+
+
+def _record_nonnegative_int(
+    value: Any,
+    field: str,
+    run_id: str,
+    journal_path: Path,
+    line_number: int,
+) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise _gradient_reporting_error(
+            run_id, journal_path, f"{field} is invalid on line {line_number}"
+        )
+    return value
+
+
+def _validate_snapshot_identities(
+    record: Mapping[str, Any],
+    *,
+    run_id: str,
+    fixed_probe_hash: str,
+    controlled_support_hash: str,
+    diagnostic_contract_hash: str,
+    diagnostic: Mapping[str, Any],
+    artifact_path: Path,
+    line_number: int,
+) -> None:
+    expected = {
+        "run_id": run_id,
+        "fixed_probe_manifest_hash": fixed_probe_hash,
+        "controlled_support_hash": controlled_support_hash,
+        "diagnostic_contract_hash": diagnostic_contract_hash,
+    }
+    for field, value in expected.items():
+        if record.get(field) != value:
+            raise _gradient_reporting_error(
+                run_id, artifact_path, f"{field} mismatch on line {line_number}"
+            )
+    semantics = record.get("semantics")
+    expected_semantics = {
+        "gradient": diagnostic.get("gradient_semantics"),
+        "loss_aggregation": diagnostic.get("loss_aggregation"),
+        "shared_support": diagnostic.get("shared_support"),
+        "layerwise": bool(diagnostic.get("layerwise")),
+    }
+    if semantics != expected_semantics:
+        raise _gradient_reporting_error(
+            run_id, artifact_path, f"diagnostic semantics mismatch on line {line_number}"
+        )
+
+
+def _compact_gradient_pairs(
+    raw_pairs: Any,
+    *,
+    expected_pairs: tuple[tuple[str, str], ...],
+    run_id: str,
+    journal_path: Path,
+    line_number: int,
+) -> tuple[GradientInterferencePair, ...]:
+    if not isinstance(raw_pairs, list) or len(raw_pairs) != len(expected_pairs):
+        raise _gradient_reporting_error(
+            run_id, journal_path, f"pair cardinality mismatch on line {line_number}"
+        )
+    compact: list[GradientInterferencePair] = []
+    for pair_index, (raw_pair, expected_pair) in enumerate(
+        zip(raw_pairs, expected_pairs, strict=True)
+    ):
+        if not isinstance(raw_pair, Mapping) or (
+            raw_pair.get("left_granularity"), raw_pair.get("right_granularity")
+        ) != expected_pair:
+            raise _gradient_reporting_error(
+                run_id,
+                journal_path,
+                f"pair ordering mismatch at index {pair_index} on line {line_number}",
+            )
+        has_zero_norm = raw_pair.get("has_zero_norm")
+        cosine = raw_pair.get("cosine")
+        if not isinstance(has_zero_norm, bool):
+            raise _gradient_reporting_error(
+                run_id, journal_path, f"zero-norm flag is invalid on line {line_number}"
+            )
+        if cosine is None:
+            if not has_zero_norm:
+                raise _gradient_reporting_error(
+                    run_id, journal_path, f"cosine is null without a zero norm on line {line_number}"
+                )
+            normalized_cosine = None
+        elif (
+            isinstance(cosine, bool)
+            or not isinstance(cosine, (int, float))
+            or not math.isfinite(float(cosine))
+            or not -1.0 <= float(cosine) <= 1.0
+            or has_zero_norm
+        ):
+            raise _gradient_reporting_error(
+                run_id, journal_path, f"cosine/zero-norm state is invalid on line {line_number}"
+            )
+        else:
+            normalized_cosine = float(cosine)
+        compact.append(
+            GradientInterferencePair(
+                left_granularity=expected_pair[0],
+                right_granularity=expected_pair[1],
+                cosine=normalized_cosine,
+                has_zero_norm=has_zero_norm,
+            )
+        )
+    return tuple(compact)
+
+
+def _gradient_comparison_contract(
+    config: Mapping[str, Any],
+    *,
+    ordered_granularities: tuple[str, ...],
+    diagnostic_contract_hash: str,
+    fixed_probe_hash: str,
+    controlled_support_hash: str,
+) -> str:
+    model = dict(_required_mapping(config.get("model"), "config.model"))
+    training = dict(_required_mapping(config.get("training"), "config.training"))
+    # H is the intervention being compared and therefore cannot enter the
+    # grouping contract. Seed and run/output identities live under run and are
+    # deliberately absent as well.
+    model.pop("global_sampling_interval_steps", None)
+    model.pop("global_sampling_state", None)
+    granularity_pattern_provenance = model.get("granularity_pattern_provenance")
+    if isinstance(granularity_pattern_provenance, Mapping):
+        granularity_pattern_provenance = dict(granularity_pattern_provenance)
+        granularity_pattern_provenance.pop(
+            "global_sampling_interval_steps", None
+        )
+        model["granularity_pattern_provenance"] = granularity_pattern_provenance
+    width_ordering = _gradient_width_ordering(model, ordered_granularities)
+    payload = {
+        "width_ordering": width_ordering,
+        "token_budget": training.get("token_budget"),
+        "model_contract": model,
+        "training_contract": training,
+        "role_hashes": {
+            field: config.get(field)
+            for field in (
+                "data_roles_manifest_hash",
+                "optimizer_training_manifest_hash",
+                "validation_manifest_hash",
+                "controller_manifest_hash",
+                "final_holdout_manifest_hash",
+            )
+        },
+        "diagnostic_contract_hash": diagnostic_contract_hash,
+        "fixed_probe_manifest_hash": fixed_probe_hash,
+        "controlled_support_hash": controlled_support_hash,
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _gradient_width_ordering(
+    model: Mapping[str, Any], ordered_granularities: tuple[str, ...]
+) -> list[list[Any]]:
+    widths = model.get("granularity_prefix_widths")
+    if not isinstance(widths, Mapping):
+        metadata = model.get("ffn_prefix_metadata")
+        if isinstance(metadata, list):
+            widths = {
+                str(item.get("name")): item.get("prefix_width")
+                for item in metadata
+                if isinstance(item, Mapping)
+            }
+    if not isinstance(widths, Mapping):
+        widths = model.get("granularity_prefixes")
+    if not isinstance(widths, Mapping):
+        widths = {}
+    return [[label, widths.get(label)] for label in ordered_granularities]
 
 
 def read_csv_artifacts(input_root: Path, filename: str) -> list[dict[str, str]]:
@@ -1150,6 +1737,12 @@ def _positive_int(value: Any, field_name: str) -> int:
     if integer <= 0:
         raise ValueError(f"{field_name} must be positive")
     return integer
+
+
+def _signed_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{field_name} must be an integer")
+    return value
 
 
 def _nonnegative_int(value: Any, field_name: str) -> int:
