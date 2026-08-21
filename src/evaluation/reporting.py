@@ -174,6 +174,20 @@ def panel_sampling_matches(
         return True
     if expected_sampling_label == "global":
         return actual_sampling_label in (None, "global")
+    if expected_sampling_label == "uniform_global_window":
+        return bool(
+            actual_sampling_label
+            and re.fullmatch(
+                r"uniform_global_h[1-9][0-9]*", actual_sampling_label
+            )
+        )
+    if expected_sampling_label == "balanced_global_window":
+        return bool(
+            actual_sampling_label
+            and re.fullmatch(
+                r"balanced_global_h[1-9][0-9]*", actual_sampling_label
+            )
+        )
     if expected_sampling_label == "probabilistic_global_thompson":
         return actual_sampling_label in {
             "probabilistic_global_thompson",
@@ -266,6 +280,11 @@ def display_sampling_label_for_curve(sampling_label: str | None) -> str | None:
     uniform_window_match = re.fullmatch(r"uniform_global_h([1-9][0-9]*)", sampling_label)
     if uniform_window_match is not None:
         return f"Uniform global (H={uniform_window_match.group(1)})"
+    balanced_window_match = re.fullmatch(
+        r"balanced_global_h([1-9][0-9]*)", sampling_label
+    )
+    if balanced_window_match is not None:
+        return f"Balanced global (H={balanced_window_match.group(1)})"
     if sampling_label == "fixed_global":
         return "fixed non-uniform global"
     if sampling_label == "per_block":
@@ -304,11 +323,16 @@ def scaling_curve_sampling_label(row: dict[str, Any]) -> str | None:
     normalized_mode = str(resolved_sampling_mode).strip().lower()
 
     if normalized_mode == "global":
+        schedule = str(
+            row.get("global_sampling_schedule") or "random_with_replacement"
+        ).strip().lower()
         interval_value = row.get("global_sampling_interval_steps", 1)
         try:
             interval_steps = int(interval_value)
         except (TypeError, ValueError):
             interval_steps = 1
+        if schedule == "balanced_cycle":
+            return f"balanced_global_h{interval_steps}"
         if interval_steps > 1:
             return f"uniform_global_h{interval_steps}"
 
@@ -1218,8 +1242,9 @@ def plot_global_sampling_cumulative_comparison(
 def _write_global_sampling_summary(histories, output_path: Path) -> Path:
     granularities = histories[0].ordered_granularities
     fieldnames = [
-        "run_id", "policy", "seed", "completed_steps", "policy_decisions",
-        "decisions_per_step", "action_transitions",
+        "run_id", "policy", "global_sampling_schedule",
+        "global_sampling_schedule_version", "seed", "completed_steps",
+        "policy_decisions", "decisions_per_step", "action_transitions",
     ]
     for label in granularities:
         fieldnames.extend(
@@ -1243,6 +1268,12 @@ def _write_global_sampling_summary(histories, output_path: Path) -> Path:
             row = {
                 "run_id": history.run_id,
                 "policy": history.policy_label,
+                "global_sampling_schedule": history.global_sampling_schedule or "",
+                "global_sampling_schedule_version": (
+                    ""
+                    if history.global_sampling_schedule_version is None
+                    else history.global_sampling_schedule_version
+                ),
                 "seed": "" if history.seed is None else history.seed,
                 "completed_steps": len(history.actions),
                 "policy_decisions": history.decision_count,
@@ -1366,10 +1397,25 @@ def generate_global_sampling_policy_figures(
             continue
         group.sort(key=lambda item: (item.policy_identity, item.seed or -1, item.run_id))
         first = group[0]
+        schedule_contracts = {
+            (
+                history.global_sampling_schedule,
+                history.global_sampling_schedule_version,
+            )
+            for history in group
+        }
+        if len(schedule_contracts) == 1:
+            schedule, schedule_version = next(iter(schedule_contracts))
+            schedule_descriptor = safe_filename_fragment(schedule or "global_policies")
+            if schedule_version is not None:
+                schedule_descriptor += f"_v{schedule_version}"
+        else:
+            schedule_descriptor = "mixed_global_policies"
         descriptor = "__".join(
             [
                 safe_filename_fragment(first.model_variant or "unknown"),
                 safe_filename_fragment(first.correction_mode or "unknown"),
+                schedule_descriptor,
                 comparison_key[:8],
             ]
         )
@@ -2006,6 +2052,9 @@ def _remove_stale_generator_artifacts(
 
     stale_patterns = [
         "gradient_interference_*.png",
+        "global_sampling_exposure_comparison__*.png",
+        "global_sampling_cumulative_comparison__*.png",
+        "global_sampling_policy_summary__*.csv",
         "loss_vs_size.png",
         "loss_vs_size__*.png",
         "selected_granularity_over_tokens_*.png",

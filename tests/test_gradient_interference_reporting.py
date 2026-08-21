@@ -27,7 +27,14 @@ PROBE_HASH = "p" * 64
 SUPPORT_HASH = "s" * 64
 
 
-def _diagnostic_config(run_dir: Path, *, run_id: str, h: int, seed: int) -> dict:
+def _diagnostic_config(
+    run_dir: Path,
+    *,
+    run_id: str,
+    h: int,
+    seed: int,
+    schedule: str = "random_with_replacement",
+) -> dict:
     milestones = [
         {"step": step, "reasons": [f"trajectory_fraction:{index / 5:g}"]}
         for index, step in enumerate(STEPS)
@@ -44,6 +51,10 @@ def _diagnostic_config(run_dir: Path, *, run_id: str, h: int, seed: int) -> dict
             "correction_mode": "none",
             "membership_correction": False,
             "granularity_sampling_mode": "global",
+            "global_sampling_schedule": schedule,
+            "global_sampling_schedule_version": (
+                1 if schedule == "balanced_cycle" else None
+            ),
             "global_sampling_interval_steps": h,
             "granularity_pattern_provenance": {
                 "policy": "uniform_global_window",
@@ -164,10 +175,13 @@ def _write_run(
     seed: int = 1,
     status: str = "completed",
     snapshot_count: int = 6,
+    schedule: str = "random_with_replacement",
 ) -> Path:
     run_dir = root / run_id
     run_dir.mkdir()
-    config = _diagnostic_config(run_dir, run_id=run_id, h=h, seed=seed)
+    config = _diagnostic_config(
+        run_dir, run_id=run_id, h=h, seed=seed, schedule=schedule
+    )
     (run_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
     records = [_snapshot(config, index) for index in range(snapshot_count)]
     journal_payload = "".join(json.dumps(record) + "\n" for record in records)
@@ -332,6 +346,33 @@ def test_canonical_generator_returns_diagnostics_and_only_cleans_owned_pngs(tmp_
     assert "gradient_interference_cosine_heatmaps__canonical.png" in names
     assert not stale_path.exists()
     assert journal_path.read_bytes() == journal_before
+
+
+def test_balanced_gradient_histories_group_across_h_but_not_with_iid(tmp_path):
+    _write_run(
+        tmp_path,
+        run_id="balanced-h1",
+        h=1,
+        schedule="balanced_cycle",
+    )
+    _write_run(
+        tmp_path,
+        run_id="balanced-h50",
+        h=50,
+        schedule="balanced_cycle",
+    )
+    _write_run(tmp_path, run_id="iid-h50", h=50)
+
+    histories = list(iter_gradient_interference_histories(tmp_path))
+    by_id = {history.run_id: history for history in histories}
+    assert (
+        by_id["balanced-h1"].comparison_contract
+        == by_id["balanced-h50"].comparison_contract
+    )
+    assert (
+        by_id["balanced-h1"].comparison_contract
+        != by_id["iid-h50"].comparison_contract
+    )
 
 
 def test_trajectory_seed_means_and_heatmap_masks_are_deterministic(

@@ -376,7 +376,7 @@ def _select_optimizer_window_action(
         }
     if model_sampling_mode == "global" and run_sampling_mode == "nested-random":
         if run_state is None:
-            raise ConfigError("Uniform global sampling requires continuation state")
+            raise ConfigError("Global sampling requires continuation state")
         state = run_state.get("global_sampling_state")
         if state is None:
             state = training_checkpointing.build_initial_global_sampling_state(config)
@@ -387,6 +387,22 @@ def _select_optimizer_window_action(
         )
         run_state["global_sampling_state"] = state
         interval = int(state["interval_steps"])
+        if state.get("schedule") == "balanced_cycle":
+            return {
+                "kind": "global",
+                "granularities": [str(state["held_granularity"])],
+                "global_sampling_schedule": "balanced_cycle",
+                "global_sampling_schedule_version": int(
+                    state["schedule_version"]
+                ),
+                "global_sampling_interval_steps": interval,
+                "global_sampling_window_index": int(state["window_index"]),
+                "global_sampling_window_progress": int(
+                    state["successful_updates_in_window"]
+                ),
+                "global_sampling_cycle_index": int(state["cycle_index"]),
+                "global_sampling_cycle_position": int(state["cycle_position"]),
+            }
         if int(state["successful_updates_in_window"]) == interval:
             state["window_index"] = int(state["window_index"]) + 1
             state["successful_updates_in_window"] = 0
@@ -425,22 +441,34 @@ def _commit_global_sampling_window_action(
     run_state: dict[str, Any],
     action: dict[str, Any],
 ) -> None:
-    """Advance a held uniform action only after its optimizer update commits."""
+    """Advance a held global action only after its optimizer update commits."""
 
     if "global_sampling_window_index" not in action:
         return
     state = run_state.get("global_sampling_state")
     if not isinstance(state, dict):
-        raise ConfigError("Uniform global sampling state is missing at commit")
+        raise ConfigError("Global sampling state is missing at commit")
     selected = str(action["granularities"][0])
     if selected != state["held_granularity"]:
-        raise ConfigError("Committed uniform global action does not match held state")
+        raise ConfigError("Committed global action does not match held state")
     if int(action["global_sampling_window_index"]) != int(state["window_index"]):
-        raise ConfigError("Committed uniform global action has the wrong window index")
+        raise ConfigError("Committed global action has the wrong window index")
     if int(action["global_sampling_window_progress"]) != int(
         state["successful_updates_in_window"]
     ):
-        raise ConfigError("Committed uniform global action has stale window progress")
+        raise ConfigError("Committed global action has stale window progress")
+    if state.get("schedule") == "balanced_cycle" and (
+        action.get("global_sampling_schedule") != "balanced_cycle"
+        or int(action.get("global_sampling_schedule_version", -1))
+        != int(state["schedule_version"])
+        or int(action.get("global_sampling_cycle_index", -1))
+        != int(state["cycle_index"])
+        or int(action.get("global_sampling_cycle_position", -1))
+        != int(state["cycle_position"])
+    ):
+        raise ConfigError(
+            "Committed balanced global action has stale cycle identity"
+        )
 
     state["successful_updates_in_window"] = int(
         state["successful_updates_in_window"]
@@ -452,6 +480,27 @@ def _commit_global_sampling_window_action(
     action["global_sampling_window_progress"] = int(
         state["successful_updates_in_window"]
     )
+    if state.get("schedule") == "balanced_cycle" and int(
+        state["successful_updates_in_window"]
+    ) == int(state["interval_steps"]):
+        state["successful_updates_in_window"] = 0
+        state["window_index"] = int(state["window_index"]) + 1
+        if int(state["cycle_position"]) + 1 < len(state["granularities"]):
+            state["cycle_position"] = int(state["cycle_position"]) + 1
+        else:
+            previous_last = str(state["cycle_permutation"][-1])
+            state["cycle_index"] = int(state["cycle_index"]) + 1
+            state["cycle_position"] = 0
+            state["cycle_permutation"] = (
+                training_checkpointing._balanced_cycle_permutation(
+                    config,
+                    cycle_index=int(state["cycle_index"]),
+                    previous_last=previous_last,
+                )
+            )
+        state["held_granularity"] = state["cycle_permutation"][
+            int(state["cycle_position"])
+        ]
     run_state["global_sampling_state"] = state
 
 
@@ -481,12 +530,19 @@ def _training_action_heartbeat_fields(action: Mapping[str, Any]) -> dict[str, An
             sampled_probability
         )
     for field in (
+        "global_sampling_schedule_version",
         "global_sampling_interval_steps",
         "global_sampling_window_index",
         "global_sampling_window_progress",
+        "global_sampling_cycle_index",
+        "global_sampling_cycle_position",
     ):
         if action.get(field) is not None:
             fields[field] = int(action[field])
+    if action.get("global_sampling_schedule") is not None:
+        fields["global_sampling_schedule"] = str(
+            action["global_sampling_schedule"]
+        )
     return fields
 
 
@@ -939,6 +995,17 @@ def train_for_steps(
                     adaptive_artifacts = _runtime_sampler_artifact_fields(
                         config, run_state, probabilistic_controller
                     )
+                    for field in (
+                        "global_sampling_schedule",
+                        "global_sampling_schedule_version",
+                        "global_sampling_interval_steps",
+                        "global_sampling_window_index",
+                        "global_sampling_window_progress",
+                        "global_sampling_cycle_index",
+                        "global_sampling_cycle_position",
+                    ):
+                        if action.get(field) is not None:
+                            adaptive_artifacts[field] = action[field]
                     adaptive_artifacts.update(
                         {
                             "microstep": committed_microsteps,
@@ -1195,6 +1262,16 @@ def _runtime_sampler_artifact_fields(
     if isinstance(global_sampling_state, Mapping):
         fields.update(
             {
+                "global_sampling_schedule": str(
+                    global_sampling_state.get(
+                        "schedule", "random_with_replacement"
+                    )
+                ),
+                "global_sampling_schedule_version": (
+                    int(global_sampling_state["schedule_version"])
+                    if global_sampling_state.get("schedule_version") is not None
+                    else None
+                ),
                 "global_sampling_interval_steps": int(
                     global_sampling_state["interval_steps"]
                 ),
@@ -1212,6 +1289,13 @@ def _runtime_sampler_artifact_fields(
                 ),
             }
         )
+        if global_sampling_state.get("cycle_index") is not None:
+            fields["global_sampling_cycle_index"] = int(
+                global_sampling_state["cycle_index"]
+            )
+            fields["global_sampling_cycle_position"] = int(
+                global_sampling_state["cycle_position"]
+            )
     return fields
 
 
@@ -1701,6 +1785,12 @@ def build_training_metric_row(
         "granularity_sampling_mode": model.get("granularity_sampling_mode"),
         "global_sampling_distribution": json_artifact_value(
             model.get("global_sampling_distribution")
+        ),
+        "global_sampling_schedule": model.get(
+            "global_sampling_schedule", "random_with_replacement"
+        ),
+        "global_sampling_schedule_version": model.get(
+            "global_sampling_schedule_version"
         ),
         "global_sampling_interval_steps": model.get(
             "global_sampling_interval_steps", 1

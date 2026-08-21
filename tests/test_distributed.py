@@ -1000,3 +1000,57 @@ def test_uniform_global_window_draw_and_state_agree_across_ranks(monkeypatch):
     assert actions[0] == actions[1]
     assert states[0]["global_sampling_state"] == states[1]["global_sampling_state"]
     assert draw_count["value"] == 1
+
+
+def test_balanced_global_cycle_action_and_state_agree_across_ranks():
+    config = {
+        "model": {
+            "granularity_sampling_mode": "global",
+            "global_sampling_schedule": "balanced_cycle",
+            "global_sampling_schedule_version": 1,
+            "global_sampling_interval_steps": 2,
+            "granularities": ["small", "full"],
+        },
+        "run": {
+            "sampling_mode": "nested-random",
+            "seed": 42,
+            "reproducibility": {"seed_stream_version": 1},
+        },
+        "training": {"granularity_sampling": "random", "max_steps": 8},
+    }
+    states = [
+        {
+            "global_sampling_state": (
+                training_checkpointing.build_initial_global_sampling_state(config)
+            )
+        }
+        for _ in range(2)
+    ]
+
+    for step in range(1, 9):
+        actions = []
+        for process_rank in (0, 1):
+            action = training_steps._select_optimizer_window_action(
+                config,
+                ["small", "full"],
+                torch.device("cpu"),
+                optimizer_step=step,
+                tokens_seen=step - 1,
+                supports_layer_granularities=False,
+                distributed_context=SimpleNamespace(
+                    enabled=True, rank=process_rank
+                ),
+                adaptive_sampler_state=None,
+                stage_name="training",
+                run_state=states[process_rank],
+            )
+            training_steps._commit_global_sampling_window_action(
+                config, states[process_rank], action
+            )
+            actions.append(action)
+        assert actions[0] == actions[1]
+
+    assert states[0]["global_sampling_state"] == states[1]["global_sampling_state"]
+    assert set(
+        states[0]["global_sampling_state"]["exposure_counts"].values()
+    ) == {4}

@@ -299,6 +299,116 @@ def test_requested_run_sampling_mode_does_not_force_per_block_model_mode():
     assert resolved["training"]["granularity_sampling"] == "random"
     assert resolved["model"]["granularity_sampling_mode"] == "global"
     assert resolved["model"]["global_sampling_interval_steps"] == 1
+    assert (
+        resolved["model"]["global_sampling_schedule"]
+        == "random_with_replacement"
+    )
+    assert resolved["model"]["global_sampling_schedule_version"] is None
+
+
+def test_balanced_global_sampling_schedule_resolves_complete_cycle_contract():
+    resolved = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        overrides={
+            "model.granularity_sampling_mode": "global",
+            "model.global_sampling_schedule": "balanced_cycle",
+            "model.global_sampling_interval_steps": 2,
+            "training.token_budget": 65_536,
+            "training.max_steps": 16,
+            "training.pre_nested_warmup.enabled": False,
+            "dataset.fixed_four_role_partition": True,
+            "evaluation.adaptive_controller": {
+                "enabled": True,
+                "source": "configured_dataset_split",
+                "examples": 128,
+                "objective_weights": "uniform",
+                "fixed_manifest": True,
+            },
+            "evaluation.final_holdout": {
+                "enabled": True,
+                "source": "configured_dataset_split",
+                "examples": 512,
+                "fixed_manifest": True,
+                "evaluate_during_training": False,
+            },
+            "evaluation.gradient_interference.enabled": True,
+            "evaluation.gradient_interference.include_warmup_completion": False,
+        },
+    )
+
+    assert resolved["model"]["global_sampling_schedule"] == "balanced_cycle"
+    assert resolved["model"]["global_sampling_schedule_version"] == 1
+    assert resolved["training"]["max_steps"] == 16
+    assert resolved["evaluation"]["gradient_interference"]["enabled"] is True
+
+
+def test_balanced_global_sampling_requires_multiple_unique_granularities():
+    resolved = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        overrides={
+            "model.global_sampling_schedule": "balanced_cycle",
+            "model.global_sampling_interval_steps": 2,
+            "training.token_budget": 65_536,
+            "training.max_steps": 16,
+        },
+    )
+    resolved["model"]["granularities"] = ["xl"]
+
+    with pytest.raises(ConfigError, match="at least two unique granularities"):
+        validate_run_config(resolved)
+
+
+@pytest.mark.parametrize("schedule", ["unknown", 1, True])
+def test_global_sampling_schedule_rejects_invalid_values(schedule):
+    with pytest.raises(ConfigError, match="model.global_sampling_schedule must be"):
+        resolve_run_config(
+            "configs/dmodel256_pilot_comparison.yaml",
+            overrides={"model.global_sampling_schedule": schedule},
+        )
+
+
+def test_explicit_global_sampling_schedule_rejects_incompatible_mode():
+    with pytest.raises(ConfigError, match="valid only for nested-random"):
+        resolve_run_config(
+            "configs/dmodel256_pilot_comparison.yaml",
+            overrides={
+                "model.granularity_sampling_mode": "per_block",
+                "model.global_sampling_schedule": "random_with_replacement",
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    "extra_overrides, message",
+    [
+        (
+            {"training.token_budget": 61_440, "training.max_steps": 15},
+            "training.max_steps must be divisible",
+        ),
+        (
+            {
+                "training.pre_nested_warmup.enabled": True,
+                "training.pre_nested_warmup.duration": 1,
+            },
+            "pre_nested_warmup.enabled=false",
+        ),
+    ],
+)
+def test_balanced_global_sampling_rejects_incomplete_contract(
+    extra_overrides, message
+):
+    overrides = {
+        "model.global_sampling_schedule": "balanced_cycle",
+        "model.global_sampling_interval_steps": 2,
+        "training.token_budget": 65_536,
+        "training.max_steps": 16,
+        **extra_overrides,
+    }
+    with pytest.raises(ConfigError, match=message):
+        resolve_run_config(
+            "configs/dmodel256_pilot_comparison.yaml",
+            overrides=overrides,
+        )
 
 
 def test_uniform_global_sampling_interval_resolves_for_nested_random():

@@ -128,6 +128,12 @@ def main(argv: list[str] | None = None) -> None:
                     "global_sampling_interval_steps": resolved["model"].get(
                         "global_sampling_interval_steps"
                     ),
+                    "global_sampling_schedule": resolved["model"].get(
+                        "global_sampling_schedule"
+                    ),
+                    "global_sampling_schedule_version": resolved["model"].get(
+                        "global_sampling_schedule_version"
+                    ),
                     "adaptive_sampler_strategy": resolved["model"].get(
                         "adaptive_sampler_strategy"
                     ),

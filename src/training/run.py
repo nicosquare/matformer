@@ -1771,6 +1771,10 @@ def run_training(
             metrics_rows,
         )
 
+        training_checkpointing.validate_balanced_global_sampling_completion(
+            run_state.get("global_sampling_state"),
+            config=config,
+        )
         completed_run_state = dict(run_state)
         completed_run_state["status"] = "completed"
         if run["continuation"]["enabled"]:
@@ -1876,6 +1880,12 @@ def run_training(
             "granularity_sampling": training.get("granularity_sampling", "all"),
             "global_sampling_interval_steps": config["model"].get(
                 "global_sampling_interval_steps", 1
+            ),
+            "global_sampling_schedule": config["model"].get(
+                "global_sampling_schedule", "random_with_replacement"
+            ),
+            "global_sampling_schedule_version": config["model"].get(
+                "global_sampling_schedule_version"
             ),
             "global_sampling_state": copy.deepcopy(
                 run_state.get("global_sampling_state")

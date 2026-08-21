@@ -15,6 +15,7 @@ import hashlib
 import json
 import math
 import os
+import random
 import shutil
 import tempfile
 from pathlib import Path
@@ -81,6 +82,7 @@ from src.utils.reproducibility import (
     capture_rng_state,
     deterministic_runtime_settings,
     restore_rng_state,
+    seed_for,
 )
 
 
@@ -92,6 +94,9 @@ PROBABILISTIC_CONTROLLER_PHASES = {
     "terminal_incomplete",
     "failed",
 }
+
+BALANCED_GLOBAL_SAMPLING_SCHEMA_VERSION = 2
+BALANCED_GLOBAL_SAMPLING_SCHEDULE_VERSION = 1
 
 
 def uses_probabilistic_controller(config: Mapping[str, Any]) -> bool:
@@ -1958,6 +1963,8 @@ def update_run_continuation_state(
 
 
 def uses_uniform_global_sampling_windows(config: Mapping[str, Any]) -> bool:
+    """Return whether the run uses the global window state (IID or balanced)."""
+
     model = config.get("model", {})
     run = config.get("run", {})
     return bool(
@@ -1968,6 +1975,53 @@ def uses_uniform_global_sampling_windows(config: Mapping[str, Any]) -> bool:
     )
 
 
+def _balanced_cycle_base_permutation(
+    config: Mapping[str, Any],
+    *,
+    cycle_index: int,
+) -> list[str]:
+    labels = [str(label) for label in config["model"].get("granularities", [])]
+    schedule_version = int(
+        config["model"].get(
+            "global_sampling_schedule_version",
+            BALANCED_GLOBAL_SAMPLING_SCHEDULE_VERSION,
+        )
+    )
+    material = (
+        f"balanced_global_cycle|{schedule_version}|"
+        f"{seed_for(config, 'granularity_selection')}|{int(cycle_index)}"
+    ).encode("utf-8")
+    cycle_seed = int.from_bytes(hashlib.sha256(material).digest()[:8], "big")
+    generator = random.Random(cycle_seed)
+    generator.shuffle(labels)
+    return labels
+
+
+def _balanced_cycle_permutation(
+    config: Mapping[str, Any],
+    *,
+    cycle_index: int,
+    previous_last: str | None,
+) -> list[str]:
+    """Build one stateless, H-independent balanced-cycle permutation."""
+
+    labels = _balanced_cycle_base_permutation(
+        config,
+        cycle_index=cycle_index,
+    )
+    if len(labels) == 2 and cycle_index > 0:
+        # With two labels, avoiding a merged boundary uniquely fixes the next
+        # ordering once cycle zero is known.
+        return _balanced_cycle_base_permutation(config, cycle_index=0)
+    if previous_last is not None and labels[0] == previous_last:
+        swap_index = next(
+            index for index, label in enumerate(labels[1:], start=1)
+            if label != previous_last
+        )
+        labels[0], labels[swap_index] = labels[swap_index], labels[0]
+    return labels
+
+
 def build_initial_global_sampling_state(
     config: Mapping[str, Any],
 ) -> dict[str, Any] | None:
@@ -1975,6 +2029,30 @@ def build_initial_global_sampling_state(
         return None
     model = config["model"]
     granularities = [str(label) for label in model.get("granularities", [])]
+    schedule = str(
+        model.get("global_sampling_schedule", "random_with_replacement")
+    )
+    if schedule == "balanced_cycle":
+        permutation = _balanced_cycle_permutation(
+            config,
+            cycle_index=0,
+            previous_last=None,
+        )
+        return {
+            "schema_version": BALANCED_GLOBAL_SAMPLING_SCHEMA_VERSION,
+            "schedule": schedule,
+            "schedule_version": BALANCED_GLOBAL_SAMPLING_SCHEDULE_VERSION,
+            "interval_steps": int(model.get("global_sampling_interval_steps", 1)),
+            "granularities": granularities,
+            "cycle_index": 0,
+            "cycle_permutation": permutation,
+            "cycle_position": 0,
+            "held_granularity": permutation[0],
+            "window_index": 0,
+            "successful_updates_in_window": 0,
+            "total_successful_updates": 0,
+            "exposure_counts": {label: 0 for label in granularities},
+        }
     return {
         "schema_version": 1,
         "interval_steps": int(model.get("global_sampling_interval_steps", 1)),
@@ -1991,17 +2069,30 @@ def validate_global_sampling_state(
     *,
     config: Mapping[str, Any],
 ) -> dict[str, Any] | None:
-    """Validate the compact continuation state for uniform global windows."""
+    """Validate compact continuation state for IID or balanced global windows."""
 
     if not uses_uniform_global_sampling_windows(config):
         if state is not None:
             raise ConfigError(
                 "global sampling window state is valid only for nested-random "
-                "uniform global runs"
+                "global runs"
             )
         return None
     if not isinstance(state, Mapping):
         raise ConfigError("Checkpoint global sampling window state is missing")
+
+    expected_schedule = str(
+        config["model"].get(
+            "global_sampling_schedule", "random_with_replacement"
+        )
+    )
+    schema_version = state.get("schema_version")
+    if expected_schedule == "balanced_cycle":
+        return _validate_balanced_global_sampling_state(state, config=config)
+    if schema_version != 1:
+        raise ConfigError(
+            "Checkpoint global sampling schedule does not match config"
+        )
 
     required = {
         "schema_version",
@@ -2086,6 +2177,200 @@ def validate_global_sampling_state(
                 "Checkpoint held global granularity does not match config"
             )
     return normalized
+
+
+def _validate_balanced_global_sampling_state(
+    state: Mapping[str, Any],
+    *,
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    required = {
+        "schema_version",
+        "schedule",
+        "schedule_version",
+        "interval_steps",
+        "granularities",
+        "cycle_index",
+        "cycle_permutation",
+        "cycle_position",
+        "held_granularity",
+        "window_index",
+        "successful_updates_in_window",
+        "total_successful_updates",
+        "exposure_counts",
+    }
+    missing = required - set(state)
+    if missing:
+        raise ConfigError(
+            "Checkpoint balanced global sampling state is incomplete: "
+            f"{sorted(missing)}"
+        )
+    normalized = copy.deepcopy(dict(state))
+    integer_fields = (
+        "schema_version",
+        "schedule_version",
+        "interval_steps",
+        "cycle_index",
+        "cycle_position",
+        "window_index",
+        "successful_updates_in_window",
+        "total_successful_updates",
+    )
+    for field in integer_fields:
+        value = normalized[field]
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ConfigError(
+                f"Checkpoint balanced global sampling {field} must be an integer"
+            )
+    if (
+        normalized["schema_version"]
+        != BALANCED_GLOBAL_SAMPLING_SCHEMA_VERSION
+        or normalized["schedule"] != "balanced_cycle"
+        or normalized["schedule_version"]
+        != BALANCED_GLOBAL_SAMPLING_SCHEDULE_VERSION
+    ):
+        raise ConfigError(
+            "Checkpoint balanced global sampling schedule identity is invalid"
+        )
+    model = config["model"]
+    if model.get("global_sampling_schedule") != "balanced_cycle":
+        raise ConfigError(
+            "Checkpoint global sampling schedule does not match config"
+        )
+    expected_interval = int(model.get("global_sampling_interval_steps", 1))
+    if normalized["interval_steps"] != expected_interval:
+        raise ConfigError(
+            "Checkpoint global sampling interval does not match config"
+        )
+    labels = [str(label) for label in model.get("granularities", [])]
+    if normalized["granularities"] != labels:
+        raise ConfigError(
+            "Checkpoint balanced global sampling labels do not match config"
+        )
+    permutation = normalized["cycle_permutation"]
+    if not isinstance(permutation, list) or set(permutation) != set(labels) or len(
+        permutation
+    ) != len(labels):
+        raise ConfigError(
+            "Checkpoint balanced global sampling permutation is invalid"
+        )
+    cycle_index = normalized["cycle_index"]
+    cycle_position = normalized["cycle_position"]
+    window_index = normalized["window_index"]
+    progress = normalized["successful_updates_in_window"]
+    total = normalized["total_successful_updates"]
+    if (
+        cycle_index < 0
+        or not 0 <= cycle_position < len(labels)
+        or window_index < 0
+        or not 0 <= progress < expected_interval
+        or total < 0
+    ):
+        raise ConfigError(
+            "Checkpoint balanced global sampling counters are invalid"
+        )
+    cycle_steps = len(labels) * expected_interval
+    expected_cycle = total // cycle_steps
+    within_cycle = total % cycle_steps
+    expected_position = within_cycle // expected_interval
+    expected_progress = within_cycle % expected_interval
+    expected_window = total // expected_interval
+    if (
+        cycle_index != expected_cycle
+        or cycle_position != expected_position
+        or progress != expected_progress
+        or window_index != expected_window
+    ):
+        raise ConfigError(
+            "Checkpoint balanced global sampling counters are inconsistent"
+        )
+    if normalized["held_granularity"] != permutation[cycle_position]:
+        raise ConfigError(
+            "Checkpoint balanced held granularity is inconsistent"
+        )
+    exposures = normalized["exposure_counts"]
+    if not isinstance(exposures, Mapping) or set(exposures) != set(labels):
+        raise ConfigError(
+            "Checkpoint balanced global sampling exposure labels do not match config"
+        )
+    normalized_exposures: dict[str, int] = {}
+    for label in labels:
+        count = exposures[label]
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ConfigError(
+                "Checkpoint balanced global sampling exposure counts must be "
+                "nonnegative integers"
+            )
+        normalized_exposures[label] = int(count)
+    normalized["exposure_counts"] = normalized_exposures
+    if sum(normalized_exposures.values()) != total:
+        raise ConfigError(
+            "Checkpoint balanced global sampling exposures do not match updates"
+        )
+    expected_exposures = {
+        label: cycle_index * expected_interval for label in labels
+    }
+    for position in range(cycle_position):
+        expected_exposures[permutation[position]] += expected_interval
+    expected_exposures[permutation[cycle_position]] += progress
+    if normalized_exposures != expected_exposures:
+        raise ConfigError(
+            "Checkpoint balanced global sampling exposure counters are inconsistent"
+        )
+    expected_permutation = _balanced_cycle_permutation(
+        config,
+        cycle_index=cycle_index,
+        previous_last=_balanced_cycle_last_label(config, cycle_index - 1),
+    )
+    if permutation != expected_permutation:
+        raise ConfigError(
+            "Checkpoint balanced global sampling permutation does not match seed"
+        )
+    return normalized
+
+
+def _balanced_cycle_last_label(
+    config: Mapping[str, Any], cycle_index: int
+) -> str | None:
+    """Resolve the previous-cycle tail needed to validate a saved permutation."""
+
+    if cycle_index < 0:
+        return None
+    labels = [str(label) for label in config["model"].get("granularities", [])]
+    if len(labels) == 2:
+        return _balanced_cycle_base_permutation(config, cycle_index=0)[-1]
+    # For K>=3 the boundary adjustment swaps only positions zero and one, so
+    # the last label remains the base permutation's last label.
+    return _balanced_cycle_base_permutation(
+        config,
+        cycle_index=cycle_index,
+    )[-1]
+
+
+def validate_balanced_global_sampling_completion(
+    state: Mapping[str, Any] | None,
+    *,
+    config: Mapping[str, Any],
+) -> None:
+    if config.get("model", {}).get("global_sampling_schedule") != "balanced_cycle":
+        return
+    normalized = validate_global_sampling_state(state, config=config)
+    if normalized is None:
+        raise ConfigError("Balanced global sampling state is missing at completion")
+    if (
+        normalized["total_successful_updates"]
+        != int(config.get("training", {}).get("max_steps", -1))
+        or normalized["total_successful_updates"]
+        % (len(normalized["granularities"]) * normalized["interval_steps"])
+        != 0
+        or normalized["successful_updates_in_window"] != 0
+        or normalized["cycle_position"] != 0
+        or len(set(normalized["exposure_counts"].values())) != 1
+    ):
+        raise ConfigError(
+            "Balanced global sampling cannot complete outside an equal-exposure "
+            "cycle boundary"
+        )
 
 
 def _build_initial_adaptive_sampler_state(

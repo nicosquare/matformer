@@ -33,6 +33,8 @@ SIZE_PLOT_PANELS_WITH_SAMPLING = [
     ("nested-random", "concat", "global"),
     ("nested-random", "slicing", "uniform_global_window"),
     ("nested-random", "concat", "uniform_global_window"),
+    ("nested-random", "slicing", "balanced_global_window"),
+    ("nested-random", "concat", "balanced_global_window"),
     ("nested-random", "slicing", "fixed_global"),
     ("nested-random", "concat", "fixed_global"),
     ("nested-random", "slicing", "per_block"),
@@ -52,6 +54,7 @@ SIZE_PLOT_PANELS_WITH_SAMPLING = [
 SCALING_GROUP_COLORS = {
     "nested-random / slicing / global": "tab:blue",
     "nested-random / slicing / uniform_global_window": "tab:cyan",
+    "nested-random / slicing / balanced_global_window": "tab:purple",
     "nested-random / slicing / fixed_global": "tab:green",
     "nested-random / slicing / per_block": "tab:cyan",
     "nested-random / slicing / probabilistic_global_thompson": "tab:blue",
@@ -62,6 +65,7 @@ SCALING_GROUP_COLORS = {
     "nested-random / slicing / adaptive_per_block_ucb": "tab:olive",
     "nested-random / concat / global": "tab:orange",
     "nested-random / concat / uniform_global_window": "tab:red",
+    "nested-random / concat / balanced_global_window": "tab:brown",
     "nested-random / concat / fixed_global": "tab:olive",
     "nested-random / concat / per_block": "tab:red",
     "nested-random / concat / probabilistic_global_thompson": "tab:orange",
@@ -84,6 +88,7 @@ SCALING_CORRECTION_STYLES = {
 SCALING_SAMPLING_TONES = {
     "global": 0.0,
     "uniform_global_window": 0.08,
+    "balanced_global_window": 0.16,
     "fixed_global": 0.12,
     "per_block": 0.28,
     "probabilistic_global_thompson": 0.16,
@@ -97,6 +102,7 @@ SCALING_SAMPLING_TONES = {
 SCALING_SAMPLING_MARKERS = {
     "global": "o",
     "uniform_global_window": "s",
+    "balanced_global_window": "D",
     "fixed_global": "H",
     "per_block": "D",
     "probabilistic_global_thompson": "*",
@@ -207,6 +213,17 @@ PPL_VS_SIZE_FIGURE_SPECS = [
         "figure_title": "Perplexity vs Non-embedding parameters",
         "figure_alias": "all",
         "panel_specs": SIZE_PLOT_PANELS_WITH_SAMPLING,
+        "style": "default",
+        "row_filter_name": None,
+    },
+    {
+        "output_name": "ppl_vs_size_balanced_global_window.png",
+        "figure_title": "Balanced global windows: perplexity vs non-embedding parameters",
+        "figure_alias": "balanced_global_window",
+        "panel_specs": [
+            ("nested-random", "slicing", "balanced_global_window"),
+            ("nested-random", "concat", "balanced_global_window"),
+        ],
         "style": "default",
         "row_filter_name": None,
     },

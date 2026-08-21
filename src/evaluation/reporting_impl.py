@@ -50,6 +50,8 @@ SIZE_PLOT_PANELS_WITH_SAMPLING = [
     ("nested-random", "concat", "global"),
     ("nested-random", "slicing", "uniform_global_window"),
     ("nested-random", "concat", "uniform_global_window"),
+    ("nested-random", "slicing", "balanced_global_window"),
+    ("nested-random", "concat", "balanced_global_window"),
     ("nested-random", "slicing", "fixed_global"),
     ("nested-random", "concat", "fixed_global"),
     ("nested-random", "slicing", "per_block"),
@@ -67,6 +69,7 @@ SIZE_PLOT_PANELS_WITH_SAMPLING = [
 ]
 SCALING_GROUP_COLORS = {
     "nested-random / slicing / global": "tab:blue",
+    "nested-random / slicing / balanced_global_window": "tab:purple",
     "nested-random / slicing / fixed_global": "tab:green",
     "nested-random / slicing / per_block": "tab:cyan",
     "nested-random / slicing / probabilistic_global_thompson": "tab:blue",
@@ -76,6 +79,7 @@ SCALING_GROUP_COLORS = {
     "nested-random / slicing / probabilistic_per_block_thompson": "tab:cyan",
     "nested-random / slicing / adaptive_per_block_ucb": "tab:olive",
     "nested-random / concat / global": "tab:orange",
+    "nested-random / concat / balanced_global_window": "tab:brown",
     "nested-random / concat / fixed_global": "tab:olive",
     "nested-random / concat / per_block": "tab:red",
     "nested-random / concat / probabilistic_global_thompson": "tab:orange",
@@ -95,6 +99,7 @@ SCALING_CORRECTION_STYLES = {
 }
 SCALING_SAMPLING_TONES = {
     "global": 0.0,
+    "balanced_global_window": 0.16,
     "fixed_global": 0.12,
     "per_block": 0.28,
     "probabilistic_global_thompson": 0.16,
@@ -106,6 +111,7 @@ SCALING_SAMPLING_TONES = {
 }
 SCALING_SAMPLING_MARKERS = {
     "global": "o",
+    "balanced_global_window": "D",
     "fixed_global": "H",
     "per_block": "D",
     "probabilistic_global_thompson": "*",
@@ -220,6 +226,17 @@ PPL_VS_SIZE_FIGURE_SPECS = [
         "figure_title": "Perplexity vs Non-embedding parameters",
         "figure_alias": "all",
         "panel_specs": SIZE_PLOT_PANELS_WITH_SAMPLING,
+        "style": "default",
+        "row_filter_name": None,
+    },
+    {
+        "output_name": "ppl_vs_size_balanced_global_window.png",
+        "figure_title": "Balanced global windows: perplexity vs non-embedding parameters",
+        "figure_alias": "balanced_global_window",
+        "panel_specs": [
+            ("nested-random", "slicing", "balanced_global_window"),
+            ("nested-random", "concat", "balanced_global_window"),
+        ],
         "style": "default",
         "row_filter_name": None,
     },
@@ -735,6 +752,20 @@ def enrich_scaling_metadata_from_run_config(
                 enriched_row["global_sampling_interval_steps"] = (
                     global_sampling_interval_steps
                 )
+            global_sampling_schedule = global_sampling_schedule_from_saved_config(
+                config_cache[config_path]
+            )
+            if global_sampling_schedule is not None:
+                enriched_row["global_sampling_schedule"] = global_sampling_schedule
+            global_sampling_schedule_version = (
+                global_sampling_schedule_version_from_saved_config(
+                    config_cache[config_path]
+                )
+            )
+            if global_sampling_schedule_version is not None:
+                enriched_row["global_sampling_schedule_version"] = (
+                    global_sampling_schedule_version
+                )
             membership_correction = membership_correction_from_saved_config(
                 config_cache[config_path]
             )
@@ -794,6 +825,20 @@ def enrich_metrics_metadata_from_run_config(
             if global_sampling_interval_steps is not None:
                 enriched_row["global_sampling_interval_steps"] = (
                     global_sampling_interval_steps
+                )
+            global_sampling_schedule = global_sampling_schedule_from_saved_config(
+                config_cache[config_path]
+            )
+            if global_sampling_schedule is not None:
+                enriched_row["global_sampling_schedule"] = global_sampling_schedule
+            global_sampling_schedule_version = (
+                global_sampling_schedule_version_from_saved_config(
+                    config_cache[config_path]
+                )
+            )
+            if global_sampling_schedule_version is not None:
+                enriched_row["global_sampling_schedule_version"] = (
+                    global_sampling_schedule_version
                 )
             membership_correction = membership_correction_from_saved_config(
                 config_cache[config_path]
@@ -1021,6 +1066,30 @@ def global_sampling_interval_steps_from_saved_config(
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         return None
     return value
+
+
+def global_sampling_schedule_from_saved_config(
+    config: dict[str, Any],
+) -> str | None:
+    model = config.get("model")
+    if not isinstance(model, dict):
+        return None
+    value = model.get("global_sampling_schedule", "random_with_replacement")
+    if value not in {"random_with_replacement", "balanced_cycle"}:
+        return None
+    return str(value)
+
+
+def global_sampling_schedule_version_from_saved_config(
+    config: dict[str, Any],
+) -> int | None:
+    model = config.get("model")
+    if not isinstance(model, dict):
+        return None
+    value = model.get("global_sampling_schedule_version")
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return int(value)
 
 
 def with_default_model_variant(config: dict[str, Any]) -> dict[str, Any]:
@@ -1465,6 +1534,7 @@ def size_plot_panel_title(
     sampling_titles = {
         "global": "Global sampling",
         "uniform_global_window": "Uniform global windows",
+        "balanced_global_window": "Balanced global windows",
         "per_block": "Per-block sampling",
         "probabilistic_global_thompson": "Bayesian global TS",
         "probabilistic_per_block_thompson": "Bayesian per-block TS",
@@ -1531,6 +1601,8 @@ def _size_plot_sampling_family(row: dict[str, Any]) -> str:
     identity = scaling_curve_sampling_label(row) or "global"
     if re.fullmatch(r"uniform_global_h[1-9][0-9]*", identity):
         return "uniform_global_window"
+    if re.fullmatch(r"balanced_global_h[1-9][0-9]*", identity):
+        return "balanced_global_window"
     return (
         "probabilistic_global_thompson"
         if identity in GLOBAL_TS_IDENTITIES
@@ -1540,7 +1612,9 @@ def _size_plot_sampling_family(row: dict[str, Any]) -> str:
 
 def _size_plot_sampling_display(row: dict[str, Any]) -> str:
     identity = scaling_curve_sampling_label(row) or "global"
-    if re.fullmatch(r"uniform_global_h[1-9][0-9]*", identity):
+    if re.fullmatch(
+        r"(?:uniform|balanced)_global_h[1-9][0-9]*", identity
+    ):
         return display_sampling_label_for_curve(identity) or identity
     labels = {
         "global": "Global sampling",
@@ -1561,7 +1635,7 @@ def _size_plot_group_sort_key(rows: list[dict[str, Any]]) -> tuple[Any, ...]:
     panelgrad_temperature = to_float_or_none(row.get("panelgrad_temperature"))
     sampling_identity = scaling_curve_sampling_label(row) or "global"
     uniform_window_match = re.fullmatch(
-        r"uniform_global_h([1-9][0-9]*)", sampling_identity
+        r"(?:uniform|balanced)_global_h([1-9][0-9]*)", sampling_identity
     )
     uniform_interval = (
         int(uniform_window_match.group(1))
@@ -1714,7 +1788,11 @@ def compact_size_curve_labels(
         scaling_curve_sampling_label(group[0]) in GLOBAL_TS_IDENTITIES
         for group in all_groups
     )
-    show_sampling_method = panel_sampling_label in (None, "uniform_global_window")
+    show_sampling_method = panel_sampling_label in (
+        None,
+        "uniform_global_window",
+        "balanced_global_window",
+    )
     groups_by_comparison_family: dict[tuple[str, str], list[list[dict[str, Any]]]] = {}
     for group in all_groups:
         comparison_family = (
@@ -1883,6 +1961,10 @@ def plot_metric_vs_size_panel(
                 sampling_label == "uniform_global_window"
                 and scaling_curve_sampling_label(row) == "global"
             )
+            or (
+                sampling_label == "balanced_global_window"
+                and scaling_curve_sampling_label(row) == "global"
+            )
         )
     ]
     panel_title = size_plot_panel_title(
@@ -1915,7 +1997,14 @@ def plot_metric_vs_size_panel(
         panel_sampling_label=sampling_label,
     )
     ordered_groups = sorted(
-        grouped.items(), key=lambda item: _size_plot_group_sort_key(item[1])
+        grouped.items(),
+        key=lambda item: (
+            0
+            if sampling_label == "balanced_global_window"
+            and scaling_curve_sampling_label(item[1][0]) == "global"
+            else 1,
+            _size_plot_group_sort_key(item[1]),
+        ),
     )
     for curve_index, (contract, group_rows_for_label) in enumerate(ordered_groups):
         style = _size_plot_curve_style(
@@ -1923,11 +2012,11 @@ def plot_metric_vs_size_panel(
             curve_index,
             style_config,
         )
-        is_h1_reference = (
-            sampling_label == "uniform_global_window"
+        is_iid_h1_reference = (
+            sampling_label in {"uniform_global_window", "balanced_global_window"}
             and scaling_curve_sampling_label(group_rows_for_label[0]) == "global"
         )
-        if is_h1_reference:
+        if is_iid_h1_reference:
             style.update(
                 {
                     "color": "#555555",
@@ -1944,7 +2033,10 @@ def plot_metric_vs_size_panel(
             aggregate["means"],
             label=(
                 "Global sampling (H=1 reference)"
-                if is_h1_reference
+                if is_iid_h1_reference
+                and sampling_label == "uniform_global_window"
+                else "Random global (IID H=1 reference)"
+                if is_iid_h1_reference
                 else legend_labels[contract]
             ),
             **style,
@@ -3970,6 +4062,7 @@ def group_scaling_rows(rows: list[dict[str, str]]) -> dict[str, list[dict[str, s
 
 SIZE_PLOT_CONTRACT_FIELDS = (
     "global_sampling_distribution",
+    "global_sampling_schedule_version",
     "controller_method_family",
     "controller_method_version",
     "controller_scope",
@@ -4335,6 +4428,8 @@ def scaling_curve_color_group_label(row: dict[str, str]) -> str:
         sampling_label = scaling_curve_sampling_label(row) or "global"
         if re.fullmatch(r"uniform_global_h[1-9][0-9]*", sampling_label):
             sampling_label = "uniform_global_window"
+        if re.fullmatch(r"balanced_global_h[1-9][0-9]*", sampling_label):
+            sampling_label = "balanced_global_window"
         return f"{family_label} / {variant_label} / {sampling_label}"
 
     return f"{family_label} / {variant_label}"
@@ -4388,11 +4483,17 @@ def scaling_curve_sampling_label(row: dict[str, str]) -> str | None:
     if resolved_sampling_mode not in (None, ""):
         normalized = str(resolved_sampling_mode).strip().lower()
         if normalized == "global":
+            schedule = str(
+                row.get("global_sampling_schedule")
+                or "random_with_replacement"
+            ).strip().lower()
             interval_value = row.get("global_sampling_interval_steps", 1)
             try:
                 interval_steps = int(interval_value)
             except (TypeError, ValueError):
                 interval_steps = 1
+            if schedule == "balanced_cycle":
+                return f"balanced_global_h{interval_steps}"
             if interval_steps > 1:
                 return f"uniform_global_h{interval_steps}"
         probabilistic_label = _probabilistic_sampling_label(row)
@@ -4410,11 +4511,17 @@ def scaling_curve_sampling_label(row: dict[str, str]) -> str | None:
     if granularity_sampling_mode not in (None, ""):
         normalized = str(granularity_sampling_mode).strip().lower()
         if normalized == "global":
+            schedule = str(
+                row.get("global_sampling_schedule")
+                or "random_with_replacement"
+            ).strip().lower()
             interval_value = row.get("global_sampling_interval_steps", 1)
             try:
                 interval_steps = int(interval_value)
             except (TypeError, ValueError):
                 interval_steps = 1
+            if schedule == "balanced_cycle":
+                return f"balanced_global_h{interval_steps}"
             if interval_steps > 1:
                 return f"uniform_global_h{interval_steps}"
         probabilistic_label = _probabilistic_sampling_label(row)
@@ -4532,6 +4639,11 @@ def display_sampling_label_for_curve(sampling_label: str | None) -> str | None:
     uniform_window_match = re.fullmatch(r"uniform_global_h([1-9][0-9]*)", sampling_label)
     if uniform_window_match is not None:
         return f"Uniform global (H={uniform_window_match.group(1)})"
+    balanced_window_match = re.fullmatch(
+        r"balanced_global_h([1-9][0-9]*)", sampling_label
+    )
+    if balanced_window_match is not None:
+        return f"Balanced global (H={balanced_window_match.group(1)})"
     if sampling_label == "fixed_global":
         return "fixed non-uniform global"
     if sampling_label == "per_block":
@@ -4601,6 +4713,14 @@ def panel_sampling_matches(
                 actual_sampling_label,
             )
         )
+    if expected_sampling_label == "balanced_global_window":
+        return bool(
+            actual_sampling_label
+            and re.fullmatch(
+                r"balanced_global_h[1-9][0-9]*",
+                actual_sampling_label,
+            )
+        )
     if expected_sampling_label == "probabilistic_global_thompson":
         return actual_sampling_label in {
             "probabilistic_global_thompson",
@@ -4641,6 +4761,9 @@ def scaling_curve_style(
     if re.fullmatch(r"uniform_global_h[1-9][0-9]*", tone_sampling_label):
         tone_sampling_label = "uniform_global_window"
         marker_sampling_label = "uniform_global_window"
+    if re.fullmatch(r"balanced_global_h[1-9][0-9]*", tone_sampling_label):
+        tone_sampling_label = "balanced_global_window"
+        marker_sampling_label = "balanced_global_window"
     sampling_tone = reporting_styles.SCALING_SAMPLING_TONES.get(
         tone_sampling_label, 0.0
     )

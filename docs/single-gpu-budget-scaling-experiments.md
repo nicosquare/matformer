@@ -574,10 +574,10 @@ and diagnostic-contract identities must agree across the saved config, summary,
 and every snapshot. Invalid completed artifacts fail figure generation instead
 of producing a partial or misleading comparison.
 
-Keep ordinary and diagnostic runs in separate output roots when practical.
-This makes the extra probe cost and stricter completed-artifact checks explicit,
-avoids accidental run-ID/continuation collisions, and keeps ordinary figure
-generation independent of a diagnostic run that is still in progress.
+Use distinct run IDs for ordinary and diagnostic runs so their checkpoints and
+continuation state cannot collide. Separate output roots are useful for
+operational isolation, but are not required: related runs may share a campaign
+root when they should be discovered by the same figure-generation command.
 
 ## 10. Generate budget-isolated figures
 
@@ -616,3 +616,90 @@ Do not compare the endpoint of a new longer cosine schedule with a resumed
 100M checkpoint as though they were the same training schedule. To measure how
 gaps evolve with tokens, compare checkpoints from policies trained with the
 same longer horizon and optimizer contract.
+
+## 11. Balanced-exposure follow-up screen
+
+This follow-up isolates temporal specialization from unequal sampled-width
+exposure. Under `balanced_cycle`, every width receives the same number of
+selected optimizer updates, while H changes only how long consecutive updates
+remain on one width. If H=50 changes the endpoint or the gradient-interference
+trajectory relative to balanced H=1, that is evidence consistent with temporal
+clustering affecting specialization rather than ordinary multinomial exposure
+noise. It is not by itself proof of a causal mechanism.
+
+Equal selected-width exposure does not equal equal parameter exposure. Nested
+widths share prefixes, so parameters in smaller prefixes still participate in
+updates selected for larger widths. The balanced contract removes imbalance in
+the selected labels; it cannot and should not remove this unavoidable nested
+shared-parameter exposure.
+
+Put this screen in the existing per-grid campaign roots alongside the IID
+uniform-window experiments. The balanced run IDs below create distinct run
+directories, so checkpoints and continuation state remain isolated while one
+figure-generation pass can discover both schedules:
+
+```bash
+test -d "$OUT_8G" && test -w "$OUT_8G"
+test -d "$OUT_4G" && test -w "$OUT_4G"
+```
+
+The ordinary `scripts/make_figures.py` commands in section 10 read these shared
+roots. They discover IID and balanced histories together for direct comparison,
+while classifying balanced curves as `balanced_global_h<H>` and placing them in
+the separate `balanced_global_window` panel. Balanced H=1 is the dotted
+reference and H is ordered numerically. Gradient-interference trajectories
+group balanced H values together but never share a contract with IID
+uniform-global histories.
+
+Run only the one-seed H=1/H=50 screen on the eight- and four-width grids. The
+exact budget is 2,400 optimizer updates at 8,192 tokens per update:
+
+```bash
+export BALANCED_TOKEN_BUDGET=19660800
+export BALANCED_TRAJECTORY='[0.0,0.3333333333333333,0.6666666666666666,1.0]'
+
+for H in 1 50; do
+  "${SBATCH[@]}" --time="$WALLTIME" --gres=gpu:1 \
+    --job-name="balanced-8g-h$H" scripts/slurm_dmodel256_pilot.sh \
+    --mode nested-random \
+    --run-id "balanced-8g-h$H-s$EXPERIMENT_SEED" \
+    --config "$BASE" --output-root "$OUT_8G" --python-bin "$PYTHON_BIN" \
+    "${EIGHT_GRANULARITY_OVERRIDES[@]}" \
+    --override "training.token_budget=$BALANCED_TOKEN_BUDGET" \
+    --override "model.granularity_sampling_mode=global" \
+    --override "model.global_sampling_schedule=balanced_cycle" \
+    --override "model.global_sampling_interval_steps=$H" \
+    --override "training.pre_nested_warmup.enabled=false" \
+    --override "evaluation.gradient_interference.enabled=true" \
+    --override "evaluation.gradient_interference.trajectory_fractions=$BALANCED_TRAJECTORY" \
+    --override "evaluation.gradient_interference.include_warmup_completion=false"
+
+  "${SBATCH[@]}" --time="$WALLTIME" --gres=gpu:1 \
+    --job-name="balanced-4g-h$H" scripts/slurm_dmodel256_pilot.sh \
+    --mode nested-random \
+    --run-id "balanced-4g-h$H-s$EXPERIMENT_SEED" \
+    --config "$BASE" --output-root "$OUT_4G" --python-bin "$PYTHON_BIN" \
+    "${FOUR_GRANULARITY_OVERRIDES[@]}" \
+    --override "training.token_budget=$BALANCED_TOKEN_BUDGET" \
+    --override "model.granularity_sampling_mode=global" \
+    --override "model.global_sampling_schedule=balanced_cycle" \
+    --override "model.global_sampling_interval_steps=$H" \
+    --override "training.pre_nested_warmup.enabled=false" \
+    --override "evaluation.gradient_interference.enabled=true" \
+    --override "evaluation.gradient_interference.trajectory_fractions=$BALANCED_TRAJECTORY" \
+    --override "evaluation.gradient_interference.include_warmup_completion=false"
+done
+```
+
+The resolved diagnostic milestones are steps `0, 800, 1600, 2400`; the
+ordinary 1,000-step optimizer warmup remains configured, but it is deliberately
+not added as a diagnostic milestone because it is not a complete H=50 cycle.
+At completion, require 300 selected updates per width on the eight-width grid
+and 600 per width on the four-width grid.
+
+The primary interference contrasts are endpoint cosine `g125–g1000` for eight
+widths and `g250–g1000` for four widths. The practical outcome is untouched
+final-holdout loss. Do not add seeds, blockwise figures, or H=5/H=25 runs for
+the initial screen. Only if an endpoint result is interesting should the same
+contract be extended with H=5 and H=25; those follow-ups use the existing loop
+with `for H in 5 25` and no other changes.

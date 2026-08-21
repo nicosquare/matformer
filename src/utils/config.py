@@ -41,6 +41,11 @@ VALID_MODEL_GRANULARITY_SAMPLING_MODES = {
     "adaptive_global",
     "adaptive_per_block",
 }
+VALID_GLOBAL_SAMPLING_SCHEDULES = {
+    "random_with_replacement",
+    "balanced_cycle",
+}
+BALANCED_GLOBAL_SAMPLING_SCHEDULE_VERSION = 1
 VALID_ADAPTIVE_SAMPLER_STRATEGIES = {"panelgrad", "thompson", "ucb"}
 PROBABILISTIC_ADAPTIVE_SAMPLING_MODES = {
     "adaptive_global",
@@ -266,6 +271,7 @@ def resolve_run_config(
     )
     _resolve_fixed_global_sampling_distribution(resolved)
     _resolve_global_sampling_interval_steps(resolved)
+    _resolve_global_sampling_schedule(resolved)
     _resolve_adaptive_sampler_defaults(resolved)
     _resolve_distributed_contract_defaults(resolved)
     _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
@@ -310,6 +316,7 @@ def resolve_all_run_configs(
         )
         _resolve_fixed_global_sampling_distribution(resolved)
         _resolve_global_sampling_interval_steps(resolved)
+        _resolve_global_sampling_schedule(resolved)
         _resolve_adaptive_sampler_defaults(resolved)
         _resolve_distributed_contract_defaults(resolved)
         _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
@@ -343,6 +350,7 @@ def resolve_all_run_configs(
         )
         _resolve_fixed_global_sampling_distribution(resolved)
         _resolve_global_sampling_interval_steps(resolved)
+        _resolve_global_sampling_schedule(resolved)
         _resolve_adaptive_sampler_defaults(resolved)
         _resolve_distributed_contract_defaults(resolved)
         _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
@@ -855,6 +863,51 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "model.global_sampling_interval_steps is valid only for "
             "nested-random runs with model.granularity_sampling_mode=global"
         )
+    global_schedule = model.get(
+        "global_sampling_schedule", "random_with_replacement"
+    )
+    if global_schedule not in VALID_GLOBAL_SAMPLING_SCHEDULES:
+        raise ConfigError(
+            "model.global_sampling_schedule must be one of "
+            f"{sorted(VALID_GLOBAL_SAMPLING_SCHEDULES)}"
+        )
+    if global_schedule == "balanced_cycle":
+        if (
+            granularity_sampling_mode != "global"
+            or run.get("sampling_mode") != "nested-random"
+        ):
+            raise ConfigError(
+                "model.global_sampling_schedule=balanced_cycle requires "
+                "nested-random + global sampling"
+            )
+        if model.get("global_sampling_schedule_version") != (
+            BALANCED_GLOBAL_SAMPLING_SCHEDULE_VERSION
+        ):
+            raise ConfigError(
+                "model.global_sampling_schedule_version is invalid"
+            )
+        if len(granularities) < 2:
+            raise ConfigError(
+                "model.global_sampling_schedule=balanced_cycle requires at "
+                "least two unique granularities"
+            )
+        if bool(warmup.get("enabled", False)):
+            raise ConfigError(
+                "model.global_sampling_schedule=balanced_cycle requires "
+                "training.pre_nested_warmup.enabled=false"
+            )
+        max_steps = training.get("max_steps")
+        if isinstance(max_steps, bool) or not isinstance(max_steps, int):
+            raise ConfigError(
+                "balanced-cycle sampling requires resolved training.max_steps"
+            )
+        cycle_steps = len(granularities) * interval
+        if max_steps <= 0 or max_steps % cycle_steps != 0:
+            raise ConfigError(
+                "training.max_steps must be divisible by the number of "
+                "granularities times model.global_sampling_interval_steps "
+                "for balanced-cycle sampling"
+            )
     requested_mode = model.get("requested_correction_mode")
     if requested_mode not in (None, ""):
         if not isinstance(requested_mode, str):
@@ -2020,6 +2073,58 @@ def _resolve_global_sampling_interval_steps(config: dict[str, Any]) -> None:
             provenance["global_sampling_interval_steps"] = int(value)
         else:
             provenance.pop("global_sampling_interval_steps", None)
+
+
+def _resolve_global_sampling_schedule(config: dict[str, Any]) -> None:
+    """Resolve the opt-in global schedule without changing IID defaults."""
+
+    model = config.get("model")
+    run = config.get("run")
+    if not isinstance(model, dict) or not isinstance(run, Mapping):
+        return
+
+    explicitly_configured = "global_sampling_schedule" in model
+    raw_schedule = model.get(
+        "global_sampling_schedule", "random_with_replacement"
+    )
+    if not isinstance(raw_schedule, str):
+        raise ConfigError(
+            "model.global_sampling_schedule must be one of "
+            f"{sorted(VALID_GLOBAL_SAMPLING_SCHEDULES)}"
+        )
+    schedule = raw_schedule.strip().lower()
+    if schedule not in VALID_GLOBAL_SAMPLING_SCHEDULES:
+        raise ConfigError(
+            "model.global_sampling_schedule must be one of "
+            f"{sorted(VALID_GLOBAL_SAMPLING_SCHEDULES)}"
+        )
+
+    eligible = (
+        model.get("granularity_sampling_mode") == "global"
+        and run.get("sampling_mode") == "nested-random"
+    )
+    if explicitly_configured and not eligible:
+        raise ConfigError(
+            "model.global_sampling_schedule is valid only for nested-random "
+            "runs with model.granularity_sampling_mode=global"
+        )
+
+    model["global_sampling_schedule"] = schedule
+    model["global_sampling_schedule_version"] = (
+        BALANCED_GLOBAL_SAMPLING_SCHEDULE_VERSION
+        if schedule == "balanced_cycle"
+        else None
+    )
+    provenance = model.get("granularity_pattern_provenance")
+    if isinstance(provenance, dict) and eligible:
+        if schedule == "balanced_cycle":
+            provenance["global_sampling_schedule"] = schedule
+            provenance["global_sampling_schedule_version"] = (
+                BALANCED_GLOBAL_SAMPLING_SCHEDULE_VERSION
+            )
+        else:
+            provenance.pop("global_sampling_schedule", None)
+            provenance.pop("global_sampling_schedule_version", None)
 
 
 def _resolve_adaptive_sampler_defaults(config: dict[str, Any]) -> None:

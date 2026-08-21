@@ -316,6 +316,12 @@ def validation_results_to_metric_rows(
             "global_sampling_distribution": json_artifact_value(
                 model.get("global_sampling_distribution")
             ),
+            "global_sampling_schedule": model.get(
+                "global_sampling_schedule", "random_with_replacement"
+            ),
+            "global_sampling_schedule_version": model.get(
+                "global_sampling_schedule_version"
+            ),
             "global_sampling_interval_steps": model.get(
                 "global_sampling_interval_steps", 1
             ),

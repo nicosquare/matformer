@@ -315,6 +315,15 @@ def _write_global_policy_run(
                 "global_sampling_interval_steps": decision_interval_steps,
             }
         )
+    elif policy == "balanced_window":
+        model.update(
+            {
+                "granularity_sampling_mode": "global",
+                "global_sampling_schedule": "balanced_cycle",
+                "global_sampling_schedule_version": 1,
+                "global_sampling_interval_steps": decision_interval_steps,
+            }
+        )
     elif policy == "fixed":
         model.update(
             {
@@ -396,12 +405,12 @@ def _write_global_policy_run(
                     ),
                     "global_sampling_window_index": (
                         (step - 1) // decision_interval_steps
-                        if policy == "uniform_window"
+                        if policy in {"uniform_window", "balanced_window"}
                         else ""
                     ),
                     "global_sampling_window_progress": (
                         ((step - 1) % decision_interval_steps) + 1
-                        if policy == "uniform_window"
+                        if policy in {"uniform_window", "balanced_window"}
                         else ""
                     ),
                 }
@@ -1038,6 +1047,78 @@ def test_uniform_global_window_panel_repeats_h1_as_dotted_reference():
         for label, line in lines.items()
         if label != "Global sampling (H=1 reference)"
     )
+    plt.close(figure)
+
+
+def test_balanced_global_windows_use_iid_reference_and_solid_balanced_h1():
+    import matplotlib.pyplot as plt
+
+    from src.evaluation.reporting_impl import (
+        plot_metric_vs_size_panel,
+        scaling_curve_sampling_label,
+    )
+    from src.evaluation.reporting_styles import PPL_VS_SIZE_FIGURE_SPECS
+
+    balanced_rows = [
+        {
+            "run_id": f"balanced-window-{interval}",
+            "sampling_mode": "nested-random",
+            "model_variant": "slicing",
+            "resolved_sampling_mode": "global",
+            "global_sampling_schedule": "balanced_cycle",
+            "global_sampling_schedule_version": 1,
+            "global_sampling_interval_steps": interval,
+            "correction_mode": "none",
+            "non_embedding_parameters": 100 + interval,
+            "perplexity": 2.0 + interval / 100.0,
+        }
+        for interval in (50, 1, 25, 5)
+    ]
+    iid_h50_row = {
+        **balanced_rows[0],
+        "run_id": "iid-window-50",
+        "global_sampling_schedule": "random_with_replacement",
+    }
+    iid_h1_row = {
+        **balanced_rows[1],
+        "run_id": "iid-h1-reference",
+        "global_sampling_schedule": "random_with_replacement",
+    }
+    assert [scaling_curve_sampling_label(row) for row in balanced_rows] == [
+        "balanced_global_h50",
+        "balanced_global_h1",
+        "balanced_global_h25",
+        "balanced_global_h5",
+    ]
+    assert scaling_curve_sampling_label(iid_h50_row) == "uniform_global_h50"
+    assert scaling_curve_sampling_label(iid_h1_row) == "global"
+    assert any(
+        spec["output_name"] == "ppl_vs_size_balanced_global_window.png"
+        for spec in PPL_VS_SIZE_FIGURE_SPECS
+    )
+
+    figure, axis = plt.subplots()
+    plot_metric_vs_size_panel(
+        axis,
+        [iid_h50_row, iid_h1_row, *balanced_rows],
+        metric_name="perplexity",
+        ylabel="Perplexity",
+        sampling_mode="nested-random",
+        variant_label="slicing",
+        sampling_label="balanced_global_window",
+    )
+
+    lines = {line.get_label(): line for line in axis.lines}
+    assert list(lines) == [
+        "Random global (IID H=1 reference)",
+        "Balanced global (H=1)",
+        "Balanced global (H=5)",
+        "Balanced global (H=25)",
+        "Balanced global (H=50)",
+    ]
+    assert lines["Random global (IID H=1 reference)"].get_linestyle() == ":"
+    assert lines["Balanced global (H=1)"].get_linestyle() != ":"
+    assert "Uniform global (H=50)" not in lines
     plt.close(figure)
 
 
@@ -3168,6 +3249,44 @@ def test_uniform_global_window_reporting_identity_and_decision_count(tmp_path):
     assert history.actions[24].decision_index == 0
     assert history.actions[25].decision_index == 1
     assert history.actions[-1].decision_index == 488
+
+
+def test_balanced_global_window_reporting_identity_and_schedule_provenance(tmp_path):
+    from src.evaluation.reporting import generate_global_sampling_policy_figures
+    from src.evaluation.reporting_io import iter_global_sampling_histories
+
+    actions = ["micro"] * 2 + ["medium"] * 2 + ["full"] * 2
+    _write_global_policy_run(
+        tmp_path,
+        run_id="balanced-window2-run",
+        policy="balanced_window",
+        actions=actions,
+        decision_interval_steps=2,
+    )
+
+    [history] = list(iter_global_sampling_histories(tmp_path))
+
+    assert history.policy_identity == "balanced_global_h2"
+    assert history.policy_label == "Balanced global (H=2)"
+    assert history.global_sampling_schedule == "balanced_cycle"
+    assert history.global_sampling_schedule_version == 1
+    assert history.decision_count == 3
+    paths = generate_global_sampling_policy_figures(
+        tmp_path, tmp_path / "figures", dpi=20, sampling_bin_steps=2
+    )
+    names = {path.name for path in paths}
+    assert any(
+        name.startswith(
+            "global_sampling_exposure_comparison__slicing__none__balanced_cycle_v1__"
+        )
+        for name in names
+    )
+    [summary_path] = [path for path in paths if path.suffix == ".csv"]
+    with summary_path.open(encoding="utf-8", newline="") as csv_file:
+        [row] = list(csv.DictReader(csv_file))
+    assert row["policy"] == "Balanced global (H=2)"
+    assert row["global_sampling_schedule"] == "balanced_cycle"
+    assert row["global_sampling_schedule_version"] == "1"
 
 
 def test_global_sampling_bins_preserve_step_resolution_and_partial_final_bin(tmp_path):

@@ -566,6 +566,14 @@ def summarize_granularity_pattern_from_config(
             )
         )
     if sampling_mode == "global" and resolved_run_mode == "nested-random":
+        if model.get("global_sampling_schedule") == "balanced_cycle":
+            repeatable_source.append(
+                "model.global_sampling_schedule=balanced_cycle"
+            )
+            repeatable_source.append(
+                "model.global_sampling_schedule_version="
+                f"{int(model['global_sampling_schedule_version'])}"
+            )
         repeatable_source.append(
             "model.global_sampling_interval_steps="
             f"{int(model.get('global_sampling_interval_steps', 1))}"

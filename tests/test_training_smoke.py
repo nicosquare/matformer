@@ -686,6 +686,98 @@ def test_uniform_global_window_records_committed_metrics_heartbeats_and_summary(
     ]
 
 
+def test_balanced_global_cycle_records_auditable_equal_exposure_artifacts(
+    tmp_path,
+):
+    output_dir = tmp_path / "balanced-global-cycle"
+    config = resolve_run_config(
+        "configs/dmodel256_pilot_comparison.yaml",
+        output_dir=output_dir,
+        overrides=[
+            "model.granularity_sampling_mode=global",
+            "model.global_sampling_schedule=balanced_cycle",
+            "model.global_sampling_interval_steps=2",
+            "run.run_id=balanced-global-cycle",
+            "run.continuation.enabled=false",
+            "training.token_budget=32768",
+            "training.max_steps=8",
+            "training.pre_nested_warmup.enabled=false",
+            "training.heartbeat_step_interval=1",
+            "training.heartbeat_time_interval_seconds=3600",
+            "evaluation.validation.interval_steps=0",
+            "training.batch_size_per_process=1",
+            "training.learning_rate=0.01",
+            "training.scheduler.kwargs.warmup_steps=0",
+            "outputs.save_checkpoints=false",
+            "evaluation.validation.enabled=false",
+            "evaluation.validation.holdout.examples=1",
+        ],
+    )
+    tokenized_dataset = Dataset.from_dict(
+        {
+            "input_ids": [
+                [index + 1, index + 2, index + 3] for index in range(16)
+            ],
+            "attention_mask": [[1, 1, 1] for _ in range(16)],
+        }
+    )
+
+    result = run_training(
+        config,
+        model=TinyNestedTrainingModel(),
+        tokenized_dataset=tokenized_dataset,
+        device="cpu",
+    )
+
+    with result["metrics_path"].open("r", encoding="utf-8", newline="") as file:
+        rows = [row for row in csv.DictReader(file) if row["split"] == "train"]
+    assert len(rows) == 8
+    assert {row["global_sampling_schedule"] for row in rows} == {
+        "balanced_cycle"
+    }
+    assert [int(row["global_sampling_window_progress"]) for row in rows] == [
+        1,
+        2,
+        1,
+        2,
+        1,
+        2,
+        1,
+        2,
+    ]
+    assert [int(row["global_sampling_cycle_position"]) for row in rows] == [
+        0,
+        0,
+        1,
+        1,
+        2,
+        2,
+        3,
+        3,
+    ]
+    assert all(row["granularity"] for row in rows)
+
+    heartbeats = [
+        event
+        for event in _read_heartbeat_events(output_dir / "heartbeats.jsonl")
+        if event.get("event_type") == "heartbeat"
+        and event.get("progress_state") == "optimizer_step_committed"
+    ]
+    assert {event["global_sampling_schedule"] for event in heartbeats} == {
+        "balanced_cycle"
+    }
+    summary = json.loads(result["summary_path"].read_text(encoding="utf-8"))
+    assert summary["global_sampling_schedule"] == "balanced_cycle"
+    assert summary["global_sampling_schedule_version"] == 1
+    assert set(summary["global_sampling_state"]["exposure_counts"].values()) == {
+        2
+    }
+    assert summary["global_sampling_state"]["cycle_index"] == 1
+    assert summary["continuation_state"]["global_sampling_state"] == summary[
+        "global_sampling_state"
+    ]
+
+
 def test_tiny_nested_training_uses_fixed_non_uniform_global_distribution(
     tmp_path,
     monkeypatch,

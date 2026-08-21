@@ -50,9 +50,13 @@ METRICS_COLUMNS = [
     "resolved_sampling_mode",
     "granularity_sampling_mode",
     "global_sampling_distribution",
+    "global_sampling_schedule",
+    "global_sampling_schedule_version",
     "global_sampling_interval_steps",
     "global_sampling_window_index",
     "global_sampling_window_progress",
+    "global_sampling_cycle_index",
+    "global_sampling_cycle_position",
     "global_sampling_total_successful_updates",
     "global_sampling_exposure_counts",
     "correction_mode",
@@ -227,6 +231,8 @@ RUN_SUMMARY_FIELDS = [
     "requested_granularity_sampling_alias",
     "granularity_sampling_mode",
     "global_sampling_distribution",
+    "global_sampling_schedule",
+    "global_sampling_schedule_version",
     "global_sampling_interval_steps",
     "global_sampling_state",
     "granularity_pattern_provenance",
@@ -876,6 +882,12 @@ def build_run_summary(
         "granularity_sampling_mode": model.get("granularity_sampling_mode"),
         "global_sampling_distribution": model.get(
             "global_sampling_distribution"
+        ),
+        "global_sampling_schedule": model.get(
+            "global_sampling_schedule", "random_with_replacement"
+        ),
+        "global_sampling_schedule_version": model.get(
+            "global_sampling_schedule_version"
         ),
         "global_sampling_interval_steps": model.get(
             "global_sampling_interval_steps", 1
@@ -2898,8 +2910,12 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "granularity_sampling_mode": None,
         "global_sampling_distribution": None,
         "global_sampling_interval_steps": None,
+        "global_sampling_schedule": None,
+        "global_sampling_schedule_version": None,
         "global_sampling_window_index": None,
         "global_sampling_window_progress": None,
+        "global_sampling_cycle_index": None,
+        "global_sampling_cycle_position": None,
         "global_sampling_total_successful_updates": None,
         "global_sampling_exposure_counts": None,
         "correction_mode": None,

@@ -38,6 +38,8 @@ __all__ = [
     "granularity_sampling_mode_from_saved_config",
     "global_sampling_distribution_from_saved_config",
     "global_sampling_interval_steps_from_saved_config",
+    "global_sampling_schedule_from_saved_config",
+    "global_sampling_schedule_version_from_saved_config",
     "iter_controller_granularity_timelines",
     "iter_global_sampling_histories",
     "iter_gradient_interference_histories",
@@ -127,6 +129,8 @@ class GlobalSamplingHistory:
     config_path: Path
     metrics_path: Path
     target_probabilities: tuple[float, ...] | None = None
+    global_sampling_schedule: str | None = None
+    global_sampling_schedule_version: int | None = None
 
 
 @dataclass(frozen=True)
@@ -827,12 +831,29 @@ def _read_global_sampling_history(
     strategy = str(model.get("adaptive_sampler_strategy") or "").lower()
     fixed_distribution: dict[str, float] | None = None
     uniform_interval = 1
+    global_sampling_schedule: str | None = None
+    global_sampling_schedule_version: int | None = None
     if sampling_mode == "global":
         uniform_interval = _positive_int(
             model.get("global_sampling_interval_steps", 1),
             "config.model.global_sampling_interval_steps",
         )
-        if uniform_interval == 1:
+        global_sampling_schedule = global_sampling_schedule_from_saved_config(
+            dict(config)
+        )
+        if global_sampling_schedule is None:
+            raise ValueError("config.model.global_sampling_schedule is invalid")
+        global_sampling_schedule_version = (
+            global_sampling_schedule_version_from_saved_config(dict(config))
+        )
+        if global_sampling_schedule == "balanced_cycle":
+            if global_sampling_schedule_version is None:
+                raise ValueError(
+                    "balanced global history requires a positive schedule version"
+                )
+            policy_identity = f"balanced_global_h{uniform_interval}"
+            policy_label = f"Balanced global (H={uniform_interval})"
+        elif uniform_interval == 1:
             policy_identity, policy_label = "uniform_global", "Uniform global"
         else:
             policy_identity = f"uniform_global_h{uniform_interval}"
@@ -923,12 +944,12 @@ def _read_global_sampling_history(
 
         if policy_identity == "thompson_global":
             decision_index = (step - 1) // int(thompson_interval)
-        elif policy_identity.startswith("uniform_global"):
+        elif sampling_mode == "global":
             decision_index = (step - 1) // int(uniform_interval)
         else:
             decision_index = step - 1
         decision_indices.add(decision_index)
-        if policy_identity.startswith("uniform_global"):
+        if sampling_mode == "global":
             recorded_window = row.get("global_sampling_window_index")
             if recorded_window not in (None, "") and _csv_nonnegative_int(
                 recorded_window,
@@ -1024,6 +1045,8 @@ def _read_global_sampling_history(
             if fixed_distribution is not None
             else None
         ),
+        global_sampling_schedule=global_sampling_schedule,
+        global_sampling_schedule_version=global_sampling_schedule_version,
     )
 
 
@@ -1871,6 +1894,20 @@ def enrich_scaling_metadata_from_run_config(
                 enriched_row["global_sampling_interval_steps"] = (
                     global_sampling_interval_steps
                 )
+            global_sampling_schedule = global_sampling_schedule_from_saved_config(
+                config_cache[config_path]
+            )
+            if global_sampling_schedule is not None:
+                enriched_row["global_sampling_schedule"] = global_sampling_schedule
+            global_sampling_schedule_version = (
+                global_sampling_schedule_version_from_saved_config(
+                    config_cache[config_path]
+                )
+            )
+            if global_sampling_schedule_version is not None:
+                enriched_row["global_sampling_schedule_version"] = (
+                    global_sampling_schedule_version
+                )
             membership_correction = membership_correction_from_saved_config(
                 config_cache[config_path]
             )
@@ -1940,6 +1977,20 @@ def enrich_metrics_metadata_from_run_config(
             if global_sampling_interval_steps is not None:
                 enriched_row["global_sampling_interval_steps"] = (
                     global_sampling_interval_steps
+                )
+            global_sampling_schedule = global_sampling_schedule_from_saved_config(
+                config_cache[config_path]
+            )
+            if global_sampling_schedule is not None:
+                enriched_row["global_sampling_schedule"] = global_sampling_schedule
+            global_sampling_schedule_version = (
+                global_sampling_schedule_version_from_saved_config(
+                    config_cache[config_path]
+                )
+            )
+            if global_sampling_schedule_version is not None:
+                enriched_row["global_sampling_schedule_version"] = (
+                    global_sampling_schedule_version
                 )
             membership_correction = membership_correction_from_saved_config(
                 config_cache[config_path]
@@ -2550,6 +2601,30 @@ def global_sampling_interval_steps_from_saved_config(
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         return None
     return value
+
+
+def global_sampling_schedule_from_saved_config(
+    config: dict[str, Any],
+) -> str | None:
+    model = config.get("model")
+    if not isinstance(model, dict):
+        return None
+    value = model.get("global_sampling_schedule", "random_with_replacement")
+    if value not in {"random_with_replacement", "balanced_cycle"}:
+        return None
+    return str(value)
+
+
+def global_sampling_schedule_version_from_saved_config(
+    config: dict[str, Any],
+) -> int | None:
+    model = config.get("model")
+    if not isinstance(model, dict):
+        return None
+    value = model.get("global_sampling_schedule_version")
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return int(value)
 
 
 def with_default_model_variant(config: dict[str, Any]) -> dict[str, Any]:

@@ -220,6 +220,33 @@ the responsibility of `global`; `fixed_global` is deliberately non-uniform so
 resolved artifacts and reports cannot confuse it with the traditional random
 global baseline.
 
+Uniform global sampling also supports an opt-in balanced-cycle schedule:
+
+```yaml
+model:
+  granularity_sampling_mode: global
+  global_sampling_schedule: balanced_cycle
+  global_sampling_interval_steps: 50
+```
+
+The default remains `global_sampling_schedule: random_with_replacement`, so
+existing H=1 and held-window runs are unchanged. In `balanced_cycle`, every
+cycle is a deterministic randomized permutation of all resolved granularities;
+each selected label is held for exactly H successful optimizer updates. The
+next cycle is adjusted when necessary so its first label differs from the
+previous cycle's last label. Failed optimizer attempts do not consume schedule
+state.
+
+Balanced runs are intentionally strict: they require `nested-random + global`,
+at least two unique granularities, disabled pre-nested sampling warmup, and a
+resolved `training.max_steps` divisible by
+`len(model.granularities) * global_sampling_interval_steps`. A run cannot be
+marked completed unless it ends on that full-cycle boundary with identical
+selected-granularity exposure counts. Checkpoints, metrics, heartbeats, and the
+run summary retain the schedule version and compact cycle state; each committed
+metrics row retains its selected granularity so the realized schedule remains
+auditable.
+
 For the adaptive per-block path, run the nested-random mode with the adaptive
 sampler enabled, then inspect the saved artifacts directly:
 
