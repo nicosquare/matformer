@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import json
 import math
 import re
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +44,7 @@ __all__ = [
     "generate_global_sampling_policy_figures",
     "global_sampling_bin_series",
     "metric_row_limits_for_panel_specs",
+    "mark_scheduler_warmup",
     "panel_spec_label",
     "panel_sampling_matches",
     "padded_limits",
@@ -55,6 +58,7 @@ __all__ = [
     "plot_global_sampling_zoom",
     "plot_gradient_interference_cosine_heatmaps",
     "plot_gradient_interference_cosine_trajectories",
+    "plot_learning_rate_schedules",
     "plot_panelgrad_cumulative_exposure_share",
     "plot_panelgrad_refresh_diagnostics",
     "resolve_plot_style",
@@ -394,6 +398,191 @@ def to_float_or_none(value: Any) -> float | None:
         return None
 
 
+def mark_scheduler_warmup(
+    axis: Any,
+    positions: list[float] | tuple[float, ...] | set[float],
+    *,
+    label: bool = True,
+) -> None:
+    """Mark distinct positive scheduler-warmup boundaries on a time axis."""
+
+    finite_positions = sorted(
+        {
+            float(position)
+            for position in positions
+            if position is not None
+            and math.isfinite(float(position))
+            and float(position) > 0.0
+        }
+    )
+    if not finite_positions:
+        return
+    x_min, x_max = axis.get_xlim()
+    visible = [position for position in finite_positions if x_min <= position <= x_max]
+    for index, position in enumerate(visible):
+        marker_label = None
+        if label and index == 0:
+            marker_label = (
+                "LR warmup end"
+                if len(visible) == 1
+                else "LR warmup ends"
+            )
+        axis.axvline(
+            position,
+            color="#4d4d4d",
+            linestyle="--",
+            linewidth=1.05,
+            alpha=0.8,
+            zorder=6,
+            label=marker_label,
+        )
+
+
+def _scheduler_curve_points(schedule: Any, *, max_points: int = 2001):
+    """Reconstruct configured HF scheduler values without replaying training."""
+
+    import torch
+    from transformers import get_scheduler
+
+    parameter = torch.nn.Parameter(torch.zeros((), dtype=torch.float32))
+    optimizer = torch.optim.SGD([parameter], lr=schedule.peak_learning_rate)
+    scheduler = get_scheduler(
+        schedule.scheduler_name,
+        optimizer=optimizer,
+        num_warmup_steps=schedule.warmup_steps,
+        num_training_steps=schedule.max_steps,
+        **dict(schedule.scheduler_kwargs),
+    )
+    lr_lambdas = getattr(scheduler, "lr_lambdas", None)
+    if not lr_lambdas:
+        raise ValueError(
+            f"scheduler {schedule.scheduler_name!r} cannot be reconstructed "
+            "as a deterministic step-only trajectory"
+        )
+
+    if schedule.max_steps + 1 <= max_points:
+        steps = list(range(schedule.max_steps + 1))
+    else:
+        steps = [
+            round(index * schedule.max_steps / (max_points - 1))
+            for index in range(max_points)
+        ]
+    steps.extend(
+        step
+        for step in (
+            0,
+            schedule.warmup_steps - 1,
+            schedule.warmup_steps,
+            schedule.warmup_steps + 1,
+            schedule.max_steps,
+        )
+        if 0 <= step <= schedule.max_steps
+    )
+    steps = sorted(set(steps))
+    factor = lr_lambdas[0]
+    learning_rates = [schedule.peak_learning_rate * float(factor(step)) for step in steps]
+    return steps, learning_rates
+
+
+def plot_learning_rate_schedules(
+    schedules: list[Any] | tuple[Any, ...],
+    output_path: str | Path,
+    *,
+    dpi: int = 300,
+) -> Path:
+    """Plot unique configured LR schedules over steps and nominal tokens."""
+
+    grouped: dict[str, list[Any]] = {}
+    for schedule in schedules:
+        contract = json.dumps(
+            {
+                "name": schedule.scheduler_name,
+                "kwargs": schedule.scheduler_kwargs,
+                "peak": schedule.peak_learning_rate,
+                "warmup": schedule.warmup_steps,
+                "max_steps": schedule.max_steps,
+                "tokens_per_step": schedule.expected_tokens_per_step,
+                "token_budget": schedule.token_budget,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        grouped.setdefault(contract, []).append(schedule)
+
+    curves = []
+    for replications in grouped.values():
+        schedule = replications[0]
+        try:
+            steps, learning_rates = _scheduler_curve_points(schedule)
+        except (TypeError, ValueError, KeyError) as error:
+            warnings.warn(
+                f"Skipping configured LR curve for {schedule.run_id}: {error}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            continue
+        run_suffix = (
+            schedule.run_id
+            if len(replications) == 1
+            else f"{len(replications)} runs"
+        )
+        label = (
+            f"{schedule.scheduler_name} · warmup "
+            f"{schedule.warmup_steps:,}/{schedule.max_steps:,} · "
+            f"peak {schedule.peak_learning_rate:.3g} · {run_suffix}"
+        )
+        token_positions = [
+            min(step * schedule.expected_tokens_per_step, schedule.token_budget)
+            for step in steps
+        ]
+        curves.append((schedule, steps, token_positions, learning_rates, label))
+    if not curves:
+        raise ValueError("no deterministic configured LR schedules were found")
+
+    figure, axes = plt.subplots(2, 1, figsize=(12, 8), constrained_layout=True)
+    colors = plt.get_cmap("tab10")
+    for index, (schedule, steps, tokens, learning_rates, label) in enumerate(curves):
+        color = colors(index % 10)
+        axes[0].plot(steps, learning_rates, color=color, linewidth=1.8, label=label)
+        axes[1].plot(tokens, learning_rates, color=color, linewidth=1.8, label=label)
+
+    mark_scheduler_warmup(
+        axes[0],
+        {schedule.warmup_steps for schedule, *_ in curves},
+        label=False,
+    )
+    mark_scheduler_warmup(
+        axes[1],
+        {
+            min(
+                schedule.warmup_steps * schedule.expected_tokens_per_step,
+                schedule.token_budget,
+            )
+            for schedule, *_ in curves
+        },
+        label=False,
+    )
+    axes[0].set_xlabel("Completed optimizer step")
+    axes[1].set_xlabel("Nominal training tokens")
+    axes[1].ticklabel_format(axis="x", style="sci", scilimits=(0, 0))
+    for axis in axes:
+        axis.set_ylabel("Learning rate")
+        axis.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
+        axis.grid(True, alpha=0.25)
+    axes[0].legend(loc="best", frameon=False, fontsize=8)
+    figure.suptitle(
+        "Configured learning-rate schedules\n"
+        "Reconstructed from config.json; instantaneous LR was not logged",
+        fontsize=15,
+    )
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    plt.close(figure)
+    return output_path
+
+
 def plot_selected_granularity_over_tokens(
     timeline,
     output_path: Path,
@@ -457,6 +646,11 @@ def plot_selected_granularity_over_tokens(
     axis.set_title(f"Selected granularity over tokens — {timeline.run_id}")
     axis.grid(axis="x", alpha=0.2)
     axis.ticklabel_format(axis="x", style="sci", scilimits=(0, 0))
+    mark_scheduler_warmup(
+        axis,
+        {getattr(timeline, "scheduler_warmup_tokens", 0)},
+        label=False,
+    )
 
     scalar_mappable = matplotlib.cm.ScalarMappable(norm=color_norm, cmap=color_map)
     colorbar = figure.colorbar(
@@ -569,6 +763,12 @@ def plot_selected_granularity_share_over_tokens(
     axes[-1].set_xlim(0, timeline.token_budget)
     axes[-1].set_xlabel("Total training tokens")
     axes[-1].ticklabel_format(axis="x", style="sci", scilimits=(0, 0))
+    for axis in axes:
+        mark_scheduler_warmup(
+            axis,
+            {getattr(timeline, "scheduler_warmup_tokens", 0)},
+            label=False,
+        )
     interpretation = (
         "Exact per-step indicator (0/1); dense switches may alias visually"
         if timeline.scope == "global"
@@ -632,6 +832,10 @@ def plot_granularity_selection_frequency_over_tokens(
     axis.ticklabel_format(axis="x", style="sci", scilimits=(0, 0))
     axis.grid(True, axis="both", alpha=0.25)
     axis.set_axisbelow(True)
+    mark_scheduler_warmup(
+        axis,
+        {getattr(timeline, "scheduler_warmup_tokens", 0)},
+    )
     axis.legend(loc="center left", bbox_to_anchor=(1.01, 0.5), frameon=False)
     aggregation = (
         f"{len(spans)} equal-token bins"
@@ -773,6 +977,10 @@ def plot_panelgrad_cumulative_exposure_share(
     axis.set_title(f"PanelGrad cumulative exposure — {history.run_id}")
     axis.ticklabel_format(axis="x", style="sci", scilimits=(0, 0))
     axis.grid(True, alpha=0.25)
+    mark_scheduler_warmup(
+        axis,
+        {getattr(history, "scheduler_warmup_tokens", 0)},
+    )
     axis.legend(loc="center left", bbox_to_anchor=(1.01, 0.5), frameon=False)
     figure.tight_layout()
     figure.savefig(output_path, dpi=dpi, bbox_inches="tight")
@@ -936,7 +1144,16 @@ def plot_panelgrad_refresh_diagnostics(
     axes[4].ticklabel_format(axis="x", style="sci", scilimits=(0, 0))
     for axis in axes:
         axis.grid(True, alpha=0.25)
-    figure.suptitle(f"PanelGrad refresh diagnostics — {history.run_id}", fontsize=15)
+        mark_scheduler_warmup(
+            axis,
+            {getattr(history, "scheduler_warmup_tokens", 0)},
+            label=False,
+        )
+    figure.suptitle(
+        f"PanelGrad refresh diagnostics — {history.run_id}\n"
+        "Dashed line = LR warmup end",
+        fontsize=15,
+    )
     figure.subplots_adjust(
         left=0.09,
         right=0.76,
@@ -1029,6 +1246,12 @@ def plot_global_sampling_exposure(
     axes[-1].set_xlim(0, history.token_budget)
     axes[-1].set_xlabel("Total training tokens")
     axes[-1].ticklabel_format(axis="x", style="sci", scilimits=(0, 0))
+    for index, axis in enumerate(axes):
+        mark_scheduler_warmup(
+            axis,
+            {getattr(history, "scheduler_warmup_tokens", 0)},
+            label=index == 0,
+        )
     partial = bin_sizes[-1] if bin_sizes and bin_sizes[-1] != bin_steps else None
     suffix = f"; final bin has {partial} steps" if partial is not None else ""
     figure.suptitle(
@@ -1088,9 +1311,17 @@ def plot_global_sampling_zoom(
         axis.set_xlim(panel_actions[0].step - 0.5, panel_actions[-1].step + 0.5)
         axis.set_title(title)
         axis.grid(axis="x", alpha=0.25)
+        mark_scheduler_warmup(
+            axis,
+            {getattr(history, "scheduler_warmup_steps", 0)},
+            label=False,
+        )
     axes[-1].set_xlabel("Completed optimizer step")
     figure.suptitle(
-        f"Exact global sampling decisions — {history.run_id}", fontsize=15, y=0.995
+        f"Exact global sampling decisions — {history.run_id}\n"
+        "Dashed line = LR warmup end when visible",
+        fontsize=15,
+        y=0.995,
     )
     figure.tight_layout()
     figure.savefig(output_path, dpi=dpi, bbox_inches="tight")
@@ -1166,6 +1397,11 @@ def plot_global_sampling_exposure_comparison(
         )
         axis.grid(True, alpha=0.25)
         axis.set_axisbelow(True)
+        mark_scheduler_warmup(
+            axis,
+            {getattr(history, "scheduler_warmup_tokens", 0)},
+            label=axis is axes[0],
+        )
     axes[0].legend(loc="center left", bbox_to_anchor=(1.01, 0.5), frameon=False)
     axes[-1].set_xlim(observed_start, observed_end)
     axes[-1].set_xlabel("Total training tokens")
@@ -1216,6 +1452,14 @@ def plot_global_sampling_cumulative_comparison(
         axis.set_ylabel("Cumulative\nselected-step share")
         axis.set_title(granularity, fontsize=11)
         axis.grid(True, alpha=0.25)
+        mark_scheduler_warmup(
+            axis,
+            {
+                getattr(history, "scheduler_warmup_tokens", 0)
+                for history in histories
+            },
+            label=axis is axes[0],
+        )
     handles, legend_labels = axes[0].get_legend_handles_labels()
     if handles:
         figure.legend(
@@ -1584,6 +1828,14 @@ def plot_gradient_interference_cosine_trajectories(
                 markersize=3.8,
                 label=f"H={interval_steps}",
             )
+        mark_scheduler_warmup(
+            axis,
+            {
+                getattr(history, "scheduler_warmup_tokens", 0)
+                for history in histories
+            },
+            label=pair_index == 0,
+        )
         axis.set_title(f"{pair[0]} vs {pair[1]}", fontsize=9)
         axis.set_ylim(-1.0, 1.0)
         axis.grid(axis="y", alpha=0.18, linewidth=0.5)
@@ -1788,6 +2040,37 @@ def generate_figures(
     )
 
     figure_paths: list[Path] = []
+    learning_rate_schedules = []
+    for schedule in reporting_io.iter_learning_rate_schedules(input_root):
+        keep = filter_plot_rows(
+            [
+                {
+                    "model_variant": schedule.model_variant,
+                    "correction_mode": schedule.correction_mode,
+                    "membership_correction": schedule.membership_correction,
+                }
+            ],
+            variants=variants,
+            corrections=corrections,
+        )
+        if keep:
+            learning_rate_schedules.append(schedule)
+    if learning_rate_schedules:
+        try:
+            figure_paths.append(
+                plot_learning_rate_schedules(
+                    learning_rate_schedules,
+                    output_dir / "learning_rate_schedule.png",
+                    dpi=dpi,
+                )
+            )
+        except ValueError as error:
+            warnings.warn(
+                f"Could not generate configured LR schedule plot: {error}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
     scaling_rows = reporting_io.read_csv_artifacts(input_root, "scaling_results.csv")
     scaling_rows = reporting_io.enrich_scaling_metadata_from_run_config(
         input_root,
@@ -2057,6 +2340,7 @@ def _remove_stale_generator_artifacts(
         "global_sampling_policy_summary__*.csv",
         "loss_vs_size.png",
         "loss_vs_size__*.png",
+        "learning_rate_schedule.png",
         "selected_granularity_over_tokens_*.png",
         "selected_granularity_share_over_tokens_*.png",
     ]

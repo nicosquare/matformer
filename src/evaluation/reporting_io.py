@@ -28,6 +28,7 @@ __all__ = [
     "GradientInterferencePair",
     "GradientInterferenceReportingError",
     "GradientInterferenceSnapshot",
+    "LearningRateSchedule",
     "PanelGradAction",
     "PanelGradHistory",
     "PanelGradRefresh",
@@ -43,6 +44,7 @@ __all__ = [
     "iter_controller_granularity_timelines",
     "iter_global_sampling_histories",
     "iter_gradient_interference_histories",
+    "iter_learning_rate_schedules",
     "iter_panelgrad_histories",
     "iter_csv_artifact_rows",
     "membership_correction_from_saved_config",
@@ -96,6 +98,8 @@ class ControllerGranularityTimeline:
     membership_correction: bool | None
     config_path: Path
     journal_path: Path
+    scheduler_warmup_steps: int = 0
+    scheduler_warmup_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -131,6 +135,26 @@ class GlobalSamplingHistory:
     target_probabilities: tuple[float, ...] | None = None
     global_sampling_schedule: str | None = None
     global_sampling_schedule_version: int | None = None
+    scheduler_warmup_steps: int = 0
+    scheduler_warmup_tokens: int = 0
+
+
+@dataclass(frozen=True)
+class LearningRateSchedule:
+    """Configured optimizer learning-rate trajectory for one run."""
+
+    run_id: str
+    scheduler_name: str
+    scheduler_kwargs: Mapping[str, Any]
+    peak_learning_rate: float
+    warmup_steps: int
+    max_steps: int
+    expected_tokens_per_step: float
+    token_budget: int
+    model_variant: str | None
+    correction_mode: str | None
+    membership_correction: bool | None
+    config_path: Path
 
 
 @dataclass(frozen=True)
@@ -181,6 +205,8 @@ class PanelGradHistory:
     config_path: Path
     metrics_path: Path
     journal_path: Path
+    scheduler_warmup_steps: int = 0
+    scheduler_warmup_tokens: int = 0
 
 
 class GradientInterferenceReportingError(ValueError):
@@ -228,6 +254,148 @@ class GradientInterferenceHistory:
     config_path: Path
     summary_path: Path
     journal_path: Path
+    scheduler_warmup_steps: int = 0
+    scheduler_warmup_tokens: int = 0
+
+
+def _learning_rate_schedule_from_saved_config(
+    config: Mapping[str, Any],
+    *,
+    config_path: Path,
+) -> LearningRateSchedule:
+    run = _required_mapping(config.get("run"), "config.run")
+    training = _required_mapping(config.get("training"), "config.training")
+    run_id = str(run.get("run_id") or config_path.parent.name).strip()
+    if not run_id:
+        raise ValueError("config.run.run_id must be nonempty")
+
+    max_steps = _positive_int(training.get("max_steps"), "config.training.max_steps")
+    peak_learning_rate = _finite_float(
+        training.get("resolved_learning_rate", training.get("learning_rate")),
+        "config.training.resolved_learning_rate",
+    )
+    if peak_learning_rate <= 0.0:
+        raise ValueError("config.training.resolved_learning_rate must be positive")
+
+    scheduler = training.get("scheduler")
+    scheduler = scheduler if isinstance(scheduler, Mapping) else {}
+    scheduler_name = str(
+        training.get("scheduler_name") or scheduler.get("name") or "cosine"
+    ).strip()
+    if not scheduler_name:
+        raise ValueError("configured scheduler name must be nonempty")
+    scheduler_kwargs = training.get("scheduler_kwargs")
+    if not isinstance(scheduler_kwargs, Mapping):
+        scheduler_kwargs = scheduler.get("kwargs", {})
+    if not isinstance(scheduler_kwargs, Mapping):
+        raise ValueError("configured scheduler kwargs must be a mapping")
+    scheduler_kwargs = {
+        str(key): value
+        for key, value in scheduler_kwargs.items()
+        if str(key) != "warmup_steps"
+    }
+
+    warmup_raw = training.get("resolved_warmup_steps")
+    if warmup_raw is None:
+        warmup_raw = scheduler.get("resolved_warmup_steps")
+    if warmup_raw is None:
+        warmup_raw = training.get("warmup_steps")
+    if warmup_raw is None:
+        warmup_ratio = _finite_float(
+            training.get("warmup_ratio", 0.0), "config.training.warmup_ratio"
+        )
+        if warmup_ratio < 0.0:
+            raise ValueError("config.training.warmup_ratio must be nonnegative")
+        warmup_raw = math.ceil(max_steps * warmup_ratio)
+    warmup_steps = _nonnegative_int(
+        warmup_raw, "config.training.resolved_warmup_steps"
+    )
+    if warmup_steps > max_steps:
+        raise ValueError("scheduler warmup cannot exceed config.training.max_steps")
+
+    expected_tokens_raw = training.get("expected_tokens_per_step")
+    token_budget = _positive_int(
+        training.get("token_budget"), "config.training.token_budget"
+    )
+    if expected_tokens_raw is None:
+        expected_tokens_per_step = token_budget / max_steps
+    else:
+        expected_tokens_per_step = _finite_float(
+            expected_tokens_raw, "config.training.expected_tokens_per_step"
+        )
+        if expected_tokens_per_step <= 0.0:
+            raise ValueError("config.training.expected_tokens_per_step must be positive")
+
+    return LearningRateSchedule(
+        run_id=run_id,
+        scheduler_name=scheduler_name,
+        scheduler_kwargs=dict(scheduler_kwargs),
+        peak_learning_rate=peak_learning_rate,
+        warmup_steps=warmup_steps,
+        max_steps=max_steps,
+        expected_tokens_per_step=expected_tokens_per_step,
+        token_budget=token_budget,
+        model_variant=model_variant_from_saved_config(dict(config)),
+        correction_mode=correction_mode_from_saved_config(dict(config)),
+        membership_correction=membership_correction_from_saved_config(dict(config)),
+        config_path=config_path,
+    )
+
+
+def iter_learning_rate_schedules(
+    input_root: str | Path,
+) -> Iterator[LearningRateSchedule]:
+    """Discover configured LR schedules without requiring per-step LR logging."""
+
+    for config_path in sorted(Path(input_root).rglob("config.json")):
+        try:
+            with config_path.open("r", encoding="utf-8") as config_file:
+                config = json.load(config_file)
+            training = config.get("training") if isinstance(config, Mapping) else None
+            if not isinstance(training, Mapping):
+                continue
+            if (
+                training.get("max_steps") is None
+                or training.get("token_budget") is None
+                or training.get(
+                    "resolved_learning_rate", training.get("learning_rate")
+                )
+                is None
+            ):
+                # Historical reporting fixtures and old runs may not contain the
+                # resolved scheduler contract needed for faithful reconstruction.
+                continue
+            yield _learning_rate_schedule_from_saved_config(
+                config,
+                config_path=config_path,
+            )
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
+            warnings.warn(
+                f"Skipping LR schedule {config_path}: {error}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+
+def _scheduler_warmup_boundaries(
+    config: Mapping[str, Any],
+    *,
+    config_path: Path,
+) -> tuple[int, int]:
+    try:
+        schedule = _learning_rate_schedule_from_saved_config(
+            config,
+            config_path=config_path,
+        )
+    except (ValueError, TypeError, KeyError):
+        return 0, 0
+    return (
+        schedule.warmup_steps,
+        min(
+            int(schedule.warmup_steps * schedule.expected_tokens_per_step),
+            schedule.token_budget,
+        ),
+    )
 
 
 def iter_gradient_interference_histories(
@@ -552,6 +720,9 @@ def _read_gradient_interference_history(
         fixed_probe_hash=fixed_probe_hash,
         controlled_support_hash=controlled_support_hash,
     )
+    scheduler_warmup_steps, scheduler_warmup_tokens = (
+        _scheduler_warmup_boundaries(config, config_path=config_path)
+    )
     return GradientInterferenceHistory(
         run_id=run_id,
         ordered_granularities=ordered_granularities,
@@ -570,6 +741,8 @@ def _read_gradient_interference_history(
         config_path=config_path,
         summary_path=summary_path,
         journal_path=journal_path,
+        scheduler_warmup_steps=scheduler_warmup_steps,
+        scheduler_warmup_tokens=scheduler_warmup_tokens,
     )
 
 
@@ -1025,6 +1198,9 @@ def _read_global_sampling_history(
     ).hexdigest()
     seed_raw = run.get("seed")
     seed = None if seed_raw in (None, "") else int(seed_raw)
+    scheduler_warmup_steps, scheduler_warmup_tokens = (
+        _scheduler_warmup_boundaries(config, config_path=config_path)
+    )
     return GlobalSamplingHistory(
         run_id=run_id,
         policy_identity=policy_identity,
@@ -1047,6 +1223,8 @@ def _read_global_sampling_history(
         ),
         global_sampling_schedule=global_sampling_schedule,
         global_sampling_schedule_version=global_sampling_schedule_version,
+        scheduler_warmup_steps=scheduler_warmup_steps,
+        scheduler_warmup_tokens=scheduler_warmup_tokens,
     )
 
 
@@ -1138,6 +1316,8 @@ def global_sampling_history_as_timeline(
         membership_correction=history.membership_correction,
         config_path=history.config_path,
         journal_path=history.metrics_path,
+        scheduler_warmup_steps=history.scheduler_warmup_steps,
+        scheduler_warmup_tokens=history.scheduler_warmup_tokens,
     )
 
 
@@ -1272,6 +1452,8 @@ def panelgrad_history_as_timeline(
         membership_correction=history.membership_correction,
         config_path=history.config_path,
         journal_path=history.journal_path,
+        scheduler_warmup_steps=history.scheduler_warmup_steps,
+        scheduler_warmup_tokens=history.scheduler_warmup_tokens,
     )
 
 
@@ -1387,6 +1569,9 @@ def _read_panelgrad_history(
                 )
             )
     refreshes.sort(key=lambda refresh: (refresh.boundary_step, refresh.refresh_index))
+    scheduler_warmup_steps, scheduler_warmup_tokens = (
+        _scheduler_warmup_boundaries(config, config_path=config_path)
+    )
 
     return PanelGradHistory(
         run_id=run_id,
@@ -1401,6 +1586,8 @@ def _read_panelgrad_history(
         config_path=config_path,
         metrics_path=metrics_path,
         journal_path=journal_path,
+        scheduler_warmup_steps=scheduler_warmup_steps,
+        scheduler_warmup_tokens=scheduler_warmup_tokens,
     )
 
 
@@ -1627,6 +1814,9 @@ def _read_controller_granularity_timeline(
                 f"window {previous.window_index} ends at step {previous.end_step}, "
                 f"window {current.window_index} starts at step {current.start_step}"
             )
+    scheduler_warmup_steps, scheduler_warmup_tokens = (
+        _scheduler_warmup_boundaries(config, config_path=config_path)
+    )
     return ControllerGranularityTimeline(
         run_id=run_id,
         scope=scope,
@@ -1640,6 +1830,8 @@ def _read_controller_granularity_timeline(
         membership_correction=membership_correction_from_saved_config(dict(config)),
         config_path=config_path,
         journal_path=journal_path,
+        scheduler_warmup_steps=scheduler_warmup_steps,
+        scheduler_warmup_tokens=scheduler_warmup_tokens,
     )
 
 
@@ -1927,6 +2119,11 @@ def enrich_scaling_metadata_from_run_config(
                 enriched_row,
                 config_cache[config_path],
             )
+            _enrich_scheduler_provenance(
+                enriched_row,
+                config_cache[config_path],
+                config_path=config_path,
+            )
         enriched_rows.append(enriched_row)
 
     return enriched_rows
@@ -2010,6 +2207,11 @@ def enrich_metrics_metadata_from_run_config(
             _enrich_controller_provenance(
                 enriched_row,
                 config_cache[config_path],
+            )
+            _enrich_scheduler_provenance(
+                enriched_row,
+                config_cache[config_path],
+                config_path=config_path,
             )
             contract, historical_fallback = seed_independent_validation_contract(
                 config_cache[config_path],
@@ -2550,6 +2752,31 @@ def _enrich_controller_provenance(
     for field_name, value in provenance.items():
         if value not in (None, ""):
             row[field_name] = value
+
+
+def _enrich_scheduler_provenance(
+    row: dict[str, Any],
+    config: Mapping[str, Any],
+    *,
+    config_path: Path,
+) -> None:
+    """Attach plotting-only scheduler boundaries reconstructed from config."""
+
+    try:
+        schedule = _learning_rate_schedule_from_saved_config(
+            config,
+            config_path=config_path,
+        )
+    except (ValueError, TypeError, KeyError):
+        return
+    row["_scheduler_name"] = schedule.scheduler_name
+    row["_scheduler_peak_learning_rate"] = schedule.peak_learning_rate
+    row["_scheduler_warmup_steps"] = schedule.warmup_steps
+    row["_scheduler_warmup_tokens"] = min(
+        schedule.warmup_steps * schedule.expected_tokens_per_step,
+        schedule.token_budget,
+    )
+    row["_scheduler_max_steps"] = schedule.max_steps
     for field_name, value in controller_contract_provenance_from_saved_config(
         config
     ).items():

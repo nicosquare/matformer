@@ -468,6 +468,74 @@ def test_make_figures_cli_sampling_zoom_is_opt_in_and_positive():
         make_figures.parse_args(["--sampling-zoom-steps", "-1"])
 
 
+def test_configured_learning_rate_schedule_is_reconstructed_and_generated(tmp_path):
+    from src.evaluation.reporting import _scheduler_curve_points
+    from src.evaluation.reporting_io import iter_learning_rate_schedules
+
+    run_dir = tmp_path / "cosine-run"
+    run_dir.mkdir()
+    (run_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "run": {"run_id": "cosine-run"},
+                "model": {"variant": "slicing", "correction_mode": "none"},
+                "training": {
+                    "max_steps": 10,
+                    "token_budget": 100,
+                    "expected_tokens_per_step": 10,
+                    "resolved_learning_rate": 0.001,
+                    "resolved_warmup_steps": 2,
+                    "scheduler_name": "cosine",
+                    "scheduler_kwargs": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    [schedule] = list(iter_learning_rate_schedules(tmp_path))
+    steps, learning_rates = _scheduler_curve_points(schedule)
+    by_step = dict(zip(steps, learning_rates))
+    assert by_step[0] == pytest.approx(0.0)
+    assert by_step[2] == pytest.approx(0.001)
+    assert by_step[10] == pytest.approx(0.0)
+
+    paths = generate_figures(
+        tmp_path,
+        tmp_path / "figures",
+        refresh_counts=False,
+        dpi=20,
+    )
+    assert "learning_rate_schedule.png" in {path.name for path in paths}
+
+
+def test_global_history_carries_scheduler_warmup_boundaries(tmp_path):
+    from src.evaluation.reporting_io import iter_global_sampling_histories
+
+    run_dir = _write_global_policy_run(
+        tmp_path,
+        run_id="warmup-global",
+        policy="uniform",
+        actions=["micro", "medium", "full", "micro"],
+    )
+    config_path = run_dir / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["training"].update(
+        {
+            "max_steps": 4,
+            "resolved_learning_rate": 0.001,
+            "resolved_warmup_steps": 2,
+            "scheduler_name": "cosine",
+            "scheduler_kwargs": {},
+        }
+    )
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    [history] = list(iter_global_sampling_histories(tmp_path))
+    assert history.scheduler_warmup_steps == 2
+    assert history.scheduler_warmup_tokens == 20
+
+
 def test_parameter_count_refresh_preserves_stored_counts_for_legacy_config(
     tmp_path, monkeypatch
 ):
@@ -2733,6 +2801,7 @@ def test_marginal_utility_figure_explains_score_and_shared_parameter_caveat(
         "model_variant": "cat_llama",
         "resolved_sampling_mode": "global",
         "correction_mode": "none",
+        "_scheduler_warmup_tokens": 3_000_000,
     }
     run = SelectedExposureRun(
         run_id="uniform-run",
@@ -2753,8 +2822,15 @@ def test_marginal_utility_figure_explains_score_and_shared_parameter_caveat(
     _plot_marginal_utility([run], tmp_path / "utility.png", dpi=30)
 
     [figure] = saved_figures
-    assert figure.axes[0].get_ylabel() == (
-        "-d(loss)/d(selected tokens)\nper 1M tokens"
+    assert figure.axes[0].get_ylabel() == ""
+    assert figure._supylabel.get_text() == (
+        "Estimated validation-loss reduction\n"
+        "per 1M directly selected tokens"
+    )
+    assert any(
+        line.get_label() == "LR warmup end"
+        and tuple(line.get_xdata()) == (3_000_000, 3_000_000)
+        for line in figure.axes[0].get_lines()
     )
     assert "Five-point OLS over direct exposure" in figure._suptitle.get_text()
     assert any(

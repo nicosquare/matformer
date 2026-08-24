@@ -2232,6 +2232,17 @@ def plot_metric_over_steps(
     axis.set_xlabel("Step")
     axis.set_ylabel(ylabel)
     axis.grid(True, alpha=0.3)
+    from .reporting import mark_scheduler_warmup
+
+    mark_scheduler_warmup(
+        axis,
+        {
+            value
+            for row in rows
+            if (value := to_float_or_none(row.get("_scheduler_warmup_steps")))
+            is not None
+        },
+    )
     place_legend_on_right(legend_axis, axis)
     figure.savefig(output_path, dpi=dpi)
     plt.close(figure)
@@ -3009,13 +3020,26 @@ def _plot_marginal_utility(
         ]
     )
     figure, axes = plt.subplots(
-        len(granularities), 1, figsize=(14, max(3.0, 2.5 * len(granularities)))
+        len(granularities),
+        1,
+        figsize=(14, max(3.0, 2.5 * len(granularities))),
+        sharex=True,
     )
     axes = [axes] if len(granularities) == 1 else list(axes)
     labels = _diagnostic_contract_labels(runs)
     contracts = sorted(labels, key=lambda contract: labels[contract])
     colors = list(plt.rcParams["axes.prop_cycle"].by_key().get("color", ["tab:blue"]))
     ranking_rows: list[dict[str, Any]] = []
+    warmup_token_positions = {
+        value
+        for run in runs
+        if (
+            value := to_float_or_none(
+                run.contract_row.get("_scheduler_warmup_tokens")
+            )
+        )
+        is not None
+    }
     for axis, granularity in zip(axes, granularities):
         for index, contract in enumerate(contracts):
             seed_curves = {
@@ -3064,9 +3088,21 @@ def _plot_marginal_utility(
                 )
         axis.axhline(0.0, color="0.35", linewidth=0.8, linestyle=":")
         axis.set_title(granularity, fontsize=11)
-        axis.set_ylabel("-d(loss)/d(selected tokens)\nper 1M tokens")
         axis.grid(True, alpha=0.3)
+    from .reporting import mark_scheduler_warmup
+
+    for axis in axes:
+        mark_scheduler_warmup(
+            axis,
+            warmup_token_positions,
+            label=axis is axes[0],
+        )
     axes[-1].set_xlabel("Total training tokens")
+    figure.supylabel(
+        "Estimated validation-loss reduction\n"
+        "per 1M directly selected tokens",
+        x=0.015,
+    )
     _apply_common_validation_y_limits(axes)
     handles_by_label: dict[str, Any] = {}
     for axis in axes:
@@ -3316,6 +3352,12 @@ def plot_validation_loss_over_tokens_by_granularity_comparison_figure(
             ),
         }
     incomplete_runs = group_incomplete_validation_runs(granularity_rows)
+    warmup_token_positions = {
+        value
+        for row in granularity_rows
+        if (value := to_float_or_none(row.get("_scheduler_warmup_tokens")))
+        is not None
+    }
 
     for axis, granularity in zip(axes, granularity_labels):
         plotted = False
@@ -3402,6 +3444,9 @@ def plot_validation_loss_over_tokens_by_granularity_comparison_figure(
         axis.minorticks_on()
         axis.grid(True, which="minor", alpha=0.15, linewidth=0.3)
         axis.set_axisbelow(True)
+        from .reporting import mark_scheduler_warmup
+
+        mark_scheduler_warmup(axis, warmup_token_positions)
 
     axes[-1].set_xlabel("Total training tokens")
     _apply_common_validation_y_limits(list(axes))
@@ -3614,6 +3659,12 @@ def plot_loss_over_tokens_for_experiment(
         for index, contract in enumerate(contract_order)
     }
     incomplete_runs = group_incomplete_validation_runs(granularity_rows)
+    warmup_token_positions = {
+        value
+        for row in granularity_rows
+        if (value := to_float_or_none(row.get("_scheduler_warmup_tokens")))
+        is not None
+    }
 
     for axis, granularity in zip(axes, granularity_labels):
         plotted = False
@@ -3713,6 +3764,9 @@ def plot_loss_over_tokens_for_experiment(
         )
 
         axis.set_axisbelow(True)
+        from .reporting import mark_scheduler_warmup
+
+        mark_scheduler_warmup(axis, warmup_token_positions)
 
     axes[-1].set_xlabel("Total training tokens")
     _apply_common_validation_y_limits(list(axes))
