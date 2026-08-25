@@ -1077,11 +1077,19 @@ def read_final_holdout_scaling_rows(
                 f"Missing final-holdout result for completed run: {run_dir}"
             )
 
+        expected_evaluation_examples = _final_holdout_evaluation_example_count(
+            run_dir,
+            expected_manifest_hash=comparison_contract[
+                "final_holdout_manifest_hash"
+            ],
+            expected_source_examples=comparison_contract["final_holdout_examples"],
+        )
         components = _validate_final_holdout_reporting_result(
             result,
             run_dir=run_dir,
             expected_run_id=run_id,
             expected_contract=comparison_contract,
+            expected_evaluation_examples=expected_evaluation_examples,
             expected_granularities=[
                 str(value) for value in config["model"]["granularities"]
             ],
@@ -1171,6 +1179,58 @@ def _saved_run_id(config: Mapping[str, Any], *, run_dir: Path) -> str:
     return str(run_id)
 
 
+def _final_holdout_evaluation_example_count(
+    run_dir: Path,
+    *,
+    expected_manifest_hash: str,
+    expected_source_examples: int,
+) -> int:
+    """Resolve evaluated rows without confusing packed sequences with sources."""
+
+    manifest_path = run_dir / "final_holdout_manifest.json"
+    if not manifest_path.is_file():
+        raise FinalHoldoutReportingError(
+            f"Missing final-holdout manifest: {manifest_path}"
+        )
+    manifest = _read_json_mapping(
+        manifest_path,
+        artifact_name="final-holdout manifest",
+    )
+    try:
+        source_examples = _csv_positive_int(
+            manifest.get("example_count"),
+            "final holdout manifest example_count",
+        )
+        evaluation_examples = _csv_positive_int(
+            manifest.get("sequence_count", source_examples),
+            "final holdout manifest sequence_count",
+        )
+    except ValueError as error:
+        raise FinalHoldoutReportingError(f"{error}: {run_dir}") from error
+    if (
+        manifest.get("role") != "final_holdout"
+        or manifest.get("manifest_hash") != expected_manifest_hash
+        or source_examples != expected_source_examples
+    ):
+        raise FinalHoldoutReportingError(
+            f"Final-holdout manifest contract mismatch: {run_dir}"
+        )
+    source_document_count = manifest.get("source_document_count")
+    if source_document_count is not None:
+        try:
+            source_document_count = _csv_positive_int(
+                source_document_count,
+                "final holdout manifest source_document_count",
+            )
+        except ValueError as error:
+            raise FinalHoldoutReportingError(f"{error}: {run_dir}") from error
+        if source_document_count != source_examples:
+            raise FinalHoldoutReportingError(
+                f"Final-holdout manifest source count mismatch: {run_dir}"
+            )
+    return evaluation_examples
+
+
 def _final_holdout_comparison_contract(
     config: Mapping[str, Any],
     *,
@@ -1244,6 +1304,7 @@ def _validate_final_holdout_reporting_result(
     run_dir: Path,
     expected_run_id: str,
     expected_contract: Mapping[str, Any],
+    expected_evaluation_examples: int,
     expected_granularities: list[str],
     expected_aggregation: str,
 ) -> list[dict[str, Any]]:
@@ -1317,7 +1378,7 @@ def _validate_final_holdout_reporting_result(
             raise FinalHoldoutReportingError(
                 f"Final-holdout loss/perplexity mismatch: {run_dir}"
             )
-        if evaluation_examples != expected_contract["final_holdout_examples"]:
+        if evaluation_examples != expected_evaluation_examples:
             raise FinalHoldoutReportingError(
                 f"Final-holdout component example count mismatch: {run_dir}"
             )

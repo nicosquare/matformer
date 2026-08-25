@@ -28,6 +28,7 @@ def _write_final_holdout_reporting_run(
     model_family: str = "nested",
     sampling_mode: str = "nested-random",
     final_holdout_manifest_hash: str = "final-holdout-hash",
+    evaluation_examples: int = 512,
 ) -> Path:
     from src.evaluation.final_holdout import FINAL_HOLDOUT_AGGREGATION
     from src.utils.reproducibility import stable_hash
@@ -78,6 +79,18 @@ def _write_final_holdout_reporting_run(
         json.dumps({"run_id": run_id, "status": "completed"}),
         encoding="utf-8",
     )
+    (run_dir / "final_holdout_manifest.json").write_text(
+        json.dumps(
+            {
+                "role": "final_holdout",
+                "manifest_hash": final_holdout_manifest_hash,
+                "example_count": 512,
+                "source_document_count": 512,
+                "sequence_count": evaluation_examples,
+            }
+        ),
+        encoding="utf-8",
+    )
 
     scaling_rows = []
     for index, granularity in enumerate(granularities, start=1):
@@ -106,7 +119,7 @@ def _write_final_holdout_reporting_run(
             "granularity": granularity,
             "loss": loss,
             "perplexity": math.exp(loss),
-            "evaluation_examples": 512,
+            "evaluation_examples": evaluation_examples,
             "evaluation_target_tokens": 2_048,
         }
         for granularity, loss in zip(granularities, losses, strict=True)
@@ -729,6 +742,24 @@ def test_final_holdout_rows_replace_validation_metrics_and_generate_size_figures
     }
     assert "final_holdout_ppl_vs_size.png" in figure_names
     assert "final_holdout_loss_vs_size.png" not in figure_names
+
+
+def test_final_holdout_rows_accept_packed_sequences_distinct_from_source_examples(
+    tmp_path,
+):
+    from src.evaluation.reporting_io import read_final_holdout_scaling_rows
+
+    _write_final_holdout_reporting_run(
+        tmp_path,
+        run_id="holdout-packed",
+        granularities=("small", "full"),
+        losses=(2.0, 1.0),
+        evaluation_examples=898,
+    )
+
+    rows = read_final_holdout_scaling_rows(tmp_path)
+
+    assert {row["evaluation_examples"] for row in rows} == {898}
 
 
 def test_final_holdout_reporting_refuses_partial_or_mixed_comparison_sets(tmp_path):
