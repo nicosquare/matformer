@@ -27,7 +27,7 @@ Options:
   -h, --help                  Show this message.
 
 All other arguments are forwarded to train.py. If --config is omitted, the
-controlled TinyStories convergence config is used.
+frozen controlled TinyStories comparison config is used.
 USAGE
 }
 

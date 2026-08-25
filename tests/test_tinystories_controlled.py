@@ -514,7 +514,7 @@ def _prepare_config_fixture(tmp_path: Path) -> tuple[Path, Path]:
         shard_token_capacity=512,
         shuffle_buffer_size=0,
         reserved_role_counts=role_counts,
-        optimizer_token_limit=1_024,
+        optimizer_token_limit=2_048,
     )
     return tokenizer_dir, tmp_path / "corpus"
 
@@ -531,7 +531,7 @@ def test_controlled_config_resolves_dense_grid(
             f"model.tokenizer_dir={tokenizer_dir}",
             f"dataset.prepared_corpus_dir={corpus_dir}",
             f"run.output_root={tmp_path / 'outputs'}",
-            "training.token_budget=1024",
+            "training.token_budget=2048",
             "training.batch_size_per_process=1",
             f"training.learning_rate={learning_rate}",
             f"training.scheduler.name={scheduler}",
@@ -553,7 +553,7 @@ def test_same_config_resolves_later_nested_window_override(tmp_path):
             f"model.tokenizer_dir={tokenizer_dir}",
             f"dataset.prepared_corpus_dir={corpus_dir}",
             f"run.output_root={tmp_path / 'outputs'}",
-            "training.token_budget=1024",
+            "training.token_budget=2048",
             "training.batch_size_per_process=1",
             "run.model_family=nested",
             "run.sampling_mode=nested-random",
@@ -567,11 +567,77 @@ def test_same_config_resolves_later_nested_window_override(tmp_path):
     assert config["model"]["granularities"] == [
         "g125",
         "g250",
+        "g375",
         "g500",
+        "g625",
+        "g750",
+        "g875",
         "g1000",
     ]
     assert config["model"]["global_sampling_interval_steps"] == 2
     assert config["model"]["global_sampling_schedule"] == "balanced_cycle"
+
+
+def test_controlled_config_freezes_selected_recipe(tmp_path):
+    tokenizer_dir, corpus_dir = _prepare_config_fixture(tmp_path)
+    config = resolve_run_config(
+        "configs/controlled_exps/tinystories_controlled_convergence.yaml",
+        overrides=[
+            f"model.tokenizer_dir={tokenizer_dir}",
+            f"dataset.prepared_corpus_dir={corpus_dir}",
+            f"run.output_root={tmp_path / 'outputs'}",
+            "training.token_budget=1024",
+            "training.batch_size_per_process=1",
+        ],
+    )
+    assert config["controlled_experiment"] == {
+        "recipe_status": "frozen",
+        "recipe_source_run_id": (
+            "tinystories-dense-lr3e-3-schedcosine-4096-s42"
+        ),
+        "selection_report_hash": (
+            "ecf84f1131b57255e945c10b51599bd1e84dfc872d48e65bc7a4818fe92c1c69"
+        ),
+    }
+    assert config["run"]["phase_id"] == "tinystories_frozen_elastic"
+    assert config["monitoring"]["project"] == "tinystories_frozen_elastic"
+    assert config["training"]["learning_rate"] == pytest.approx(3e-3)
+    assert config["training"]["scheduler_name"] == "cosine"
+
+
+def test_controlled_config_resolves_four_granularity_scope(tmp_path):
+    tokenizer_dir, corpus_dir = _prepare_config_fixture(tmp_path)
+    config = resolve_run_config(
+        "configs/controlled_exps/tinystories_controlled_convergence.yaml",
+        overrides=[
+            f"model.tokenizer_dir={tokenizer_dir}",
+            f"dataset.prepared_corpus_dir={corpus_dir}",
+            f"run.output_root={tmp_path / 'outputs'}",
+            "training.token_budget=1024",
+            "training.batch_size_per_process=1",
+            "run.model_family=nested",
+            "run.sampling_mode=nested-random",
+            "run.granularity=null",
+            "model.granularities=[g250,g500,g750,g1000]",
+            (
+                "model.granularity_prefixes={g250: 0.25, g500: 0.5, "
+                "g750: 0.75, g1000: 1.0}"
+            ),
+        ],
+    )
+    assert config["model"]["granularities"] == [
+        "g250",
+        "g500",
+        "g750",
+        "g1000",
+    ]
+    assert config["model"]["granularity_prefixes"] == {
+        "g250": 0.25,
+        "g500": 0.5,
+        "g750": 0.75,
+        "g1000": 1.0,
+    }
+    assert config["model"]["intermediate_size"] == 512
 
 
 def test_controlled_config_runs_one_cpu_step_through_train_entrypoint(tmp_path):
