@@ -24,10 +24,34 @@ gradient-interference diagnostic used by the larger setup.
 
 ## 1. Set the shared contract
 
-Run all commands from the repository root in the validated environment:
+### 1.1 Choose the budget first
+
+Run from the repository root, activate the validated environment, and choose
+exactly one horizon before defining any setup, policy, or submission arrays:
+
+| Horizon | Exact tokens | Optimizer updates | Command |
+| --- | ---: | ---: | --- |
+| 1x (default) | 33,554,432 | 4,096 | `export TOKEN_BUDGET=33554432` |
+| 2x | 67,108,864 | 8,192 | `export TOKEN_BUDGET=67108864` |
+| 4x | 134,217,728 | 16,384 | `export TOKEN_BUDGET=134217728` |
+| 8x | 268,435,456 | 32,768 | `export TOKEN_BUDGET=268435456` |
+
+For the 2x campaign requested here, start with:
 
 ```bash
 conda activate elasticnn
+export TOKEN_BUDGET=67108864
+```
+
+If `TOKEN_BUDGET` is unset, setup falls back to the 1x value. An explicitly
+exported value is preserved, so do not rely on the fallback when switching an
+existing shell from one campaign to another.
+
+### 1.2 Resolve and validate the selected budget
+
+After choosing the budget, run this entire block:
+
+```bash
 
 tinystories_setup() {
   export PYTHON_BIN="$(command -v python)"
@@ -50,8 +74,7 @@ tinystories_setup() {
   export TINYSTORIES_CORPUS_NAME="${TINYSTORIES_CORPUS_NAME:-tinystories-packed-full-v1}"
   export TINYSTORIES_EXPERIMENT_NAME="${TINYSTORIES_EXPERIMENT_NAME:-tinystories-frozen-elastic-v2}"
 
-  # Exact context- and optimizer-step-aligned budget. Suggested horizons:
-  # 1x=33554432, 2x=67108864, 4x=134217728, 8x=268435456.
+  # Fall back to the frozen 1x horizon only when no budget was selected above.
   export TOKEN_BUDGET="${TOKEN_BUDGET:-33554432}"
   export TOKENS_PER_STEP=8192
 
@@ -138,10 +161,16 @@ tinystories_setup() {
 tinystories_setup
 ```
 
+For 2x, do not continue unless the final line reports:
+
+```text
+tokens=67108864 optimizer_steps=8192
+```
+
 To train on the largest complete optimizer-step prefix, set `TOKEN_BUDGET` to
-the printed `max_aligned_tokens` value and rerun this section. The raw corpus
-capacity may contain a final partial 8,192-token update and must not be used
-directly unless it is already aligned.
+the printed `max_aligned_tokens` value and rerun every block in this section.
+The raw corpus capacity may contain a final partial 8,192-token update and must
+not be used directly unless it is already aligned.
 
 The setup function returns on validation failures instead of exiting the
 interactive shell. If it reports missing prepared artifacts, run section 11
@@ -180,6 +209,21 @@ if [[ -n "${SLURM_EXCLUDE:-}" ]]; then
 fi
 ```
 
+### 1.3 Required sequence after changing the budget
+
+Changing `TOKEN_BUDGET` in an existing shell does not rewrite arrays that were
+already defined. Use this order every time:
+
+1. Export the new `TOKEN_BUDGET` from section 1.1.
+2. Run `tinystories_setup` from section 1.2 and verify its reported tokens and
+   optimizer steps.
+3. Rerun the `COMMON_OVERRIDES`, granularity, and `SBATCH` block immediately
+   above so it captures the new budget and output roots.
+4. Rerun all of section 2 so budget-dependent policies and diagnostic arrays
+   are rebuilt.
+5. Run the section 3 preflights, redefine the section 4 submission helper, and
+   only then submit a campaign from section 5 onward.
+
 The resulting FFN prefix widths are `64, 128, 192, 256, 320, 384, 448,
 512` for eight granularities and `128, 256, 384, 512` for four. Both scopes
 retain the same data roles, initialization seed, optimizer, scheduler, selected
@@ -189,6 +233,7 @@ initialization rather than resuming a completed shorter schedule.
 
 ## 2. Define the adaptive policies
 
+Run this section after both section 1 blocks every time the budget changes.
 Use the established 25-update controller cadence. Uniform `H=25` is the
 no-controller temporal-batching control for both adaptive policies.
 
@@ -366,7 +411,7 @@ The launcher streams unbuffered progress to `./logs`. If a job is interrupted,
 resubmit the identical helper call and run ID; continuation restores its
 checkpoint, scheduler, RNG streams, sampling-policy state, exposure counts,
 and packed-corpus cursor. Never submit one run ID concurrently. To select a
-different budget, change `TOKEN_BUDGET` and rerun section 1 before defining
+different budget, follow the complete section 1.3 sequence before defining
 this helper.
 
 ## 5. Submit the uniform-window sweep
