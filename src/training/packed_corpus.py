@@ -1486,6 +1486,12 @@ def load_existing_corpus_if_matching(
     }
     if optimizer_token_limit is not None:
         expected["optimizer_token_limit"] = int(optimizer_token_limit)
+        expected["source.termination"] = "optimizer_token_limit"
+        expected["source.source_exhausted"] = False
+    else:
+        expected["optimizer_token_limit"] = None
+        expected["source.termination"] = "source_exhausted"
+        expected["source.source_exhausted"] = True
     if minimum_optimizer_document_count is not None:
         expected["minimum_optimizer_document_count"] = int(
             minimum_optimizer_document_count

@@ -149,6 +149,7 @@ def test_prepare_command_loads_pinned_huggingface_dataset(
         "validation", 1, fingerprint="validation-native"
     )
     load_calls = []
+    corpus_load_calls = []
 
     def fake_load_dataset(name, **kwargs):
         load_calls.append((name, kwargs))
@@ -177,7 +178,9 @@ def test_prepare_command_loads_pinned_huggingface_dataset(
     monkeypatch.setattr(
         command,
         "load_existing_corpus_if_matching",
-        lambda *args, **kwargs: corpus_manifest,
+        lambda *args, **kwargs: (
+            corpus_load_calls.append(kwargs) or corpus_manifest
+        ),
     )
 
     command.main(
@@ -201,6 +204,21 @@ def test_prepare_command_loads_pinned_huggingface_dataset(
     summary = json.loads(capsys.readouterr().out)
     assert summary["dataset"] == "roneneldan/TinyStories"
     assert summary["dataset_revision"] == load_calls[0][1]["revision"]
+    assert summary["optimizer_token_request"] == "all"
+    assert corpus_load_calls[0]["optimizer_token_limit"] is None
+
+
+def test_prepare_command_accepts_explicit_or_full_optimizer_token_count():
+    from scripts import prepare_tinystories as command
+
+    shared = ["--tokenizer-dir", "tokenizer", "--corpus-dir", "corpus"]
+    assert command.parse_args(shared).optimizer_token_count is None
+    assert command.parse_args(
+        [*shared, "--optimizer-token-count", "all"]
+    ).optimizer_token_count is None
+    assert command.parse_args(
+        [*shared, "--optimizer-token-count", "67108864"]
+    ).optimizer_token_count == 67_108_864
 
 
 def test_prepare_command_reports_resume_replay_and_live_throughput(
@@ -303,6 +321,7 @@ def test_prepare_command_reports_resume_replay_and_live_throughput(
 
     captured = capsys.readouterr()
     assert "event=resuming documents=10 optimizer_tokens=1,024" in captured.err
+    assert "target_optimizer_tokens=all_available" in captured.err
     assert "event=resume_replay_completed phase=resume_replay" in captured.err
     assert "replay_percent=100.00" in captured.err
     assert "event=progress phase=tokenization" in captured.err
@@ -311,6 +330,7 @@ def test_prepare_command_reports_resume_replay_and_live_throughput(
     assert "tokens_per_second=" in captured.err
     assert "event=completed status=resumed_and_prepared" in captured.err
     assert json.loads(captured.out)["corpus_status"] == "resumed_and_prepared"
+    assert json.loads(captured.out)["optimizer_token_request"] == "all"
 
 
 def test_generic_sentencepiece_trainer_supports_small_dataset_tokenizer(tmp_path):
@@ -407,6 +427,27 @@ def test_shared_packed_builder_supports_custom_roles_and_exact_token_limit(tmp_p
         role_source_provenance=role_sources,
     )
     assert reused == manifest
+
+    with pytest.raises(
+        PackedCorpusError,
+        match="Existing prepared corpus does not match the requested preparation",
+    ):
+        load_existing_corpus_if_matching(
+            tmp_path / "corpus",
+            tokenizer_manifest=tokenizer_manifest,
+            tokenizer_name=tokenizer_manifest["tokenizer_name"],
+            tokenizer_revision=tokenizer_manifest["manifest_hash"],
+            source_dataset="roneneldan/TinyStories",
+            source_config="official-raw",
+            source_split="train+validation",
+            context_length=4,
+            shard_token_capacity=8,
+            shuffle_buffer_size=0,
+            reserved_role_counts=role_counts,
+            optimizer_token_limit=None,
+            minimum_optimizer_document_count=6,
+            role_source_provenance=role_sources,
+        )
 
 
 def test_exact_token_limit_resume_does_not_consume_an_extra_story(

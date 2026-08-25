@@ -30,7 +30,6 @@ from src.training.tinystories import (
     TINYSTORIES_DATASET_NAME,
     TINYSTORIES_DATASET_REVISION,
     TINYSTORIES_DATASET_SPLIT,
-    TINYSTORIES_OPTIMIZER_TOKEN_COUNT,
     TINYSTORIES_ROLE_COUNTS,
     TINYSTORIES_TOKENIZER_STORY_COUNT,
     corpus_source_contract,
@@ -46,6 +45,12 @@ def positive_int(value: str) -> int:
     if parsed <= 0:
         raise argparse.ArgumentTypeError("must be a positive integer")
     return parsed
+
+
+def optimizer_token_count(value: str) -> int | None:
+    if value.strip().lower() == "all":
+        return None
+    return positive_int(value)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -71,8 +76,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-chunk-bytes", type=positive_int, default=4_096)
     parser.add_argument(
         "--optimizer-token-count",
-        type=positive_int,
-        default=TINYSTORIES_OPTIMIZER_TOKEN_COUNT,
+        type=optimizer_token_count,
+        default=None,
+        metavar="TOKENS|all",
+        help=(
+            "Context-aligned optimizer-token cap, or 'all' to consume every "
+            "optimizer-eligible source story (default: all)"
+        ),
     )
     parser.add_argument(
         "--shard-token-capacity",
@@ -90,7 +100,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
-    if args.optimizer_token_count % TINYSTORIES_CONTEXT_LENGTH:
+    if (
+        args.optimizer_token_count is not None
+        and args.optimizer_token_count % TINYSTORIES_CONTEXT_LENGTH
+    ):
         raise SystemExit(
             "--optimizer-token-count must be divisible by the 128-token context"
         )
@@ -306,12 +319,17 @@ def main(argv: Sequence[str] | None = None) -> None:
                 flush=True,
             )
 
+        optimizer_token_target = (
+            "all_available"
+            if args.optimizer_token_count is None
+            else f"{args.optimizer_token_count:,}"
+        )
         print(
             "[corpus-progress] "
             f"event={'resuming' if was_resumable else 'starting'} "
             f"documents={resumed_document_count:,} "
             f"optimizer_tokens={resumed_token_count:,} "
-            f"target_optimizer_tokens={args.optimizer_token_count:,} "
+            f"target_optimizer_tokens={optimizer_token_target} "
             f"interval_seconds={args.progress_interval_seconds:g} "
             f"source_read_workers=1 "
             f"tokenization_workers={args.tokenization_workers}",
@@ -378,6 +396,11 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "corpus_status": corpus_status,
                 "corpus_dir": str(Path(args.corpus_dir).resolve()),
                 "corpus_hash": corpus_manifest["corpus_hash"],
+                "optimizer_token_request": (
+                    "all"
+                    if args.optimizer_token_count is None
+                    else args.optimizer_token_count
+                ),
                 "optimizer_token_count": corpus_manifest[
                     "available_optimizer_token_count"
                 ],
