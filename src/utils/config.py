@@ -1315,7 +1315,13 @@ def _validate_distributed_and_prepared_corpus_contract(
         )
     if config["run"]["model_family"] == "nested":
         granularities = tuple(model.get("granularities", ()))
-        if dataset.get("dataset_phase") == "prepared_100m":
+        dataset_phase = dataset.get("dataset_phase")
+        if dataset_phase == "tinystories_controlled":
+            if not granularities:
+                raise ConfigError(
+                    "TinyStories packed-mmap nested runs require granularities"
+                )
+        elif dataset_phase == "prepared_100m":
             production_subset = tuple(
                 label
                 for label in PRODUCTION_GRANULARITY_ORDER
@@ -1331,19 +1337,21 @@ def _validate_distributed_and_prepared_corpus_contract(
                 "10B packed-mmap nested runs require ordered granularities "
                 f"{list(PRODUCTION_GRANULARITY_ORDER)}"
             )
-        prefixes = model.get("granularity_prefixes", {})
-        if any(
-            not math.isclose(
-                float(prefixes.get(label, -1.0)),
-                PRODUCTION_GRANULARITY_PREFIXES[label],
-                rel_tol=0.0,
-                abs_tol=1e-12,
-            )
-            for label in granularities
-        ):
-            raise ConfigError(
-                "packed-mmap runs require canonical production granularity prefixes"
-            )
+        if dataset_phase != "tinystories_controlled":
+            prefixes = model.get("granularity_prefixes", {})
+            if any(
+                not math.isclose(
+                    float(prefixes.get(label, -1.0)),
+                    PRODUCTION_GRANULARITY_PREFIXES[label],
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+                for label in granularities
+            ):
+                raise ConfigError(
+                    "packed-mmap runs require canonical production granularity "
+                    "prefixes"
+                )
     try:
         from src.training.packed_corpus import load_corpus_manifest
 

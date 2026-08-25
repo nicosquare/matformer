@@ -254,6 +254,7 @@ def _write_training_input(
     source_fingerprint: str,
     text_column: str,
     document_count: int,
+    reserved_document_count: int,
     max_chunk_bytes: int,
 ) -> dict[str, Any]:
     source_digest = hashlib.sha256()
@@ -263,6 +264,7 @@ def _write_training_input(
         for source_index, document in select_tokenizer_training_documents(
             documents,
             document_count=document_count,
+            reserved_document_count=reserved_document_count,
         ):
             if text_column not in document:
                 raise FineWebTokenizerError(
@@ -330,7 +332,7 @@ def _auto_tokenizer_from_sentencepiece(model_file: Path, processor):
         def convert_ids_to_tokens(self, token_id):
             return processor.id_to_piece(int(token_id))
 
-    class FineWebLlamaConverter(LlamaConverter):
+    class SentencePieceLlamaConverter(LlamaConverter):
         def tokenizer(self, proto):
             vocab_scores = self.vocab(proto)
             vocabulary = {
@@ -352,7 +354,9 @@ def _auto_tokenizer_from_sentencepiece(model_file: Path, processor):
             return SpmConverter.normalizer(self, proto)
 
     return PreTrainedTokenizerFast(
-        tokenizer_object=FineWebLlamaConverter(SentencePieceAdapter()).converted(),
+        tokenizer_object=SentencePieceLlamaConverter(
+            SentencePieceAdapter()
+        ).converted(),
         unk_token=SPECIAL_TOKEN_PIECES["unk"],
         bos_token=SPECIAL_TOKEN_PIECES["bos"],
         eos_token=SPECIAL_TOKEN_PIECES["eos"],
@@ -360,29 +364,36 @@ def _auto_tokenizer_from_sentencepiece(model_file: Path, processor):
     )
 
 
-def train_fineweb_tokenizer(
+def train_sentencepiece_tokenizer(
     documents: Iterable[Mapping[str, Any]],
     output_dir: str | Path,
     *,
-    source_dataset: str = "HuggingFaceFW/fineweb",
-    source_config: str = "sample-10BT",
-    source_split: str = "train",
+    tokenizer_name: str,
+    training_version: str,
+    source_dataset: str,
+    source_config: str,
+    source_split: str,
     source_fingerprint: str,
     text_column: str = DEFAULT_TEXT_COLUMN,
     data_seed: int = 42,
     shuffle_buffer_size: int = 100_000,
     document_count: int = DEFAULT_TOKENIZER_DOCUMENT_COUNT,
+    reserved_document_count: int = 0,
     max_chunk_bytes: int = DEFAULT_MAX_CHUNK_BYTES,
     vocab_size: int = DEFAULT_VOCAB_SIZE,
 ) -> dict[str, Any]:
-    """Train and atomically install an AutoTokenizer-compatible tokenizer."""
+    """Train and atomically install a manifested SentencePiece tokenizer."""
 
-    if int(data_seed) != 42:
-        raise FineWebTokenizerError("FineWeb tokenizer training requires data_seed=42")
-    if int(vocab_size) != DEFAULT_VOCAB_SIZE:
+    if not str(tokenizer_name).strip():
+        raise FineWebTokenizerError("tokenizer_name must be non-empty")
+    if not str(training_version).strip():
+        raise FineWebTokenizerError("training_version must be non-empty")
+    if int(document_count) <= 0 or int(reserved_document_count) < 0:
         raise FineWebTokenizerError(
-            f"FineWeb tokenizer vocabulary must be exactly {DEFAULT_VOCAB_SIZE}"
+            "Tokenizer document counts must be positive/nonnegative"
         )
+    if int(vocab_size) <= len(SPECIAL_TOKEN_IDS):
+        raise FineWebTokenizerError("Tokenizer vocabulary is too small")
     try:
         import sentencepiece as spm
     except ImportError as error:
@@ -407,6 +418,7 @@ def train_fineweb_tokenizer(
             source_fingerprint=source_fingerprint,
             text_column=text_column,
             document_count=int(document_count),
+            reserved_document_count=int(reserved_document_count),
             max_chunk_bytes=int(max_chunk_bytes),
         )
         model_prefix = staging / "tokenizer"
@@ -437,8 +449,8 @@ def train_fineweb_tokenizer(
         }
         manifest = {
             "schema_version": TOKENIZER_MANIFEST_SCHEMA_VERSION,
-            "training_version": TOKENIZER_TRAINING_VERSION,
-            "tokenizer_name": "fineweb_sentencepiece_bpe_256k",
+            "training_version": str(training_version),
+            "tokenizer_name": str(tokenizer_name),
             "sentencepiece_version": spm.__version__,
             "sentencepiece_options": trainer_options,
             "dataset": {
@@ -452,7 +464,7 @@ def train_fineweb_tokenizer(
                 "seed": int(data_seed),
                 "buffer_size": int(shuffle_buffer_size),
             },
-            "reserved_document_count": sum(RESERVED_ROLE_COUNTS.values()),
+            "reserved_document_count": int(reserved_document_count),
             "training_document_count": counts["document_count"],
             "training_chunk_count": counts["chunk_count"],
             "max_chunk_bytes": int(max_chunk_bytes),
@@ -481,6 +493,48 @@ def train_fineweb_tokenizer(
         raise
 
 
+def train_fineweb_tokenizer(
+    documents: Iterable[Mapping[str, Any]],
+    output_dir: str | Path,
+    *,
+    source_dataset: str = "HuggingFaceFW/fineweb",
+    source_config: str = "sample-10BT",
+    source_split: str = "train",
+    source_fingerprint: str,
+    text_column: str = DEFAULT_TEXT_COLUMN,
+    data_seed: int = 42,
+    shuffle_buffer_size: int = 100_000,
+    document_count: int = DEFAULT_TOKENIZER_DOCUMENT_COUNT,
+    max_chunk_bytes: int = DEFAULT_MAX_CHUNK_BYTES,
+    vocab_size: int = DEFAULT_VOCAB_SIZE,
+) -> dict[str, Any]:
+    """Train the immutable production FineWeb tokenizer."""
+
+    if int(data_seed) != 42:
+        raise FineWebTokenizerError("FineWeb tokenizer training requires data_seed=42")
+    if int(vocab_size) != DEFAULT_VOCAB_SIZE:
+        raise FineWebTokenizerError(
+            f"FineWeb tokenizer vocabulary must be exactly {DEFAULT_VOCAB_SIZE}"
+        )
+    return train_sentencepiece_tokenizer(
+        documents,
+        output_dir,
+        tokenizer_name="fineweb_sentencepiece_bpe_256k",
+        training_version=TOKENIZER_TRAINING_VERSION,
+        source_dataset=source_dataset,
+        source_config=source_config,
+        source_split=source_split,
+        source_fingerprint=source_fingerprint,
+        text_column=text_column,
+        data_seed=data_seed,
+        shuffle_buffer_size=shuffle_buffer_size,
+        document_count=document_count,
+        reserved_document_count=sum(RESERVED_ROLE_COUNTS.values()),
+        max_chunk_bytes=max_chunk_bytes,
+        vocab_size=vocab_size,
+    )
+
+
 __all__ = [
     "DEFAULT_MAX_CHUNK_BYTES",
     "DEFAULT_TOKENIZER_DOCUMENT_COUNT",
@@ -496,5 +550,6 @@ __all__ = [
     "select_tokenizer_training_documents",
     "sentencepiece_trainer_options",
     "train_fineweb_tokenizer",
+    "train_sentencepiece_tokenizer",
     "utf8_safe_chunks",
 ]

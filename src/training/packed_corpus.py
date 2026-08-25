@@ -8,6 +8,7 @@ packed sequence.
 
 from __future__ import annotations
 
+import copy
 import fcntl
 import hashlib
 import json
@@ -321,6 +322,7 @@ class _RoleShardWriter:
         self.token_count = 0
         self.source_document_count = 0
         self.discarded_trailing_tokens = 0
+        self._discarded_limit_tokens = 0
         self._pending: list[int] = []
         self._shard_index = 0
         self._shard_path: Path | None = None
@@ -335,6 +337,9 @@ class _RoleShardWriter:
             raise PackedCorpusError(f"Writer checkpoint role mismatch: {self.role}")
         self.token_count = int(state.get("token_count", -1))
         self.source_document_count = int(state.get("source_document_count", -1))
+        self._discarded_limit_tokens = int(
+            state.get("discarded_limit_tokens", 0)
+        )
         self._pending = [int(value) for value in state.get("pending_tokens", [])]
         self._shard_index = int(state.get("shard_index", -1))
         self._shard_offset = int(state.get("shard_offset", -1))
@@ -374,13 +379,30 @@ class _RoleShardWriter:
                 shape=(self.shard_token_capacity,),
             )
 
-    def add_document(self, token_ids: Sequence[int], *, eos_token_id: int) -> bool:
+    def add_document(
+        self,
+        token_ids: Sequence[int],
+        *,
+        eos_token_id: int,
+        max_total_tokens: int | None = None,
+    ) -> bool:
         completed_before = len(self._completed_shards)
         self.source_document_count += 1
         values = [int(value) for value in token_ids]
         values.append(int(eos_token_id))
         if any(value < 0 or value > np.iinfo(np.uint32).max for value in values):
             raise PackedCorpusError("Tokenizer emitted an ID outside uint32 range")
+        if max_total_tokens is not None:
+            remaining = (
+                int(max_total_tokens) - self.token_count - len(self._pending)
+            )
+            if remaining < 0:
+                raise PackedCorpusError(
+                    f"Packed role {self.role} exceeded its token limit"
+                )
+            if len(values) > remaining:
+                self._discarded_limit_tokens += len(values) - remaining
+                values = values[:remaining]
         self._pending.extend(values)
         complete_count = (len(self._pending) // self.context_length) * self.context_length
         if complete_count:
@@ -447,6 +469,7 @@ class _RoleShardWriter:
             "role": self.role,
             "token_count": self.token_count,
             "source_document_count": self.source_document_count,
+            "discarded_limit_tokens": self._discarded_limit_tokens,
             "pending_tokens": list(self._pending),
             "shard_index": self._shard_index,
             "shard_offset": self._shard_offset,
@@ -477,7 +500,9 @@ class _RoleShardWriter:
             self._shard_path = None
             self._shard_offset = 0
             self._shard_index += 1
-        self.discarded_trailing_tokens = len(self._pending)
+        self.discarded_trailing_tokens = (
+            len(self._pending) + self._discarded_limit_tokens
+        )
         if self.token_count % self.context_length:
             raise PackedCorpusError(f"Packed role {self.role} is not sequence aligned")
         return {
@@ -694,10 +719,14 @@ def prepare_packed_corpus(
     tokenization_workers: int = 1,
     source_read_workers: int = 1,
     tokenizer_manifest: Mapping[str, Any],
+    reserved_role_counts: Mapping[str, int] = RESERVED_ROLE_COUNTS,
+    optimizer_token_limit: int | None = None,
+    minimum_optimizer_document_count: int | None = None,
+    role_source_provenance: Mapping[str, Mapping[str, Any]] | None = None,
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
     progress_interval_seconds: float = 60.0,
 ) -> dict[str, Any]:
-    """Consume the complete seeded source and atomically publish a v3 corpus."""
+    """Consume a seeded source and atomically publish a v3 packed corpus."""
 
     output_path = Path(output_dir).expanduser().resolve()
     work_root = preparation_work_dir(output_path)
@@ -712,6 +741,42 @@ def prepare_packed_corpus(
         raise PackedCorpusError("source_read_workers must be positive")
     if float(progress_interval_seconds) <= 0:
         raise PackedCorpusError("progress_interval_seconds must be positive")
+    resolved_role_counts = {
+        str(role): int(count) for role, count in reserved_role_counts.items()
+    }
+    if tuple(resolved_role_counts) != tuple(RESERVED_ROLE_COUNTS):
+        raise PackedCorpusError(
+            "reserved_role_counts must preserve ordinary_validation, controller, "
+            "final_holdout order"
+        )
+    if any(count <= 0 for count in resolved_role_counts.values()):
+        raise PackedCorpusError("Reserved role counts must be positive")
+    if optimizer_token_limit is not None:
+        optimizer_token_limit = int(optimizer_token_limit)
+        if optimizer_token_limit <= 0 or optimizer_token_limit % int(context_length):
+            raise PackedCorpusError(
+                "optimizer_token_limit must be positive and context-length aligned"
+            )
+    if minimum_optimizer_document_count is not None:
+        minimum_optimizer_document_count = int(minimum_optimizer_document_count)
+        if minimum_optimizer_document_count <= 0:
+            raise PackedCorpusError(
+                "minimum_optimizer_document_count must be positive"
+            )
+    normalized_role_sources = (
+        {
+            str(role): dict(provenance)
+            for role, provenance in role_source_provenance.items()
+        }
+        if role_source_provenance is not None
+        else None
+    )
+    if normalized_role_sources is not None and set(normalized_role_sources) != set(
+        ALL_CORPUS_ROLES
+    ):
+        raise PackedCorpusError(
+            "role_source_provenance must describe every packed corpus role"
+        )
 
     token_identity = tokenizer_identity(
         tokenizer,
@@ -738,6 +803,22 @@ def prepare_packed_corpus(
         "shard_token_capacity_requested": int(shard_token_capacity),
         "shard_token_capacity_resolved": resolved_capacity,
     }
+    if resolved_role_counts != RESERVED_ROLE_COUNTS:
+        preparation_configuration["reserved_role_counts"] = dict(
+            resolved_role_counts
+        )
+    if optimizer_token_limit is not None:
+        preparation_configuration["optimizer_token_limit"] = int(
+            optimizer_token_limit
+        )
+    if minimum_optimizer_document_count is not None:
+        preparation_configuration["minimum_optimizer_document_count"] = int(
+            minimum_optimizer_document_count
+        )
+    if normalized_role_sources is not None:
+        preparation_configuration["role_source_provenance"] = copy.deepcopy(
+            normalized_role_sources
+        )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = preparation_lock_path(output_path)
@@ -781,9 +862,7 @@ def prepare_packed_corpus(
                 },
                 "role_states": {},
                 "role_manifests": {},
-                "reserved_identities": {
-                    role: [] for role in RESERVED_ROLE_COUNTS
-                },
+                "reserved_identities": {role: [] for role in resolved_role_counts},
                 "source_exhausted": False,
             }
             _atomic_write_json(progress_path, _progress_envelope(progress))
@@ -885,13 +964,13 @@ def prepare_packed_corpus(
 
         reserved_boundaries: list[tuple[int, str]] = []
         boundary = 0
-        for role, count in RESERVED_ROLE_COUNTS.items():
+        for role, count in resolved_role_counts.items():
             boundary += int(count)
             reserved_boundaries.append((boundary, role))
         reserved_total = boundary
         reserved_identity_hashes = {
             stable_hash(identity)
-            for role in RESERVED_ROLE_COUNTS
+            for role in resolved_role_counts
             for identity in progress["reserved_identities"][role]
         }
 
@@ -951,10 +1030,17 @@ def prepare_packed_corpus(
                         )
                         yield (source_index, identity, document)
 
+                optimizer_limit_already_reached = bool(
+                    optimizer_token_limit is not None
+                    and get_writer("optimizer_training").token_count
+                    == optimizer_token_limit
+                )
                 for metadata, token_ids in _ordered_tokenize_documents(
                     (
                         ((source_index, identity), document)
-                        for source_index, identity, document in pending_records()
+                        for source_index, identity, document in (
+                            () if optimizer_limit_already_reached else pending_records()
+                        )
                     ),
                     tokenizer,
                     text_column=text_column,
@@ -970,10 +1056,17 @@ def prepare_packed_corpus(
                         raise PackedCorpusError(
                             "A reserved source document reappeared in training"
                         )
-                    completed_shard = get_writer(role).add_document(
-                        token_ids, eos_token_id=int(token_identity["eos_token_id"])
+                    writer = get_writer(role)
+                    completed_shard = writer.add_document(
+                        token_ids,
+                        eos_token_id=int(token_identity["eos_token_id"]),
+                        max_total_tokens=(
+                            optimizer_token_limit
+                            if role == "optimizer_training"
+                            else None
+                        ),
                     )
-                    if role in RESERVED_ROLE_COUNTS:
+                    if role in resolved_role_counts:
                         progress["reserved_identities"][role].append(identity)
                         reserved_identity_hashes.add(identity_hash)
                     progress["rolling_document_identity_hash"] = _extend_document_hash(
@@ -997,10 +1090,49 @@ def prepare_packed_corpus(
                     if now - last_progress_at >= float(progress_interval_seconds):
                         emit_progress("progress", role)
                         last_progress_at = now
+                    if (
+                        role == "optimizer_training"
+                        and optimizer_token_limit is not None
+                        and writer.token_count == optimizer_token_limit
+                    ):
+                        if (
+                            minimum_optimizer_document_count is not None
+                            and writer.source_document_count
+                            < minimum_optimizer_document_count
+                        ):
+                            raise PackedCorpusError(
+                                "optimizer_token_limit was reached before all "
+                                "tokenizer-training stories entered the optimizer "
+                                "corpus"
+                            )
+                        break
 
                 if int(progress["committed_shuffled_document_count"]) < reserved_total:
                     raise PackedCorpusError(
-                        "FineWeb source ended before all reserved documents were selected"
+                        "Source ended before all reserved documents were selected"
+                    )
+                if optimizer_token_limit is not None:
+                    actual_optimizer_tokens = get_writer(
+                        "optimizer_training"
+                    ).token_count
+                    if actual_optimizer_tokens != optimizer_token_limit:
+                        raise PackedCorpusError(
+                            "Source ended before optimizer_token_limit was reached: "
+                            f"expected {optimizer_token_limit}, found "
+                            f"{actual_optimizer_tokens}"
+                        )
+                actual_optimizer_documents = get_writer(
+                    "optimizer_training"
+                ).source_document_count
+                if (
+                    minimum_optimizer_document_count is not None
+                    and actual_optimizer_documents
+                    < minimum_optimizer_document_count
+                ):
+                    raise PackedCorpusError(
+                        "Optimizer corpus contains fewer documents than required: "
+                        f"expected at least {minimum_optimizer_document_count}, "
+                        f"found {actual_optimizer_documents}"
                     )
                 finish_role("optimizer_training")
                 progress["source_exhausted"] = True
@@ -1062,10 +1194,10 @@ def prepare_packed_corpus(
                     stable_hash(identity)
                     for identity in progress["reserved_identities"][role]
                 }
-                for role in RESERVED_ROLE_COUNTS
+                for role in resolved_role_counts
             }
             pairwise_intersections: dict[str, int] = {}
-            reserved_roles = tuple(RESERVED_ROLE_COUNTS)
+            reserved_roles = tuple(resolved_role_counts)
             for left_index, left in enumerate(reserved_roles):
                 for right in reserved_roles[left_index + 1 :]:
                     count = len(
@@ -1089,7 +1221,12 @@ def prepare_packed_corpus(
                     "dataset_config_name": source_config,
                     "split": source_split,
                     "fingerprint": source_fingerprint,
-                    "source_exhausted": True,
+                    "source_exhausted": optimizer_token_limit is None,
+                    "termination": (
+                        "optimizer_token_limit"
+                        if optimizer_token_limit is not None
+                        else "source_exhausted"
+                    ),
                     "shuffled_document_count": int(
                         progress["committed_shuffled_document_count"]
                     ),
@@ -1116,12 +1253,22 @@ def prepare_packed_corpus(
                         "resolved": resolved_capacity,
                     },
                 },
-                "role_selection_order": list(RESERVED_ROLE_COUNTS),
-                "reserved_role_counts": dict(RESERVED_ROLE_COUNTS),
+                "role_selection_order": list(resolved_role_counts),
+                "reserved_role_counts": dict(resolved_role_counts),
                 "reserved_pairwise_intersection_counts": pairwise_intersections,
                 "role_manifest_hashes": role_hashes,
                 "roles": role_manifests,
             }
+            if optimizer_token_limit is not None:
+                manifest["optimizer_token_limit"] = int(optimizer_token_limit)
+            if minimum_optimizer_document_count is not None:
+                manifest["minimum_optimizer_document_count"] = int(
+                    minimum_optimizer_document_count
+                )
+            if normalized_role_sources is not None:
+                manifest["role_source_provenance"] = copy.deepcopy(
+                    normalized_role_sources
+                )
             manifest["corpus_hash"] = stable_hash(manifest)
             manifest_path = work_root / "corpus_manifest.json"
             _atomic_write_json(manifest_path, manifest)
@@ -1177,8 +1324,30 @@ def load_corpus_manifest(
     if manifest.get("packing_version") != PACKING_VERSION:
         raise PackedCorpusError("Prepared corpus packing version mismatch")
     source = manifest.get("source")
-    if not isinstance(source, Mapping) or source.get("source_exhausted") is not True:
-        raise PackedCorpusError("Prepared corpus does not record source exhaustion")
+    if not isinstance(source, Mapping):
+        raise PackedCorpusError("Prepared corpus source provenance is missing")
+    termination = source.get("termination", "source_exhausted")
+    if termination == "source_exhausted":
+        if source.get("source_exhausted") is not True:
+            raise PackedCorpusError(
+                "Prepared corpus does not record source exhaustion"
+            )
+    elif termination == "optimizer_token_limit":
+        if source.get("source_exhausted") is not False:
+            raise PackedCorpusError(
+                "Token-limited corpus must record an unexhausted physical source"
+            )
+        declared_limit = manifest.get("optimizer_token_limit")
+        if (
+            isinstance(declared_limit, bool)
+            or not isinstance(declared_limit, int)
+            or declared_limit <= 0
+        ):
+            raise PackedCorpusError(
+                "Token-limited corpus optimizer token limit is missing"
+            )
+    else:
+        raise PackedCorpusError("Prepared corpus source termination is invalid")
     if manifest.get("dtype") != "uint32":
         raise PackedCorpusError("Prepared corpus dtype must be uint32")
     roles = manifest.get("roles")
@@ -1212,6 +1381,27 @@ def load_corpus_manifest(
         training["sequence_count"]
     ):
         raise PackedCorpusError("Prepared corpus available optimizer counts mismatch")
+    optimizer_token_limit = manifest.get("optimizer_token_limit")
+    if optimizer_token_limit is not None and int(optimizer_token_limit) != int(
+        training["token_count"]
+    ):
+        raise PackedCorpusError(
+            "Prepared corpus optimizer token limit does not match its training role"
+        )
+    minimum_optimizer_documents = manifest.get("minimum_optimizer_document_count")
+    if minimum_optimizer_documents is not None:
+        if (
+            isinstance(minimum_optimizer_documents, bool)
+            or not isinstance(minimum_optimizer_documents, int)
+            or minimum_optimizer_documents <= 0
+        ):
+            raise PackedCorpusError(
+                "Prepared corpus minimum optimizer document count is invalid"
+            )
+        if minimum_optimizer_documents > int(training["source_document_count"]):
+            raise PackedCorpusError(
+                "Prepared corpus does not contain its required optimizer documents"
+            )
     ordering = manifest.get("training_order")
     if not isinstance(ordering, Mapping):
         raise PackedCorpusError("Prepared corpus training-order metadata is missing")
@@ -1249,6 +1439,10 @@ def load_existing_corpus_if_matching(
     context_length: int = DEFAULT_CONTEXT_LENGTH,
     shard_token_capacity: int = DEFAULT_SHARD_TOKEN_CAPACITY,
     shuffle_buffer_size: int = DEFAULT_SHUFFLE_BUFFER_SIZE,
+    reserved_role_counts: Mapping[str, int] = RESERVED_ROLE_COUNTS,
+    optimizer_token_limit: int | None = None,
+    minimum_optimizer_document_count: int | None = None,
+    role_source_provenance: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Load a fully verified exact-match corpus, or return ``None`` if absent."""
 
@@ -1286,7 +1480,21 @@ def load_existing_corpus_if_matching(
         "preparation.shard_token_capacity.resolved": _resolved_shard_token_capacity(
             shard_token_capacity, context_length
         ),
+        "reserved_role_counts": {
+            str(role): int(count) for role, count in reserved_role_counts.items()
+        },
     }
+    if optimizer_token_limit is not None:
+        expected["optimizer_token_limit"] = int(optimizer_token_limit)
+    if minimum_optimizer_document_count is not None:
+        expected["minimum_optimizer_document_count"] = int(
+            minimum_optimizer_document_count
+        )
+    if role_source_provenance is not None:
+        expected["role_source_provenance"] = {
+            str(role): dict(provenance)
+            for role, provenance in role_source_provenance.items()
+        }
 
     def value_at(path: str) -> Any:
         value: Any = manifest

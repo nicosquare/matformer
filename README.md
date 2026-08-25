@@ -28,6 +28,9 @@ authoritative guide for those experiments. The
 [clean 100M prepared-corpus slicing guide](docs/100m-slicing-experiments.md)
 defines the matched baseline, Thompson, and PanelGrad pilot suite over the same
 immutable tokenizer and corpus.
+The [TinyStories controlled-convergence guide](docs/tinystories-controlled-convergence-experiments.md)
+defines the small dense recipe grid and the frozen-config handoff to later
+standalone and elastic global/windowed experiments.
 
 The importable code now lives under `src/`. The root `train.py` and
 `scripts/make_figures.py` entrypoints remain thin wrappers around that package
