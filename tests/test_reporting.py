@@ -1,5 +1,6 @@
 import csv
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,120 @@ from src.evaluation.reporting_io import (
 )
 from src.utils.metrics import write_metrics_csv, write_scaling_results_csv
 from src.utils.monitoring import group_loss_rows_by_series
+
+
+def _write_final_holdout_reporting_run(
+    root: Path,
+    *,
+    run_id: str,
+    granularities: tuple[str, ...],
+    losses: tuple[float, ...],
+    model_family: str = "nested",
+    sampling_mode: str = "nested-random",
+    final_holdout_manifest_hash: str = "final-holdout-hash",
+) -> Path:
+    from src.evaluation.final_holdout import FINAL_HOLDOUT_AGGREGATION
+    from src.utils.reproducibility import stable_hash
+
+    run_dir = root / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    role_hashes = {
+        "data_roles_manifest_hash": "data-roles-hash",
+        "optimizer_training_manifest_hash": "optimizer-training-hash",
+        "controller_manifest_hash": "controller-hash",
+        "validation_manifest_hash": "validation-hash",
+        "final_holdout_manifest_hash": final_holdout_manifest_hash,
+    }
+    config = {
+        "run": {
+            "run_id": run_id,
+            "model_family": model_family,
+            "sampling_mode": sampling_mode,
+            "seed": 42,
+        },
+        "model": {
+            "variant": "slicing",
+            "correction_mode": "none",
+            "membership_correction": False,
+            "granularity_sampling_mode": "global",
+            "resolved_sampling_mode": "global",
+            "global_sampling_interval_steps": 1,
+            "global_sampling_schedule": "random_with_replacement",
+            "granularities": list(granularities),
+        },
+        "training": {
+            "token_budget": 1_000,
+            "expected_tokens_per_step": 10,
+        },
+        "evaluation": {
+            "final_holdout": {
+                "enabled": True,
+                "evaluate_during_training": False,
+                "examples": 512,
+                "fixed_manifest": True,
+                "manifest_hash": final_holdout_manifest_hash,
+            }
+        },
+        **role_hashes,
+    }
+    (run_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    (run_dir / "run_summary.json").write_text(
+        json.dumps({"run_id": run_id, "status": "completed"}),
+        encoding="utf-8",
+    )
+
+    scaling_rows = []
+    for index, granularity in enumerate(granularities, start=1):
+        scaling_rows.append(
+            {
+                "comparison_id": f"{run_id}__{granularity}",
+                "run_id": run_id,
+                "model_family": model_family,
+                "sampling_mode": sampling_mode,
+                "model_variant": "slicing",
+                "completion_label": "completed",
+                "granularity": granularity,
+                "total_parameters": index * 1_100,
+                "embedding_parameters": 100,
+                "lm_head_parameters": 100,
+                "non_embedding_parameters": index * 1_000,
+                "loss": 99.0,
+                "perplexity": math.exp(99.0),
+                "average_downstream_accuracy": None,
+            }
+        )
+    write_scaling_results_csv(run_dir, scaling_rows)
+
+    components = [
+        {
+            "granularity": granularity,
+            "loss": loss,
+            "perplexity": math.exp(loss),
+            "evaluation_examples": 512,
+            "evaluation_target_tokens": 2_048,
+        }
+        for granularity, loss in zip(granularities, losses, strict=True)
+    ]
+    result_path = run_dir / "final_holdout_results.json"
+    result = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "checkpoint_path": str(run_dir / "checkpoints" / "best.pt"),
+        "checkpoint_selection_provenance": {"source": "ordinary_validation"},
+        "final_holdout_manifest_hash": final_holdout_manifest_hash,
+        "run_summary_hash": "summary-hash",
+        "controller_summary_hash": "controller-summary-hash",
+        "controller_metrics_hash": "controller-metrics-hash",
+        "ordered_granularities": list(granularities),
+        "ordered_per_granularity_losses": components,
+        "uniform_average_loss": math.fsum(losses) / len(losses),
+        "aggregation_method": FINAL_HOLDOUT_AGGREGATION,
+        "evaluation_example_count": 512,
+        "result_path": str(result_path),
+    }
+    result["result_hash"] = stable_hash(result)
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+    return run_dir
 
 
 def _write_controller_timeline_run(
@@ -563,6 +678,94 @@ def test_parameter_count_refresh_preserves_stored_counts_for_legacy_config(
     assert refreshed[0]["non_embedding_parameters"] == "100"
 
 
+def test_final_holdout_rows_replace_validation_metrics_and_generate_size_figures(
+    tmp_path,
+):
+    from src.evaluation.reporting_io import read_final_holdout_scaling_rows
+
+    nested_run = _write_final_holdout_reporting_run(
+        tmp_path,
+        run_id="holdout-nested",
+        granularities=("small", "full"),
+        losses=(2.0, 1.0),
+    )
+    _write_final_holdout_reporting_run(
+        tmp_path,
+        run_id="holdout-standalone-small",
+        granularities=("small",),
+        losses=(1.8,),
+        model_family="standalone",
+        sampling_mode="standalone",
+    )
+    _write_final_holdout_reporting_run(
+        tmp_path,
+        run_id="holdout-standalone-full",
+        granularities=("full",),
+        losses=(0.9,),
+        model_family="standalone",
+        sampling_mode="standalone",
+    )
+
+    rows = read_final_holdout_scaling_rows(tmp_path)
+    nested_small = next(
+        row
+        for row in rows
+        if row["run_id"] == "holdout-nested" and row["granularity"] == "small"
+    )
+    assert nested_small["loss"] == pytest.approx(2.0)
+    assert nested_small["perplexity"] == pytest.approx(math.exp(2.0))
+    assert nested_small["metric_source"] == "final_holdout_results.json"
+    assert nested_small["evaluation_split"] == "final_holdout"
+    assert nested_small["_source_csv"] == str(nested_run / "scaling_results.csv")
+
+    figure_names = {
+        path.name
+        for path in generate_figures(
+            tmp_path,
+            tmp_path / "figures",
+            refresh_counts=False,
+            dpi=20,
+        )
+    }
+    assert "final_holdout_ppl_vs_size.png" in figure_names
+    assert "final_holdout_loss_vs_size.png" not in figure_names
+
+
+def test_final_holdout_reporting_refuses_partial_or_mixed_comparison_sets(tmp_path):
+    from src.evaluation.reporting_io import (
+        FinalHoldoutReportingError,
+        read_final_holdout_scaling_rows,
+    )
+
+    complete_run = _write_final_holdout_reporting_run(
+        tmp_path,
+        run_id="holdout-complete",
+        granularities=("small", "full"),
+        losses=(2.0, 1.0),
+    )
+    missing_run = _write_final_holdout_reporting_run(
+        tmp_path,
+        run_id="holdout-missing",
+        granularities=("small", "full"),
+        losses=(2.1, 1.1),
+    )
+    (missing_run / "final_holdout_results.json").unlink()
+
+    with pytest.raises(FinalHoldoutReportingError, match="Missing"):
+        read_final_holdout_scaling_rows(tmp_path)
+
+    _write_final_holdout_reporting_run(
+        tmp_path,
+        run_id="holdout-missing",
+        granularities=("small", "full"),
+        losses=(2.1, 1.1),
+        final_holdout_manifest_hash="different-final-holdout-hash",
+    )
+    assert (complete_run / "final_holdout_results.json").is_file()
+    with pytest.raises(FinalHoldoutReportingError, match="mixes corpus"):
+        read_final_holdout_scaling_rows(tmp_path)
+
+
 def test_reporting_path_groups_loss_rows_and_writes_medium_trend_report(tmp_path):
     run_dir = tmp_path / "debug-nested-001"
 
@@ -756,6 +959,8 @@ def test_default_generation_removes_superseded_artifacts(tmp_path):
         "loss_vs_size__nested_random_slicing_global.png",
         "ppl_vs_size__nested_random_slicing_global.png",
         "accuracy_vs_size__nested_random_slicing_global.png",
+        "final_holdout_loss_vs_size.png",
+        "final_holdout_ppl_vs_size__nested_random_slicing_global.png",
         "selected_granularity_over_tokens_old-run.png",
         "selected_granularity_share_over_tokens_old-run.png",
         "selected_granularity_zoom_old-run.png",

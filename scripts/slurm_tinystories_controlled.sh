@@ -24,16 +24,20 @@ Options:
   --repo-root PATH            Repository root; defaults to the submit directory.
   --python-bin PATH           Python executable; defaults to python.
   --final-holdout-only PATH   Evaluate a completed selected run without training.
+                              Repeat to evaluate several runs sequentially.
   -h, --help                  Show this message.
 
 All other arguments are forwarded to train.py. If --config is omitted, the
 frozen controlled TinyStories comparison config is used.
+
+Finalize several completed runs in one allocation:
+  sbatch scripts/slurm_tinystories_controlled.sh --final-holdout-only RUN_A --final-holdout-only RUN_B
 USAGE
 }
 
 REPO_ROOT_ARG=""
 PYTHON_BIN="${PYTHON_BIN:-python}"
-FINAL_HOLDOUT_RUN_DIR=""
+FINAL_HOLDOUT_RUN_DIRS=()
 FORWARDED_ARGS=()
 HAS_CONFIG=false
 
@@ -60,7 +64,7 @@ while [[ $# -gt 0 ]]; do
         echo "Missing value for --final-holdout-only" >&2
         exit 2
       fi
-      FINAL_HOLDOUT_RUN_DIR="$2"
+      FINAL_HOLDOUT_RUN_DIRS+=("$2")
       shift 2
       ;;
     --config)
@@ -92,13 +96,19 @@ else
 fi
 cd "$ROOT_DIR"
 
-if [[ -n "$FINAL_HOLDOUT_RUN_DIR" ]]; then
+if [[ ${#FINAL_HOLDOUT_RUN_DIRS[@]} -gt 0 ]]; then
   if [[ ${#FORWARDED_ARGS[@]} -ne 0 ]]; then
     echo "--final-holdout-only cannot be combined with training arguments" >&2
     exit 2
   fi
-  exec "$PYTHON_BIN" scripts/evaluate_final_holdout.py \
-    --run-dir "$FINAL_HOLDOUT_RUN_DIR"
+  for run_dir in "${FINAL_HOLDOUT_RUN_DIRS[@]}"; do
+    printf 'Finalizing completed run: %s\n' "$run_dir"
+    "$PYTHON_BIN" scripts/evaluate_final_holdout.py \
+      --run-dir "$run_dir" \
+      --device cuda \
+      --skip-existing
+  done
+  exit 0
 fi
 
 if [[ "$HAS_CONFIG" == false ]]; then

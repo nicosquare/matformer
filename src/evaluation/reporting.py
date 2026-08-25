@@ -2087,6 +2087,18 @@ def generate_figures(
             scaling_rows,
         )
 
+    final_holdout_rows = reporting_io.read_final_holdout_scaling_rows(input_root)
+    final_holdout_rows = filter_plot_rows(
+        final_holdout_rows,
+        variants=variants,
+        corrections=corrections,
+    )
+    if refresh_counts and final_holdout_rows:
+        final_holdout_rows = reporting_io.refresh_scaling_parameter_counts(
+            input_root,
+            final_holdout_rows,
+        )
+
     task_result_rows = reporting_io.read_csv_artifacts(input_root, "task_results.csv")
     consistency_rows = reporting_io.read_csv_artifacts(
         input_root,
@@ -2153,6 +2165,22 @@ def generate_figures(
             write_medium_trend_report(
                 scaling_rows,
                 output_dir / "medium_trend_report.md",
+            )
+        )
+
+    if final_holdout_rows:
+        figure_paths.extend(
+            plot_metric_vs_size(
+                final_holdout_rows,
+                metric_name="perplexity",
+                ylabel="Final holdout perplexity",
+                output_path=output_dir / "final_holdout_ppl_vs_size.png",
+                panel_specs=reporting_styles.SIZE_PLOT_PANELS_WITH_SAMPLING,
+                figure_title=("Final holdout perplexity vs Non-embedding parameters"),
+                style="default",
+                figure_alias="all",
+                include_individual_panels=include_individual_size_panels,
+                dpi=dpi,
             )
         )
 
@@ -2340,6 +2368,8 @@ def _remove_stale_generator_artifacts(
         "global_sampling_policy_summary__*.csv",
         "loss_vs_size.png",
         "loss_vs_size__*.png",
+        "final_holdout_loss_vs_size*.png",
+        "final_holdout_ppl_vs_size*.png",
         "learning_rate_schedule.png",
         "selected_granularity_over_tokens_*.png",
         "selected_granularity_share_over_tokens_*.png",

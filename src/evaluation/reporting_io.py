@@ -28,6 +28,7 @@ __all__ = [
     "GradientInterferencePair",
     "GradientInterferenceReportingError",
     "GradientInterferenceSnapshot",
+    "FinalHoldoutReportingError",
     "LearningRateSchedule",
     "PanelGradAction",
     "PanelGradHistory",
@@ -53,6 +54,7 @@ __all__ = [
     "global_sampling_history_as_timeline",
     "read_csv_artifacts",
     "read_csv_artifacts_filtered",
+    "read_final_holdout_scaling_rows",
     "recompute_parameter_counts",
     "refresh_scaling_parameter_counts",
     "resolved_sampling_mode_from_saved_config",
@@ -67,6 +69,10 @@ PANELGRAD_METHOD_FAMILIES = {
     "panelgrad_gradient_rms": "gradient_rms",
     "panelgrad_gradient_l2": "gradient_l2",
 }
+
+
+class FinalHoldoutReportingError(ValueError):
+    """Raised when final-holdout rows cannot form one valid comparison set."""
 
 
 @dataclass(frozen=True)
@@ -940,6 +946,405 @@ def _gradient_width_ordering(
 
 def read_csv_artifacts(input_root: Path, filename: str) -> list[dict[str, str]]:
     return read_csv_artifacts_filtered(input_root, filename, row_filter=None)
+
+
+def read_final_holdout_scaling_rows(
+    input_root: str | Path,
+) -> list[dict[str, Any]]:
+    """Build plot rows from complete, contract-compatible final-holdout results.
+
+    The per-run scaling CSV supplies only model metadata and parameter counts;
+    loss and perplexity always come from the separately sealed holdout artifact.
+    A completed run that opted into the post-training holdout must have a valid
+    result before any rows are returned, preventing partial comparison figures.
+    """
+
+    from .final_holdout import (
+        FINAL_HOLDOUT_AGGREGATION,
+        FinalHoldoutError,
+        resolve_existing_final_holdout_result,
+    )
+
+    root = Path(input_root)
+    expected_runs: list[tuple[Path, dict[str, Any], dict[str, Any]]] = []
+    for config_path in sorted(root.rglob("config.json")):
+        run_dir = config_path.parent
+        config = _read_json_mapping(config_path, artifact_name="saved run config")
+        if not _post_training_final_holdout_enabled(config):
+            continue
+
+        summary_path = run_dir / "run_summary.json"
+        if not summary_path.is_file():
+            continue
+        summary = _read_json_mapping(summary_path, artifact_name="run summary")
+        if summary.get("status") != "completed":
+            if (run_dir / "final_holdout_results.json").is_file():
+                raise FinalHoldoutReportingError(
+                    f"Final-holdout result exists for an incomplete run: {run_dir}"
+                )
+            continue
+        expected_runs.append((run_dir, config, summary))
+
+    if not expected_runs:
+        return []
+
+    missing_results = [
+        run_dir
+        for run_dir, _, _ in expected_runs
+        if not (run_dir / "final_holdout_results.json").is_file()
+    ]
+    if missing_results:
+        formatted = "\n".join(f"- {path}" for path in missing_results)
+        raise FinalHoldoutReportingError(
+            "Final-holdout reporting requires results for every completed, "
+            "holdout-enabled run. Missing:\n"
+            f"{formatted}"
+        )
+
+    contracts: dict[str, list[Path]] = {}
+    contract_payloads: dict[str, dict[str, Any]] = {}
+    for run_dir, config, _ in expected_runs:
+        payload = _final_holdout_comparison_contract(config, run_dir=run_dir)
+        key = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        contracts.setdefault(key, []).append(run_dir)
+        contract_payloads[key] = payload
+    if len(contracts) != 1:
+        summaries = []
+        for key, run_dirs in contracts.items():
+            summaries.append(
+                f"- runs={','.join(path.name for path in run_dirs)} "
+                f"contract={json.dumps(contract_payloads[key], sort_keys=True)}"
+            )
+        raise FinalHoldoutReportingError(
+            "Final-holdout comparison mixes corpus, holdout, budget, seed, or "
+            "granularity contracts:\n" + "\n".join(summaries)
+        )
+
+    comparison_contract = next(iter(contract_payloads.values()))
+    nested_orders: dict[tuple[str, ...], list[Path]] = {}
+    for run_dir, config, _ in expected_runs:
+        run = config["run"]
+        if (
+            run.get("model_family") == "standalone"
+            or run.get("sampling_mode") == "standalone"
+        ):
+            continue
+        order = tuple(str(value) for value in config["model"]["granularities"])
+        nested_orders.setdefault(order, []).append(run_dir)
+    if len(nested_orders) > 1:
+        summaries = [
+            f"- granularities={list(order)} "
+            f"runs={','.join(path.name for path in run_dirs)}"
+            for order, run_dirs in nested_orders.items()
+        ]
+        raise FinalHoldoutReportingError(
+            "Final-holdout comparison mixes nested granularity grids:\n"
+            + "\n".join(summaries)
+        )
+    nested_universe = set(next(iter(nested_orders))) if nested_orders else set()
+    if nested_universe:
+        for run_dir, config, _ in expected_runs:
+            run = config["run"]
+            if (
+                run.get("model_family") != "standalone"
+                and run.get("sampling_mode") != "standalone"
+            ):
+                continue
+            standalone_granularities = {
+                str(value) for value in config["model"]["granularities"]
+            }
+            if not standalone_granularities.issubset(nested_universe):
+                raise FinalHoldoutReportingError(
+                    "Standalone granularity is outside the nested comparison grid: "
+                    f"{run_dir}"
+                )
+
+    rows: list[dict[str, Any]] = []
+    for run_dir, config, summary in expected_runs:
+        run_id = _saved_run_id(config, run_dir=run_dir)
+        if summary.get("run_id") != run_id:
+            raise FinalHoldoutReportingError(
+                f"Run ID mismatch between config and summary: {run_dir}"
+            )
+        try:
+            result = resolve_existing_final_holdout_result(run_dir)
+        except FinalHoldoutError as error:
+            raise FinalHoldoutReportingError(
+                f"Invalid final-holdout result for {run_dir}: {error}"
+            ) from error
+        if result is None:
+            raise FinalHoldoutReportingError(
+                f"Missing final-holdout result for completed run: {run_dir}"
+            )
+
+        components = _validate_final_holdout_reporting_result(
+            result,
+            run_dir=run_dir,
+            expected_run_id=run_id,
+            expected_contract=comparison_contract,
+            expected_granularities=[
+                str(value) for value in config["model"]["granularities"]
+            ],
+            expected_aggregation=FINAL_HOLDOUT_AGGREGATION,
+        )
+        scaling_path = run_dir / "scaling_results.csv"
+        if not scaling_path.is_file():
+            raise FinalHoldoutReportingError(
+                f"Missing scaling metadata for final-holdout run: {scaling_path}"
+            )
+        scaling_by_granularity: dict[str, dict[str, Any]] = {}
+        for scaling_row in iter_csv_artifact_rows(scaling_path):
+            granularity = str(scaling_row.get("granularity") or "")
+            if not granularity or granularity in scaling_by_granularity:
+                raise FinalHoldoutReportingError(
+                    "Scaling metadata must contain one row per granularity: "
+                    f"{scaling_path}"
+                )
+            if scaling_row.get("run_id") != run_id:
+                raise FinalHoldoutReportingError(
+                    f"Scaling metadata run ID mismatch: {scaling_path}"
+                )
+            scaling_by_granularity[granularity] = scaling_row
+
+        ordered_granularities = [row["granularity"] for row in components]
+        if set(scaling_by_granularity) != set(ordered_granularities):
+            raise FinalHoldoutReportingError(
+                "Scaling metadata granularities do not match the final holdout "
+                f"for {run_dir}"
+            )
+        result_path = run_dir / "final_holdout_results.json"
+        for component in components:
+            granularity = component["granularity"]
+            row = dict(scaling_by_granularity[granularity])
+            row.update(
+                {
+                    "comparison_id": f"{run_id}__{granularity}__final_holdout",
+                    "loss": component["loss"],
+                    "perplexity": component["perplexity"],
+                    "evaluation_examples": component["evaluation_examples"],
+                    "evaluation_target_tokens": component["evaluation_target_tokens"],
+                    "evaluation_split": "final_holdout",
+                    "metric_source": "final_holdout_results.json",
+                    "final_holdout_manifest_hash": result[
+                        "final_holdout_manifest_hash"
+                    ],
+                    "_source_json": str(result_path),
+                }
+            )
+            rows.append(row)
+
+    return enrich_scaling_metadata_from_run_config(root, rows)
+
+
+def _read_json_mapping(path: Path, *, artifact_name: str) -> dict[str, Any]:
+    try:
+        with path.open("r", encoding="utf-8") as artifact_file:
+            value = json.load(artifact_file)
+    except (OSError, json.JSONDecodeError) as error:
+        raise FinalHoldoutReportingError(
+            f"Could not read {artifact_name}: {path}"
+        ) from error
+    if not isinstance(value, dict):
+        raise FinalHoldoutReportingError(
+            f"{artifact_name.capitalize()} must be a mapping: {path}"
+        )
+    return value
+
+
+def _post_training_final_holdout_enabled(config: Mapping[str, Any]) -> bool:
+    evaluation = config.get("evaluation")
+    final_holdout = (
+        evaluation.get("final_holdout") if isinstance(evaluation, Mapping) else None
+    )
+    return bool(
+        isinstance(final_holdout, Mapping)
+        and final_holdout.get("enabled") is True
+        and final_holdout.get("evaluate_during_training") is False
+    )
+
+
+def _saved_run_id(config: Mapping[str, Any], *, run_dir: Path) -> str:
+    run = config.get("run")
+    run_id = run.get("run_id") if isinstance(run, Mapping) else None
+    if run_id in (None, ""):
+        raise FinalHoldoutReportingError(f"Saved config has no run ID: {run_dir}")
+    return str(run_id)
+
+
+def _final_holdout_comparison_contract(
+    config: Mapping[str, Any],
+    *,
+    run_dir: Path,
+) -> dict[str, Any]:
+    run = config.get("run")
+    model = config.get("model")
+    training = config.get("training")
+    evaluation = config.get("evaluation")
+    if not all(
+        isinstance(value, Mapping) for value in (run, model, training, evaluation)
+    ):
+        raise FinalHoldoutReportingError(
+            f"Saved config lacks run/model/training/evaluation mappings: {run_dir}"
+        )
+    final_holdout = evaluation.get("final_holdout")
+    granularities = model.get("granularities")
+    if (
+        not isinstance(final_holdout, Mapping)
+        or final_holdout.get("enabled") is not True
+        or final_holdout.get("evaluate_during_training") is not False
+        or final_holdout.get("fixed_manifest") is not True
+    ):
+        raise FinalHoldoutReportingError(
+            f"Saved final-holdout contract is incompatible: {run_dir}"
+        )
+    if (
+        not isinstance(granularities, list)
+        or not granularities
+        or len({str(value) for value in granularities}) != len(granularities)
+    ):
+        raise FinalHoldoutReportingError(
+            f"Saved granularity order is invalid: {run_dir}"
+        )
+
+    ordinary_validation_hash = config.get("ordinary_validation_manifest_hash")
+    if ordinary_validation_hash in (None, ""):
+        ordinary_validation_hash = config.get("validation_manifest_hash")
+    payload = {
+        "data_roles_manifest_hash": config.get("data_roles_manifest_hash"),
+        "optimizer_training_manifest_hash": config.get(
+            "optimizer_training_manifest_hash"
+        ),
+        "ordinary_validation_manifest_hash": ordinary_validation_hash,
+        "controller_manifest_hash": config.get("controller_manifest_hash"),
+        "final_holdout_manifest_hash": config.get("final_holdout_manifest_hash"),
+        "final_holdout_examples": final_holdout.get("examples"),
+        "token_budget": training.get("token_budget"),
+        "expected_tokens_per_step": training.get("expected_tokens_per_step"),
+        "seed": run.get("seed"),
+    }
+    missing = [key for key, value in payload.items() if value in (None, "", [])]
+    if missing:
+        raise FinalHoldoutReportingError(
+            f"Saved comparison contract is incomplete for {run_dir}: "
+            f"{', '.join(missing)}"
+        )
+    if final_holdout.get("manifest_hash") not in (
+        None,
+        payload["final_holdout_manifest_hash"],
+    ):
+        raise FinalHoldoutReportingError(
+            f"Final-holdout manifest hash disagrees with saved config: {run_dir}"
+        )
+    return payload
+
+
+def _validate_final_holdout_reporting_result(
+    result: Mapping[str, Any],
+    *,
+    run_dir: Path,
+    expected_run_id: str,
+    expected_contract: Mapping[str, Any],
+    expected_granularities: list[str],
+    expected_aggregation: str,
+) -> list[dict[str, Any]]:
+    ordered_granularities = result.get("ordered_granularities")
+    components = result.get("ordered_per_granularity_losses")
+    if (
+        result.get("run_id") != expected_run_id
+        or ordered_granularities != expected_granularities
+        or not isinstance(components, list)
+        or len(components) != len(expected_granularities)
+    ):
+        raise FinalHoldoutReportingError(
+            f"Final-holdout run ID or granularity order mismatch: {run_dir}"
+        )
+    if (
+        result.get("final_holdout_manifest_hash")
+        != expected_contract["final_holdout_manifest_hash"]
+        or result.get("aggregation_method") != expected_aggregation
+        or result.get("evaluation_example_count")
+        != expected_contract["final_holdout_examples"]
+    ):
+        raise FinalHoldoutReportingError(
+            f"Final-holdout evaluation contract mismatch: {run_dir}"
+        )
+    selection = result.get("checkpoint_selection_provenance")
+    if not isinstance(selection, Mapping) or selection.get("source") != (
+        "ordinary_validation"
+    ):
+        raise FinalHoldoutReportingError(
+            "Final reported comparisons require an ordinary-validation-selected "
+            f"checkpoint: {run_dir}"
+        )
+
+    validated: list[dict[str, Any]] = []
+    for expected_granularity, component in zip(
+        expected_granularities, components, strict=True
+    ):
+        if not isinstance(component, Mapping) or component.get("granularity") != (
+            expected_granularity
+        ):
+            raise FinalHoldoutReportingError(
+                f"Final-holdout component order mismatch: {run_dir}"
+            )
+        try:
+            loss = _finite_float(component.get("loss"), "final holdout loss")
+            perplexity = _finite_float(
+                component.get("perplexity"), "final holdout perplexity"
+            )
+            evaluation_examples = _csv_positive_int(
+                component.get("evaluation_examples"),
+                "final holdout evaluation_examples",
+            )
+            evaluation_target_tokens = _csv_positive_int(
+                component.get("evaluation_target_tokens"),
+                "final holdout evaluation_target_tokens",
+            )
+        except ValueError as error:
+            raise FinalHoldoutReportingError(f"{error}: {run_dir}") from error
+        try:
+            expected_perplexity = math.exp(loss)
+        except OverflowError as error:
+            raise FinalHoldoutReportingError(
+                f"Final-holdout loss cannot produce finite perplexity: {run_dir}"
+            ) from error
+        if not math.isclose(
+            perplexity,
+            expected_perplexity,
+            rel_tol=1e-6,
+            abs_tol=1e-9,
+        ):
+            raise FinalHoldoutReportingError(
+                f"Final-holdout loss/perplexity mismatch: {run_dir}"
+            )
+        if evaluation_examples != expected_contract["final_holdout_examples"]:
+            raise FinalHoldoutReportingError(
+                f"Final-holdout component example count mismatch: {run_dir}"
+            )
+        validated.append(
+            {
+                "granularity": expected_granularity,
+                "loss": loss,
+                "perplexity": perplexity,
+                "evaluation_examples": evaluation_examples,
+                "evaluation_target_tokens": evaluation_target_tokens,
+            }
+        )
+
+    uniform_average_loss = _finite_float(
+        result.get("uniform_average_loss"), "uniform_average_loss"
+    )
+    expected_average = math.fsum(row["loss"] for row in validated) / len(validated)
+    if not math.isclose(
+        uniform_average_loss,
+        expected_average,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    ):
+        raise FinalHoldoutReportingError(
+            f"Final-holdout uniform average mismatch: {run_dir}"
+        )
+    return validated
 
 
 def iter_csv_artifact_rows(path: str | Path) -> Iterator[dict[str, str]]:

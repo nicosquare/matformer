@@ -616,33 +616,49 @@ batch geometry, or selected token/optimizer-step horizon.
 ## 10. Evaluate and compare the completed campaigns
 
 Declare the comparison set using ordinary validation before exposing the
-sealed final holdout. Then submit final-holdout evaluation for every completed
-run that belongs to that declared set:
+sealed final holdout. Then collect every completed run in that declared set and
+submit one finalization allocation. The allocation evaluates the runs
+sequentially, so the entire final holdout consumes one Slurm job slot rather
+than one slot per run:
 
 ```bash
 export GROUP_DIR_8G="$OUT_8G/matformer_llama_2m_$TOKEN_BUDGET_GROUP"
 export GROUP_DIR_4G="$OUT_4G/matformer_llama_2m_$TOKEN_BUDGET_GROUP"
+export FINALIZATION_WALLTIME="${FINALIZATION_WALLTIME:-02:00:00}"
+
+FINAL_HOLDOUT_ARGS=()
 
 for GROUP_DIR in "$GROUP_DIR_8G" "$GROUP_DIR_4G"; do
-  find "$GROUP_DIR" -mindepth 1 -maxdepth 1 -type d -print0 |
+  if [[ -d "$GROUP_DIR" ]]; then
     while IFS= read -r -d '' RUN_DIR; do
       [[ -f "$RUN_DIR/run_summary.json" ]] || continue
-      [[ -f "$RUN_DIR/final_holdout_results.json" ]] && continue
       STATUS="$("$PYTHON_BIN" -c \
         'import json, pathlib, sys; print(json.loads((pathlib.Path(sys.argv[1]) / "run_summary.json").read_text())["status"])' \
         "$RUN_DIR")"
       [[ "$STATUS" == completed ]] || continue
-      RUN_ID="$(basename "$RUN_DIR")"
-      "${SBATCH[@]}" \
-        --job-name="holdout-$RUN_ID" \
-        scripts/slurm_tinystories_controlled.sh \
-        --python-bin "$PYTHON_BIN" \
-        --final-holdout-only "$RUN_DIR"
-    done
+      FINAL_HOLDOUT_ARGS+=(--final-holdout-only "$RUN_DIR")
+    done < <(find "$GROUP_DIR" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)
+  fi
 done
+
+if (( ${#FINAL_HOLDOUT_ARGS[@]} > 0 )); then
+  "${SBATCH[@]}" \
+    --time="$FINALIZATION_WALLTIME" \
+    --job-name="tiny-$BUDGET_RUN_SLUG-final-holdouts" \
+    scripts/slurm_tinystories_controlled.sh \
+    --python-bin "$PYTHON_BIN" \
+    "${FINAL_HOLDOUT_ARGS[@]}"
+else
+  echo "No completed runs are waiting for final-holdout evaluation"
+fi
 ```
 
-Generate one figure set per width grid:
+The finalization launcher uses `--skip-existing` for each run. If one run
+fails or the allocation reaches its wall-time limit, rerun this block: existing
+valid results are skipped and only unfinished runs consume evaluation time.
+
+Wait for the single finalization job to complete successfully, then generate
+one figure set per width grid:
 
 ```bash
 "$PYTHON_BIN" scripts/make_figures.py \
@@ -658,8 +674,21 @@ Generate one figure set per width grid:
   --correction none
 ```
 
-Use ordinary validation trajectories to study when gaps appear and the sealed
-final holdout for the final reported comparisons. For each width grid, compare:
+`make_figures.py` now keeps the two metric sources separate:
+
+- `ppl_vs_size*.png` and the validation trajectories use ordinary validation;
+- `final_holdout_ppl_vs_size.png` uses only `final_holdout_results.json`, with
+  perplexity on the primary axis and loss on the secondary axis.
+
+The final-holdout figures are all-or-nothing. Figure generation fails clearly
+if a completed holdout-enabled run is missing its result, if a result is
+malformed, or if the selected runs mix data-role hashes, holdout hashes, token
+budgets, seeds, or nested granularity grids. This prevents a partial final plot
+from being mistaken for the declared comparison set.
+
+Use ordinary validation trajectories to study when gaps appear and use the
+sealed final-holdout figures for the final reported comparisons. For each width
+grid, compare:
 
 - elastic `H=1` against `H=5`, `H=25`, and `H=50`;
 - `H=25` against Thompson and both PanelGrad policies;

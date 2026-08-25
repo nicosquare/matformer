@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -219,6 +221,52 @@ def test_prepare_command_accepts_explicit_or_full_optimizer_token_count():
     assert command.parse_args(
         [*shared, "--optimizer-token-count", "67108864"]
     ).optimizer_token_count == 67_108_864
+
+
+def test_tinystories_slurm_finalizes_multiple_runs_sequentially(tmp_path):
+    recorder = tmp_path / "python-recorder.sh"
+    argv_path = tmp_path / "argv.txt"
+    first_run = tmp_path / "completed-run-a"
+    second_run = tmp_path / "completed-run-b"
+    recorder.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '__CALL__\\n' >> \"$ARGV_FILE\"\n"
+        'printf \'%s\\n\' "$@" >> "$ARGV_FILE"\n',
+        encoding="utf-8",
+    )
+    recorder.chmod(0o755)
+    env = os.environ.copy()
+    env["ARGV_FILE"] = str(argv_path)
+
+    subprocess.run(
+        [
+            "bash",
+            "scripts/slurm_tinystories_controlled.sh",
+            "--python-bin",
+            str(recorder),
+            "--final-holdout-only",
+            str(first_run),
+            "--final-holdout-only",
+            str(second_run),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    calls = argv_path.read_text(encoding="utf-8").split("__CALL__\n")[1:]
+    assert len(calls) == 2
+    for call, run_dir in zip(calls, (first_run, second_run), strict=True):
+        assert call.splitlines() == [
+            "scripts/evaluate_final_holdout.py",
+            "--run-dir",
+            str(run_dir),
+            "--device",
+            "cuda",
+            "--skip-existing",
+        ]
 
 
 def test_prepare_command_reports_resume_replay_and_live_throughput(
