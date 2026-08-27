@@ -4,6 +4,7 @@ import csv
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -267,6 +268,80 @@ def test_tinystories_slurm_finalizes_multiple_runs_sequentially(tmp_path):
             "cuda",
             "--skip-existing",
         ]
+
+
+@pytest.mark.parametrize(
+    ("profile", "dataset_name", "tokenizer_name", "corpus_name", "phase"),
+    [
+        (
+            "stories",
+            "roneneldan/TinyStories",
+            "tinystories-sentencepiece-bpe-2k-v1",
+            "tinystories-packed-full-v1",
+            "tinystories_controlled",
+        ),
+        (
+            "instruct",
+            "roneneldan/TinyStoriesInstruct",
+            "tinystories-instruct-sentencepiece-bpe-2k-v1",
+            "tinystories-instruct-packed-full-v1",
+            "tinystories_instruct_controlled",
+        ),
+    ],
+)
+def test_tinystories_profile_selector_binds_data_contract(
+    tmp_path,
+    profile,
+    dataset_name,
+    tokenizer_name,
+    corpus_name,
+    phase,
+):
+    env = os.environ.copy()
+    env["PATH"] = f"{Path(sys.executable).parent}:{env.get('PATH', '')}"
+    env["TINYSTORIES_PROFILE"] = profile
+    env["MATFORMER_TOKENIZER_ROOT"] = str(tmp_path / "tokenizers")
+    env["MATFORMER_CORPUS_ROOT"] = str(tmp_path / "corpora")
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            (
+                "source scripts/select_tinystories_profile.sh >/dev/null; "
+                "printf '%s\\n' \"$DATASET_NAME\" \"$TOKENIZER\" "
+                "\"$CORPUS\" \"$DATASET_PHASE\""
+            ),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.splitlines() == [
+        dataset_name,
+        str(tmp_path / "tokenizers" / tokenizer_name),
+        str(tmp_path / "corpora" / corpus_name),
+        phase,
+    ]
+
+
+def test_tinystories_profile_selector_requires_explicit_profile(tmp_path):
+    env = os.environ.copy()
+    env["PATH"] = f"{Path(sys.executable).parent}:{env.get('PATH', '')}"
+    env.pop("TINYSTORIES_PROFILE", None)
+    result = subprocess.run(
+        ["bash", "-c", "source scripts/select_tinystories_profile.sh"],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "must be stories or instruct" in result.stderr
 
 
 def test_prepare_command_reports_resume_replay_and_live_throughput(
@@ -694,7 +769,13 @@ def test_controlled_config_freezes_selected_recipe(tmp_path):
     assert config["training"]["scheduler_name"] == "cosine"
 
 
-def test_controlled_config_resolves_four_granularity_scope(tmp_path):
+@pytest.mark.parametrize(
+    "dataset_phase",
+    ["tinystories_controlled", "tinystories_instruct_controlled"],
+)
+def test_controlled_config_resolves_four_granularity_scope(
+    tmp_path, dataset_phase
+):
     tokenizer_dir, corpus_dir = _prepare_config_fixture(tmp_path)
     config = resolve_run_config(
         "configs/controlled_exps/tinystories_controlled_convergence.yaml",
@@ -707,6 +788,7 @@ def test_controlled_config_resolves_four_granularity_scope(tmp_path):
             "run.model_family=nested",
             "run.sampling_mode=nested-random",
             "run.granularity=null",
+            f"dataset.dataset_phase={dataset_phase}",
             "model.granularities=[g250,g500,g750,g1000]",
             (
                 "model.granularity_prefixes={g250: 0.25, g500: 0.5, "
@@ -726,6 +808,7 @@ def test_controlled_config_resolves_four_granularity_scope(tmp_path):
         "g750": 0.75,
         "g1000": 1.0,
     }
+    assert config["dataset"]["dataset_phase"] == dataset_phase
     assert config["model"]["intermediate_size"] == 512
 
 

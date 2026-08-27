@@ -101,6 +101,10 @@ PRODUCTION_GRANULARITY_PREFIXES = {
     label: (index + 1) / 8.0
     for index, label in enumerate(PRODUCTION_GRANULARITY_ORDER)
 }
+TINYSTORIES_CONTROLLED_DATASET_PHASES = {
+    "tinystories_controlled",
+    "tinystories_instruct_controlled",
+}
 DEFAULT_FFN_MULTIPLIER = 4
 CONFIG_ROOT = Path(__file__).resolve().parent.parent.parent
 PRESET_REGISTRY_ROOT = CONFIG_ROOT / "configs" / "presets"
@@ -1316,7 +1320,7 @@ def _validate_distributed_and_prepared_corpus_contract(
     if config["run"]["model_family"] == "nested":
         granularities = tuple(model.get("granularities", ()))
         dataset_phase = dataset.get("dataset_phase")
-        if dataset_phase == "tinystories_controlled":
+        if dataset_phase in TINYSTORIES_CONTROLLED_DATASET_PHASES:
             if not granularities:
                 raise ConfigError(
                     "TinyStories packed-mmap nested runs require granularities"
@@ -1337,7 +1341,7 @@ def _validate_distributed_and_prepared_corpus_contract(
                 "10B packed-mmap nested runs require ordered granularities "
                 f"{list(PRODUCTION_GRANULARITY_ORDER)}"
             )
-        if dataset_phase != "tinystories_controlled":
+        if dataset_phase not in TINYSTORIES_CONTROLLED_DATASET_PHASES:
             prefixes = model.get("granularity_prefixes", {})
             if any(
                 not math.isclose(
