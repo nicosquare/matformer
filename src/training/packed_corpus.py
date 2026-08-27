@@ -705,6 +705,7 @@ def prepare_packed_corpus(
     tokenizer: Any,
     output_dir: str | Path,
     *,
+    corpus_name: str | None = None,
     tokenizer_name: str,
     tokenizer_revision: str,
     source_dataset: str = "HuggingFaceFW/fineweb",
@@ -741,6 +742,8 @@ def prepare_packed_corpus(
         raise PackedCorpusError("source_read_workers must be positive")
     if float(progress_interval_seconds) <= 0:
         raise PackedCorpusError("progress_interval_seconds must be positive")
+    if corpus_name is not None and not str(corpus_name).strip():
+        raise PackedCorpusError("corpus_name must be non-empty when provided")
     resolved_role_counts = {
         str(role): int(count) for role, count in reserved_role_counts.items()
     }
@@ -803,6 +806,8 @@ def prepare_packed_corpus(
         "shard_token_capacity_requested": int(shard_token_capacity),
         "shard_token_capacity_resolved": resolved_capacity,
     }
+    if corpus_name is not None:
+        preparation_configuration["corpus_name"] = str(corpus_name)
     if resolved_role_counts != RESERVED_ROLE_COUNTS:
         preparation_configuration["reserved_role_counts"] = dict(
             resolved_role_counts
@@ -1259,6 +1264,8 @@ def prepare_packed_corpus(
                 "role_manifest_hashes": role_hashes,
                 "roles": role_manifests,
             }
+            if corpus_name is not None:
+                manifest["corpus_name"] = str(corpus_name)
             if optimizer_token_limit is not None:
                 manifest["optimizer_token_limit"] = int(optimizer_token_limit)
             if minimum_optimizer_document_count is not None:
@@ -1428,6 +1435,7 @@ def load_corpus_manifest(
 def load_existing_corpus_if_matching(
     prepared_corpus_dir: str | Path,
     *,
+    corpus_name: str | None = None,
     tokenizer_manifest: Mapping[str, Any],
     tokenizer_name: str,
     tokenizer_revision: str,
@@ -1460,6 +1468,7 @@ def load_existing_corpus_if_matching(
         raise PackedCorpusError("Tokenizer manifest hash mismatch")
     special_ids = tokenizer_manifest.get("special_token_ids", {})
     expected = {
+        "corpus_name": str(corpus_name) if corpus_name is not None else None,
         "data_seed": int(data_seed),
         "context_length": int(context_length),
         "source.dataset_name": str(source_dataset),
@@ -1595,9 +1604,20 @@ def audit_packed_corpus(
             )
     return {
         "status": "passed",
+        "corpus_name": manifest.get("corpus_name"),
         "corpus_hash": manifest["corpus_hash"],
+        "source_exhausted": bool(manifest["source"]["source_exhausted"]),
+        "source_termination": manifest["source"].get(
+            "termination", "source_exhausted"
+        ),
         "training_token_count": int(training["token_count"]),
         "training_sequence_count": int(training["sequence_count"]),
+        "reserved_role_counts": dict(manifest["reserved_role_counts"]),
+        "role_source_document_counts": {
+            role: int(role_manifest["source_document_count"])
+            for role, role_manifest in manifest["roles"].items()
+        },
+        "reserved_pairwise_intersection_counts": dict(intersections),
         "role_manifest_hashes": dict(manifest["role_manifest_hashes"]),
         "verified_shard_count": sum(
             len(role["shards"]) for role in manifest["roles"].values()
