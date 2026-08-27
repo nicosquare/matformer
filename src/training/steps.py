@@ -1248,6 +1248,12 @@ def _runtime_sampler_artifact_fields(
     probabilistic_controller=None,
 ) -> dict[str, Any]:
     fields = build_adaptive_sampler_artifact_fields(config, run_state)
+    fields.update(
+        training_data.optimizer_iteration_artifact_fields(
+            config,
+            tokens_seen=int(run_state.get("tokens_seen", 0)),
+        )
+    )
     if probabilistic_controller is not None:
         fields.update(
             build_compact_controller_metric_fields(

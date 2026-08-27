@@ -16,7 +16,7 @@ from src.utils.config import (
 )
 from src.models.correction import correction_context_from_config
 from src.models.granularity import build_granularity_pattern
-from src.utils.reproducibility import derive_seed
+from src.utils.reproducibility import build_comparison_control_signature, derive_seed
 
 
 def _write_single_run_config(tmp_path):
@@ -2345,6 +2345,136 @@ def _production_manifest():
             "optimizer_training": {"token_count": 90_000_000_000},
         },
     }
+
+
+def _patch_production_artifacts(monkeypatch, manifest):
+    import src.training.fineweb_tokenizer as fineweb_tokenizer
+    import src.training.packed_corpus as packed_corpus
+
+    monkeypatch.delenv("WORLD_SIZE", raising=False)
+    monkeypatch.setattr(
+        packed_corpus, "load_corpus_manifest", lambda *args, **kwargs: manifest
+    )
+    monkeypatch.setattr(
+        fineweb_tokenizer,
+        "load_tokenizer_manifest",
+        lambda *args, **kwargs: {
+            "tokenizer_name": "fineweb_sentencepiece_bpe_256k",
+            "manifest_hash": "tokenizer-hash",
+            "sentencepiece_model_sha256": "model-hash",
+            "vocab_size": 256000,
+        },
+    )
+
+
+def test_packed_optimizer_iteration_defaults_preserve_signature(tmp_path, monkeypatch):
+    manifest = _production_manifest()
+    _patch_production_artifacts(monkeypatch, manifest)
+    common = [
+        "dataset.prepared_corpus_dir=/prepared/fineweb",
+        "model.tokenizer_dir=/prepared/tokenizer",
+    ]
+    implicit = resolve_run_config(
+        "configs/production/slicing_10b_base.yaml",
+        output_dir=tmp_path / "implicit" / "slicing-10b-base",
+        overrides=common,
+    )
+    explicit = resolve_run_config(
+        "configs/production/slicing_10b_base.yaml",
+        output_dir=tmp_path / "explicit" / "slicing-10b-base",
+        overrides=[
+            *common,
+            "dataset.optimizer_iteration.mode=single_pass",
+            "dataset.optimizer_iteration.epoch_order=stored_permutation",
+        ],
+    )
+    assert implicit["dataset"]["optimizer_iteration"] == explicit["dataset"][
+        "optimizer_iteration"
+    ]
+    assert build_comparison_control_signature(implicit) == (
+        build_comparison_control_signature(explicit)
+    )
+    assert "optimizer_iteration" not in build_comparison_control_signature(implicit)[1]
+
+
+def test_repeat_epochs_accepts_oversized_budget_and_resolves_aligned_epoch(
+    tmp_path, monkeypatch
+):
+    manifest = _production_manifest()
+    _patch_production_artifacts(monkeypatch, manifest)
+    common = [
+        "dataset.prepared_corpus_dir=/prepared/fineweb",
+        "model.tokenizer_dir=/prepared/tokenizer",
+        "dataset.optimizer_iteration.mode=repeat_epochs",
+        "dataset.optimizer_iteration.epoch_order=deterministic_per_epoch",
+    ]
+    baseline = resolve_run_config(
+        "configs/production/slicing_10b_base.yaml",
+        output_dir=tmp_path / "baseline" / "slicing-10b-base",
+        overrides=common,
+    )
+    epoch_tokens = baseline["dataset"]["optimizer_iteration"][
+        "aligned_epoch_tokens"
+    ]
+    repeated = resolve_run_config(
+        "configs/production/slicing_10b_base.yaml",
+        output_dir=tmp_path / "repeated" / "slicing-10b-base",
+        overrides=[*common, f"training.token_budget={epoch_tokens * 2 + epoch_tokens // 2}"],
+    )
+    contract = repeated["dataset"]["optimizer_iteration"]
+    assert contract["complete_epochs"] == 2
+    assert contract["partial_final_epoch_tokens"] == epoch_tokens // 2
+    assert contract["planned_data_reuse_factor"] == pytest.approx(2.5)
+    assert contract["excluded_tail_tokens"] < repeated["training"][
+        "expected_tokens_per_step"
+    ]
+    assert build_comparison_control_signature(repeated)[1][
+        "optimizer_iteration"
+    ] == contract
+
+
+@pytest.mark.parametrize(
+    "overrides,match",
+    [
+        (
+            ["dataset.optimizer_iteration.mode=unknown"],
+            "mode must be single_pass or repeat_epochs",
+        ),
+        (
+            [
+                "dataset.optimizer_iteration.mode=repeat_epochs",
+                "dataset.optimizer_iteration.epoch_order=stored_permutation",
+            ],
+            "mode/order",
+        ),
+    ],
+)
+def test_packed_optimizer_iteration_rejects_invalid_contract(
+    tmp_path, monkeypatch, overrides, match
+):
+    _patch_production_artifacts(monkeypatch, _production_manifest())
+    with pytest.raises(ConfigError, match=match):
+        resolve_run_config(
+            "configs/production/slicing_10b_base.yaml",
+            output_dir=tmp_path / "invalid" / "slicing-10b-base",
+            overrides=[
+                "dataset.prepared_corpus_dir=/prepared/fineweb",
+                "model.tokenizer_dir=/prepared/tokenizer",
+                *overrides,
+            ],
+        )
+
+
+def test_raw_dataset_rejects_optimizer_iteration_config(tmp_path):
+    config_path = _write_single_run_config(tmp_path)
+    with pytest.raises(ConfigError, match="valid only.*packed_mmap"):
+        resolve_run_config(
+            config_path,
+            overrides=[
+                "dataset.optimizer_iteration.mode=repeat_epochs",
+                "dataset.optimizer_iteration.epoch_order=deterministic_per_epoch",
+            ],
+        )
 
 
 def test_10b_production_preflight_resolves_exact_four_gpu_schedule(tmp_path, monkeypatch):

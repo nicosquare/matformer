@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import copy
 import itertools
 import json
 import threading
@@ -13,12 +14,19 @@ import pytest
 import torch
 
 from src.training.distributed import DistributedContext
-from src.training.data import build_packed_mmap_dataloaders, packed_sampler_state
+from src.training.data import (
+    build_packed_mmap_dataloaders,
+    optimizer_iteration_artifact_fields,
+    packed_sampler_state,
+    restore_packed_sampler_state,
+)
 from src.training.packed_corpus import (
     NoPaddingDistributedBatchSampler,
     PERMUTATION_VERSION,
     PackedCorpusError,
     PackedMMapDataset,
+    REPEATED_EPOCH_ORDER_VERSION,
+    RepeatingNoPaddingDistributedBatchSampler,
     _ordered_tokenize_documents,
     audit_packed_corpus,
     iter_streaming_documents_with_ordered_prefetch,
@@ -87,6 +95,13 @@ class TinyPackedTrainingModel(torch.nn.Module):
         return SimpleNamespace(
             loss=self.weight.square() + input_ids.float().mean() * 0.0
         )
+
+
+class DataDependentTinyPackedTrainingModel(TinyPackedTrainingModel):
+    def forward(self, input_ids, attention_mask=None, labels=None):
+        del attention_mask, labels
+        target = input_ids.float().mean() / 100.0
+        return SimpleNamespace(loss=(self.weight - target).square())
 
 
 def documents(count: int = 1176):
@@ -641,6 +656,83 @@ def test_packed_dataloader_stops_at_run_budget_and_exposes_order_state(tmp_path)
     assert state["permutation_hash"] == manifest["training_order"]["sha256"]
 
 
+def test_repeating_packed_dataloader_excludes_tail_and_resumes_across_boundary(
+    tmp_path,
+):
+    manifest = prepare_small(tmp_path)
+    config = {
+        "dataset": {
+            "mode": "packed_mmap",
+            "prepared_corpus_dir": str(tmp_path / "corpus"),
+            "data_seed": 42,
+            "dataset_name": "HuggingFaceFW/fineweb",
+            "dataset_config_name": "sample-100BT",
+            "dataset_split": "train",
+            "optimizer_iteration": {
+                "mode": "repeat_epochs",
+                "epoch_order": "deterministic_per_epoch",
+                "ordering_policy_version": REPEATED_EPOCH_ORDER_VERSION,
+                "aligned_epoch_samples": 15,
+            },
+        },
+        "model": {
+            "context_length": 4,
+            "tokenizer_name": "tiny",
+            "tokenizer_revision": tiny_tokenizer_manifest()["manifest_hash"],
+            "tokenizer_manifest_hash": tiny_tokenizer_manifest()["manifest_hash"],
+            "vocab_size": 128,
+        },
+        "training": {
+            "token_budget": 132,
+            "batch_size_per_process": 3,
+            "dataloader_num_workers": 0,
+        },
+    }
+    full_loader, _, _, _ = build_packed_mmap_dataloaders(
+        config, torch.device("cpu")
+    )
+    full = [
+        int(value)
+        for batch in full_loader
+        for value in batch["packed_sequence_index"].tolist()
+    ]
+    stored = np.memmap(
+        tmp_path / "corpus" / manifest["training_order"]["path"],
+        mode="r",
+        dtype="<u8",
+    )
+    fixed_set = {int(value) for value in stored[:15]}
+    excluded_tail = {int(value) for value in stored[15:]}
+    assert full[:15] == [int(value) for value in stored[:15]]
+    assert set(full[15:30]) == fixed_set
+    assert not set(full) & excluded_tail
+    assert len(full) == 33
+
+    interrupted_loader, _, _, _ = build_packed_mmap_dataloaders(
+        config, torch.device("cpu")
+    )
+    iterator = iter(interrupted_loader)
+    prefix_batches = [next(iterator) for _ in range(5)]
+    prefix = [
+        int(value)
+        for batch in prefix_batches
+        for value in batch["packed_sequence_index"].tolist()
+    ]
+    state = packed_sampler_state(interrupted_loader)
+    assert state["epoch_index"] == 1
+    assert state["within_epoch_cursor"] == 0
+    resumed_loader, _, _, _ = build_packed_mmap_dataloaders(
+        config, torch.device("cpu")
+    )
+    restore_packed_sampler_state(resumed_loader, state)
+    suffix = [
+        int(value)
+        for batch in resumed_loader
+        for value in batch["packed_sequence_index"].tolist()
+    ]
+    assert prefix + suffix == full
+
+
 def test_packed_training_processes_exact_budget_with_partial_accumulation(tmp_path):
     prepare_small(tmp_path)
     config = resolve_run_config(
@@ -763,6 +855,264 @@ def test_sampler_checkpoint_records_selected_prefix_and_exact_resume(tmp_path):
     assert first_batch + list(itertools.chain.from_iterable(resumed)) == list(
         itertools.chain.from_iterable(full)
     )
+
+
+def _repeating_sampler(*, rank=0, world_size=1, planned=20):
+    return RepeatingNoPaddingDistributedBatchSampler(
+        dataset_size=11,
+        batch_size_per_rank=2,
+        rank=rank,
+        world_size=world_size,
+        planned_sample_count=planned,
+        epoch_sample_count=8,
+        data_seed=42,
+        corpus_hash="corpus-hash",
+        optimizer_training_manifest_hash="optimizer-role-hash",
+    )
+
+
+def test_repeating_sampler_preserves_fixed_set_and_reshuffles_later_epochs():
+    sampler = _repeating_sampler()
+    stream = list(itertools.chain.from_iterable(sampler))
+    stored_prefix = sampler._permutation[:8].tolist()
+    assert stream[:8] == stored_prefix
+    assert set(stream[8:16]) == set(stored_prefix)
+    assert stream[8:16] != stored_prefix
+    assert len(set(stream[:8])) == 8
+    assert stream[:8] == list(itertools.chain.from_iterable(_repeating_sampler(planned=8)))
+    assert stream[16:] == list(
+        itertools.chain.from_iterable(_repeating_sampler(planned=20))
+    )[16:]
+    assert all(value in stored_prefix for value in stream)
+    assert not any(value in sampler._permutation[8:].tolist() for value in stream)
+
+
+def test_repeating_sampler_fractional_epoch_distributed_partition_and_resume():
+    rank_streams = [
+        list(itertools.chain.from_iterable(_repeating_sampler(rank=rank, world_size=2)))
+        for rank in range(2)
+    ]
+    combined = []
+    for offset in range(0, 10, 2):
+        combined.extend(rank_streams[0][offset : offset + 2])
+        combined.extend(rank_streams[1][offset : offset + 2])
+    assert combined == list(itertools.chain.from_iterable(_repeating_sampler()))
+
+    original = _repeating_sampler()
+    iterator = iter(original)
+    prefix = next(iterator) + next(iterator) + next(iterator) + next(iterator)
+    state = original.state_dict()
+    assert state["schema_version"] == 3
+    assert state["ordering_policy_version"] == REPEATED_EPOCH_ORDER_VERSION
+    assert state["epoch_index"] == 1
+    assert state["within_epoch_cursor"] == 0
+    resumed = _repeating_sampler()
+    resumed.load_state_dict(state)
+    assert prefix + list(itertools.chain.from_iterable(resumed)) == list(
+        itertools.chain.from_iterable(_repeating_sampler())
+    )
+
+
+def test_repeating_sampler_precommit_rollback_across_boundary_retries_same_batch():
+    sampler = _repeating_sampler()
+    iterator = iter(sampler)
+    for _ in range(4):
+        next(iterator)
+    boundary_state = sampler.state_dict()
+    assert boundary_state["total_cursor"] == 8
+    failed_attempt_batch = next(iterator)
+    assert sampler.state_dict()["total_cursor"] == 10
+    sampler.load_state_dict(boundary_state)
+    retry_batch = next(iter(sampler))
+    assert retry_batch == failed_attempt_batch
+    assert sampler.state_dict()["total_cursor"] == 10
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("planned_sample_count", 21),
+        ("data_seed", 43),
+        ("corpus_hash", "other-corpus"),
+        ("permutation_hash", "other-order"),
+        ("world_size", 2),
+        ("ordering_policy_version", "future-policy"),
+    ],
+)
+def test_repeating_sampler_rejects_resume_identity_changes(field, value):
+    state = _repeating_sampler().state_dict()
+    state[field] = value
+    with pytest.raises(PackedCorpusError, match=f"resume mismatch for {field}"):
+        _repeating_sampler().load_state_dict(state)
+
+
+def test_optimizer_iteration_metrics_separate_unique_and_repeated_tokens():
+    config = {
+        "dataset": {
+            "mode": "packed_mmap",
+            "optimizer_iteration": {
+                "mode": "repeat_epochs",
+                "epoch_order": "deterministic_per_epoch",
+                "ordering_policy_version": REPEATED_EPOCH_ORDER_VERSION,
+                "aligned_epoch_samples": 8,
+                "aligned_epoch_tokens": 32,
+                "excluded_tail_samples": 3,
+                "excluded_tail_tokens": 12,
+            },
+        }
+    }
+    fields = optimizer_iteration_artifact_fields(config, tokens_seen=40)
+    assert fields["optimizer_epoch_index"] == 1
+    assert fields["optimizer_epoch_progress"] == pytest.approx(0.25)
+    assert fields["optimizer_data_reuse_factor"] == pytest.approx(1.25)
+    assert fields["unique_optimizer_token_positions_seen"] == 32
+    assert fields["repeated_optimizer_tokens_seen"] == 8
+
+    config["dataset"]["optimizer_iteration"]["mode"] = "single_pass"
+    single = optimizer_iteration_artifact_fields(config, tokens_seen=40)
+    assert single["unique_optimizer_token_positions_seen"] == 40
+    assert single["repeated_optimizer_tokens_seen"] == 0
+
+
+def test_repeating_training_resume_before_at_and_after_epoch_boundary_is_exact(
+    tmp_path,
+):
+    manifest = prepare_small(tmp_path)
+    base = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=tmp_path / "debug-nested-001",
+        overrides=[
+            "model.correction_mode=none",
+            "evaluation.validation=false",
+            "evaluation.final_validation=false",
+            "training.eval_interval=0",
+            "run.continuation.enabled=false",
+            "outputs.save_checkpoints=false",
+        ],
+    )
+    tokenizer_manifest = tiny_tokenizer_manifest()
+    base["dataset"].update(
+        {
+            "mode": "packed_mmap",
+            "prepared_corpus_dir": str(tmp_path / "corpus"),
+            "data_seed": 42,
+            "dataset_name": "HuggingFaceFW/fineweb",
+            "dataset_config_name": "sample-100BT",
+            "dataset_split": "train",
+            "optimizer_iteration": {
+                "mode": "repeat_epochs",
+                "epoch_order": "deterministic_per_epoch",
+                "ordering_policy_version": REPEATED_EPOCH_ORDER_VERSION,
+                "aligned_epoch_samples": 18,
+                "aligned_epoch_tokens": 72,
+                "excluded_tail_samples": 0,
+                "excluded_tail_tokens": 0,
+            },
+        }
+    )
+    base["model"].update(
+        {
+            "context_length": 4,
+            "tokenizer_name": "tiny",
+            "tokenizer_revision": tokenizer_manifest["manifest_hash"],
+            "tokenizer_manifest_hash": tokenizer_manifest["manifest_hash"],
+            "vocab_size": 128,
+            "granularities": ["xl"],
+        }
+    )
+    base["training"].update(
+        {
+            "token_budget": 144,
+            "max_steps": 12,
+            "batch_size_per_process": 3,
+            "gradient_accumulation_steps": 1,
+            "dataloader_num_workers": 0,
+        }
+    )
+
+    def execute(config, *, split_step=None):
+        loader, validation_loader, _, loaded = build_packed_mmap_dataloaders(
+            config, torch.device("cpu")
+        )
+        assert loaded == manifest
+        model = DataDependentTinyPackedTrainingModel()
+        optimizer, scheduler = build_optimizer_and_scheduler(model, config["training"])
+        run_state = {
+            "last_completed_step": 0,
+            "epoch": 0,
+            "batch_index": 0,
+            "tokens_seen": 0,
+            "content_tokens_seen": 0,
+            "microstep": 0,
+            "status": "fresh",
+        }
+        if split_step is None:
+            rows = train_for_steps(
+                config,
+                model,
+                loader,
+                validation_loader,
+                optimizer,
+                scheduler,
+                torch.device("cpu"),
+                run_state=run_state,
+            )
+        else:
+            original_max_steps = config["training"]["max_steps"]
+            config["training"]["max_steps"] = split_step
+            first_rows = train_for_steps(
+                config,
+                model,
+                loader,
+                validation_loader,
+                optimizer,
+                scheduler,
+                torch.device("cpu"),
+                run_state=run_state,
+            )
+            config["training"]["max_steps"] = original_max_steps
+            resumed_loader, resumed_validation, _, _ = build_packed_mmap_dataloaders(
+                config, torch.device("cpu")
+            )
+            restore_packed_sampler_state(resumed_loader, run_state["sampler_state"])
+            second_rows = train_for_steps(
+                config,
+                model,
+                resumed_loader,
+                resumed_validation,
+                optimizer,
+                scheduler,
+                torch.device("cpu"),
+                run_state=run_state,
+            )
+            rows = first_rows + second_rows
+        return model, optimizer, scheduler, run_state, rows
+
+    full = execute(copy.deepcopy(base))
+    full_losses = [row["loss"] for row in full[4] if row["split"] == "train"]
+    for split_step in (5, 6, 7):
+        resumed = execute(copy.deepcopy(base), split_step=split_step)
+        torch.testing.assert_close(resumed[0].weight, full[0].weight, rtol=0, atol=0)
+        assert resumed[1].state_dict()["state"].keys() == full[1].state_dict()[
+            "state"
+        ].keys()
+        for parameter_state, expected_state in zip(
+            resumed[1].state_dict()["state"].values(),
+            full[1].state_dict()["state"].values(),
+        ):
+            for key in expected_state:
+                if torch.is_tensor(expected_state[key]):
+                    torch.testing.assert_close(
+                        parameter_state[key], expected_state[key], rtol=0, atol=0
+                    )
+                else:
+                    assert parameter_state[key] == expected_state[key]
+        assert resumed[2].state_dict() == full[2].state_dict()
+        assert resumed[3]["sampler_state"] == full[3]["sampler_state"]
+        assert [row["loss"] for row in resumed[4] if row["split"] == "train"] == (
+            full_losses
+        )
 
 
 def test_uneven_rank_loss_scaling_matches_global_token_weighted_gradient():

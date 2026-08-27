@@ -1327,6 +1327,14 @@ def _save_model_checkpoint_rank_zero(
             "tokens_seen": run_state.get("tokens_seen", 0),
             "content_tokens_seen": run_state.get("content_tokens_seen", 0),
             "sampler_state": copy.deepcopy(run_state.get("sampler_state")),
+            "optimizer_iteration": (
+                copy.deepcopy(config.get("dataset", {}).get("optimizer_iteration"))
+                if config.get("dataset", {})
+                .get("optimizer_iteration", {})
+                .get("mode")
+                == "repeat_epochs"
+                else None
+            ),
             "next_validation_tokens": run_state.get("next_validation_tokens"),
             "optimizer_window_microsteps": run_state.get(
                 "optimizer_window_microsteps"
@@ -2866,6 +2874,13 @@ def load_checkpoint_state(
     elif config is not None:
         global_sampling_state = None
     if config is not None and config.get("dataset", {}).get("mode") == "packed_mmap":
+        optimizer_iteration = config.get("dataset", {}).get(
+            "optimizer_iteration", {}
+        )
+        if optimizer_iteration.get("mode") == "repeat_epochs" and checkpoint.get(
+            "optimizer_iteration"
+        ) != optimizer_iteration:
+            raise ConfigError("Checkpoint optimizer-iteration contract mismatch")
         expected_data_hashes = {
             "corpus_hash": config.get("corpus_hash"),
             "tokenizer_manifest_hash": config.get("model", {}).get(

@@ -22,7 +22,7 @@ def heartbeat_training_fields(
     eta_seconds: float | None = None,
 ) -> dict[str, Any]:
     training = config["training"]
-    return {
+    fields = {
         "step": step,
         "derived_max_steps": training.get("derived_max_steps"),
         "tokens_seen": tokens_seen,
@@ -33,6 +33,42 @@ def heartbeat_training_fields(
         "peak_gpu_memory_bytes": peak_gpu_memory_bytes,
         "eta_seconds": eta_seconds,
     }
+    iteration = config.get("dataset", {}).get("optimizer_iteration")
+    if isinstance(iteration, dict) and tokens_seen is not None:
+        epoch_tokens = int(iteration["aligned_epoch_tokens"])
+        epoch_index, within_epoch_tokens = divmod(int(tokens_seen), epoch_tokens)
+        unique_tokens = (
+            int(tokens_seen)
+            if iteration["mode"] == "single_pass"
+            else min(int(tokens_seen), epoch_tokens)
+        )
+        fields.update(
+            {
+                "optimizer_iteration_mode": iteration["mode"],
+                "optimizer_epoch_order": iteration["epoch_order"],
+                "optimizer_epoch_ordering_policy_version": iteration[
+                    "ordering_policy_version"
+                ],
+                "optimizer_epoch_index": epoch_index,
+                "optimizer_epoch_progress": within_epoch_tokens / epoch_tokens,
+                "optimizer_data_reuse_factor": int(tokens_seen) / epoch_tokens,
+                "unique_optimizer_token_positions_seen": unique_tokens,
+                "repeated_optimizer_tokens_seen": max(
+                    int(tokens_seen) - unique_tokens, 0
+                ),
+                "aligned_optimizer_epoch_samples": iteration[
+                    "aligned_epoch_samples"
+                ],
+                "aligned_optimizer_epoch_tokens": epoch_tokens,
+                "excluded_optimizer_tail_samples": iteration[
+                    "excluded_tail_samples"
+                ],
+                "excluded_optimizer_tail_tokens": iteration[
+                    "excluded_tail_tokens"
+                ],
+            }
+        )
+    return fields
 
 
 def build_heartbeat_cadence(config: dict[str, Any]) -> "HeartbeatCadence":

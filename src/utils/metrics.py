@@ -114,6 +114,18 @@ METRICS_COLUMNS = [
     "content_tokens_seen",
     "optimizer_window_microsteps",
     "committed_tokens_this_step",
+    "optimizer_iteration_mode",
+    "optimizer_epoch_order",
+    "optimizer_epoch_ordering_policy_version",
+    "optimizer_epoch_index",
+    "optimizer_epoch_progress",
+    "optimizer_data_reuse_factor",
+    "unique_optimizer_token_positions_seen",
+    "repeated_optimizer_tokens_seen",
+    "aligned_optimizer_epoch_samples",
+    "aligned_optimizer_epoch_tokens",
+    "excluded_optimizer_tail_samples",
+    "excluded_optimizer_tail_tokens",
     "evaluation_examples",
     "evaluation_batches",
     "evaluation_target_tokens",
@@ -288,6 +300,19 @@ RUN_SUMMARY_FIELDS = [
     "tokenizer_manifest_hash",
     "tokens_seen",
     "content_tokens_seen",
+    "optimizer_iteration",
+    "optimizer_iteration_mode",
+    "optimizer_epoch_order",
+    "optimizer_epoch_ordering_policy_version",
+    "optimizer_epoch_index",
+    "optimizer_epoch_progress",
+    "optimizer_data_reuse_factor",
+    "unique_optimizer_token_positions_seen",
+    "repeated_optimizer_tokens_seen",
+    "aligned_optimizer_epoch_samples",
+    "aligned_optimizer_epoch_tokens",
+    "excluded_optimizer_tail_samples",
+    "excluded_optimizer_tail_tokens",
     "stop_reason",
     "seed",
     "validation_manifest_hash",
@@ -843,6 +868,55 @@ def build_run_summary(
     stop_reason = "failed" if status == "failed" else "not_started"
     continuation_state = _build_continuation_state(config, tokens_seen, status)
     warmup_policy = _build_warmup_policy(config)
+    optimizer_iteration = dataset.get("optimizer_iteration")
+    optimizer_iteration_fields: dict[str, Any] = {
+        "optimizer_iteration": None,
+        "optimizer_iteration_mode": None,
+        "optimizer_epoch_order": None,
+        "optimizer_epoch_ordering_policy_version": None,
+        "optimizer_epoch_index": None,
+        "optimizer_epoch_progress": None,
+        "optimizer_data_reuse_factor": None,
+        "unique_optimizer_token_positions_seen": None,
+        "repeated_optimizer_tokens_seen": None,
+        "aligned_optimizer_epoch_samples": None,
+        "aligned_optimizer_epoch_tokens": None,
+        "excluded_optimizer_tail_samples": None,
+        "excluded_optimizer_tail_tokens": None,
+    }
+    if isinstance(optimizer_iteration, Mapping):
+        epoch_tokens = int(optimizer_iteration["aligned_epoch_tokens"])
+        epoch_index, within_epoch_tokens = divmod(int(tokens_seen), epoch_tokens)
+        unique_tokens = (
+            int(tokens_seen)
+            if optimizer_iteration["mode"] == "single_pass"
+            else min(int(tokens_seen), epoch_tokens)
+        )
+        optimizer_iteration_fields = {
+            "optimizer_iteration": dict(optimizer_iteration),
+            "optimizer_iteration_mode": optimizer_iteration["mode"],
+            "optimizer_epoch_order": optimizer_iteration["epoch_order"],
+            "optimizer_epoch_ordering_policy_version": optimizer_iteration[
+                "ordering_policy_version"
+            ],
+            "optimizer_epoch_index": epoch_index,
+            "optimizer_epoch_progress": within_epoch_tokens / epoch_tokens,
+            "optimizer_data_reuse_factor": int(tokens_seen) / epoch_tokens,
+            "unique_optimizer_token_positions_seen": unique_tokens,
+            "repeated_optimizer_tokens_seen": max(
+                int(tokens_seen) - unique_tokens, 0
+            ),
+            "aligned_optimizer_epoch_samples": int(
+                optimizer_iteration["aligned_epoch_samples"]
+            ),
+            "aligned_optimizer_epoch_tokens": epoch_tokens,
+            "excluded_optimizer_tail_samples": int(
+                optimizer_iteration["excluded_tail_samples"]
+            ),
+            "excluded_optimizer_tail_tokens": int(
+                optimizer_iteration["excluded_tail_tokens"]
+            ),
+        }
 
     summary = {
         "run_id": run["run_id"],
@@ -952,6 +1026,7 @@ def build_run_summary(
         "tokenizer_manifest_hash": model.get("tokenizer_manifest_hash"),
         "tokens_seen": tokens_seen,
         "content_tokens_seen": content_tokens_seen,
+        **optimizer_iteration_fields,
         "stop_reason": stop_reason,
         "seed": run.get("seed"),
         "validation_manifest_hash": config.get("validation_manifest_hash"),
@@ -2981,6 +3056,18 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "content_tokens_seen": normalized_row.get("tokens_seen"),
         "optimizer_window_microsteps": None,
         "committed_tokens_this_step": None,
+        "optimizer_iteration_mode": None,
+        "optimizer_epoch_order": None,
+        "optimizer_epoch_ordering_policy_version": None,
+        "optimizer_epoch_index": None,
+        "optimizer_epoch_progress": None,
+        "optimizer_data_reuse_factor": None,
+        "unique_optimizer_token_positions_seen": None,
+        "repeated_optimizer_tokens_seen": None,
+        "aligned_optimizer_epoch_samples": None,
+        "aligned_optimizer_epoch_tokens": None,
+        "excluded_optimizer_tail_samples": None,
+        "excluded_optimizer_tail_tokens": None,
         "evaluation_examples": None,
         "evaluation_batches": None,
         "evaluation_target_tokens": None,

@@ -18,6 +18,7 @@ from src.training.packed_corpus import (
     NoPaddingDistributedBatchSampler,
     PackedCorpusError,
     PackedMMapDataset,
+    RepeatingNoPaddingDistributedBatchSampler,
     load_corpus_manifest,
 )
 from src.utils.reproducibility import (
@@ -687,7 +688,7 @@ def build_packed_mmap_dataloaders(
     device: torch.device,
     distributed_context=None,
 ) -> tuple[DataLoader, DataLoader, DataLoader, dict[str, Any]]:
-    """Open immutable prepared roles and create a one-pass training loader."""
+    """Open immutable prepared roles and create the resolved training loader."""
 
     dataset_config = config["dataset"]
     prepared_dir = dataset_config.get("prepared_corpus_dir")
@@ -739,20 +740,46 @@ def build_packed_mmap_dataloaders(
         )
     selected_sample_count = token_budget // context_length
     available_sample_count = len(role_datasets["optimizer_training"])
-    if selected_sample_count > available_sample_count:
-        raise DataError("Requested token budget exceeds the prepared corpus")
     ordering = manifest["training_order"]
-    train_batch_sampler = NoPaddingDistributedBatchSampler(
-        available_sample_count,
-        batch_size,
-        rank,
-        world_size,
-        data_seed=int(dataset_config["data_seed"]),
-        selected_sample_count=selected_sample_count,
-        permutation_path=Path(prepared_dir) / ordering["path"],
-        permutation_hash_expected=ordering["sha256"],
-        permutation_version=ordering["permutation_version"],
+    optimizer_iteration = dataset_config.get(
+        "optimizer_iteration",
+        {"mode": "single_pass", "epoch_order": "stored_permutation"},
     )
+    if optimizer_iteration["mode"] == "repeat_epochs":
+        train_batch_sampler = RepeatingNoPaddingDistributedBatchSampler(
+            available_sample_count,
+            batch_size,
+            rank,
+            world_size,
+            planned_sample_count=selected_sample_count,
+            epoch_sample_count=int(optimizer_iteration["aligned_epoch_samples"]),
+            data_seed=int(dataset_config["data_seed"]),
+            permutation_path=Path(prepared_dir) / ordering["path"],
+            permutation_hash_expected=ordering["sha256"],
+            permutation_version=ordering["permutation_version"],
+            epoch_order=str(optimizer_iteration["epoch_order"]),
+            ordering_policy_version=str(
+                optimizer_iteration["ordering_policy_version"]
+            ),
+            corpus_hash=str(manifest["corpus_hash"]),
+            optimizer_training_manifest_hash=str(
+                manifest["roles"]["optimizer_training"]["manifest_hash"]
+            ),
+        )
+    else:
+        if selected_sample_count > available_sample_count:
+            raise DataError("Requested token budget exceeds the prepared corpus")
+        train_batch_sampler = NoPaddingDistributedBatchSampler(
+            available_sample_count,
+            batch_size,
+            rank,
+            world_size,
+            data_seed=int(dataset_config["data_seed"]),
+            selected_sample_count=selected_sample_count,
+            permutation_path=Path(prepared_dir) / ordering["path"],
+            permutation_hash_expected=ordering["sha256"],
+            permutation_version=ordering["permutation_version"],
+        )
     pin_memory = device.type == "cuda"
     num_workers = int(config["training"].get("dataloader_num_workers", 0))
     if num_workers != 0:
@@ -802,25 +829,71 @@ def build_packed_mmap_dataloaders(
 
 def packed_sampler_state(dataloader) -> dict[str, Any] | None:
     sampler = getattr(dataloader, "batch_sampler", None)
-    if isinstance(sampler, NoPaddingDistributedBatchSampler):
+    if isinstance(
+        sampler,
+        (NoPaddingDistributedBatchSampler, RepeatingNoPaddingDistributedBatchSampler),
+    ):
         return sampler.state_dict()
     return None
 
 
 def restore_packed_sampler_state(dataloader, state: Mapping[str, Any] | None) -> None:
     sampler = getattr(dataloader, "batch_sampler", None)
-    if not isinstance(sampler, NoPaddingDistributedBatchSampler):
+    if not isinstance(
+        sampler,
+        (NoPaddingDistributedBatchSampler, RepeatingNoPaddingDistributedBatchSampler),
+    ):
         if state is not None:
             raise DataError("Checkpoint contains a packed sampler for a raw dataset")
         return
     if not isinstance(state, Mapping):
-        if sampler.cursor != 0:
+        cursor = getattr(sampler, "cursor", getattr(sampler, "total_cursor", 0))
+        if cursor != 0:
             raise DataError("Packed sampler resume state is missing")
         return
     try:
         sampler.load_state_dict(state)
     except PackedCorpusError as error:
         raise DataError(str(error)) from error
+
+
+def optimizer_iteration_artifact_fields(
+    config: Mapping[str, Any],
+    *,
+    tokens_seen: int,
+) -> dict[str, Any]:
+    """Resolve compact progress fields without changing total-token semantics."""
+
+    dataset = config.get("dataset", {})
+    if not isinstance(dataset, Mapping) or dataset.get("mode") != "packed_mmap":
+        return {}
+    iteration = dataset.get("optimizer_iteration")
+    if not isinstance(iteration, Mapping):
+        return {}
+    epoch_tokens = int(iteration["aligned_epoch_tokens"])
+    processed_tokens = max(0, int(tokens_seen))
+    epoch_index, within_epoch_tokens = divmod(processed_tokens, epoch_tokens)
+    unique_tokens = (
+        processed_tokens
+        if iteration["mode"] == "single_pass"
+        else min(processed_tokens, epoch_tokens)
+    )
+    return {
+        "optimizer_iteration_mode": str(iteration["mode"]),
+        "optimizer_epoch_order": str(iteration["epoch_order"]),
+        "optimizer_epoch_ordering_policy_version": str(
+            iteration["ordering_policy_version"]
+        ),
+        "optimizer_epoch_index": epoch_index,
+        "optimizer_epoch_progress": within_epoch_tokens / epoch_tokens,
+        "optimizer_data_reuse_factor": processed_tokens / epoch_tokens,
+        "unique_optimizer_token_positions_seen": unique_tokens,
+        "repeated_optimizer_tokens_seen": max(processed_tokens - unique_tokens, 0),
+        "aligned_optimizer_epoch_samples": int(iteration["aligned_epoch_samples"]),
+        "aligned_optimizer_epoch_tokens": epoch_tokens,
+        "excluded_optimizer_tail_samples": int(iteration["excluded_tail_samples"]),
+        "excluded_optimizer_tail_tokens": int(iteration["excluded_tail_tokens"]),
+    }
 
 
 def build_distributed_sampler(

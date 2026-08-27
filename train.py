@@ -94,6 +94,9 @@ def main(argv: list[str] | None = None) -> None:
                     ),
                     "data_seed": resolved["dataset"].get("data_seed"),
                     "corpus_hash": resolved["dataset"].get("corpus_hash"),
+                    "optimizer_iteration": resolved["dataset"].get(
+                        "optimizer_iteration"
+                    ),
                     "expected_world_size": resolved["training"]
                     .get("distributed", {})
                     .get("expected_world_size"),

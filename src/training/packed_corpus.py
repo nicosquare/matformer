@@ -29,6 +29,7 @@ from src.utils.reproducibility import stable_hash
 PACKED_CORPUS_SCHEMA_VERSION = 3
 PACKING_VERSION = "contiguous_eos_uint32_v1"
 PERMUTATION_VERSION = "numpy_pcg64_uint64_le_v1"
+REPEATED_EPOCH_ORDER_VERSION = "numpy_pcg64_epoch_positions_v1"
 DOCUMENT_HASH_CHAIN_VERSION = "sha256_chain_v1"
 PREPARATION_PROGRESS_SCHEMA_VERSION = 1
 DEFAULT_DATA_SEED = 42
@@ -1693,6 +1694,24 @@ def deterministic_permutation(length: int, *, data_seed: int) -> np.ndarray:
     return np.random.Generator(np.random.PCG64(int(data_seed))).permutation(int(length))
 
 
+def deterministic_epoch_positions(
+    length: int,
+    *,
+    data_seed: int,
+    epoch_index: int,
+) -> np.ndarray:
+    """Return the versioned position permutation for a repeated optimizer epoch."""
+
+    length = int(length)
+    epoch_index = int(epoch_index)
+    if length < 0:
+        raise PackedCorpusError("Epoch permutation length must be nonnegative")
+    if epoch_index < 1:
+        raise PackedCorpusError("Repeated epoch index must be at least one")
+    seed = np.random.SeedSequence([int(data_seed), epoch_index, 1])
+    return np.random.Generator(np.random.PCG64(seed)).permutation(length)
+
+
 @dataclass
 class NoPaddingDistributedBatchSampler(Sampler[list[int]]):
     """Stored corpus permutation prefix, partitioned without rank padding."""
@@ -1826,6 +1845,244 @@ class NoPaddingDistributedBatchSampler(Sampler[list[int]]):
         self.set_cursor(int(state.get("cursor", -1)))
 
 
+@dataclass
+class RepeatingNoPaddingDistributedBatchSampler(Sampler[list[int]]):
+    """One logical packed stream over deterministic repetitions of a fixed prefix."""
+
+    dataset_size: int
+    batch_size_per_rank: int
+    rank: int
+    world_size: int
+    planned_sample_count: int
+    epoch_sample_count: int
+    data_seed: int = DEFAULT_DATA_SEED
+    total_cursor: int = 0
+    permutation_path: str | Path | None = None
+    permutation_hash_expected: str | None = None
+    permutation_version: str = PERMUTATION_VERSION
+    epoch_order: str = "deterministic_per_epoch"
+    ordering_policy_version: str = REPEATED_EPOCH_ORDER_VERSION
+    corpus_hash: str | None = None
+    optimizer_training_manifest_hash: str | None = None
+
+    def __post_init__(self) -> None:
+        self.dataset_size = int(self.dataset_size)
+        self.batch_size_per_rank = int(self.batch_size_per_rank)
+        self.rank = int(self.rank)
+        self.world_size = int(self.world_size)
+        self.planned_sample_count = int(self.planned_sample_count)
+        self.epoch_sample_count = int(self.epoch_sample_count)
+        self.data_seed = int(self.data_seed)
+        self.total_cursor = int(self.total_cursor)
+        if self.dataset_size <= 0:
+            raise PackedCorpusError("Repeating sampler requires a nonempty dataset")
+        if self.batch_size_per_rank <= 0:
+            raise PackedCorpusError("batch_size_per_rank must be positive")
+        if self.world_size < 1 or not 0 <= self.rank < self.world_size:
+            raise PackedCorpusError("Invalid distributed rank topology")
+        if not 0 < self.epoch_sample_count <= self.dataset_size:
+            raise PackedCorpusError(
+                "epoch_sample_count must be within the available corpus"
+            )
+        if self.epoch_sample_count % self.global_batch_size:
+            raise PackedCorpusError(
+                "epoch_sample_count must identify a global-batch boundary"
+            )
+        if self.planned_sample_count <= 0:
+            raise PackedCorpusError("planned_sample_count must be positive")
+        if not 0 <= self.total_cursor <= self.planned_sample_count:
+            raise PackedCorpusError("Sampler cursor is outside the planned stream")
+        if self.permutation_version != PERMUTATION_VERSION:
+            raise PackedCorpusError("Unsupported stored permutation version")
+        if self.epoch_order != "deterministic_per_epoch":
+            raise PackedCorpusError("Unsupported repeated epoch order")
+        if self.ordering_policy_version != REPEATED_EPOCH_ORDER_VERSION:
+            raise PackedCorpusError("Unsupported repeated epoch ordering version")
+        if not isinstance(self.corpus_hash, str) or not self.corpus_hash:
+            raise PackedCorpusError("Repeating sampler corpus identity is missing")
+        if (
+            not isinstance(self.optimizer_training_manifest_hash, str)
+            or not self.optimizer_training_manifest_hash
+        ):
+            raise PackedCorpusError(
+                "Repeating sampler optimizer role identity is missing"
+            )
+
+        if self.permutation_path is None:
+            self._permutation = deterministic_permutation(
+                self.dataset_size, data_seed=self.data_seed
+            ).astype("<u8", copy=False)
+            self._permutation_hash = hashlib.sha256(
+                self._permutation.tobytes()
+            ).hexdigest()
+        else:
+            path = Path(self.permutation_path).expanduser().resolve()
+            if not path.is_file() or path.stat().st_size != self.dataset_size * 8:
+                raise PackedCorpusError("Stored permutation size does not match dataset")
+            self._permutation = np.memmap(path, mode="r", dtype="<u8")
+            actual_hash = sha256_file(path)
+            if (
+                self.permutation_hash_expected is not None
+                and actual_hash != str(self.permutation_hash_expected)
+            ):
+                raise PackedCorpusError("Stored permutation checksum mismatch")
+            self._permutation_hash = actual_hash
+        self._fixed_epoch_set_hash = stable_hash(
+            {
+                "permutation_hash": self._permutation_hash,
+                "permutation_version": self.permutation_version,
+                "epoch_sample_count": self.epoch_sample_count,
+            }
+        )
+        self._cached_epoch_index: int | None = None
+        self._cached_epoch_order: np.ndarray | np.memmap | None = None
+        self.last_yielded_cursor = self.total_cursor
+
+    @property
+    def global_batch_size(self) -> int:
+        return self.batch_size_per_rank * self.world_size
+
+    @property
+    def permutation_hash(self) -> str:
+        return self._permutation_hash
+
+    @property
+    def fixed_epoch_set_hash(self) -> str:
+        return self._fixed_epoch_set_hash
+
+    def _epoch_indices(self, epoch_index: int) -> np.ndarray | np.memmap:
+        epoch_index = int(epoch_index)
+        if self._cached_epoch_index == epoch_index and self._cached_epoch_order is not None:
+            return self._cached_epoch_order
+        fixed_prefix = self._permutation[: self.epoch_sample_count]
+        if epoch_index == 0:
+            order: np.ndarray | np.memmap = fixed_prefix
+        else:
+            positions = deterministic_epoch_positions(
+                self.epoch_sample_count,
+                data_seed=self.data_seed,
+                epoch_index=epoch_index,
+            )
+            order = np.asarray(fixed_prefix[positions], dtype="<u8")
+        self._cached_epoch_index = epoch_index
+        self._cached_epoch_order = order
+        return order
+
+    def _logical_indices(self, start: int, end: int) -> list[int]:
+        indices: list[int] = []
+        cursor = int(start)
+        while cursor < int(end):
+            epoch_index, within_epoch = divmod(cursor, self.epoch_sample_count)
+            take = min(int(end) - cursor, self.epoch_sample_count - within_epoch)
+            epoch_order = self._epoch_indices(epoch_index)
+            indices.extend(
+                int(value)
+                for value in epoch_order[within_epoch : within_epoch + take]
+            )
+            cursor += take
+        return indices
+
+    def __iter__(self):
+        cursor = self.total_cursor
+        while cursor < self.planned_sample_count:
+            end = min(self.planned_sample_count, cursor + self.global_batch_size)
+            global_indices = self._logical_indices(cursor, end)
+            base, remainder = divmod(len(global_indices), self.world_size)
+            local_start = self.rank * base + min(self.rank, remainder)
+            local_count = base + (1 if self.rank < remainder else 0)
+            if local_count == 0:
+                raise PackedCorpusError(
+                    "Final global batch is smaller than world_size; it cannot "
+                    "participate in a collective optimizer step without padding"
+                )
+            cursor = end
+            self.last_yielded_cursor = cursor
+            yield global_indices[local_start : local_start + local_count]
+
+    def __len__(self) -> int:
+        remaining = self.planned_sample_count - self.total_cursor
+        return (remaining + self.global_batch_size - 1) // self.global_batch_size
+
+    def set_cursor(self, cursor: int) -> None:
+        cursor = int(cursor)
+        if not 0 <= cursor <= self.planned_sample_count:
+            raise PackedCorpusError("Sampler cursor is outside the planned stream")
+        if cursor != self.planned_sample_count and cursor % self.global_batch_size:
+            raise PackedCorpusError("Sampler cursor must identify a global-batch boundary")
+        self.total_cursor = cursor
+        self.last_yielded_cursor = cursor
+
+    def state_dict(self) -> dict[str, Any]:
+        cursor = int(self.last_yielded_cursor)
+        epoch_index, within_epoch_cursor = divmod(cursor, self.epoch_sample_count)
+        return {
+            "schema_version": 3,
+            "sampler_type": "repeating_packed",
+            "iteration_mode": "repeat_epochs",
+            "epoch_order": self.epoch_order,
+            "ordering_policy_version": self.ordering_policy_version,
+            "data_seed": self.data_seed,
+            "dataset_size": self.dataset_size,
+            "planned_samples": self.planned_sample_count,
+            "planned_sample_count": self.planned_sample_count,
+            "fixed_epoch_sample_count": self.epoch_sample_count,
+            "epoch_sample_count": self.epoch_sample_count,
+            "excluded_tail_sample_count": self.dataset_size - self.epoch_sample_count,
+            "batch_size_per_rank": self.batch_size_per_rank,
+            "world_size": self.world_size,
+            "total_cursor": cursor,
+            "epoch": epoch_index,
+            "epoch_index": epoch_index,
+            "within_epoch_cursor": within_epoch_cursor,
+            "permutation_version": self.permutation_version,
+            "permutation_hash": self.permutation_hash,
+            "fixed_epoch_set_hash": self.fixed_epoch_set_hash,
+            "corpus_hash": self.corpus_hash,
+            "optimizer_training_manifest_hash": self.optimizer_training_manifest_hash,
+            "distributed_batch_geometry": {
+                "batch_size_per_rank": self.batch_size_per_rank,
+                "global_batch_size": self.global_batch_size,
+                "world_size": self.world_size,
+            },
+        }
+
+    def load_state_dict(self, state: Mapping[str, Any]) -> None:
+        expected = self.state_dict()
+        for field in (
+            "schema_version",
+            "sampler_type",
+            "iteration_mode",
+            "epoch_order",
+            "ordering_policy_version",
+            "data_seed",
+            "dataset_size",
+            "planned_samples",
+            "planned_sample_count",
+            "fixed_epoch_sample_count",
+            "epoch_sample_count",
+            "excluded_tail_sample_count",
+            "batch_size_per_rank",
+            "world_size",
+            "permutation_version",
+            "permutation_hash",
+            "fixed_epoch_set_hash",
+            "corpus_hash",
+            "optimizer_training_manifest_hash",
+            "distributed_batch_geometry",
+        ):
+            if state.get(field) != expected[field]:
+                raise PackedCorpusError(f"Sampler resume mismatch for {field}")
+        cursor = int(state.get("total_cursor", -1))
+        epoch_index, within_epoch_cursor = divmod(cursor, self.epoch_sample_count)
+        if state.get("epoch_index") != epoch_index:
+            raise PackedCorpusError("Sampler resume mismatch for epoch_index")
+        if state.get("epoch") != epoch_index:
+            raise PackedCorpusError("Sampler resume mismatch for epoch")
+        if state.get("within_epoch_cursor") != within_epoch_cursor:
+            raise PackedCorpusError("Sampler resume mismatch for within_epoch_cursor")
+        self.set_cursor(cursor)
+
+
 def partition_permutation_without_padding(
     length: int,
     *,
@@ -1844,14 +2101,17 @@ __all__ = [
     "DEFAULT_DATA_SEED",
     "DOCUMENT_HASH_CHAIN_VERSION",
     "NoPaddingDistributedBatchSampler",
+    "RepeatingNoPaddingDistributedBatchSampler",
     "PACKED_CORPUS_SCHEMA_VERSION",
     "PACKING_VERSION",
     "PERMUTATION_VERSION",
+    "REPEATED_EPOCH_ORDER_VERSION",
     "PackedCorpusError",
     "PackedMMapDataset",
     "RESERVED_ROLE_COUNTS",
     "audit_packed_corpus",
     "deterministic_permutation",
+    "deterministic_epoch_positions",
     "load_corpus_manifest",
     "partition_permutation_without_padding",
     "preparation_lock_path",

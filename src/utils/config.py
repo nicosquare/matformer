@@ -27,6 +27,7 @@ from src.utils.reproducibility import (
     SEED_STREAM_VERSION,
     build_balanced_warmup_schedule,
     seed_for,
+    stable_hash,
 )
 
 
@@ -1300,7 +1301,13 @@ def _validate_distributed_and_prepared_corpus_contract(
             )
 
     mode = dataset.get("mode", "raw_tokenized")
+    optimizer_iteration_supplied = "optimizer_iteration" in dataset
     if mode != "packed_mmap":
+        if optimizer_iteration_supplied:
+            raise ConfigError(
+                "dataset.optimizer_iteration is valid only when "
+                "dataset.mode=packed_mmap"
+            )
         return
     if dataset.get("sample_limit") is not None:
         raise ConfigError(
@@ -1357,7 +1364,10 @@ def _validate_distributed_and_prepared_corpus_contract(
                     "prefixes"
                 )
     try:
-        from src.training.packed_corpus import load_corpus_manifest
+        from src.training.packed_corpus import (
+            REPEATED_EPOCH_ORDER_VERSION,
+            load_corpus_manifest,
+        )
 
         manifest = load_corpus_manifest(prepared_dir, verify_shards=False)
     except Exception as error:
@@ -1376,10 +1386,94 @@ def _validate_distributed_and_prepared_corpus_contract(
     available_tokens = int(
         manifest["roles"]["optimizer_training"]["token_count"]
     )
-    if token_budget > available_tokens:
+    optimizer_iteration = dataset.get("optimizer_iteration", {})
+    if not isinstance(optimizer_iteration, Mapping):
+        raise ConfigError("dataset.optimizer_iteration must be a mapping")
+    iteration_mode = optimizer_iteration.get("mode", "single_pass")
+    epoch_order = optimizer_iteration.get("epoch_order", "stored_permutation")
+    if iteration_mode not in {"single_pass", "repeat_epochs"}:
         raise ConfigError(
-            "training.token_budget exceeds the prepared corpus optimizer tokens"
+            "dataset.optimizer_iteration.mode must be single_pass or repeat_epochs"
         )
+    if epoch_order not in {"stored_permutation", "deterministic_per_epoch"}:
+        raise ConfigError(
+            "dataset.optimizer_iteration.epoch_order must be stored_permutation "
+            "or deterministic_per_epoch"
+        )
+    expected_order = (
+        "stored_permutation"
+        if iteration_mode == "single_pass"
+        else "deterministic_per_epoch"
+    )
+    if epoch_order != expected_order:
+        raise ConfigError(
+            "dataset.optimizer_iteration mode/order must be "
+            "single_pass+stored_permutation or "
+            "repeat_epochs+deterministic_per_epoch"
+        )
+    if iteration_mode == "single_pass" and token_budget > available_tokens:
+        raise ConfigError(
+            "training.token_budget exceeds the prepared corpus optimizer tokens "
+            "in single_pass mode"
+        )
+
+    available_samples = int(
+        manifest["roles"]["optimizer_training"].get(
+            "sequence_count", available_tokens // context_length
+        )
+    )
+    samples_per_optimizer_step = (
+        int(training["expected_tokens_per_step"]) // context_length
+    )
+    aligned_epoch_samples = (
+        available_samples // samples_per_optimizer_step
+    ) * samples_per_optimizer_step
+    if aligned_epoch_samples <= 0:
+        raise ConfigError(
+            "Prepared corpus cannot fill one optimizer-step-aligned epoch"
+        )
+    planned_samples = token_budget // context_length
+    complete_epochs, partial_final_epoch_samples = divmod(
+        planned_samples, aligned_epoch_samples
+    )
+    resolved_optimizer_iteration = {
+        "mode": iteration_mode,
+        "epoch_order": epoch_order,
+        "ordering_policy_version": (
+            REPEATED_EPOCH_ORDER_VERSION
+            if iteration_mode == "repeat_epochs"
+            else manifest["training_order"]["permutation_version"]
+        ),
+        "planned_samples": planned_samples,
+        "aligned_epoch_samples": aligned_epoch_samples,
+        "aligned_epoch_tokens": aligned_epoch_samples * context_length,
+        "excluded_tail_samples": available_samples - aligned_epoch_samples,
+        "excluded_tail_tokens": (
+            available_samples - aligned_epoch_samples
+        ) * context_length,
+        "complete_epochs": complete_epochs,
+        "partial_final_epoch_samples": partial_final_epoch_samples,
+        "partial_final_epoch_tokens": partial_final_epoch_samples * context_length,
+        "planned_data_reuse_factor": planned_samples / aligned_epoch_samples,
+        "permutation_version": manifest["training_order"]["permutation_version"],
+        "permutation_hash": manifest["training_order"]["sha256"],
+        "fixed_epoch_set_hash": stable_hash(
+            {
+                "permutation_hash": manifest["training_order"]["sha256"],
+                "permutation_version": manifest["training_order"][
+                    "permutation_version"
+                ],
+                "epoch_sample_count": aligned_epoch_samples,
+            }
+        ),
+        "corpus_hash": manifest["corpus_hash"],
+        "optimizer_training_manifest_hash": manifest["roles"][
+            "optimizer_training"
+        ].get(
+            "manifest_hash",
+            manifest.get("role_manifest_hashes", {}).get("optimizer_training"),
+        ),
+    }
     source = manifest["source"]
     expected_source = {
         "dataset_name": dataset.get("dataset_name"),
@@ -1414,6 +1508,7 @@ def _validate_distributed_and_prepared_corpus_contract(
     if int(tokenizer.get("vocab_size", -1)) != int(model["vocab_size"]):
         raise ConfigError("Prepared corpus tokenizer vocabulary does not match the model")
     if isinstance(dataset, dict):
+        dataset["optimizer_iteration"] = resolved_optimizer_iteration
         dataset["corpus_hash"] = manifest["corpus_hash"]
         dataset["role_manifest_hashes"] = dict(manifest["role_manifest_hashes"])
         dataset["available_optimizer_tokens"] = available_tokens
