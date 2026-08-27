@@ -19,10 +19,10 @@ export MATFORMER_TOKENIZER_ROOT="${MATFORMER_TOKENIZER_ROOT:-$NFS_USER_ROOT/matf
 export MATFORMER_CORPUS_ROOT="${MATFORMER_CORPUS_ROOT:-$NFS_USER_ROOT/matformer-corpora}"
 export MATFORMER_EXPERIMENT_ROOT="${MATFORMER_EXPERIMENT_ROOT:-$NFS_USER_ROOT/results/elasticnn}"
 export HF_HOME="${HF_HOME:-$NFS_USER_ROOT/huggingface}"
-export BASE=configs/controlled_exps/tinystories_controlled_convergence.yaml
 
 case "${TINYSTORIES_PROFILE:-}" in
   stories)
+    export BASE=configs/controlled_exps/tinystories_controlled_convergence.yaml
     export PROFILE_SLUG=tinystories
     export RUN_PREFIX=tiny
     export TOKENIZER_NAME=tinystories-sentencepiece-bpe-2k-v1
@@ -35,9 +35,10 @@ case "${TINYSTORIES_PROFILE:-}" in
     export EXPERIMENT_NAME=tinystories-frozen-elastic-v2
     export EXPERIMENT_PHASE=tinystories_frozen_elastic
     export PROFILE_RECIPE_STATUS=frozen
-    export CAPACITY_CONFIG=configs/controlled_exps/tinystories_capacity_converged.yaml
+    export CAPACITY_CONFIG=configs/controlled_exps/tinystories_controlled_convergence.yaml
     ;;
   instruct)
+    export BASE=configs/controlled_exps/tinystories_instruct_plateau.yaml
     export PROFILE_SLUG=tinystories-instruct
     export RUN_PREFIX=tiny-instruct
     export TOKENIZER_NAME=tinystories-instruct-sentencepiece-bpe-2k-v1
@@ -50,7 +51,7 @@ case "${TINYSTORIES_PROFILE:-}" in
     export EXPERIMENT_NAME=tinystories-instruct-recipe-selection-v1
     export EXPERIMENT_PHASE=tinystories_instruct_recipe_selection
     export PROFILE_RECIPE_STATUS=calibration
-    export CAPACITY_CONFIG=configs/controlled_exps/tinystories_instruct_capacity_converged.yaml
+    export CAPACITY_CONFIG=configs/controlled_exps/tinystories_instruct_plateau.yaml
     ;;
   *)
     echo "TINYSTORIES_PROFILE must be stories or instruct" >&2

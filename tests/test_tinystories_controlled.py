@@ -271,7 +271,7 @@ def test_tinystories_slurm_finalizes_multiple_runs_sequentially(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("profile", "dataset_name", "tokenizer_name", "corpus_name", "phase"),
+    ("profile", "dataset_name", "tokenizer_name", "corpus_name", "phase", "base"),
     [
         (
             "stories",
@@ -279,6 +279,7 @@ def test_tinystories_slurm_finalizes_multiple_runs_sequentially(tmp_path):
             "tinystories-sentencepiece-bpe-2k-v1",
             "tinystories-packed-full-v1",
             "tinystories_controlled",
+            "configs/controlled_exps/tinystories_controlled_convergence.yaml",
         ),
         (
             "instruct",
@@ -286,6 +287,7 @@ def test_tinystories_slurm_finalizes_multiple_runs_sequentially(tmp_path):
             "tinystories-instruct-sentencepiece-bpe-2k-v1",
             "tinystories-instruct-packed-full-v1",
             "tinystories_instruct_controlled",
+            "configs/controlled_exps/tinystories_instruct_plateau.yaml",
         ),
     ],
 )
@@ -296,6 +298,7 @@ def test_tinystories_profile_selector_binds_data_contract(
     tokenizer_name,
     corpus_name,
     phase,
+    base,
 ):
     env = os.environ.copy()
     env["PATH"] = f"{Path(sys.executable).parent}:{env.get('PATH', '')}"
@@ -309,7 +312,7 @@ def test_tinystories_profile_selector_binds_data_contract(
             (
                 "source scripts/select_tinystories_profile.sh >/dev/null; "
                 "printf '%s\\n' \"$DATASET_NAME\" \"$TOKENIZER\" "
-                "\"$CORPUS\" \"$DATASET_PHASE\""
+                "\"$CORPUS\" \"$DATASET_PHASE\" \"$BASE\" \"$CAPACITY_CONFIG\""
             ),
         ],
         cwd=Path(__file__).resolve().parents[1],
@@ -324,6 +327,8 @@ def test_tinystories_profile_selector_binds_data_contract(
         str(tmp_path / "tokenizers" / tokenizer_name),
         str(tmp_path / "corpora" / corpus_name),
         phase,
+        base,
+        base,
     ]
 
 
@@ -681,6 +686,63 @@ def _prepare_config_fixture(tmp_path: Path) -> tuple[Path, Path]:
         optimizer_token_limit=2_048,
     )
     return tokenizer_dir, tmp_path / "corpus"
+
+
+def _prepare_instruct_plateau_config_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    tokenizer_dir, tokenizer_manifest = _tokenizer_artifact(tmp_path)
+    prepare_packed_corpus(
+        (
+            {"id": f"record-{index}", "text": str(index)}
+            for index in range(2_000)
+        ),
+        ControlledTokenizer(),
+        tmp_path / "corpus",
+        tokenizer_name=tokenizer_manifest["tokenizer_name"],
+        tokenizer_revision=tokenizer_manifest["manifest_hash"],
+        tokenizer_manifest=tokenizer_manifest,
+        source_dataset="roneneldan/TinyStoriesInstruct",
+        source_config="default",
+        source_split="train+validation",
+        source_fingerprint="instruct-config-source",
+        context_length=128,
+        shard_token_capacity=512,
+        shuffle_buffer_size=0,
+        reserved_role_counts={
+            "ordinary_validation": 128,
+            "controller": 128,
+            "final_holdout": 512,
+        },
+        optimizer_token_limit=2_048,
+    )
+    return tokenizer_dir, tmp_path / "corpus"
+
+
+def test_instruct_plateau_config_resolves_locked_repeated_epoch_contract(tmp_path):
+    tokenizer_dir, corpus_dir = _prepare_instruct_plateau_config_fixture(tmp_path)
+    config = resolve_run_config(
+        "configs/controlled_exps/tinystories_instruct_plateau.yaml",
+        overrides=[
+            f"model.tokenizer_dir={tokenizer_dir}",
+            f"dataset.prepared_corpus_dir={corpus_dir}",
+            f"run.output_root={tmp_path / 'outputs'}",
+            "training.token_budget=6144",
+            "training.batch_size_per_process=1",
+        ],
+    )
+    iteration = config["dataset"]["optimizer_iteration"]
+    assert config["controlled_experiment"]["recipe_status"] == "calibration"
+    assert config["model"]["d_model"] == 64
+    assert config["model"]["num_layers"] == 4
+    assert config["model"]["granularities"] == ["g1000"]
+    assert config["training"]["resolved_learning_rate"] == pytest.approx(0.008)
+    assert config["training"]["resolved_warmup_steps"] == 64
+    assert config["training"]["scheduler_name"] == "cosine"
+    assert config["training"]["expected_tokens_per_step"] == 128
+    assert iteration["mode"] == "repeat_epochs"
+    assert iteration["epoch_order"] == "deterministic_per_epoch"
+    assert iteration["aligned_epoch_samples"] == 16
+    assert iteration["aligned_epoch_tokens"] == 2048
+    assert iteration["complete_epochs"] == 3
 
 
 @pytest.mark.parametrize("learning_rate", [3e-4, 1e-3, 3e-3])
