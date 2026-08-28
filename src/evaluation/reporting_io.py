@@ -161,6 +161,7 @@ class LearningRateSchedule:
     correction_mode: str | None
     membership_correction: bool | None
     config_path: Path
+    scheduler_contract: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -300,6 +301,13 @@ def _learning_rate_schedule_from_saved_config(
         for key, value in scheduler_kwargs.items()
         if str(key) != "warmup_steps"
     }
+    scheduler_contract = training.get("scheduler_contract")
+    if not isinstance(scheduler_contract, Mapping):
+        scheduler_contract = scheduler.get("contract")
+    if scheduler_contract is not None and not isinstance(
+        scheduler_contract, Mapping
+    ):
+        raise ValueError("configured scheduler contract must be a mapping")
 
     warmup_raw = training.get("resolved_warmup_steps")
     if warmup_raw is None:
@@ -345,6 +353,11 @@ def _learning_rate_schedule_from_saved_config(
         correction_mode=correction_mode_from_saved_config(dict(config)),
         membership_correction=membership_correction_from_saved_config(dict(config)),
         config_path=config_path,
+        scheduler_contract=(
+            dict(scheduler_contract)
+            if isinstance(scheduler_contract, Mapping)
+            else None
+        ),
     )
 
 

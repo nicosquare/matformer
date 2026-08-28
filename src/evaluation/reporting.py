@@ -10,7 +10,7 @@ import math
 import re
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import matplotlib
 
@@ -450,8 +450,13 @@ def _scheduler_curve_points(schedule: Any, *, max_points: int = 2001):
         schedule.scheduler_name,
         optimizer=optimizer,
         num_warmup_steps=schedule.warmup_steps,
-        num_training_steps=schedule.max_steps,
-        **dict(schedule.scheduler_kwargs),
+        num_training_steps=(
+            None
+            if schedule.scheduler_name == "warmup_stable_decay"
+            and "num_stable_steps" in schedule.scheduler_kwargs
+            else schedule.max_steps
+        ),
+        scheduler_specific_kwargs=dict(schedule.scheduler_kwargs),
     )
     lr_lambdas = getattr(scheduler, "lr_lambdas", None)
     if not lr_lambdas:
@@ -478,6 +483,19 @@ def _scheduler_curve_points(schedule: Any, *, max_points: int = 2001):
         )
         if 0 <= step <= schedule.max_steps
     )
+    scheduler_contract = getattr(schedule, "scheduler_contract", None)
+    if isinstance(scheduler_contract, Mapping):
+        cooldown_start = scheduler_contract.get("cooldown_start_step")
+        if isinstance(cooldown_start, int):
+            steps.extend(
+                step
+                for step in (
+                    cooldown_start - 1,
+                    cooldown_start,
+                    cooldown_start + 1,
+                )
+                if 0 <= step <= schedule.max_steps
+            )
     steps = sorted(set(steps))
     factor = lr_lambdas[0]
     learning_rates = [schedule.peak_learning_rate * float(factor(step)) for step in steps]
@@ -503,6 +521,7 @@ def plot_learning_rate_schedules(
                 "max_steps": schedule.max_steps,
                 "tokens_per_step": schedule.expected_tokens_per_step,
                 "token_budget": schedule.token_budget,
+                "contract": getattr(schedule, "scheduler_contract", None),
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -552,6 +571,29 @@ def plot_learning_rate_schedules(
         {schedule.warmup_steps for schedule, *_ in curves},
         label=False,
     )
+    cooldown_steps = {
+        int(schedule.scheduler_contract["cooldown_start_step"])
+        for schedule, *_ in curves
+        if isinstance(getattr(schedule, "scheduler_contract", None), Mapping)
+        and schedule.scheduler_contract.get("cooldown_start_step") is not None
+    }
+    cooldown_tokens = {
+        float(schedule.scheduler_contract["cooldown_start_tokens"])
+        for schedule, *_ in curves
+        if isinstance(getattr(schedule, "scheduler_contract", None), Mapping)
+        and schedule.scheduler_contract.get("cooldown_start_tokens") is not None
+    }
+    for axis, positions in zip(axes, (cooldown_steps, cooldown_tokens), strict=True):
+        for index, position in enumerate(sorted(positions)):
+            axis.axvline(
+                position,
+                color="#b35806",
+                linestyle=":",
+                linewidth=1.25,
+                alpha=0.9,
+                zorder=6,
+                label="WSD cooldown begins" if index == 0 else None,
+            )
     mark_scheduler_warmup(
         axes[1],
         {
@@ -573,7 +615,7 @@ def plot_learning_rate_schedules(
     axes[0].legend(loc="best", frameon=False, fontsize=8)
     figure.suptitle(
         "Configured learning-rate schedules\n"
-        "Reconstructed from config.json; instantaneous LR was not logged",
+        "Reconstructed from the resolved config.json contract",
         fontsize=15,
     )
     output_path = Path(output_path)
@@ -2010,6 +2052,7 @@ def generate_figures(
     dpi: int = 300,
     validation_loss_log_y: bool = False,
     include_incomplete_validation_traces: bool = False,
+    include_final_holdout: bool = True,
     variants: list[str] | tuple[str, ...] | None = None,
     corrections: list[str] | tuple[str, ...] | None = None,
     sampling_bin_steps: int = 50,
@@ -2087,7 +2130,11 @@ def generate_figures(
             scaling_rows,
         )
 
-    final_holdout_rows = reporting_io.read_final_holdout_scaling_rows(input_root)
+    final_holdout_rows = (
+        reporting_io.read_final_holdout_scaling_rows(input_root)
+        if include_final_holdout
+        else []
+    )
     final_holdout_rows = filter_plot_rows(
         final_holdout_rows,
         variants=variants,

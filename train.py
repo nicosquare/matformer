@@ -115,6 +115,13 @@ def main(argv: list[str] | None = None) -> None:
                     "resolved_warmup_steps": resolved["training"][
                         "resolved_warmup_steps"
                     ],
+                    "scheduler": resolved["training"]["scheduler"],
+                    "scheduler_specific_kwargs": resolved["training"].get(
+                        "scheduler_specific_kwargs", {}
+                    ),
+                    "scheduler_contract": resolved["training"].get(
+                        "scheduler_contract"
+                    ),
                     "pre_nested_warmup": _pre_nested_warmup_preflight(
                         resolved["training"]
                     ),

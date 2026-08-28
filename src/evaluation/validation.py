@@ -10,6 +10,7 @@ import torch
 import torch.distributed as dist
 
 from src.training.distributed import autocast_context
+from src.training.schedules import scheduler_metric_fields
 from src.utils.config import resolve_sampling_mode_from_config_sections
 from src.models.granularity import resolved_granularity_artifact_fields
 from src.utils.metrics import json_artifact_value
@@ -372,6 +373,10 @@ def validation_results_to_metric_rows(
             "wall_clock_seconds": wall_clock_seconds,
             "tokens_per_second": tokens_per_second,
             "peak_memory_bytes": peak_memory_bytes,
+            **scheduler_metric_fields(
+                training,
+                scheduler_position=int(step),
+            ),
         }
         if adaptive_artifacts:
             row.update(adaptive_artifacts)

@@ -1438,6 +1438,9 @@ def _save_model_checkpoint_rank_zero(
             "model_state_dict": model_state_dict,
             "optimizer_state_dict": optimizer_state_dict,
             "scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
+            "scheduler_contract": copy.deepcopy(
+                config.get("training", {}).get("scheduler_contract")
+            ),
         }
 
     artifact_io = resolved_artifact_io(config)
@@ -2813,6 +2816,17 @@ def load_checkpoint_state(
         checkpoint_path=checkpoint_path,
         distributed_context=distributed_context,
     )
+    if config is not None:
+        expected_scheduler_contract = config.get("training", {}).get(
+            "scheduler_contract"
+        )
+        checkpoint_scheduler_contract = checkpoint.get("scheduler_contract")
+        if isinstance(expected_scheduler_contract, Mapping) and (
+            checkpoint_scheduler_contract != expected_scheduler_contract
+        ):
+            raise ConfigError(
+                "Checkpoint scheduler contract does not match the current run"
+            )
     if (
         config is not None
         and config.get("model", {}).get("granularity_sampling_mode")

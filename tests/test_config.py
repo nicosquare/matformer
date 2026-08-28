@@ -3034,3 +3034,89 @@ def test_panelgrad_rejects_invalid_or_mixed_policy_configuration(override, match
             "tests/fixtures/panelgrad_smoke.yaml",
             overrides=[override],
         )
+
+
+def _resolve_ratio_wsd(tmp_path, *, max_steps, scheduler_kwargs=None):
+    config_path = _write_single_run_config(tmp_path)
+    kwargs = {
+        "decay_ratio": 0.10,
+        "warmup_type": "linear",
+        "decay_type": "cosine",
+        "min_lr_ratio": 0.0,
+        "num_cycles": 0.5,
+        **(scheduler_kwargs or {}),
+    }
+    return resolve_run_config(
+        config_path,
+        overrides={
+            "training.token_budget": max_steps * 64,
+            "training.max_steps": None,
+            "training.warmup_steps": 64,
+            "training.scheduler": {
+                "name": "warmup_stable_decay",
+                "kwargs": kwargs,
+            },
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "max_steps, expected_decay, expected_stable, expected_cooldown",
+    [
+        (87_132, 8_714, 78_354, 78_418),
+        (261_396, 26_140, 235_192, 235_256),
+        (101, 11, 26, 90),
+    ],
+)
+def test_ratio_wsd_resolves_exact_proportional_boundaries(
+    tmp_path, max_steps, expected_decay, expected_stable, expected_cooldown
+):
+    resolved = _resolve_ratio_wsd(tmp_path, max_steps=max_steps)
+    training = resolved["training"]
+    contract = training["scheduler_contract"]
+
+    assert contract["decay_steps"] == expected_decay
+    assert contract["stable_steps"] == expected_stable
+    assert contract["cooldown_start_step"] == expected_cooldown
+    assert contract["cooldown_start_tokens"] == expected_cooldown * 64
+    assert contract["policy_version"] == 1
+    assert training["scheduler_specific_kwargs"] == {
+        "num_decay_steps": expected_decay,
+        "num_stable_steps": expected_stable,
+        "warmup_type": "linear",
+        "decay_type": "cosine",
+        "min_lr_ratio": 0.0,
+        "num_cycles": 0.5,
+    }
+    _, inputs = build_comparison_control_signature(resolved)
+    assert inputs["scheduler"]["contract"] == contract
+
+
+@pytest.mark.parametrize(
+    "kwargs, max_steps, match",
+    [
+        ({"decay_ratio": 0.0}, 100, "strictly between"),
+        ({"decay_ratio": 1.0}, 100, "strictly between"),
+        ({"decay_ratio": float("inf")}, 100, "finite"),
+        ({"decay_ratio": 0.1, "warmup_type": "cosine"}, 100, "warmup_type"),
+        ({"decay_ratio": 0.1, "decay_type": "linear"}, 100, "decay_type"),
+        ({"decay_ratio": 0.1, "min_lr_ratio": 0.1}, 100, "min_lr_ratio"),
+        ({"decay_ratio": 0.1, "num_cycles": 1.0}, 100, "num_cycles"),
+        ({"decay_ratio": 0.1, "num_stable_steps": 10}, 100, "unsupported"),
+        ({"decay_ratio": 0.5}, 65, "at least one stable step"),
+    ],
+)
+def test_ratio_wsd_rejects_invalid_contracts(tmp_path, kwargs, max_steps, match):
+    with pytest.raises(ConfigError, match=match):
+        _resolve_ratio_wsd(
+            tmp_path,
+            max_steps=max_steps,
+            scheduler_kwargs=kwargs,
+        )
+
+
+def test_cosine_schedule_resolution_remains_unchanged(tmp_path):
+    resolved = resolve_run_config(_write_single_run_config(tmp_path))
+    assert resolved["training"]["scheduler_name"] == "cosine"
+    assert resolved["training"]["scheduler_kwargs"] == {}
+    assert resolved["training"]["scheduler_contract"] is None

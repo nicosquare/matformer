@@ -2969,6 +2969,152 @@ def test_nonadaptive_checkpoint_round_trip_remains_free_of_controller_state(tmp_
         assert torch.equal(parameter, restored_parameter)
 
 
+def test_wsd_checkpoint_persists_contract_and_rejects_any_contract_change(tmp_path):
+    import src.training.checkpointing as training_checkpointing
+    from src.training.steps import build_optimizer_and_scheduler
+
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides={
+            "run.continuation.enabled": True,
+            "training.token_budget": 1_280,
+            "training.max_steps": 10,
+            "training.warmup_steps": 2,
+            "training.scheduler": {
+                "name": "warmup_stable_decay",
+                "kwargs": {
+                    "decay_ratio": 0.2,
+                    "warmup_type": "linear",
+                    "decay_type": "cosine",
+                    "min_lr_ratio": 0.0,
+                    "num_cycles": 0.5,
+                },
+            },
+        },
+    )
+    model = torch.nn.Linear(2, 1)
+    optimizer, scheduler = build_optimizer_and_scheduler(model, config["training"])
+    run_state = training_checkpointing.build_initial_continuation_state(config)
+    run_state.update(step=1, last_completed_step=1, tokens_seen=128)
+    checkpoint_path = output_dir / "checkpoints" / "latest.pt"
+    training_checkpointing.save_model_checkpoint(
+        config,
+        model,
+        optimizer,
+        scheduler,
+        output_path=checkpoint_path,
+        checkpoint_fields={
+            "checkpoint_status": "latest",
+            "checkpoint_metric": None,
+            "checkpoint_metric_value": None,
+            "checkpoint_selection_step": None,
+        },
+        run_state=run_state,
+    )
+
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    assert checkpoint["scheduler_contract"] == config["training"][
+        "scheduler_contract"
+    ]
+    summary = build_run_summary(config, tokens_seen=128)
+    assert summary["scheduler_contract"] == config["training"][
+        "scheduler_contract"
+    ]
+    assert summary["scheduler_specific_kwargs"] == config["training"][
+        "scheduler_specific_kwargs"
+    ]
+
+    changed = copy.deepcopy(config)
+    changed["training"]["scheduler_contract"]["decay_ratio"] = 0.3
+    restored_model = torch.nn.Linear(2, 1)
+    restored_optimizer, restored_scheduler = build_optimizer_and_scheduler(
+        restored_model, config["training"]
+    )
+    with pytest.raises(ConfigError, match="scheduler contract"):
+        training_checkpointing.load_checkpoint_state(
+            checkpoint_path,
+            restored_model,
+            restored_optimizer,
+            restored_scheduler,
+            config=changed,
+        )
+
+
+def test_historical_metrics_header_is_migrated_before_new_schedule_rows_append(
+    tmp_path,
+):
+    from src.utils.metrics import MetricsJournal
+
+    output_dir = tmp_path / "historical-cosine"
+    output_dir.mkdir()
+    schedule_columns = {
+        "learning_rate",
+        "scheduler_position",
+        "scheduler_phase",
+        "scheduler_phase_step",
+        "scheduler_phase_progress",
+        "scheduler_policy_version",
+        "scheduler_warmup_steps",
+        "scheduler_stable_steps",
+        "scheduler_decay_steps",
+        "scheduler_decay_ratio",
+        "scheduler_cooldown_start_step",
+        "scheduler_cooldown_start_tokens",
+        "scheduler_warmup_type",
+        "scheduler_decay_type",
+        "scheduler_min_lr_ratio",
+        "scheduler_min_learning_rate",
+        "scheduler_num_cycles",
+        "scheduler_schedule_end_step",
+        "scheduler_schedule_end_tokens",
+    }
+    historical_columns = [
+        column for column in METRICS_COLUMNS if column not in schedule_columns
+    ]
+    row = {column: None for column in historical_columns}
+    row.update(
+        {
+            "run_id": "historical-cosine",
+            "step": 1,
+            "split": "train",
+            "granularity": "xl",
+            "loss": 1.0,
+            "tokens_seen": 128,
+        }
+    )
+    with (output_dir / "metrics.csv").open(
+        "w", encoding="utf-8", newline=""
+    ) as target:
+        writer = csv.DictWriter(target, fieldnames=historical_columns)
+        writer.writeheader()
+        writer.writerow(row)
+
+    journal = MetricsJournal(output_dir, checkpoint_step=1)
+    journal.append(
+        {
+            **row,
+            "step": 2,
+            "learning_rate": 0.001,
+            "scheduler_position": 1,
+            "scheduler_phase": "schedule",
+        },
+        force=True,
+    )
+
+    with (output_dir / "metrics.csv").open(
+        "r", encoding="utf-8", newline=""
+    ) as source:
+        reader = csv.DictReader(source)
+        rows = list(reader)
+    assert reader.fieldnames == METRICS_COLUMNS
+    assert len(rows) == 2
+    assert rows[0]["scheduler_phase"] == ""
+    assert rows[1]["learning_rate"] == "0.001"
+
+
 def test_fixed_global_checkpoint_rejects_a_changed_distribution(tmp_path):
     import src.training.checkpointing as training_checkpointing
 

@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
+from src.training.schedules import scheduler_metric_fields
+
 
 def heartbeat_training_fields(
     config: dict[str, Any],
@@ -33,6 +35,13 @@ def heartbeat_training_fields(
         "peak_gpu_memory_bytes": peak_gpu_memory_bytes,
         "eta_seconds": eta_seconds,
     }
+    if step is not None:
+        fields.update(
+            scheduler_metric_fields(
+                training,
+                scheduler_position=max(int(step) - 1, 0),
+            )
+        )
     iteration = config.get("dataset", {}).get("optimizer_iteration")
     if isinstance(iteration, dict) and tokens_seen is not None:
         epoch_tokens = int(iteration["aligned_epoch_tokens"])

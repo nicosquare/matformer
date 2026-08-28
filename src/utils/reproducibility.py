@@ -437,6 +437,13 @@ def build_comparison_control_signature(config: Mapping[str, Any]) -> tuple[str, 
         and optimizer_iteration.get("mode") == "repeat_epochs"
     ):
         inputs["optimizer_iteration"] = dict(optimizer_iteration)
+    controlled_experiment = config.get("controlled_experiment", {})
+    if isinstance(controlled_experiment, Mapping) and controlled_experiment.get(
+        "selection_report_hash"
+    ) not in (None, ""):
+        inputs["selection_report_hash"] = controlled_experiment[
+            "selection_report_hash"
+        ]
     if _uses_probabilistic_adaptive_controller(config):
         inputs["probabilistic_seed_streams"] = probabilistic_seed_provenance(config)
         inputs["probabilistic_data_role_manifests"] = {

@@ -20,6 +20,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.utils.reproducibility import stable_hash
+from src.training.schedules import (
+    WSD_SCHEDULER_NAME,
+    WSD_SCHEDULE_POLICY,
+    WSD_SCHEDULE_POLICY_VERSION,
+    wsd_learning_rate_factor,
+)
 
 
 PERPLEXITY_TOLERANCE = 0.005
@@ -30,6 +36,9 @@ ELASTIC_WIDTHS = ("g250", "g500", "g750", "g1000")
 PLATEAU_WINDOW_FRACTION = 0.25
 CATCHUP_STREAK = 5
 MATCHED_HORIZON_EPOCHS = 3
+STANDALONE_WSD_LRS = (0.002, 0.004, 0.006, 0.008)
+WSD_DECAY_RATIO = 0.10
+WSD_WARMUP_STEPS = 64
 
 
 class PlateauCatchupError(ValueError):
@@ -444,6 +453,20 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
     )
 
 
+def _write_immutable_json(path: Path, payload: Mapping[str, Any]) -> None:
+    """Create a selection manifest once and reject later provenance drift."""
+
+    if path.exists():
+        existing = _read_json(path)
+        if existing != dict(payload):
+            raise PlateauCatchupError(
+                f"Immutable selection manifest already exists with different "
+                f"provenance: {path}"
+            )
+        return
+    _write_json(path, payload)
+
+
 def _write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = sorted({key for row in rows for key in row})
@@ -692,6 +715,555 @@ def select_elastic_lr(
     return selection
 
 
+def _resolved_wsd_contract(run: Mapping[str, Any]) -> dict[str, Any]:
+    training = run["config"].get("training", {})
+    scheduler = training.get("scheduler", {})
+    contract = training.get("scheduler_contract")
+    if not isinstance(contract, Mapping) and isinstance(scheduler, Mapping):
+        contract = scheduler.get("contract")
+    if not isinstance(contract, Mapping):
+        raise PlateauCatchupError("Run lacks a resolved WSD scheduler contract")
+    return dict(contract)
+
+
+def _validate_ratio_wsd_contract(
+    run: Mapping[str, Any],
+    *,
+    expected_epochs: int,
+) -> tuple[list[str], dict[str, Any]]:
+    """Validate one standalone seed-42 ratio-WSD calibration run."""
+
+    config = run["config"]
+    training = config.get("training", {})
+    iteration = _iteration_contract(run)
+    epoch_tokens = _integer(iteration["aligned_epoch_tokens"], "aligned_epoch_tokens")
+    expected_budget = expected_epochs * epoch_tokens
+    rejections = _completed_rejections(run, expected_budget)
+    if _seed(run) != 42:
+        rejections.append("WSD calibration requires seed 42")
+    if config.get("run", {}).get("model_family") != "standalone":
+        rejections.append("run is not standalone")
+    if config.get("model", {}).get("granularities") != ["g1000"]:
+        rejections.append("run is not the standalone g1000 endpoint")
+    if _integer(config.get("model", {}).get("d_model"), "model.d_model") != 64:
+        rejections.append("run does not use d_model=64")
+    if _integer(config.get("model", {}).get("num_layers"), "model.num_layers") != 4:
+        rejections.append("run does not use num_layers=4")
+
+    expected_tokens_per_step = _integer(
+        training.get("expected_tokens_per_step"), "expected_tokens_per_step"
+    )
+    expected_max_steps = math.ceil(expected_budget / expected_tokens_per_step)
+    configured_max_steps = _integer(training.get("max_steps"), "training.max_steps")
+    if configured_max_steps != expected_max_steps:
+        rejections.append(
+            f"resolved max_steps is {configured_max_steps}, expected {expected_max_steps}"
+        )
+    try:
+        contract = _resolved_wsd_contract(run)
+    except PlateauCatchupError as error:
+        rejections.append(str(error))
+        return rejections, {}
+
+    expected_decay_steps = math.ceil(expected_max_steps * WSD_DECAY_RATIO)
+    expected_stable_steps = (
+        expected_max_steps - WSD_WARMUP_STEPS - expected_decay_steps
+    )
+    expected_cooldown_start = WSD_WARMUP_STEPS + expected_stable_steps
+    expected_contract = {
+        "name": WSD_SCHEDULER_NAME,
+        "policy": WSD_SCHEDULE_POLICY,
+        "policy_version": WSD_SCHEDULE_POLICY_VERSION,
+        "max_steps": expected_max_steps,
+        "warmup_steps": WSD_WARMUP_STEPS,
+        "stable_steps": expected_stable_steps,
+        "decay_steps": expected_decay_steps,
+        "decay_ratio": WSD_DECAY_RATIO,
+        "cooldown_start_step": expected_cooldown_start,
+        "cooldown_start_tokens": min(
+            expected_cooldown_start * expected_tokens_per_step,
+            expected_budget,
+        ),
+        "schedule_end_tokens": expected_budget,
+        "warmup_type": "linear",
+        "decay_type": "cosine",
+        "min_lr_ratio": 0.0,
+        "min_learning_rate": 0.0,
+        "num_cycles": 0.5,
+    }
+    for key, expected in expected_contract.items():
+        actual = contract.get(key)
+        if isinstance(expected, float):
+            try:
+                matches = math.isclose(
+                    float(actual), expected, rel_tol=0.0, abs_tol=1e-12
+                )
+            except (TypeError, ValueError):
+                matches = False
+        else:
+            matches = actual == expected
+        if not matches:
+            rejections.append(
+                f"WSD contract {key} is {actual!r}, expected {expected!r}"
+            )
+    return rejections, contract
+
+
+def _checkpoint_for_metric_row(
+    run: Mapping[str, Any], row: Mapping[str, Any]
+) -> tuple[Path, str]:
+    summary = run["summary"]
+    checkpoint = _resolve_checkpoint(
+        Path(run["run_dir"]), summary.get("best_checkpoint_path")
+    )
+    if summary.get("checkpoint_status") != "best_eval" or checkpoint is None:
+        raise PlateauCatchupError(
+            "Selected ordinary-validation loss has no available best checkpoint"
+        )
+    checkpoint_step = _integer(
+        summary.get("checkpoint_selection_step"), "checkpoint selection step"
+    )
+    if checkpoint_step != _integer(row.get("step"), "selected metric step"):
+        raise PlateauCatchupError(
+            "Selected ordinary-validation loss is not the available best checkpoint"
+        )
+    return checkpoint, _sha256(checkpoint)
+
+
+def select_standalone_wsd_lr(
+    run_dirs: Iterable[str | Path], output_dir: str | Path
+) -> dict[str, Any]:
+    """Freeze the seed-42 standalone LR selected only from cooldown validation."""
+
+    runs = [_load_run(path) for path in run_dirs]
+    candidates: list[dict[str, Any]] = []
+    by_lr: dict[float, dict[str, Any]] = {}
+    for run in runs:
+        learning_rate = _learning_rate(run)
+        rejections, contract = _validate_ratio_wsd_contract(
+            run, expected_epochs=1
+        )
+        cooldown_start = contract.get("cooldown_start_step")
+        rows = _ordinary_validation_rows(run, "g1000")
+        cooldown_rows = (
+            [row for row in rows if row["step"] >= int(cooldown_start)]
+            if cooldown_start is not None
+            else []
+        )
+        if not cooldown_rows:
+            rejections.append("no ordinary-validation g1000 rows after cooldown begins")
+            cooldown_best = None
+        else:
+            cooldown_best = min(
+                cooldown_rows, key=lambda row: (row["loss"], row["step"])
+            )
+        candidate = {
+            "run_id": run["summary"].get("run_id", run["run_dir"].name),
+            "run_dir": str(run["run_dir"]),
+            "seed": _seed(run),
+            "learning_rate": learning_rate,
+            "contract_satisfied": not rejections,
+            "rejection_reasons": rejections,
+            "cooldown_start_step": cooldown_start,
+            "cooldown_validation_count": len(cooldown_rows),
+            "cooldown_best_step": (
+                cooldown_best["step"] if cooldown_best is not None else None
+            ),
+            "cooldown_best_tokens": (
+                cooldown_best["tokens_seen"] if cooldown_best is not None else None
+            ),
+            "cooldown_best_loss": (
+                cooldown_best["loss"] if cooldown_best is not None else None
+            ),
+            "wsd_contract": contract,
+            "provenance": _run_provenance(run),
+        }
+        candidates.append(candidate)
+        matching_lr = next(
+            (
+                expected
+                for expected in STANDALONE_WSD_LRS
+                if math.isclose(
+                    learning_rate, expected, rel_tol=0.0, abs_tol=1e-12
+                )
+            ),
+            learning_rate,
+        )
+        if matching_lr in by_lr:
+            raise PlateauCatchupError(
+                f"Duplicate WSD LR-screen run for learning rate {matching_lr}"
+            )
+        by_lr[matching_lr] = candidate
+
+    if set(by_lr) != set(STANDALONE_WSD_LRS):
+        raise PlateauCatchupError(
+            "WSD LR screen must contain exactly "
+            f"{list(STANDALONE_WSD_LRS)}; found {sorted(by_lr)}"
+        )
+    invalid = [row for row in candidates if not row["contract_satisfied"]]
+    if invalid:
+        raise PlateauCatchupError(
+            "WSD LR screen contains invalid runs: "
+            + "; ".join(
+                f"{row['run_id']}: {row['rejection_reasons']}" for row in invalid
+            )
+        )
+    provenance_hashes = {stable_hash(row["provenance"]) for row in candidates}
+    if len(provenance_hashes) != 1:
+        raise PlateauCatchupError(
+            "WSD LR-screen data/model provenance does not match across candidates"
+        )
+
+    winner = min(
+        candidates,
+        key=lambda row: (row["cooldown_best_loss"], row["learning_rate"]),
+    )
+    winner_run = next(
+        run for run in runs if str(run["run_dir"]) == winner["run_dir"]
+    )
+    winner_row = {
+        "step": winner["cooldown_best_step"],
+        "loss": winner["cooldown_best_loss"],
+    }
+    checkpoint, checkpoint_sha256 = _checkpoint_for_metric_row(
+        winner_run, winner_row
+    )
+    selection = {
+        "schema_version": 1,
+        "analysis": "tinystories_instruct_standalone_wsd_lr_selection",
+        "status": "lr_selected",
+        "selection_endpoint": "cooldown_ordinary_validation_g1000_best_loss",
+        "required_seed": 42,
+        "candidate_learning_rates": list(STANDALONE_WSD_LRS),
+        "selected_learning_rate": winner["learning_rate"],
+        "selected_run_id": winner["run_id"],
+        "selected_run_dir": winner["run_dir"],
+        "selected_cooldown_best_step": winner["cooldown_best_step"],
+        "selected_cooldown_best_tokens": winner["cooldown_best_tokens"],
+        "selected_cooldown_best_loss": winner["cooldown_best_loss"],
+        "selected_checkpoint_path": str(checkpoint),
+        "selected_checkpoint_sha256": checkpoint_sha256,
+        "shared_provenance": winner["provenance"],
+        "shared_provenance_hash": next(iter(provenance_hashes)),
+        "wsd_contract": winner["wsd_contract"],
+        "candidates": candidates,
+    }
+    selection["manifest_hash"] = stable_hash(selection)
+    output = Path(output_dir).expanduser().resolve()
+    _write_immutable_json(output / "standalone_wsd_lr_selection.json", selection)
+    _write_csv(output / "standalone_wsd_lr_candidates.csv", candidates)
+    pyplot = _pyplot()
+    figure, axis = pyplot.subplots(figsize=(7, 4))
+    ordered = sorted(candidates, key=lambda row: row["learning_rate"])
+    axis.plot(
+        [row["learning_rate"] for row in ordered],
+        [row["cooldown_best_loss"] for row in ordered],
+        marker="o",
+    )
+    axis.scatter(
+        [winner["learning_rate"]],
+        [winner["cooldown_best_loss"]],
+        color="tab:red",
+        zorder=3,
+        label="selected",
+    )
+    axis.set(
+        xlabel="stable learning rate",
+        ylabel="best cooldown ordinary-validation g1000 loss",
+    )
+    axis.legend(frameon=False)
+    figure.tight_layout()
+    figure.savefig(output / "standalone_wsd_lr_selection.png", dpi=160)
+    pyplot.close(figure)
+    return selection
+
+
+def _phase_for_scheduler_position(
+    position: int, contract: Mapping[str, Any]
+) -> tuple[str, int, float]:
+    warmup_steps = int(contract["warmup_steps"])
+    stable_steps = int(contract["stable_steps"])
+    decay_steps = int(contract["decay_steps"])
+    cooldown_start = int(contract["cooldown_start_step"])
+    if position < warmup_steps:
+        return "warmup", position, position / max(warmup_steps, 1)
+    if position < cooldown_start:
+        phase_step = position - warmup_steps
+        return "stable", phase_step, phase_step / max(stable_steps, 1)
+    phase_step = min(max(position - cooldown_start, 0), decay_steps)
+    return "cooldown", phase_step, min(phase_step / max(decay_steps, 1), 1.0)
+
+
+def analyze_wsd_calibration(
+    run_dir: str | Path,
+    selection_path: str | Path,
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    """Analyze one fresh three-epoch winner without freezing any target."""
+
+    output = Path(output_dir).expanduser().resolve()
+    frozen_target_path = output / "frozen_standalone_targets.json"
+    if frozen_target_path.exists():
+        raise PlateauCatchupError(
+            "wsd-calibration refuses an output directory containing "
+            "frozen_standalone_targets.json"
+        )
+    selection_file = Path(selection_path).expanduser().resolve()
+    selection = _read_json(selection_file)
+    _validate_manifest(selection, "standalone WSD LR selection")
+    if selection.get("analysis") != "tinystories_instruct_standalone_wsd_lr_selection":
+        raise PlateauCatchupError("Selection is not a standalone WSD LR manifest")
+
+    run = _load_run(run_dir)
+    rejections, contract = _validate_ratio_wsd_contract(
+        run, expected_epochs=MATCHED_HORIZON_EPOCHS
+    )
+    selected_lr = _number(selection.get("selected_learning_rate"), "selected LR")
+    if not math.isclose(
+        _learning_rate(run), selected_lr, rel_tol=0.0, abs_tol=1e-12
+    ):
+        rejections.append("calibration learning rate does not match the selection")
+    if _run_provenance(run) != selection.get("shared_provenance"):
+        rejections.append("calibration data/model provenance does not match selection")
+    controlled_experiment = run["config"].get("controlled_experiment", {})
+    configured_selection_hash = (
+        controlled_experiment.get("selection_report_hash")
+        if isinstance(controlled_experiment, Mapping)
+        else None
+    )
+    if configured_selection_hash != selection.get("manifest_hash"):
+        rejections.append(
+            "calibration config does not link the immutable WSD selection hash"
+        )
+    if run["summary"].get("run_id") == selection.get("selected_run_id"):
+        rejections.append("calibration run must be distinct from the LR-screen winner")
+    if rejections:
+        raise PlateauCatchupError(f"Invalid WSD calibration run: {rejections}")
+
+    peak_lr = _learning_rate(run)
+    rows = _ordinary_validation_rows(run, "g1000")
+    if not rows:
+        raise PlateauCatchupError("WSD calibration has no validation rows")
+    validation_rows: list[dict[str, Any]] = []
+    by_phase: dict[str, list[dict[str, Any]]] = {
+        "warmup": [],
+        "stable": [],
+        "cooldown": [],
+    }
+    for row in rows:
+        position = int(row["step"])
+        phase, phase_step, phase_progress = _phase_for_scheduler_position(
+            position, contract
+        )
+        factor = wsd_learning_rate_factor(
+            position,
+            warmup_steps=int(contract["warmup_steps"]),
+            stable_steps=int(contract["stable_steps"]),
+            decay_steps=int(contract["decay_steps"]),
+            warmup_type=str(contract["warmup_type"]),
+            decay_type=str(contract["decay_type"]),
+            min_lr_ratio=float(contract["min_lr_ratio"]),
+            num_cycles=float(contract["num_cycles"]),
+        )
+        decorated = {
+            **row,
+            "scheduler_position": position,
+            "scheduler_phase": phase,
+            "scheduler_phase_step": phase_step,
+            "scheduler_phase_progress": phase_progress,
+            "learning_rate": peak_lr * factor,
+        }
+        validation_rows.append(decorated)
+        by_phase[phase].append(decorated)
+
+    stable_rows = by_phase["stable"]
+    cooldown_rows = by_phase["cooldown"]
+    if not stable_rows or not cooldown_rows:
+        raise PlateauCatchupError(
+            "WSD calibration requires both stable and cooldown validation rows"
+        )
+    stable_best = min(stable_rows, key=lambda row: (row["loss"], row["step"]))
+    cooldown_best = min(
+        cooldown_rows, key=lambda row: (row["loss"], row["step"])
+    )
+    cooldown_final = max(cooldown_rows, key=lambda row: row["step"])
+
+    iteration = _iteration_contract(run)
+    epoch_tokens = _integer(iteration["aligned_epoch_tokens"], "aligned_epoch_tokens")
+    quarter_tokens = epoch_tokens // 4
+    if quarter_tokens * 4 != epoch_tokens:
+        raise PlateauCatchupError("aligned epoch cannot be divided into quarters")
+    horizon_tokens = MATCHED_HORIZON_EPOCHS * epoch_tokens
+    stable_windows: list[dict[str, Any]] = []
+    for start in range(0, horizon_tokens, quarter_tokens):
+        end = start + quarter_tokens
+        window_rows = [
+            row for row in stable_rows if start < row["tokens_seen"] <= end
+        ]
+        prior_rows = [row for row in stable_rows if row["tokens_seen"] <= start]
+        if not window_rows or not prior_rows:
+            improvement = None
+            prior_best = None
+            through_best = None
+        else:
+            prior_best = min(row["loss"] for row in prior_rows)
+            through_best = min(
+                row["loss"]
+                for row in stable_rows
+                if row["tokens_seen"] <= end
+            )
+            improvement = max(prior_best - through_best, 0.0)
+        stable_windows.append(
+            {
+                "start_tokens": start,
+                "end_tokens": end,
+                "validation_count": len(window_rows),
+                "prior_best_loss": prior_best,
+                "cumulative_best_loss": through_best,
+                "improvement": improvement,
+                "below_diagnostic_threshold": (
+                    improvement is not None and improvement < LOSS_TOLERANCE
+                ),
+            }
+        )
+
+    checkpoint = _resolve_checkpoint(
+        Path(run["run_dir"]), run["summary"].get("best_checkpoint_path")
+    )
+    if checkpoint is None:
+        raise PlateauCatchupError("WSD calibration best checkpoint is unavailable")
+
+    max_steps = int(contract["max_steps"])
+    trajectory_positions = {
+        round(index * max_steps / 1000) for index in range(1001)
+    }
+    trajectory_positions.update(
+        {
+            0,
+            int(contract["warmup_steps"]),
+            int(contract["cooldown_start_step"]),
+            max_steps,
+        }
+    )
+    lr_trajectory = []
+    for position in sorted(trajectory_positions):
+        phase, phase_step, phase_progress = _phase_for_scheduler_position(
+            position, contract
+        )
+        factor = wsd_learning_rate_factor(
+            position,
+            warmup_steps=int(contract["warmup_steps"]),
+            stable_steps=int(contract["stable_steps"]),
+            decay_steps=int(contract["decay_steps"]),
+            warmup_type=str(contract["warmup_type"]),
+            decay_type=str(contract["decay_type"]),
+            min_lr_ratio=float(contract["min_lr_ratio"]),
+            num_cycles=float(contract["num_cycles"]),
+        )
+        lr_trajectory.append(
+            {
+                "scheduler_position": position,
+                "tokens": min(
+                    position
+                    * _integer(
+                        run["config"]["training"]["expected_tokens_per_step"],
+                        "expected_tokens_per_step",
+                    ),
+                    horizon_tokens,
+                ),
+                "phase": phase,
+                "phase_step": phase_step,
+                "phase_progress": phase_progress,
+                "learning_rate": peak_lr * factor,
+            }
+        )
+
+    report = {
+        "schema_version": 1,
+        "analysis": "tinystories_instruct_wsd_calibration",
+        "status": "calibration_reported",
+        "seed": 42,
+        "run_id": run["summary"].get("run_id", Path(run_dir).name),
+        "run_dir": str(run["run_dir"]),
+        "selected_learning_rate": selected_lr,
+        "selection_manifest_path": str(selection_file),
+        "selection_manifest_hash": selection["manifest_hash"],
+        "wsd_contract": contract,
+        "phase_boundaries": {
+            "warmup_end_step": int(contract["warmup_steps"]),
+            "cooldown_start_step": int(contract["cooldown_start_step"]),
+            "cooldown_start_tokens": int(contract["cooldown_start_tokens"]),
+            "schedule_end_step": int(contract["max_steps"]),
+            "schedule_end_tokens": horizon_tokens,
+        },
+        "validation_counts_by_phase": {
+            phase: len(phase_rows) for phase, phase_rows in by_phase.items()
+        },
+        "quarter_epoch_stable_improvements": stable_windows,
+        "diagnostic_perplexity_threshold": PERPLEXITY_TOLERANCE,
+        "diagnostic_loss_threshold": LOSS_TOLERANCE,
+        "stable_best": stable_best,
+        "cooldown_best": cooldown_best,
+        "cooldown_final": cooldown_final,
+        "cooldown_gain": stable_best["loss"] - cooldown_best["loss"],
+        "checkpoint_path": str(checkpoint),
+        "checkpoint_sha256": _sha256(checkpoint),
+        "lr_trajectory": lr_trajectory,
+        "validation_rows_by_phase": by_phase,
+        "targets_frozen": False,
+        "elastic_claim": False,
+    }
+    report["report_hash"] = stable_hash(report)
+    _write_json(output / "wsd_calibration_report.json", report)
+    _write_csv(output / "wsd_calibration_validation.csv", validation_rows)
+
+    pyplot = _pyplot()
+    figure, loss_axis = pyplot.subplots(figsize=(9, 5))
+    lr_axis = loss_axis.twinx()
+    for phase, color in (
+        ("warmup", "tab:orange"),
+        ("stable", "tab:blue"),
+        ("cooldown", "tab:green"),
+    ):
+        phase_rows = by_phase[phase]
+        if phase_rows:
+            loss_axis.plot(
+                [row["tokens_seen"] for row in phase_rows],
+                [row["loss"] for row in phase_rows],
+                marker="o",
+                markersize=2.5,
+                linewidth=1.2,
+                color=color,
+                label=f"{phase} validation",
+            )
+    lr_axis.plot(
+        [row["tokens"] for row in lr_trajectory],
+        [row["learning_rate"] for row in lr_trajectory],
+        color="black",
+        alpha=0.55,
+        linewidth=1.1,
+        label="learning rate",
+    )
+    loss_axis.axvline(
+        int(contract["cooldown_start_tokens"]),
+        color="tab:red",
+        linestyle="--",
+        linewidth=1.0,
+        label="cooldown begins",
+    )
+    loss_axis.set(xlabel="optimizer tokens", ylabel="ordinary-validation g1000 loss")
+    lr_axis.set_ylabel("learning rate")
+    handles, labels = loss_axis.get_legend_handles_labels()
+    lr_handles, lr_labels = lr_axis.get_legend_handles_labels()
+    loss_axis.legend(handles + lr_handles, labels + lr_labels, frameon=False)
+    figure.tight_layout()
+    figure.savefig(output / "wsd_calibration.png", dpi=160)
+    pyplot.close(figure)
+    if frozen_target_path.exists():
+        raise AssertionError("wsd-calibration must never freeze standalone targets")
+    return report
+
+
 def measure_catchup(
     run_dirs: Iterable[str | Path],
     frozen_targets_path: str | Path,
@@ -878,6 +1450,22 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     select.add_argument("--frozen-targets", required=True)
     select.add_argument("--output-dir", required=True)
 
+    select_wsd = subparsers.add_parser(
+        "select-standalone-wsd-lr",
+        help="freeze the seed-42 standalone ratio-WSD LR",
+    )
+    select_wsd.add_argument("--run-dir", action="append", default=[])
+    select_wsd.add_argument("--runs-root", action="append", default=[])
+    select_wsd.add_argument("--output-dir", required=True)
+
+    calibration = subparsers.add_parser(
+        "wsd-calibration",
+        help="analyze one fresh three-epoch standalone WSD winner",
+    )
+    calibration.add_argument("--run-dir", required=True)
+    calibration.add_argument("--wsd-selection", required=True)
+    calibration.add_argument("--output-dir", required=True)
+
     catchup = subparsers.add_parser("catchup", help="measure matched-seed H=1 catch-up")
     catchup.add_argument("--run-dir", action="append", default=[])
     catchup.add_argument("--runs-root", action="append", default=[])
@@ -889,6 +1477,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
+    if args.command == "wsd-calibration":
+        result = analyze_wsd_calibration(
+            args.run_dir,
+            args.wsd_selection,
+            args.output_dir,
+        )
+        print(json.dumps({"status": result["status"]}, sort_keys=True))
+        return
+
     run_dirs = _discover_run_dirs(
         args.run_dir,
         args.runs_root,
@@ -898,7 +1495,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         result = freeze_plateau_targets(run_dirs, args.output_dir)
     elif args.command == "select-elastic-lr":
         result = select_elastic_lr(run_dirs, args.frozen_targets, args.output_dir)
-    else:
+    elif args.command == "select-standalone-wsd-lr":
+        result = select_standalone_wsd_lr(run_dirs, args.output_dir)
+    elif args.command == "catchup":
         result = measure_catchup(
             run_dirs,
             args.frozen_targets,

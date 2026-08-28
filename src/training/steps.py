@@ -11,6 +11,7 @@ except ImportError:  # pragma: no cover - optional dependency
 load_dotenv()
 
 import copy
+import math
 import time
 from contextlib import nullcontext
 from pathlib import Path
@@ -54,6 +55,7 @@ from src.training.distributed import (
     sum_int,
 )
 from src.training.monitoring import NoopHeartbeatWriter
+from src.training.schedules import scheduler_metric_fields
 from src.utils.config import (
     ConfigError,
     resolve_optimizer_kwargs,
@@ -121,8 +123,13 @@ def build_optimizer_and_scheduler(model, training: Mapping[str, Any]):
         scheduler_name,
         optimizer=optimizer,
         num_warmup_steps=resolved_warmup_steps,
-        num_training_steps=int(training["max_steps"]),
-        **scheduler_kwargs,
+        num_training_steps=(
+            None
+            if scheduler_name == "warmup_stable_decay"
+            and "num_stable_steps" in scheduler_kwargs
+            else int(training["max_steps"])
+        ),
+        scheduler_specific_kwargs=scheduler_kwargs,
     )
     return optimizer, scheduler
 
@@ -876,6 +883,24 @@ def train_for_steps(
                     gradient_clip_norm = training.get("gradient_clip_norm")
                     if gradient_clip_norm is not None:
                         clip_grad_norm_(model.parameters(), float(gradient_clip_norm))
+                    # LambdaLR position ``pending_step - 1`` is the rate applied by
+                    # this update. Capture it before optimizer.step/scheduler.step
+                    # so metrics never report the rate prepared for the next update.
+                    committed_learning_rates = [
+                        float(group["lr"]) for group in optimizer.param_groups
+                    ]
+                    if not committed_learning_rates or any(
+                        not math.isfinite(value) for value in committed_learning_rates
+                    ):
+                        raise RuntimeError("Optimizer learning rate is missing or non-finite")
+                    if any(
+                        value != committed_learning_rates[0]
+                        for value in committed_learning_rates[1:]
+                    ):
+                        raise RuntimeError(
+                            "Per-row learning_rate requires one shared optimizer rate"
+                        )
+                    committed_learning_rate = committed_learning_rates[0]
                     _maybe_apply_concat_lmc_optimizer_step(
                         config,
                         model,
@@ -1011,6 +1036,11 @@ def train_for_steps(
                             "microstep": committed_microsteps,
                             "optimizer_window_microsteps": len(window),
                             "committed_tokens_this_step": committed_tokens,
+                            **scheduler_metric_fields(
+                                training,
+                                scheduler_position=step - 1,
+                                learning_rate=committed_learning_rate,
+                            ),
                         }
                     )
                     if action.get("sampled_probability") is not None:
@@ -1836,6 +1866,10 @@ def build_training_metric_row(
         "wall_clock_seconds": wall_clock_seconds,
         "tokens_per_second": tokens_per_second,
         "peak_memory_bytes": peak_memory_bytes,
+        **scheduler_metric_fields(
+            training,
+            scheduler_position=max(int(step) - 1, 0),
+        ),
     }
     if adaptive_artifacts:
         row.update(adaptive_artifacts)

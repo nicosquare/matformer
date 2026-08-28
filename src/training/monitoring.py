@@ -158,6 +158,8 @@ class WandbMonitoringSession(NoopMonitoringSession):
             "log_loss_by_granularity": monitoring.get("log_loss_by_granularity", True),
             "log_validation_loss": monitoring.get("log_validation_loss", True),
             "log_stage_events": monitoring.get("log_stage_events", True),
+            "scheduler_name": training.get("scheduler_name"),
+            "scheduler_contract": training.get("scheduler_contract"),
         }
         self.run.config.update(metadata, allow_val_change=True)
         self.run.summary.update(
@@ -222,6 +224,14 @@ class WandbMonitoringSession(NoopMonitoringSession):
                     if value is None:
                         continue
                     payload = {series_name: value}
+                    if row.get("learning_rate") is not None:
+                        payload["training/learning_rate"] = float(
+                            row["learning_rate"]
+                        )
+                    if row.get("scheduler_phase") is not None:
+                        payload["training/scheduler_phase"] = str(
+                            row["scheduler_phase"]
+                        )
                     if (
                         row.get("split") == "train"
                         and row.get("granularity_sampling_mode")

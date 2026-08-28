@@ -29,6 +29,11 @@ from src.utils.reproducibility import (
     seed_for,
     stable_hash,
 )
+from src.training.schedules import (
+    WSD_SCHEDULER_NAME,
+    WSD_SCHEDULE_POLICY,
+    WSD_SCHEDULE_POLICY_VERSION,
+)
 
 
 VALID_GRANULARITIES = {"s", "m", "l", "xl"}
@@ -127,6 +132,13 @@ OPTIMIZER_ALLOWED_KWARGS = {
     "sgd": {"momentum", "dampening", "nesterov", "weight_decay"},
 }
 SCHEDULER_RESERVED_KWARGS = {"num_warmup_steps", "num_training_steps", "optimizer"}
+WSD_INPUT_KWARGS = {
+    "decay_ratio",
+    "warmup_type",
+    "decay_type",
+    "min_lr_ratio",
+    "num_cycles",
+}
 
 
 class ConfigError(ValueError):
@@ -3729,21 +3741,37 @@ def _resolve_training_schedule_defaults(
     scheduler_name = _normalize_scheduler_name(scheduler.get("name", "cosine"))
     scheduler_input_kwargs = copy.deepcopy(scheduler_raw_kwargs)
     scheduler_input_kwargs["warmup_steps"] = resolved_warmup_steps
-    scheduler_kwargs = _resolve_scheduler_kwargs(
-        scheduler_name,
-        {
-            key: value
-            for key, value in scheduler_input_kwargs.items()
-            if key != "warmup_steps"
-        },
-    )
+    raw_scheduler_specific_kwargs = {
+        key: value
+        for key, value in scheduler_input_kwargs.items()
+        if key != "warmup_steps"
+    }
+    scheduler_contract = None
+    if scheduler_name == WSD_SCHEDULER_NAME:
+        scheduler_kwargs, scheduler_contract = _resolve_wsd_scheduler_contract(
+            raw_scheduler_specific_kwargs,
+            max_steps=int(training["max_steps"]),
+            warmup_steps=int(resolved_warmup_steps),
+            expected_tokens_per_step=int(training["expected_tokens_per_step"]),
+            token_budget=int(training["token_budget"]),
+            peak_learning_rate=float(training["resolved_learning_rate"]),
+        )
+    else:
+        scheduler_kwargs = _resolve_scheduler_kwargs(
+            scheduler_name,
+            raw_scheduler_specific_kwargs,
+        )
     training["scheduler"] = {
         "name": scheduler_name,
         "kwargs": copy.deepcopy(scheduler_input_kwargs),
         "resolved_warmup_steps": int(resolved_warmup_steps),
     }
+    if scheduler_contract is not None:
+        training["scheduler"]["contract"] = copy.deepcopy(scheduler_contract)
     training["scheduler_name"] = scheduler_name
     training["scheduler_kwargs"] = scheduler_kwargs
+    training["scheduler_specific_kwargs"] = copy.deepcopy(scheduler_kwargs)
+    training["scheduler_contract"] = copy.deepcopy(scheduler_contract)
 
 
 def _resolve_continuation_defaults(config: dict[str, Any]) -> None:
@@ -4509,6 +4537,114 @@ def _resolve_scheduler_kwargs(
         )
 
     return copy.deepcopy(raw_kwargs)
+
+
+def _resolve_wsd_scheduler_contract(
+    raw_kwargs: Any,
+    *,
+    max_steps: int,
+    warmup_steps: int,
+    expected_tokens_per_step: int,
+    token_budget: int,
+    peak_learning_rate: float,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Resolve the horizon-independent ratio WSD policy into HF arguments."""
+
+    if not isinstance(raw_kwargs, dict):
+        raise ConfigError("training.scheduler.kwargs must be a mapping when provided")
+    unsupported = sorted(str(key) for key in raw_kwargs if key not in WSD_INPUT_KWARGS)
+    if unsupported:
+        raise ConfigError(
+            "training.scheduler.kwargs contains unsupported WSD fields: "
+            f"{unsupported}"
+        )
+    if "decay_ratio" not in raw_kwargs:
+        raise ConfigError(
+            "training.scheduler.kwargs.decay_ratio is required for "
+            "warmup_stable_decay"
+        )
+    raw_ratio = raw_kwargs["decay_ratio"]
+    if isinstance(raw_ratio, bool) or not isinstance(raw_ratio, (int, float)):
+        raise ConfigError("training.scheduler.kwargs.decay_ratio must be numeric")
+    decay_ratio = float(raw_ratio)
+    if not math.isfinite(decay_ratio) or not 0.0 < decay_ratio < 1.0:
+        raise ConfigError(
+            "training.scheduler.kwargs.decay_ratio must be finite and strictly "
+            "between 0 and 1"
+        )
+
+    warmup_type = raw_kwargs.get("warmup_type", "linear")
+    decay_type = raw_kwargs.get("decay_type", "cosine")
+    if warmup_type != "linear":
+        raise ConfigError(
+            "training.scheduler.kwargs.warmup_type must be 'linear' for the "
+            "ratio WSD policy"
+        )
+    if decay_type != "cosine":
+        raise ConfigError(
+            "training.scheduler.kwargs.decay_type must be 'cosine' for the "
+            "ratio WSD policy"
+        )
+
+    min_lr_ratio = _nonnegative_finite_float(
+        raw_kwargs.get("min_lr_ratio", 0.0),
+        "training.scheduler.kwargs.min_lr_ratio",
+    )
+    if min_lr_ratio != 0.0:
+        raise ConfigError(
+            "training.scheduler.kwargs.min_lr_ratio must be 0.0 for the ratio "
+            "WSD policy"
+        )
+    num_cycles = _nonnegative_finite_float(
+        raw_kwargs.get("num_cycles", 0.5),
+        "training.scheduler.kwargs.num_cycles",
+    )
+    if num_cycles != 0.5:
+        raise ConfigError(
+            "training.scheduler.kwargs.num_cycles must be 0.5 for one cosine "
+            "cooldown"
+        )
+
+    decay_steps = math.ceil(max_steps * decay_ratio)
+    stable_steps = max_steps - warmup_steps - decay_steps
+    if stable_steps < 1:
+        raise ConfigError(
+            "warmup_stable_decay requires at least one stable step after resolving "
+            f"max_steps={max_steps}, warmup_steps={warmup_steps}, "
+            f"decay_steps={decay_steps}"
+        )
+    cooldown_start_step = warmup_steps + stable_steps
+    cooldown_start_tokens = min(
+        cooldown_start_step * expected_tokens_per_step,
+        token_budget,
+    )
+    contract = {
+        "name": WSD_SCHEDULER_NAME,
+        "policy": WSD_SCHEDULE_POLICY,
+        "policy_version": WSD_SCHEDULE_POLICY_VERSION,
+        "max_steps": max_steps,
+        "warmup_steps": warmup_steps,
+        "stable_steps": stable_steps,
+        "decay_steps": decay_steps,
+        "decay_ratio": decay_ratio,
+        "cooldown_start_step": cooldown_start_step,
+        "cooldown_start_tokens": cooldown_start_tokens,
+        "schedule_end_tokens": token_budget,
+        "warmup_type": warmup_type,
+        "decay_type": decay_type,
+        "min_lr_ratio": min_lr_ratio,
+        "min_learning_rate": peak_learning_rate * min_lr_ratio,
+        "num_cycles": num_cycles,
+    }
+    scheduler_specific_kwargs = {
+        "num_decay_steps": decay_steps,
+        "num_stable_steps": stable_steps,
+        "warmup_type": warmup_type,
+        "decay_type": decay_type,
+        "min_lr_ratio": min_lr_ratio,
+        "num_cycles": num_cycles,
+    }
+    return scheduler_specific_kwargs, contract
 
 
 def _resolve_component_kwargs(

@@ -564,6 +564,7 @@ def test_make_figures_cli_forwards_validation_loss_log_y(monkeypatch):
         [
             "--validation-loss-log-y",
             "--include-incomplete-validation-traces",
+            "--skip-final-holdout",
             "--variant",
             "slicing",
             "--variant",
@@ -580,6 +581,7 @@ def test_make_figures_cli_forwards_validation_loss_log_y(monkeypatch):
 
     assert captured["kwargs"]["validation_loss_log_y"] is True
     assert captured["kwargs"]["include_incomplete_validation_traces"] is True
+    assert captured["kwargs"]["include_final_holdout"] is False
     assert captured["kwargs"]["variants"] == ["slicing", "concat"]
     assert captured["kwargs"]["corrections"] == ["none", "gmc"]
     assert captured["kwargs"]["include_individual_size_panels"] is True
@@ -594,6 +596,27 @@ def test_make_figures_cli_sampling_zoom_is_opt_in_and_positive():
         make_figures.parse_args(["--sampling-zoom-steps", "0"])
     with pytest.raises(SystemExit):
         make_figures.parse_args(["--sampling-zoom-steps", "-1"])
+
+
+def test_figure_generation_can_explicitly_skip_final_holdout(tmp_path, monkeypatch):
+    from src.evaluation import reporting_io
+
+    def fail_if_called(_input_root):
+        raise AssertionError("final-holdout reporting must be skipped")
+
+    monkeypatch.setattr(
+        reporting_io,
+        "read_final_holdout_scaling_rows",
+        fail_if_called,
+    )
+
+    paths = generate_figures(
+        tmp_path,
+        tmp_path / "figures",
+        refresh_counts=False,
+        include_final_holdout=False,
+    )
+    assert all(path.is_file() for path in paths)
 
 
 def test_configured_learning_rate_schedule_is_reconstructed_and_generated(tmp_path):
@@ -635,6 +658,74 @@ def test_configured_learning_rate_schedule_is_reconstructed_and_generated(tmp_pa
         dpi=20,
     )
     assert "learning_rate_schedule.png" in {path.name for path in paths}
+
+
+def test_ratio_wsd_schedule_is_reconstructed_with_phase_boundaries(tmp_path):
+    from src.evaluation.reporting import _scheduler_curve_points
+    from src.evaluation.reporting_io import iter_learning_rate_schedules
+
+    run_dir = tmp_path / "wsd-run"
+    run_dir.mkdir()
+    contract = {
+        "name": "warmup_stable_decay",
+        "policy": "ratio_decay_over_total_steps",
+        "policy_version": 1,
+        "max_steps": 10,
+        "warmup_steps": 2,
+        "stable_steps": 6,
+        "decay_steps": 2,
+        "decay_ratio": 0.2,
+        "cooldown_start_step": 8,
+        "cooldown_start_tokens": 80,
+        "warmup_type": "linear",
+        "decay_type": "cosine",
+        "min_lr_ratio": 0.0,
+        "min_learning_rate": 0.0,
+        "num_cycles": 0.5,
+    }
+    (run_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "run": {"run_id": "wsd-run"},
+                "model": {
+                    "variant": "slicing",
+                    "correction_mode": "none",
+                    "membership_correction": False,
+                },
+                "training": {
+                    "max_steps": 10,
+                    "token_budget": 100,
+                    "expected_tokens_per_step": 10,
+                    "resolved_learning_rate": 1.0,
+                    "resolved_warmup_steps": 2,
+                    "scheduler_name": "warmup_stable_decay",
+                    "scheduler_kwargs": {
+                        "num_decay_steps": 2,
+                        "num_stable_steps": 6,
+                        "warmup_type": "linear",
+                        "decay_type": "cosine",
+                        "min_lr_ratio": 0.0,
+                        "num_cycles": 0.5,
+                    },
+                    "scheduler_contract": contract,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    [schedule] = list(iter_learning_rate_schedules(tmp_path))
+    assert schedule.scheduler_contract == contract
+    steps, learning_rates = _scheduler_curve_points(schedule)
+    by_step = dict(zip(steps, learning_rates))
+    assert by_step[0] == pytest.approx(0.0)
+    assert by_step[2] == pytest.approx(1.0)
+    assert by_step[8] == pytest.approx(1.0)
+    assert by_step[9] == pytest.approx(0.5)
+    assert by_step[10] == pytest.approx(0.0)
+
+    paths = generate_figures(tmp_path, tmp_path / "figures", refresh_counts=False)
+    assert tmp_path / "figures" / "learning_rate_schedule.png" in paths
 
 
 def test_global_history_carries_scheduler_warmup_boundaries(tmp_path):

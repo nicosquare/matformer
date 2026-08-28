@@ -28,6 +28,11 @@ Historical eight-width/four-width campaigns, Thompson and PanelGrad runs, the
 old capacity search, d128 results, preparation details, and optional diagnostics
 are preserved in [the controlled-convergence reference](tinystories-controlled-convergence-reference.md).
 
+An independent, seed-42-only
+[ratio-WSD calibration path](tinystories-wsd-calibration.md) is also available.
+It uses isolated roots and does not alter this cosine plateau/catch-up workflow
+or freeze targets.
+
 ## 1. Select and verify the Instruct data profile
 
 Run from the repository root in the environment used for training:

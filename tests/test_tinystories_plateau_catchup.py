@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -12,9 +13,11 @@ from scripts.analyze_tinystories_plateau_catchup import (
     PlateauCatchupError,
     _discover_run_dirs,
     analyze_plateau_run,
+    analyze_wsd_calibration,
     freeze_plateau_targets,
     measure_catchup,
     select_elastic_lr,
+    select_standalone_wsd_lr,
 )
 from src.evaluation.reporting import generate_figures
 from src.utils.reproducibility import stable_hash
@@ -111,7 +114,7 @@ def _write_run(
             "tokenizer_manifest_hash": provenance["tokenizer_manifest_hash"],
         },
         "training": {
-            "token_budget": epochs * EPOCH_TOKENS,
+            "token_budget": epochs * provenance["aligned_epoch_tokens"],
             "expected_tokens_per_step": 25,
             "learning_rate": learning_rate,
             "resolved_learning_rate": learning_rate,
@@ -138,8 +141,8 @@ def _write_run(
         "run_id": run_id,
         "seed": seed,
         "status": status,
-        "tokens_seen": epochs * EPOCH_TOKENS,
-        "token_budget": epochs * EPOCH_TOKENS,
+        "tokens_seen": epochs * provenance["aligned_epoch_tokens"],
+        "token_budget": epochs * provenance["aligned_epoch_tokens"],
         "resolved_learning_rate": learning_rate,
         "best_checkpoint_path": str(checkpoint_path),
         "checkpoint_status": "best_eval",
@@ -192,8 +195,10 @@ def _write_run(
                 "model_variant": "slicing",
                 "correction_mode": "none",
                 "split": "final_holdout",
-                "step": epochs * 16,
-                "tokens_seen": epochs * EPOCH_TOKENS,
+                "step": (
+                    epochs * provenance["aligned_epoch_tokens"] // 25
+                ),
+                "tokens_seen": epochs * provenance["aligned_epoch_tokens"],
                 "granularity": "g1000",
                 "loss": 0.1,
             }
@@ -514,3 +519,243 @@ def test_matched_budget_runs_feed_make_figures_comparison(tmp_path):
     comparison = output / "validation_loss_over_tokens_granularity_comparison.png"
     assert comparison in paths
     assert comparison.is_file()
+
+
+def _write_wsd_run(
+    root: Path,
+    run_id: str,
+    *,
+    learning_rate: float,
+    epochs: int,
+    losses: list[tuple[int, float]],
+    checkpoint: bool = True,
+    provenance_updates: dict | None = None,
+) -> Path:
+    epoch_tokens = 2_500
+    updates = {
+        "aligned_epoch_samples": 625,
+        "aligned_epoch_tokens": epoch_tokens,
+        **(provenance_updates or {}),
+    }
+    run_dir = _write_run(
+        root,
+        run_id,
+        seed=42,
+        learning_rate=learning_rate,
+        model_family="standalone",
+        epochs=epochs,
+        losses_by_width={"g1000": losses},
+        checkpoint=checkpoint,
+        provenance_updates=updates,
+    )
+    config_path = run_dir / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    max_steps = epochs * epoch_tokens // 25
+    decay_steps = math.ceil(max_steps * 0.10)
+    stable_steps = max_steps - 64 - decay_steps
+    cooldown_start = 64 + stable_steps
+    contract = {
+        "name": "warmup_stable_decay",
+        "policy": "ratio_decay_over_total_steps",
+        "policy_version": 1,
+        "max_steps": max_steps,
+        "warmup_steps": 64,
+        "stable_steps": stable_steps,
+        "decay_steps": decay_steps,
+        "decay_ratio": 0.10,
+        "cooldown_start_step": cooldown_start,
+        "cooldown_start_tokens": cooldown_start * 25,
+        "schedule_end_tokens": epochs * epoch_tokens,
+        "warmup_type": "linear",
+        "decay_type": "cosine",
+        "min_lr_ratio": 0.0,
+        "min_learning_rate": 0.0,
+        "num_cycles": 0.5,
+    }
+    config["training"].update(
+        {
+            "max_steps": max_steps,
+            "resolved_warmup_steps": 64,
+            "scheduler_name": "warmup_stable_decay",
+            "scheduler": {
+                "name": "warmup_stable_decay",
+                "kwargs": {
+                    "decay_ratio": 0.10,
+                    "warmup_type": "linear",
+                    "decay_type": "cosine",
+                    "min_lr_ratio": 0.0,
+                    "num_cycles": 0.5,
+                },
+                "resolved_warmup_steps": 64,
+                "contract": contract,
+            },
+            "scheduler_kwargs": {
+                "num_decay_steps": decay_steps,
+                "num_stable_steps": stable_steps,
+                "warmup_type": "linear",
+                "decay_type": "cosine",
+                "min_lr_ratio": 0.0,
+                "num_cycles": 0.5,
+            },
+            "scheduler_contract": contract,
+        }
+    )
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    summary_path = run_dir / "run_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["continuation_state"] = {"resume_count": 0}
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    return run_dir
+
+
+def _screen_losses(cooldown_loss: float):
+    return [
+        (1_600, cooldown_loss + 0.2),
+        (2_250, cooldown_loss),
+        (2_500, cooldown_loss + 0.01),
+    ]
+
+
+def test_standalone_wsd_lr_selection_uses_only_cooldown_and_freezes_provenance(
+    tmp_path,
+):
+    runs = []
+    for lr, cooldown_loss in zip(
+        (0.002, 0.004, 0.006, 0.008),
+        (1.0, 0.9, 0.8, 0.85),
+        strict=True,
+    ):
+        runs.append(
+            _write_wsd_run(
+                tmp_path / "screen",
+                f"wsd-lr-{lr}",
+                learning_rate=lr,
+                epochs=1,
+                losses=_screen_losses(cooldown_loss),
+            )
+        )
+    output = tmp_path / "selection"
+    selection = select_standalone_wsd_lr(runs, output)
+
+    assert selection["selected_learning_rate"] == 0.006
+    assert selection["selected_cooldown_best_step"] == 90
+    assert selection["selected_checkpoint_sha256"]
+    assert (output / "standalone_wsd_lr_selection.json").is_file()
+    assert (output / "standalone_wsd_lr_candidates.csv").is_file()
+    assert (output / "standalone_wsd_lr_selection.png").is_file()
+    assert not (output / "frozen_standalone_targets.json").exists()
+    assert select_standalone_wsd_lr(runs, output) == selection
+
+
+def test_standalone_wsd_lr_selection_rejects_incomplete_duplicate_and_provenance(
+    tmp_path,
+):
+    runs = [
+        _write_wsd_run(
+            tmp_path / "screen",
+            f"wsd-lr-{lr}",
+            learning_rate=lr,
+            epochs=1,
+            losses=_screen_losses(1.0 - lr),
+        )
+        for lr in (0.002, 0.004, 0.006)
+    ]
+    with pytest.raises(PlateauCatchupError, match="exactly"):
+        select_standalone_wsd_lr(runs, tmp_path / "incomplete")
+
+    duplicate = _write_wsd_run(
+        tmp_path / "duplicate",
+        "wsd-lr-duplicate",
+        learning_rate=0.006,
+        epochs=1,
+        losses=_screen_losses(0.7),
+    )
+    with pytest.raises(PlateauCatchupError, match="Duplicate"):
+        select_standalone_wsd_lr(runs + [duplicate], tmp_path / "duplicate-output")
+
+    mismatched = _write_wsd_run(
+        tmp_path / "mismatch",
+        "wsd-lr-0.008",
+        learning_rate=0.008,
+        epochs=1,
+        losses=_screen_losses(0.7),
+        provenance_updates={"corpus_hash": "different-corpus"},
+    )
+    with pytest.raises(PlateauCatchupError, match="provenance"):
+        select_standalone_wsd_lr(runs + [mismatched], tmp_path / "mismatch-output")
+
+
+def test_standalone_wsd_lr_selection_requires_winner_checkpoint(tmp_path):
+    runs = []
+    for lr in (0.002, 0.004, 0.006, 0.008):
+        runs.append(
+            _write_wsd_run(
+                tmp_path / "screen",
+                f"wsd-lr-{lr}",
+                learning_rate=lr,
+                epochs=1,
+                losses=_screen_losses(0.7 if lr == 0.004 else 0.9),
+                checkpoint=lr != 0.004,
+            )
+        )
+    with pytest.raises(PlateauCatchupError, match="checkpoint"):
+        select_standalone_wsd_lr(runs, tmp_path / "selection")
+
+
+def test_wsd_calibration_separates_phases_and_never_freezes_targets(tmp_path):
+    screen_runs = []
+    for lr in (0.002, 0.004, 0.006, 0.008):
+        screen_runs.append(
+            _write_wsd_run(
+                tmp_path / "screen",
+                f"wsd-lr-{lr}",
+                learning_rate=lr,
+                epochs=1,
+                losses=_screen_losses(0.7 if lr == 0.006 else 0.9),
+            )
+        )
+    selection_dir = tmp_path / "selection"
+    selection = select_standalone_wsd_lr(screen_runs, selection_dir)
+    calibration = _write_wsd_run(
+        tmp_path / "full",
+        "wsd-calibration-full",
+        learning_rate=selection["selected_learning_rate"],
+        epochs=3,
+        losses=[
+            (1_600, 1.2),
+            (3_200, 1.0),
+            (5_000, 0.9),
+            (6_750, 0.85),
+            (7_000, 0.80),
+            (7_500, 0.82),
+        ],
+    )
+    calibration_config_path = calibration / "config.json"
+    calibration_config = json.loads(
+        calibration_config_path.read_text(encoding="utf-8")
+    )
+    calibration_config["controlled_experiment"] = {
+        "selection_report_hash": selection["manifest_hash"]
+    }
+    calibration_config_path.write_text(
+        json.dumps(calibration_config), encoding="utf-8"
+    )
+    output = tmp_path / "calibration-analysis"
+    report = analyze_wsd_calibration(
+        calibration,
+        selection_dir / "standalone_wsd_lr_selection.json",
+        output,
+    )
+
+    assert report["status"] == "calibration_reported"
+    assert report["validation_counts_by_phase"]["stable"] > 0
+    assert report["validation_counts_by_phase"]["cooldown"] == 3
+    assert report["stable_best"]["loss"] == pytest.approx(0.9)
+    assert report["cooldown_best"]["loss"] == pytest.approx(0.8)
+    assert report["cooldown_gain"] == pytest.approx(0.1)
+    assert report["checkpoint_sha256"]
+    assert report["targets_frozen"] is False
+    assert (output / "wsd_calibration_report.json").is_file()
+    assert (output / "wsd_calibration_validation.csv").is_file()
+    assert (output / "wsd_calibration.png").is_file()
+    assert not (output / "frozen_standalone_targets.json").exists()

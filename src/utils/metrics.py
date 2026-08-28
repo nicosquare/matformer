@@ -108,6 +108,25 @@ METRICS_COLUMNS = [
     "controller_selection_source",
     "reward",
     "correction_penalty",
+    "learning_rate",
+    "scheduler_position",
+    "scheduler_phase",
+    "scheduler_phase_step",
+    "scheduler_phase_progress",
+    "scheduler_policy_version",
+    "scheduler_warmup_steps",
+    "scheduler_stable_steps",
+    "scheduler_decay_steps",
+    "scheduler_decay_ratio",
+    "scheduler_cooldown_start_step",
+    "scheduler_cooldown_start_tokens",
+    "scheduler_warmup_type",
+    "scheduler_decay_type",
+    "scheduler_min_lr_ratio",
+    "scheduler_min_learning_rate",
+    "scheduler_num_cycles",
+    "scheduler_schedule_end_step",
+    "scheduler_schedule_end_tokens",
     "loss",
     "perplexity",
     "tokens_seen",
@@ -142,6 +161,19 @@ METRICS_COLUMNS = [
     "scaling_results_path",
     "extraction_metadata_path",
 ]
+
+
+def _compatible_metrics_header(fieldnames: Iterable[str] | None) -> bool:
+    """Accept historical metrics schemas that are strict subsets of today's."""
+
+    if not fieldnames:
+        return False
+    fields = [str(field) for field in fieldnames]
+    return (
+        len(fields) == len(set(fields))
+        and {"run_id", "step", "split"}.issubset(fields)
+        and set(fields).issubset(METRICS_COLUMNS)
+    )
 
 TASK_RESULTS_COLUMNS = [
     "run_id",
@@ -284,6 +316,8 @@ RUN_SUMMARY_FIELDS = [
     "scheduler_warmup_steps",
     "scheduler_resolved_warmup_steps",
     "scheduler_kwargs",
+    "scheduler_specific_kwargs",
+    "scheduler_contract",
     "optimizer_name",
     "optimizer_kwargs",
     "requested_mixed_precision",
@@ -713,13 +747,17 @@ class MetricsJournal:
                 delete=False,
             ) as target:
                 temporary_path = Path(target.name)
-                writer = csv.DictWriter(target, fieldnames=METRICS_COLUMNS)
+                writer = csv.DictWriter(
+                    target,
+                    fieldnames=METRICS_COLUMNS,
+                    extrasaction="ignore",
+                )
                 writer.writeheader()
                 with self.path.open(
                     "r", encoding="utf-8", newline=""
                 ) as source:
                     reader = csv.DictReader(source)
-                    if reader.fieldnames != METRICS_COLUMNS:
+                    if not _compatible_metrics_header(reader.fieldnames):
                         return
                     for row in reader:
                         if None in row or any(value is None for value in row.values()):
@@ -730,7 +768,7 @@ class MetricsJournal:
                             break
                         if row_step > checkpoint_step:
                             continue
-                        writer.writerow(row)
+                        writer.writerow(_with_artifact_defaults(row))
                         if row.get("split") == "validation":
                             self._validation_steps.add(row_step)
                         if rebuild_accumulator:
@@ -770,7 +808,7 @@ def recover_metrics_rows(
     try:
         with metrics_path.open("r", encoding="utf-8", newline="") as metrics_file:
             reader = csv.DictReader(metrics_file)
-            if reader.fieldnames != METRICS_COLUMNS:
+            if not _compatible_metrics_header(reader.fieldnames):
                 return []
             for row in reader:
                 if None in row or any(value is None for value in row.values()):
@@ -781,7 +819,7 @@ def recover_metrics_rows(
                     break
                 if row_step > int(checkpoint_step):
                     continue
-                recovered.append(dict(row))
+                recovered.append(_with_artifact_defaults(row))
     except (OSError, csv.Error, UnicodeError):
         return recovered
     return recovered
@@ -998,6 +1036,12 @@ def build_run_summary(
         "scheduler_warmup_steps": training["scheduler"]["kwargs"]["warmup_steps"],
         "scheduler_resolved_warmup_steps": training["scheduler"]["resolved_warmup_steps"],
         "scheduler_kwargs": training["scheduler_kwargs"],
+        "scheduler_specific_kwargs": training.get(
+            "scheduler_specific_kwargs", training["scheduler_kwargs"]
+        ),
+        "scheduler_contract": copy_json_mapping(
+            training.get("scheduler_contract")
+        ),
         "optimizer_name": training["optimizer_name"],
         "optimizer_kwargs": training["optimizer_kwargs"],
         "requested_mixed_precision": training.get("requested_mixed_precision"),
@@ -3041,6 +3085,25 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "controller_selection_source": None,
         "reward": None,
         "correction_penalty": None,
+        "learning_rate": None,
+        "scheduler_position": None,
+        "scheduler_phase": None,
+        "scheduler_phase_step": None,
+        "scheduler_phase_progress": None,
+        "scheduler_policy_version": None,
+        "scheduler_warmup_steps": None,
+        "scheduler_stable_steps": None,
+        "scheduler_decay_steps": None,
+        "scheduler_decay_ratio": None,
+        "scheduler_cooldown_start_step": None,
+        "scheduler_cooldown_start_tokens": None,
+        "scheduler_warmup_type": None,
+        "scheduler_decay_type": None,
+        "scheduler_min_lr_ratio": None,
+        "scheduler_min_learning_rate": None,
+        "scheduler_num_cycles": None,
+        "scheduler_schedule_end_step": None,
+        "scheduler_schedule_end_tokens": None,
         "model_family_slug": None,
         "model_variant": None,
         "model_size_slug": None,

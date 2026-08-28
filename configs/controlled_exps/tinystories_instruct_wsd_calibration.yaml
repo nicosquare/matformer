@@ -1,0 +1,147 @@
+# Seed-42-only standalone WSD LR screening and three-epoch calibration recipe.
+# Supply model.tokenizer_dir and dataset.prepared_corpus_dir on every launch.
+controlled_experiment:
+  recipe_status: calibration
+  recipe_source_run_id: null
+  selection_report_hash: null
+
+run:
+  run_id: tinystories-instruct-wsd-d64-l4-g1000-s42
+  phase_id: tinystories_instruct_wsd_calibration
+  model_family: standalone
+  sampling_mode: standalone
+  granularity: g1000
+  model_shape_label: tinystories-instruct-d64-l4
+  seed: 42
+  reproducibility:
+    mode: strict
+    seed_stream_version: 1
+    data_split_version: 1
+  output_root: outputs
+  continuation:
+    enabled: true
+    latest_checkpoint_save_interval_steps: 0
+    latest_checkpoint_save_on_validation: true
+    latest_checkpoint_save_on_completion: true
+
+model:
+  base_model_name: tinystories-instruct-wsd-llama
+  tokenizer_dir: __PREPARED_TOKENIZER_DIR__
+  variant: slicing
+  correction_mode: none
+  granularity_mode: explicit
+  granularity_sampling_mode: global
+  d_model: 64
+  num_layers: 4
+  num_attention_heads: 4
+  context_length: 128
+  vocab_size: 2048
+  granularities: [g250, g500, g750, g1000]
+  granularity_prefixes:
+    g250: 0.25
+    g500: 0.50
+    g750: 0.75
+    g1000: 1.00
+
+training:
+  # Three aligned epochs by default. Override to 713785344 for each LR-screen run.
+  token_budget: 2141356032
+  max_steps_cap: null
+  batch_size_per_process: 64
+  gradient_accumulation_steps: 1
+  learning_rate: 0.008
+  learning_rate_scale_rule: none
+  warmup_steps: 64
+  pre_nested_warmup:
+    enabled: false
+    duration: 0
+    unit: steps
+  gradient_clip_norm: 1.0
+  mixed_precision: bf16
+  activation_checkpointing: false
+  dataloader_num_workers: 0
+  optimizer:
+    name: adamw
+    kwargs:
+      betas: [0.9, 0.95]
+      eps: 1.0e-8
+      weight_decay: 0.1
+  scheduler:
+    name: warmup_stable_decay
+    kwargs:
+      decay_ratio: 0.10
+      warmup_type: linear
+      decay_type: cosine
+      min_lr_ratio: 0.0
+      num_cycles: 0.5
+  distributed:
+    strategy: none
+    expected_world_size: 1
+
+dataset:
+  mode: packed_mmap
+  prepared_corpus_dir: __PREPARED_CORPUS_DIR__
+  optimizer_iteration:
+    mode: repeat_epochs
+    epoch_order: deterministic_per_epoch
+  fixed_four_role_partition: true
+  data_seed: 42
+  dataset_name: roneneldan/TinyStoriesInstruct
+  dataset_config_name: default
+  dataset_split: train+validation
+  dataset_phase: tinystories_instruct_controlled
+  sample_limit: null
+  tokenization_keep_in_memory: false
+  preprocessing_notes: complete_record_lf_join_preserve_fields_and_internal_newlines_v1
+
+outputs:
+  save_config: true
+  save_metrics_csv: true
+  save_run_summary_json: true
+  save_checkpoints: true
+  make_plots: false
+  metrics_flush_interval_steps: 32
+  best_eval_retention_count: 1
+  artifact_io:
+    checkpoint_staging: auto
+
+monitoring:
+  enabled: false
+  backend: wandb
+  project: tinystories_instruct_wsd_calibration
+  job_type: train
+  tags: [controlled-experiment, tinystories-instruct, wsd, calibration]
+  notes: seed-42 standalone d64/l4 ratio-WSD calibration only
+  log_loss_by_granularity: true
+  log_validation_loss: true
+  log_stage_events: true
+
+evaluation:
+  validation:
+    enabled: true
+    interval_steps: 64
+    interval_tokens: 0
+    run_at_completion: true
+    holdout:
+      source: configured_dataset_split
+      examples: 128
+    trailing_summary_evaluations: 5
+  adaptive_controller:
+    enabled: true
+    source: configured_dataset_split
+    examples: 128
+    objective_weights: uniform
+    fixed_manifest: true
+  final_holdout:
+    # This seed-42 calibration ends with ordinary-validation diagnostics. It
+    # deliberately does not open or require the sealed final holdout.
+    enabled: false
+    source: configured_dataset_split
+    examples: 512
+    fixed_manifest: true
+    evaluate_during_training: false
+  test:
+    enabled: false
+  downstream_suite: []
+  consistency: false
+  speculative: false

@@ -47,6 +47,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Include incomplete runs as separate dashed validation traces.",
     )
     parser.add_argument(
+        "--skip-final-holdout",
+        action="store_true",
+        help=(
+            "Skip final-holdout artifact validation and figures. Use only for "
+            "workflows, such as calibration, that explicitly do not open the "
+            "final holdout."
+        ),
+    )
+    parser.add_argument(
         "--variant",
         dest="variants",
         action="append",
@@ -106,6 +115,7 @@ def main(argv: list[str] | None = None) -> None:
         include_incomplete_validation_traces=(
             args.include_incomplete_validation_traces
         ),
+        include_final_holdout=not args.skip_final_holdout,
         variants=args.variants,
         corrections=args.corrections,
         sampling_bin_steps=args.sampling_bin_steps,
