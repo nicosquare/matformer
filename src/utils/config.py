@@ -114,11 +114,22 @@ TINYSTORIES_CONTROLLED_DATASET_PHASES = {
 PORTFOLIO_COMPARISON_GROUP_ID = "tinystories_instruct_portfolio_catchup_v1"
 PORTFOLIO_REFERENCE_BUDGET_TOKENS = 713_785_344
 PORTFOLIO_ELASTIC_BUDGET_CAP_TOKENS = 2_141_356_032
+PORTFOLIO_AGGREGATE_REFERENCE_BUDGET_TOKENS = 2_855_141_376
 PORTFOLIO_AGGREGATE_REFERENCE_COUNT = 4
 PORTFOLIO_GRANULARITIES = ("g250", "g500", "g750", "g1000")
 PORTFOLIO_COMPARISON_ROLES = {
     "standalone_reference",
     "elastic_candidate",
+}
+PORTFOLIO_EXTENSION_ARMS = {
+    "uniform_h1_4b": {
+        "budget_tokens": PORTFOLIO_AGGREGATE_REFERENCE_BUDGET_TOKENS,
+        "sampling_mode": "nested-random",
+    },
+    "nested_all_b": {
+        "budget_tokens": PORTFOLIO_REFERENCE_BUDGET_TOKENS,
+        "sampling_mode": "nested-all",
+    },
 }
 DEFAULT_FFN_MULTIPLIER = 4
 CONFIG_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -1562,7 +1573,19 @@ def _validate_portfolio_aligned_epoch_contract(config: Mapping[str, Any]) -> Non
             "Portfolio B must equal one optimizer-step-aligned corpus epoch"
         )
     role = controlled.get("comparison_role")
-    expected_epochs = 3 if role == "elastic_candidate" else 1
+    expected_budget = (
+        contract.get("elastic_budget_cap_tokens")
+        if role == "elastic_candidate"
+        else PORTFOLIO_REFERENCE_BUDGET_TOKENS
+    )
+    if (
+        isinstance(expected_budget, bool)
+        or not isinstance(expected_budget, int)
+        or expected_budget <= 0
+        or expected_budget % PORTFOLIO_REFERENCE_BUDGET_TOKENS != 0
+    ):
+        raise ConfigError("Portfolio budget must be a positive whole number of B")
+    expected_epochs = expected_budget // PORTFOLIO_REFERENCE_BUDGET_TOKENS
     if (
         iteration.get("complete_epochs") != expected_epochs
         or iteration.get("partial_final_epoch_tokens") != 0
@@ -3575,9 +3598,23 @@ def _resolve_portfolio_controlled_experiment(config: dict[str, Any]) -> None:
         )
     schema_version = raw_contract.get("schema_version", 2)
     legacy_reference = role == "standalone_reference" and schema_version == 1
-    if schema_version != 2 and not legacy_reference:
+    extension_candidate = role == "elastic_candidate" and schema_version == 3
+    if schema_version != 2 and not legacy_reference and not extension_candidate:
         raise ConfigError(
-            "Portfolio catch-up schema 1 is accepted only for standalone references"
+            "Portfolio catch-up schema must be 2, legacy reference schema 1, "
+            "or extension candidate schema 3"
+        )
+    comparison_arm_id = controlled.get("comparison_arm_id")
+    if extension_candidate:
+        if comparison_arm_id not in PORTFOLIO_EXTENSION_ARMS:
+            raise ConfigError(
+                "controlled_experiment.comparison_arm_id must be one of "
+                f"{sorted(PORTFOLIO_EXTENSION_ARMS)} for schema-3 candidates"
+            )
+    elif comparison_arm_id not in (None, ""):
+        raise ConfigError(
+            "controlled_experiment.comparison_arm_id is reserved for "
+            "schema-3 extension candidates"
         )
     removed_lr_selection_fields = {
         "lr_selection_manifest_path",
@@ -3680,9 +3717,23 @@ def _validate_portfolio_controlled_experiment(config: Mapping[str, Any]) -> None
         )
     schema_version = contract.get("schema_version")
     legacy_reference = role == "standalone_reference" and schema_version == 1
-    if schema_version != 2 and not legacy_reference:
+    extension_candidate = role == "elastic_candidate" and schema_version == 3
+    if schema_version != 2 and not legacy_reference and not extension_candidate:
         raise ConfigError(
-            "Portfolio catch-up schema 1 is accepted only for standalone references"
+            "Portfolio catch-up schema must be 2, legacy reference schema 1, "
+            "or extension candidate schema 3"
+        )
+    comparison_arm_id = controlled.get("comparison_arm_id")
+    if extension_candidate:
+        if comparison_arm_id not in PORTFOLIO_EXTENSION_ARMS:
+            raise ConfigError(
+                "controlled_experiment.comparison_arm_id must identify a "
+                "supported schema-3 extension arm"
+            )
+    elif comparison_arm_id not in (None, ""):
+        raise ConfigError(
+            "controlled_experiment.comparison_arm_id is reserved for "
+            "schema-3 extension candidates"
         )
     removed_lr_selection_fields = {
         "lr_selection_manifest_path",
@@ -3700,9 +3751,14 @@ def _validate_portfolio_controlled_experiment(config: Mapping[str, Any]) -> None
     if controlled.get("comparison_group_id") != PORTFOLIO_COMPARISON_GROUP_ID:
         raise ConfigError("Portfolio comparison group ID is invalid")
 
+    expected_elastic_budget = (
+        PORTFOLIO_EXTENSION_ARMS[str(comparison_arm_id)]["budget_tokens"]
+        if extension_candidate
+        else PORTFOLIO_ELASTIC_BUDGET_CAP_TOKENS
+    )
     exact_fields = {
         "reference_budget_tokens": PORTFOLIO_REFERENCE_BUDGET_TOKENS,
-        "elastic_budget_cap_tokens": PORTFOLIO_ELASTIC_BUDGET_CAP_TOKENS,
+        "elastic_budget_cap_tokens": expected_elastic_budget,
         "aggregate_reference_count": PORTFOLIO_AGGREGATE_REFERENCE_COUNT,
         "granularities": list(PORTFOLIO_GRANULARITIES),
         "perplexity_tolerance": 0.005,
@@ -3722,7 +3778,7 @@ def _validate_portfolio_controlled_experiment(config: Mapping[str, Any]) -> None
     model = config.get("model", {})
     run = config.get("run", {})
     expected_budget = (
-        PORTFOLIO_ELASTIC_BUDGET_CAP_TOKENS
+        expected_elastic_budget
         if role == "elastic_candidate"
         else PORTFOLIO_REFERENCE_BUDGET_TOKENS
     )
@@ -3748,22 +3804,32 @@ def _validate_portfolio_controlled_experiment(config: Mapping[str, Any]) -> None
         if granularities[0] not in PORTFOLIO_GRANULARITIES:
             raise ConfigError("Standalone reference granularity is outside the portfolio")
     else:
+        expected_sampling_mode = (
+            PORTFOLIO_EXTENSION_ARMS[str(comparison_arm_id)]["sampling_mode"]
+            if extension_candidate
+            else "nested-random"
+        )
         if run.get("model_family") != "nested" or run.get(
             "sampling_mode"
-        ) != "nested-random":
-            raise ConfigError("Elastic portfolio runs require nested-random topology")
+        ) != expected_sampling_mode:
+            raise ConfigError(
+                "Elastic portfolio topology does not match its comparison arm"
+            )
         if granularities != list(PORTFOLIO_GRANULARITIES):
             raise ConfigError(
                 "Elastic portfolio runs require all four ordered granularities"
             )
-        if model.get("granularity_sampling_mode") != "global":
-            raise ConfigError("Elastic portfolio runs require uniform global sampling")
-        if model.get("global_sampling_schedule") != "random_with_replacement":
-            raise ConfigError(
-                "Elastic portfolio runs require random-with-replacement sampling"
-            )
-        if model.get("global_sampling_interval_steps") != 1:
-            raise ConfigError("Elastic portfolio runs require H=1")
+        if expected_sampling_mode == "nested-random":
+            if model.get("granularity_sampling_mode") != "global":
+                raise ConfigError(
+                    "Uniform-H1 portfolio arms require uniform global sampling"
+                )
+            if model.get("global_sampling_schedule") != "random_with_replacement":
+                raise ConfigError(
+                    "Uniform-H1 portfolio arms require random-with-replacement sampling"
+                )
+            if model.get("global_sampling_interval_steps") != 1:
+                raise ConfigError("Uniform-H1 portfolio arms require H=1")
 
     if role == "elastic_candidate":
         if contract.get("enabled") is not True:

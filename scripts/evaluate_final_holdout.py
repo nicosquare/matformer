@@ -88,6 +88,7 @@ def main(argv: list[str] | None = None) -> int:
                 explicit = entry["checkpoint_selection"] in {
                     "portfolio_confirmation",
                     "terminal_3B",
+                    "terminal_candidate_budget",
                 }
                 if not explicit:
                     ordinary_checkpoint = resolve_final_holdout_checkpoint(run_dir)
@@ -156,13 +157,21 @@ def _portfolio_selection_entries(path: Path) -> list[dict]:
         raise RuntimeError("Portfolio selection manifest must list exactly 15 checkpoints")
     normalized = []
     selection_mode = manifest.get("selection_mode", "portfolio_confirmation")
-    if selection_mode not in {"portfolio_confirmation", "terminal_3B_censored"}:
+    confirmation_modes = {
+        "portfolio_confirmation",
+        "portfolio_confirmation_diagnostic",
+    }
+    terminal_modes = {
+        "terminal_3B_censored",
+        "terminal_candidate_budget_censored",
+    }
+    if selection_mode not in confirmation_modes | terminal_modes:
         raise RuntimeError("Portfolio selection manifest mode is invalid")
     claim_eligible = manifest.get(
         "claim_eligible", selection_mode == "portfolio_confirmation"
     )
-    if not isinstance(claim_eligible, bool) or claim_eligible != (
-        selection_mode == "portfolio_confirmation"
+    if not isinstance(claim_eligible, bool) or (
+        claim_eligible and selection_mode != "portfolio_confirmation"
     ):
         raise RuntimeError(
             "Portfolio selection claim eligibility contradicts its mode"
@@ -188,8 +197,12 @@ def _portfolio_selection_entries(path: Path) -> list[dict]:
             if role == "standalone_reference"
             else (
                 "portfolio_confirmation"
-                if selection_mode == "portfolio_confirmation"
-                else "terminal_3B"
+                if selection_mode in confirmation_modes
+                else (
+                    "terminal_candidate_budget"
+                    if selection_mode == "terminal_candidate_budget_censored"
+                    else "terminal_3B"
+                )
             )
         )
         if entry["checkpoint_selection"] != expected_selection:
@@ -202,6 +215,14 @@ def _portfolio_selection_entries(path: Path) -> list[dict]:
         ):
             raise RuntimeError(
                 "Portfolio terminal checkpoint is not at the declared 3B cap"
+            )
+        if (
+            expected_selection == "terminal_candidate_budget"
+            and entry.get("checkpoint_tokens")
+            != manifest.get("candidate_budget_tokens")
+        ):
+            raise RuntimeError(
+                "Portfolio terminal checkpoint is not at the declared arm cap"
             )
         normalized.append(entry)
     if role_counts != {"standalone_reference": 12, "elastic_candidate": 3}:

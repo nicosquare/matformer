@@ -14,6 +14,7 @@ import src.evaluation.final_holdout as final_holdout_module
 import src.evaluation.reporting_impl as reporting_impl
 from scripts.analyze_tinystories_portfolio_catchup import (
     AGGREGATE_REFERENCE_BUDGET_TOKENS,
+    CANDIDATE_ARMS,
     ELASTIC_BUDGET_CAP_TOKENS,
     FIXED_LEARNING_RATE,
     GRANULARITIES,
@@ -348,6 +349,8 @@ def _candidate_runs(
     tmp_path: Path,
     target_path: Path,
     targets: dict,
+    *,
+    candidate_arm_id: str = "uniform_h1_3b",
 ):
     runs = []
     for seed in (42, 43, 44):
@@ -357,6 +360,19 @@ def _candidate_runs(
             lr=FIXED_LEARNING_RATE,
             target=target_path,
         )
+        if candidate_arm_id != "uniform_h1_3b":
+            arm = CANDIDATE_ARMS[candidate_arm_id]
+            budget = int(arm["budget_tokens"])
+            epochs = budget // REFERENCE_BUDGET_TOKENS
+            config["controlled_experiment"]["comparison_arm_id"] = candidate_arm_id
+            contract = config["controlled_experiment"]["portfolio_catchup"]
+            contract["schema_version"] = 3
+            contract["elastic_budget_cap_tokens"] = budget
+            config["training"]["token_budget"] = budget
+            config["training"]["derived_max_steps"] = 87132 * epochs
+            config["training"]["max_steps"] = 87132 * epochs
+            config["dataset"]["optimizer_iteration"]["complete_epochs"] = epochs
+            config["run"]["sampling_mode"] = arm["sampling_mode"]
         losses = {}
         for width in GRANULARITIES:
             target_loss = targets["targets"][str(seed)][width]["target_loss"]
@@ -375,6 +391,9 @@ def _candidate_runs(
             "target_manifest_hash": targets["manifest_hash"],
             "learning_rate": FIXED_LEARNING_RATE,
         }
+        if candidate_arm_id != "uniform_h1_3b":
+            state["comparison_arm_id"] = candidate_arm_id
+            state["elastic_budget_cap_tokens"] = config["training"]["token_budget"]
         payload = {
             "checkpoint_status": "portfolio_catchup_confirmation",
             "portfolio_catchup_state": state,
@@ -461,6 +480,88 @@ def test_portfolio_config_contract_exact_budgets_roles_and_h1():
     with pytest.raises(ConfigError, match="not supported"):
         _validate_portfolio_controlled_experiment(bad)
     assert ELASTIC_BUDGET_CAP_TOKENS / AGGREGATE_REFERENCE_BUDGET_TOKENS == 0.75
+
+
+def test_schema3_extension_arms_reuse_targets_with_arm_specific_budgets(tmp_path):
+    target_path, _ = _freeze(tmp_path)
+    for arm_id in ("uniform_h1_4b", "nested_all_b"):
+        arm = CANDIDATE_ARMS[arm_id]
+        config = _config(
+            "elastic_candidate",
+            seed=42,
+            target=target_path,
+        )
+        budget = int(arm["budget_tokens"])
+        epochs = budget // REFERENCE_BUDGET_TOKENS
+        config["controlled_experiment"]["comparison_arm_id"] = arm_id
+        contract = config["controlled_experiment"]["portfolio_catchup"]
+        contract["schema_version"] = 3
+        contract["elastic_budget_cap_tokens"] = budget
+        config["run"]["sampling_mode"] = arm["sampling_mode"]
+        config["training"]["token_budget"] = budget
+        config["training"]["derived_max_steps"] = 87132 * epochs
+        config["training"]["max_steps"] = 87132 * epochs
+        config["dataset"]["optimizer_iteration"]["complete_epochs"] = epochs
+
+        _validate_portfolio_controlled_experiment(config)
+        _validate_portfolio_aligned_epoch_contract(config)
+        state = build_portfolio_catchup_state(config)
+        assert state["schema_version"] == 3
+        assert state["comparison_arm_id"] == arm_id
+        assert state["elastic_budget_cap_tokens"] == budget
+
+    mismatched = json.loads(json.dumps(config))
+    mismatched["training"]["token_budget"] += REFERENCE_BUDGET_TOKENS
+    with pytest.raises(ConfigError, match="exactly"):
+        _validate_portfolio_controlled_experiment(mismatched)
+
+
+def test_extension_report_is_diagnostic_and_preserves_4b_cost_accounting(tmp_path):
+    target_path, targets = _freeze(tmp_path)
+    runs = _candidate_runs(
+        tmp_path,
+        target_path,
+        targets,
+        candidate_arm_id="uniform_h1_4b",
+    )
+    output = tmp_path / "uniform-h1-4b-analysis"
+    report = portfolio_catchup(
+        runs,
+        target_path,
+        output,
+        candidate_arm="uniform_h1_4b",
+    )
+    assert report["comparison_arm_id"] == "uniform_h1_4b"
+    assert report["arm_catchup_confirmed"] is True
+    assert report["general_portfolio_catchup_claim"] is False
+    assert report["post_hoc_diagnostic"] is True
+    assert report["realized_full_run_spend_over_4B"] == 1.0
+    assert report["final_holdout_selection_mode"] == (
+        "portfolio_confirmation_diagnostic"
+    )
+    selection = json.loads(
+        (output / "final_holdout_selection_manifest.json").read_text()
+    )
+    assert selection["claim_eligible"] is False
+    assert selection["candidate_budget_tokens"] == (
+        AGGREGATE_REFERENCE_BUDGET_TOKENS
+    )
+    normalized = evaluate_holdout_cli._portfolio_selection_entries(
+        output / "final_holdout_selection_manifest.json"
+    )
+    assert len(normalized) == 15
+
+    figure_paths = generate_figures(
+        tmp_path,
+        tmp_path / "uniform-h1-4b-figures",
+        comparison_manifest=output / "portfolio_catchup_report.json",
+        include_final_holdout=False,
+        dpi=40,
+    )
+    assert "ppl_vs_size.png" in {path.name for path in figure_paths}
+    assert "portfolio_worst_width_deficit.png" in {
+        path.name for path in figure_paths
+    }
 
 
 def test_schema1_compatibility_is_narrowly_limited_to_legacy_references():

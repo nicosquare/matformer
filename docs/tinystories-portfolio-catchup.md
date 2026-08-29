@@ -279,3 +279,307 @@ has no confirmation marker. `portfolio_final_holdout_perplexity.png` is retained
 as a compatibility alias of `final_holdout_ppl_vs_size.png`. Without
 `--comparison-manifest`, figure generation retains its historical strict
 same-contract behavior.
+
+## Post-hoc diagnostic extension: `4B` uniform H=1 and nested-all
+
+Use this extension after the frozen `3B` uniform-H1 arm is censored. It reuses
+the existing 12 standalone runs, their best checkpoints, and the exact frozen
+target manifest. Do **not** rerun or refreeze the standalone references.
+
+The two additional arms are:
+
+- `uniform_h1_4b`: a fresh uniform-global, random-with-replacement, `H=1`
+  elastic run with a cosine horizon of `4B`;
+- `nested_all_b`: a fresh nested-all run with a cosine horizon of `B`, where
+  every optimizer update averages the four width losses.
+
+Both arms retain LR `0.008`, AdamW, warmup, batch construction, corpus,
+ordinary-validation manifest, targets, tolerance, and five-validation streak.
+They use schema 3 so their arm, topology, and budget are immutable resume
+inputs. Existing schema-1/2 references and `3B` candidates remain unchanged
+and resumable under their original contracts.
+
+This is a post-hoc diagnosis, not a replacement frozen-recipe claim. Even if an
+extension arm confirms catch-up, its analyzer report and final holdout remain
+claim-ineligible. The already-opened final holdout may be evaluated for
+descriptive comparison; a new prospective generalization claim would require a
+new untouched holdout protocol fixed before inspecting these arm results.
+
+### Reuse and verify the frozen inputs
+
+Start from the same environment used above. The manifest hash must be read from
+the already-frozen artifact rather than regenerated:
+
+```bash
+export TARGET_MANIFEST="$ANALYSIS_ROOT/references/standalone_portfolio_targets.json"
+export TARGET_HASH="$(jq -r '.manifest_hash' "$TARGET_MANIFEST")"
+export CATCHUP_REPORT="$ANALYSIS_ROOT/portfolio-catchup/portfolio_catchup_report.json"
+export EXTENSION_ROOT="$PORTFOLIO_ROOT/diagnostic-extension"
+export UNIFORM_4B_ROOT="$EXTENSION_ROOT/uniform-h1-4b-runs"
+export NESTED_ALL_ROOT="$EXTENSION_ROOT/nested-all-b-runs"
+export EXTENSION_ANALYSIS_ROOT="$EXTENSION_ROOT/analysis"
+export EXTENSION_HOLDOUT_ROOT="$EXTENSION_ROOT/final-holdout-analysis"
+export EXTENSION_FIGURES_ROOT="$EXTENSION_ROOT/figures"
+
+test -r "$TARGET_MANIFEST"
+test -r "$CATCHUP_REPORT"
+test "$(jq -r '.reference_budget_tokens' "$TARGET_MANIFEST")" -eq "$B"
+test "$(jq -r '.aggregate_reference_budget_tokens' "$TARGET_MANIFEST")" -eq "$FOUR_B"
+test "${#TARGET_HASH}" -eq 64
+mkdir -p "$UNIFORM_4B_ROOT" "$NESTED_ALL_ROOT" \
+  "$EXTENSION_ANALYSIS_ROOT" "$EXTENSION_HOLDOUT_ROOT" \
+  "$EXTENSION_FIGURES_ROOT" logs
+```
+
+Never continue a `3B` checkpoint into the `4B` arm. Its cosine horizon was
+resolved for `3B`, so the `4B` diagnosis must use fresh run IDs and empty output
+roots. Likewise, nested-all is a new topology and must start from scratch.
+
+### Preflight and launch fresh uniform-H1 `4B`
+
+```bash
+for SEED in 42 43 44; do
+  RUN_ID="tiny-instruct-portfolio-uniform-h1-4b-s${SEED}"
+  "$PYTHON_BIN" train.py \
+    --config "$BASE" \
+    --output-root "$UNIFORM_4B_ROOT/s$SEED" \
+    --override "run.run_id=$RUN_ID" \
+    --override "run.seed=$SEED" \
+    --override run.model_family=nested \
+    --override run.sampling_mode=nested-random \
+    --override run.granularity=null \
+    --override controlled_experiment.comparison_role=elastic_candidate \
+    --override controlled_experiment.comparison_arm_id=uniform_h1_4b \
+    --override controlled_experiment.portfolio_catchup.schema_version=3 \
+    --override controlled_experiment.portfolio_catchup.enabled=true \
+    --override "controlled_experiment.portfolio_catchup.elastic_budget_cap_tokens=$FOUR_B" \
+    --override "controlled_experiment.portfolio_catchup.target_manifest_path=$TARGET_MANIFEST" \
+    --override "controlled_experiment.portfolio_catchup.target_manifest_hash=$TARGET_HASH" \
+    --override "training.token_budget=$FOUR_B" \
+    --override training.learning_rate=0.008 \
+    --override model.granularity_sampling_mode=global \
+    --override model.global_sampling_schedule=random_with_replacement \
+    --override model.global_sampling_interval_steps=1 \
+    --override "model.tokenizer_dir=$TOKENIZER" \
+    --override "dataset.prepared_corpus_dir=$CORPUS" \
+    --preflight
+done
+```
+
+```bash
+for SEED in 42 43 44; do
+  RUN_ID="tiny-instruct-portfolio-uniform-h1-4b-s${SEED}"
+  sbatch \
+    --job-name="portfolio-uniform-h1-4b-s${SEED}" \
+    --time=48:00:00 \
+    scripts/slurm_tinystories_controlled.sh \
+    --python-bin "$PYTHON_BIN" \
+    --config "$BASE" \
+    --output-root "$UNIFORM_4B_ROOT/s$SEED" \
+    --override "run.run_id=$RUN_ID" \
+    --override "run.seed=$SEED" \
+    --override run.model_family=nested \
+    --override run.sampling_mode=nested-random \
+    --override run.granularity=null \
+    --override controlled_experiment.comparison_role=elastic_candidate \
+    --override controlled_experiment.comparison_arm_id=uniform_h1_4b \
+    --override controlled_experiment.portfolio_catchup.schema_version=3 \
+    --override controlled_experiment.portfolio_catchup.enabled=true \
+    --override "controlled_experiment.portfolio_catchup.elastic_budget_cap_tokens=$FOUR_B" \
+    --override "controlled_experiment.portfolio_catchup.target_manifest_path=$TARGET_MANIFEST" \
+    --override "controlled_experiment.portfolio_catchup.target_manifest_hash=$TARGET_HASH" \
+    --override "training.token_budget=$FOUR_B" \
+    --override training.learning_rate=0.008 \
+    --override model.granularity_sampling_mode=global \
+    --override model.global_sampling_schedule=random_with_replacement \
+    --override model.global_sampling_interval_steps=1 \
+    --override "model.tokenizer_dir=$TOKENIZER" \
+    --override "dataset.prepared_corpus_dir=$CORPUS"
+done
+```
+
+### Preflight and launch fresh nested-all `B`
+
+Do not pass `model.global_sampling_*` overrides to nested-all; those controls
+belong only to nested-random global sampling. Nested-all evaluates and
+backpropagates all four widths on every optimizer update.
+
+```bash
+for SEED in 42 43 44; do
+  RUN_ID="tiny-instruct-portfolio-nested-all-b-s${SEED}"
+  "$PYTHON_BIN" train.py \
+    --config "$BASE" \
+    --output-root "$NESTED_ALL_ROOT/s$SEED" \
+    --override "run.run_id=$RUN_ID" \
+    --override "run.seed=$SEED" \
+    --override run.model_family=nested \
+    --override run.sampling_mode=nested-all \
+    --override run.granularity=null \
+    --override controlled_experiment.comparison_role=elastic_candidate \
+    --override controlled_experiment.comparison_arm_id=nested_all_b \
+    --override controlled_experiment.portfolio_catchup.schema_version=3 \
+    --override controlled_experiment.portfolio_catchup.enabled=true \
+    --override "controlled_experiment.portfolio_catchup.elastic_budget_cap_tokens=$B" \
+    --override "controlled_experiment.portfolio_catchup.target_manifest_path=$TARGET_MANIFEST" \
+    --override "controlled_experiment.portfolio_catchup.target_manifest_hash=$TARGET_HASH" \
+    --override "training.token_budget=$B" \
+    --override training.learning_rate=0.008 \
+    --override "model.tokenizer_dir=$TOKENIZER" \
+    --override "dataset.prepared_corpus_dir=$CORPUS" \
+    --preflight
+done
+```
+
+```bash
+for SEED in 42 43 44; do
+  RUN_ID="tiny-instruct-portfolio-nested-all-b-s${SEED}"
+  sbatch \
+    --job-name="portfolio-nested-all-b-s${SEED}" \
+    --time=48:00:00 \
+    scripts/slurm_tinystories_controlled.sh \
+    --python-bin "$PYTHON_BIN" \
+    --config "$BASE" \
+    --output-root "$NESTED_ALL_ROOT/s$SEED" \
+    --override "run.run_id=$RUN_ID" \
+    --override "run.seed=$SEED" \
+    --override run.model_family=nested \
+    --override run.sampling_mode=nested-all \
+    --override run.granularity=null \
+    --override controlled_experiment.comparison_role=elastic_candidate \
+    --override controlled_experiment.comparison_arm_id=nested_all_b \
+    --override controlled_experiment.portfolio_catchup.schema_version=3 \
+    --override controlled_experiment.portfolio_catchup.enabled=true \
+    --override "controlled_experiment.portfolio_catchup.elastic_budget_cap_tokens=$B" \
+    --override "controlled_experiment.portfolio_catchup.target_manifest_path=$TARGET_MANIFEST" \
+    --override "controlled_experiment.portfolio_catchup.target_manifest_hash=$TARGET_HASH" \
+    --override "training.token_budget=$B" \
+    --override training.learning_rate=0.008 \
+    --override "model.tokenizer_dir=$TOKENIZER" \
+    --override "dataset.prepared_corpus_dir=$CORPUS"
+done
+```
+
+`nested_all_b` spends `B` optimizer/data tokens but performs four subnetwork
+forward/backward evaluations per optimizer step. The report therefore records
+both `realized_full_run_spend_over_4B = 0.25` in optimizer-token units and
+`realized_subnetwork_target_tokens = 4B` as a compute-exposure diagnostic. Do
+not describe it as a quarter-compute run.
+
+### Analyze each arm against the unchanged targets
+
+Wait until all three runs in an arm have completed their declared cap. Analyze
+the arms separately so `B`, `3B`, and `4B` runs are never aggregated as
+replications:
+
+```bash
+export UNIFORM_4B_ANALYSIS="$EXTENSION_ANALYSIS_ROOT/uniform-h1-4b"
+export NESTED_ALL_ANALYSIS="$EXTENSION_ANALYSIS_ROOT/nested-all-b"
+
+"$PYTHON_BIN" scripts/analyze_tinystories_portfolio_catchup.py \
+  portfolio-catchup \
+  --runs-root "$UNIFORM_4B_ROOT" \
+  --target-manifest "$TARGET_MANIFEST" \
+  --candidate-arm uniform_h1_4b \
+  --output-dir "$UNIFORM_4B_ANALYSIS"
+
+"$PYTHON_BIN" scripts/analyze_tinystories_portfolio_catchup.py \
+  portfolio-catchup \
+  --runs-root "$NESTED_ALL_ROOT" \
+  --target-manifest "$TARGET_MANIFEST" \
+  --candidate-arm nested_all_b \
+  --output-dir "$NESTED_ALL_ANALYSIS"
+
+export UNIFORM_4B_REPORT="$UNIFORM_4B_ANALYSIS/portfolio_catchup_report.json"
+export NESTED_ALL_REPORT="$NESTED_ALL_ANALYSIS/portfolio_catchup_report.json"
+export UNIFORM_4B_HOLDOUT_SELECTION="$UNIFORM_4B_ANALYSIS/final_holdout_selection_manifest.json"
+export NESTED_ALL_HOLDOUT_SELECTION="$NESTED_ALL_ANALYSIS/final_holdout_selection_manifest.json"
+
+test -r "$UNIFORM_4B_REPORT"
+test -r "$NESTED_ALL_REPORT"
+test -r "$UNIFORM_4B_HOLDOUT_SELECTION"
+test -r "$NESTED_ALL_HOLDOUT_SELECTION"
+```
+
+Inspect ordinary-validation outcomes together with the original `3B` report:
+
+```bash
+jq -s '[.[] | {
+  arm: (.comparison_arm_id // "uniform_h1_3b"),
+  status,
+  all_seeds_confirmed: (.arm_catchup_confirmed // ([.seeds[].caught_up] | all)),
+  general_claim: .general_portfolio_catchup_claim,
+  optimizer_spend_over_4B: .realized_full_run_spend_over_4B,
+  subnetwork_target_tokens: (.realized_subnetwork_target_tokens // .elastic_budget_cap_tokens),
+  worst_terminal_ppl_deficit_by_seed: [
+    .seeds[] | {
+      seed,
+      value: ([.final_per_width_deficits[].perplexity_deficit] | max)
+    }
+  ]
+}]' \
+  "$CATCHUP_REPORT" "$UNIFORM_4B_REPORT" "$NESTED_ALL_REPORT"
+```
+
+Interpret the two new arms against the censored uniform-H1 `3B` result:
+
+| nested-all `B` | uniform-H1 `4B` | Main diagnosis |
+|---|---|---|
+| passes | passes | Width-exposure dilution is the leading explanation. |
+| passes | fails | Sequential sampling or its schedule is the leading issue. |
+| fails | passes | Extra sequential updates overcome simultaneous-gradient interference. |
+| fails | fails | The shared architecture/optimizer recipe does not meet the frozen tolerance under either reasonable extension. |
+
+“Passes” means five consecutive **joint** validations for all four widths and
+all three seeds. Independently passing widths at different validations does not
+count.
+
+### Optional descriptive final holdout and figures
+
+Each arm report seals its own 12-reference-plus-3-elastic checkpoint manifest.
+The same standalone holdout results may be reused only when their stored
+checkpoint hashes match; the elastic checkpoints are arm-specific.
+
+```bash
+for ARM in uniform-h1-4b nested-all-b; do
+  if test "$ARM" = uniform-h1-4b; then
+    SELECTION="$UNIFORM_4B_HOLDOUT_SELECTION"
+  else
+    SELECTION="$NESTED_ALL_HOLDOUT_SELECTION"
+  fi
+  sbatch \
+    --job-name="portfolio-${ARM}-holdout" \
+    --time=24:00:00 \
+    scripts/slurm_tinystories_controlled.sh \
+    --python-bin "$PYTHON_BIN" \
+    --final-holdout-manifest "$SELECTION"
+done
+```
+
+After those allocations finish:
+
+```bash
+"$PYTHON_BIN" scripts/analyze_tinystories_portfolio_catchup.py \
+  final-holdout \
+  --selection-manifest "$UNIFORM_4B_HOLDOUT_SELECTION" \
+  --output-dir "$EXTENSION_HOLDOUT_ROOT/uniform-h1-4b"
+
+"$PYTHON_BIN" scripts/analyze_tinystories_portfolio_catchup.py \
+  final-holdout \
+  --selection-manifest "$NESTED_ALL_HOLDOUT_SELECTION" \
+  --output-dir "$EXTENSION_HOLDOUT_ROOT/nested-all-b"
+
+"$PYTHON_BIN" scripts/make_figures.py \
+  --input "$EXTENSION_ROOT" \
+  --comparison-manifest "$UNIFORM_4B_REPORT" \
+  --output "$EXTENSION_FIGURES_ROOT/uniform-h1-4b"
+
+"$PYTHON_BIN" scripts/make_figures.py \
+  --input "$EXTENSION_ROOT" \
+  --comparison-manifest "$NESTED_ALL_REPORT" \
+  --output "$EXTENSION_FIGURES_ROOT/nested-all-b"
+```
+
+The extension holdout reports may set `diagnostic_arm_equivalence`, but they
+always leave `general_portfolio_equivalence_claim` false. The figure roots are
+separate by arm; each plot overlays that arm with the same frozen standalone
+targets and labels its actual budget and selected checkpoint.

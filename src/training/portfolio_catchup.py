@@ -11,7 +11,7 @@ from typing import Any, Mapping, Sequence
 from src.utils.reproducibility import stable_hash
 
 
-PORTFOLIO_SCHEMA_VERSION = 2
+PORTFOLIO_SCHEMA_VERSIONS = {2, 3}
 PORTFOLIO_GRANULARITIES = ("g250", "g500", "g750", "g1000")
 
 
@@ -100,8 +100,9 @@ def build_portfolio_catchup_state(config: Mapping[str, Any]) -> dict[str, Any] |
         }
 
     tolerance = _finite_float(contract["perplexity_tolerance"], "perplexity_tolerance")
+    schema_version = int(contract["schema_version"])
     state = {
-        "schema_version": PORTFOLIO_SCHEMA_VERSION,
+        "schema_version": schema_version,
         "comparison_group_id": controlled["comparison_group_id"],
         "comparison_role": controlled["comparison_role"],
         "target_manifest_hash": target_manifest["manifest_hash"],
@@ -133,6 +134,11 @@ def build_portfolio_catchup_state(config: Mapping[str, Any]) -> dict[str, Any] |
         "confirmation_checkpoint_sha256": None,
         "confirmation_checkpoint_saved": False,
     }
+    if schema_version >= 3:
+        state["comparison_arm_id"] = controlled["comparison_arm_id"]
+        state["elastic_budget_cap_tokens"] = int(
+            contract["elastic_budget_cap_tokens"]
+        )
     state["contract_hash"] = _state_contract_hash(state)
     return state
 
@@ -152,8 +158,12 @@ def validate_portfolio_catchup_state(
     expected = build_portfolio_catchup_state(config)
     if expected is None:
         raise AssertionError("portfolio catch-up configuration was not active")
-    if normalized.get("schema_version") != PORTFOLIO_SCHEMA_VERSION:
+    if normalized.get("schema_version") not in PORTFOLIO_SCHEMA_VERSIONS:
         raise PortfolioCatchupError("Unsupported portfolio catch-up state schema")
+    if normalized.get("schema_version") != expected.get("schema_version"):
+        raise PortfolioCatchupError(
+            "Portfolio catch-up checkpoint schema does not match the current run"
+        )
     if normalized.get("contract_hash") != _state_contract_hash(normalized):
         raise PortfolioCatchupError(
             "Portfolio catch-up checkpoint contract hash is internally inconsistent"
@@ -338,6 +348,9 @@ def _state_contract_hash(state: Mapping[str, Any]) -> str:
             "required_consecutive_evaluations",
         )
     }
+    for key in ("comparison_arm_id", "elastic_budget_cap_tokens"):
+        if key in state:
+            fields[key] = state[key]
     return stable_hash(fields)
 
 

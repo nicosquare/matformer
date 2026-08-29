@@ -33,6 +33,26 @@ PERPLEXITY_TOLERANCE = 0.005
 LOSS_TOLERANCE = math.log1p(PERPLEXITY_TOLERANCE)
 REQUIRED_STREAK = 5
 COMPARISON_GROUP_ID = "tinystories_instruct_portfolio_catchup_v1"
+CANDIDATE_ARMS = {
+    "uniform_h1_3b": {
+        "budget_tokens": ELASTIC_BUDGET_CAP_TOKENS,
+        "schema_version": 2,
+        "sampling_mode": "nested-random",
+        "post_hoc_diagnostic": False,
+    },
+    "uniform_h1_4b": {
+        "budget_tokens": AGGREGATE_REFERENCE_BUDGET_TOKENS,
+        "schema_version": 3,
+        "sampling_mode": "nested-random",
+        "post_hoc_diagnostic": True,
+    },
+    "nested_all_b": {
+        "budget_tokens": REFERENCE_BUDGET_TOKENS,
+        "schema_version": 3,
+        "sampling_mode": "nested-all",
+        "post_hoc_diagnostic": True,
+    },
+}
 
 
 class PortfolioAnalysisError(ValueError):
@@ -137,6 +157,19 @@ def _controlled_contract(
         controlled.get("comparison_role"),
         contract if isinstance(contract, Mapping) else {},
     )
+
+
+def _candidate_arm_id(run: Mapping[str, Any]) -> str | None:
+    controlled = run["config"].get("controlled_experiment", {})
+    if not isinstance(controlled, Mapping):
+        return None
+    arm_id = controlled.get("comparison_arm_id")
+    if arm_id in (None, ""):
+        _, contract = _controlled_contract(run)
+        if contract.get("schema_version") == 2:
+            return "uniform_h1_3b"
+        return None
+    return str(arm_id)
 
 
 def _ordinary_rows(run: Mapping[str, Any], width: str) -> list[dict[str, Any]]:
@@ -262,7 +295,13 @@ def _run_provenance(run: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _base_rejections(run: Mapping[str, Any], *, role: str, budget: int) -> list[str]:
+def _base_rejections(
+    run: Mapping[str, Any],
+    *,
+    role: str,
+    budget: int,
+    candidate_arm_id: str | None = None,
+) -> list[str]:
     config = run["config"]
     summary = run["summary"]
     actual_role, contract = _controlled_contract(run)
@@ -290,12 +329,24 @@ def _base_rejections(run: Mapping[str, Any], *, role: str, budget: int) -> list[
         and contract.get("lr_selection_manifest_path") in (None, "")
         and contract.get("lr_selection_manifest_hash") in (None, "")
     )
-    if schema_version != 2 and not legacy_reference:
+    expected_schema = (
+        CANDIDATE_ARMS[candidate_arm_id]["schema_version"]
+        if role == "elastic_candidate" and candidate_arm_id in CANDIDATE_ARMS
+        else 2
+    )
+    if schema_version != expected_schema and not legacy_reference:
         rejections.append("portfolio contract schema mismatch")
     if contract.get("reference_budget_tokens") != REFERENCE_BUDGET_TOKENS:
         rejections.append("reference budget contract mismatch")
-    if contract.get("elastic_budget_cap_tokens") != ELASTIC_BUDGET_CAP_TOKENS:
+    expected_elastic_budget = (
+        CANDIDATE_ARMS[candidate_arm_id]["budget_tokens"]
+        if role == "elastic_candidate" and candidate_arm_id in CANDIDATE_ARMS
+        else ELASTIC_BUDGET_CAP_TOKENS
+    )
+    if contract.get("elastic_budget_cap_tokens") != expected_elastic_budget:
         rejections.append("elastic budget contract mismatch")
+    if role == "elastic_candidate" and _candidate_arm_id(run) != candidate_arm_id:
+        rejections.append("comparison arm ID mismatch")
     if contract.get("aggregate_reference_count") != 4:
         rejections.append("aggregate reference count mismatch")
     if list(contract.get("granularities", [])) != list(GRANULARITIES):
@@ -514,24 +565,31 @@ def freeze_references(
 
 
 def _validate_elastic_run(
-    run: Mapping[str, Any], *, role: str, budget: int
+    run: Mapping[str, Any], *, role: str, budget: int, candidate_arm_id: str
 ) -> list[str]:
     config = run["config"]
     model = config.get("model", {})
-    rejections = _base_rejections(run, role=role, budget=budget)
+    arm = CANDIDATE_ARMS[candidate_arm_id]
+    rejections = _base_rejections(
+        run,
+        role=role,
+        budget=budget,
+        candidate_arm_id=candidate_arm_id,
+    )
     if (
         config.get("run", {}).get("model_family") != "nested"
-        or config.get("run", {}).get("sampling_mode") != "nested-random"
+        or config.get("run", {}).get("sampling_mode") != arm["sampling_mode"]
     ):
-        rejections.append("elastic run is not nested-random")
+        rejections.append("elastic topology does not match the comparison arm")
     if list(model.get("granularities", [])) != list(GRANULARITIES):
         rejections.append("elastic run does not expose the four-width portfolio")
-    if model.get("granularity_sampling_mode") != "global":
-        rejections.append("elastic run is not uniform-global")
-    if model.get("global_sampling_schedule") != "random_with_replacement":
-        rejections.append("elastic run does not sample uniformly with replacement")
-    if model.get("global_sampling_interval_steps") != 1:
-        rejections.append("elastic run does not use H=1")
+    if arm["sampling_mode"] == "nested-random":
+        if model.get("granularity_sampling_mode") != "global":
+            rejections.append("elastic run is not uniform-global")
+        if model.get("global_sampling_schedule") != "random_with_replacement":
+            rejections.append("elastic run does not sample uniformly with replacement")
+        if model.get("global_sampling_interval_steps") != 1:
+            rejections.append("elastic run does not use H=1")
     return rejections
 
 
@@ -597,6 +655,8 @@ def _validate_confirmation_checkpoint(
     *,
     target_hash: str,
     confirmation_step: int,
+    candidate_arm_id: str,
+    budget_tokens: int,
 ) -> None:
     try:
         import torch
@@ -626,6 +686,13 @@ def _validate_confirmation_checkpoint(
         raise PortfolioAnalysisError(
             "Confirmation checkpoint manifest provenance mismatch"
         )
+    if CANDIDATE_ARMS[candidate_arm_id]["schema_version"] >= 3 and (
+        state.get("comparison_arm_id") != candidate_arm_id
+        or state.get("elastic_budget_cap_tokens") != budget_tokens
+    ):
+        raise PortfolioAnalysisError(
+            "Confirmation checkpoint comparison-arm provenance mismatch"
+        )
     if not isinstance(checkpoint.get("model_state_dict"), Mapping):
         raise PortfolioAnalysisError("Confirmation checkpoint lacks exact model state")
 
@@ -635,6 +702,7 @@ def _validate_terminal_checkpoint(
     *,
     run: Mapping[str, Any],
     target_hash: str,
+    budget_tokens: int,
 ) -> None:
     try:
         import torch
@@ -642,10 +710,10 @@ def _validate_terminal_checkpoint(
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     except Exception as error:
         raise PortfolioAnalysisError(
-            f"Cannot load terminal 3B checkpoint: {checkpoint_path}"
+            f"Cannot load terminal candidate checkpoint: {checkpoint_path}"
         ) from error
     if not isinstance(checkpoint, Mapping):
-        raise PortfolioAnalysisError("Terminal 3B checkpoint is malformed")
+        raise PortfolioAnalysisError("Terminal candidate checkpoint is malformed")
     summary = run["summary"]
     expected_step = _integer(summary.get("steps_completed"), "completed step")
     if (
@@ -653,10 +721,10 @@ def _validate_terminal_checkpoint(
         or _integer(checkpoint.get("step"), "terminal checkpoint step")
         != expected_step
         or _integer(checkpoint.get("tokens_seen"), "terminal checkpoint tokens")
-        != ELASTIC_BUDGET_CAP_TOKENS
+        != budget_tokens
     ):
         raise PortfolioAnalysisError(
-            "Terminal diagnostic checkpoint is not the completed 3B boundary"
+            "Terminal diagnostic checkpoint is not the completed arm boundary"
         )
     run_id = summary.get("run_id", run["run_dir"].name)
     if checkpoint.get("run_id") != run_id:
@@ -675,6 +743,16 @@ def _validate_terminal_checkpoint(
         raise PortfolioAnalysisError(
             "Terminal checkpoint target or recipe provenance mismatch"
         )
+    candidate_arm_id = _candidate_arm_id(run)
+    if candidate_arm_id in CANDIDATE_ARMS and CANDIDATE_ARMS[candidate_arm_id][
+        "schema_version"
+    ] >= 3 and (
+        state.get("comparison_arm_id") != candidate_arm_id
+        or state.get("elastic_budget_cap_tokens") != budget_tokens
+    ):
+        raise PortfolioAnalysisError(
+            "Terminal checkpoint comparison-arm provenance mismatch"
+        )
     summary_state = summary.get("portfolio_catchup_state")
     if not isinstance(summary_state, Mapping) or any(
         state.get(field) != summary_state.get(field)
@@ -692,7 +770,7 @@ def _validate_terminal_checkpoint(
 
 
 def _terminal_checkpoint_selection(
-    run: Mapping[str, Any], *, target_hash: str
+    run: Mapping[str, Any], *, target_hash: str, budget_tokens: int
 ) -> tuple[Path, str, int]:
     summary = run["summary"]
     checkpoint = _resolve_checkpoint(
@@ -702,7 +780,12 @@ def _terminal_checkpoint_selection(
         raise PortfolioAnalysisError(
             "Completed elastic run lacks its terminal latest checkpoint"
         )
-    _validate_terminal_checkpoint(checkpoint, run=run, target_hash=target_hash)
+    _validate_terminal_checkpoint(
+        checkpoint,
+        run=run,
+        target_hash=target_hash,
+        budget_tokens=budget_tokens,
+    )
     return (
         checkpoint,
         _sha256(checkpoint),
@@ -714,9 +797,35 @@ def portfolio_catchup(
     run_dirs: Iterable[str | Path],
     target_manifest_path: str | Path,
     output_dir: str | Path,
+    candidate_arm: str | None = None,
 ) -> dict[str, Any]:
     targets = _load_hashed_manifest(target_manifest_path, "standalone targets")
     runs = [_load_run(path) for path in run_dirs]
+    observed_arms = {_candidate_arm_id(run) for run in runs}
+    if None in observed_arms or any(arm not in CANDIDATE_ARMS for arm in observed_arms):
+        raise PortfolioAnalysisError(
+            f"Elastic candidates have an unsupported comparison arm: {observed_arms}"
+        )
+    if candidate_arm is None:
+        if len(observed_arms) != 1:
+            raise PortfolioAnalysisError(
+                "Elastic candidates must all belong to one comparison arm"
+            )
+        candidate_arm_id = str(next(iter(observed_arms)))
+    else:
+        candidate_arm_id = str(candidate_arm)
+        if candidate_arm_id not in CANDIDATE_ARMS:
+            raise PortfolioAnalysisError(
+                f"Unknown candidate arm {candidate_arm_id!r}; "
+                f"expected one of {sorted(CANDIDATE_ARMS)}"
+            )
+        if observed_arms != {candidate_arm_id}:
+            raise PortfolioAnalysisError(
+                "Requested candidate arm differs from the saved run contracts"
+            )
+    arm = CANDIDATE_ARMS[candidate_arm_id]
+    candidate_budget_tokens = int(arm["budget_tokens"])
+    post_hoc_diagnostic = bool(arm["post_hoc_diagnostic"])
     by_seed: dict[int, Mapping[str, Any]] = {}
     for run in runs:
         seed = _seed(run)
@@ -739,7 +848,10 @@ def portfolio_catchup(
     for seed in REQUIRED_SEEDS:
         run = by_seed[seed]
         rejections = _validate_elastic_run(
-            run, role="elastic_candidate", budget=ELASTIC_BUDGET_CAP_TOKENS
+            run,
+            role="elastic_candidate",
+            budget=candidate_budget_tokens,
+            candidate_arm_id=candidate_arm_id,
         )
         config = run["config"]
         contract = config["controlled_experiment"]["portfolio_catchup"]
@@ -776,6 +888,13 @@ def portfolio_catchup(
         ):
             raise PortfolioAnalysisError(
                 "Candidate online catch-up state violates fixed-recipe provenance"
+            )
+        if int(arm["schema_version"]) >= 3 and (
+            state.get("comparison_arm_id") != candidate_arm_id
+            or state.get("elastic_budget_cap_tokens") != candidate_budget_tokens
+        ):
+            raise PortfolioAnalysisError(
+                "Candidate online catch-up state has the wrong comparison arm"
             )
         state_confirmation = state.get("confirmation_step")
         if (
@@ -815,6 +934,8 @@ def portfolio_catchup(
                 checkpoint,
                 target_hash=targets["manifest_hash"],
                 confirmation_step=int(offline["confirmation_step"]),
+                candidate_arm_id=candidate_arm_id,
+                budget_tokens=candidate_budget_tokens,
             )
         confirmation_tokens = offline["confirmation_tokens"]
         seed_report = {
@@ -836,8 +957,8 @@ def portfolio_catchup(
             - confirmation_tokens / AGGREGATE_REFERENCE_BUDGET_TOKENS
             if caught_up
             else None,
-            "realized_full_run_tokens": ELASTIC_BUDGET_CAP_TOKENS,
-            "realized_full_run_spend_over_4B": ELASTIC_BUDGET_CAP_TOKENS
+            "realized_full_run_tokens": candidate_budget_tokens,
+            "realized_full_run_spend_over_4B": candidate_budget_tokens
             / AGGREGATE_REFERENCE_BUDGET_TOKENS,
             "final_per_width_deficits": observations[-1]["widths"],
             "validation_observations": observations,
@@ -865,9 +986,19 @@ def portfolio_catchup(
             )
 
     all_caught_up = all(row["caught_up"] for row in seed_reports)
-    selection_mode = (
-        "portfolio_confirmation" if all_caught_up else "terminal_3B_censored"
-    )
+    claim_eligible = all_caught_up and not post_hoc_diagnostic
+    if all_caught_up:
+        selection_mode = (
+            "portfolio_confirmation_diagnostic"
+            if post_hoc_diagnostic
+            else "portfolio_confirmation"
+        )
+    else:
+        selection_mode = (
+            "terminal_candidate_budget_censored"
+            if post_hoc_diagnostic
+            else "terminal_3B_censored"
+        )
     for seed_report in seed_reports:
         seed = int(seed_report["seed"])
         run = by_seed[seed]
@@ -882,10 +1013,15 @@ def portfolio_catchup(
                 _terminal_checkpoint_selection(
                     run,
                     target_hash=targets["manifest_hash"],
+                    budget_tokens=candidate_budget_tokens,
                 )
             )
-            checkpoint_tokens = ELASTIC_BUDGET_CAP_TOKENS
-            checkpoint_selection = "terminal_3B"
+            checkpoint_tokens = candidate_budget_tokens
+            checkpoint_selection = (
+                "terminal_candidate_budget"
+                if post_hoc_diagnostic
+                else "terminal_3B"
+            )
         seed_report["holdout_checkpoint_selection"] = checkpoint_selection
         seed_report["holdout_checkpoint_path"] = str(checkpoint)
         seed_report["holdout_checkpoint_sha256"] = checkpoint_sha
@@ -921,16 +1057,29 @@ def portfolio_catchup(
             "median_confirmation_tokens": statistics.median(confirmed_tokens),
         }
     report = {
-        "schema_version": 2,
+        "schema_version": 3 if post_hoc_diagnostic else 2,
         "analysis": "tinystories_instruct_four_granularity_portfolio_catchup",
         "status": "portfolio_catchup_confirmed" if all_caught_up else "censored",
-        "general_portfolio_catchup_claim": all_caught_up,
+        "general_portfolio_catchup_claim": claim_eligible,
+        "arm_catchup_confirmed": all_caught_up,
+        "post_hoc_diagnostic": post_hoc_diagnostic,
+        "comparison_arm_id": candidate_arm_id,
         "comparison_group_id": COMPARISON_GROUP_ID,
         "reference_budget_tokens": REFERENCE_BUDGET_TOKENS,
         "aggregate_reference_budget_tokens": AGGREGATE_REFERENCE_BUDGET_TOKENS,
-        "elastic_budget_cap_tokens": ELASTIC_BUDGET_CAP_TOKENS,
-        "realized_full_run_spend_over_4B": ELASTIC_BUDGET_CAP_TOKENS
+        "elastic_budget_cap_tokens": candidate_budget_tokens,
+        "realized_full_run_spend_over_4B": candidate_budget_tokens
         / AGGREGATE_REFERENCE_BUDGET_TOKENS,
+        "subnetwork_gradient_evaluations_per_optimizer_step": (
+            len(GRANULARITIES)
+            if arm["sampling_mode"] == "nested-all"
+            else 1
+        ),
+        "realized_subnetwork_target_tokens": (
+            candidate_budget_tokens * len(GRANULARITIES)
+            if arm["sampling_mode"] == "nested-all"
+            else candidate_budget_tokens
+        ),
         "perplexity_tolerance": PERPLEXITY_TOLERANCE,
         "loss_tolerance": LOSS_TOLERANCE,
         "required_consecutive_evaluations": REQUIRED_STREAK,
@@ -942,11 +1091,15 @@ def portfolio_catchup(
         "budget_summary": budget_summary,
         "final_holdout_selection_status": (
             "ready_confirmatory"
-            if all_caught_up
-            else "ready_diagnostic_terminal_3B"
+            if claim_eligible
+            else (
+                "ready_diagnostic"
+                if post_hoc_diagnostic
+                else "ready_diagnostic_terminal_3B"
+            )
         ),
         "final_holdout_selection_mode": selection_mode,
-        "final_holdout_claim_eligible": all_caught_up,
+        "final_holdout_claim_eligible": claim_eligible,
     }
     report["report_hash"] = stable_hash(report)
     output = Path(output_dir).expanduser().resolve()
@@ -973,20 +1126,30 @@ def portfolio_catchup(
     _write_csv(output / "portfolio_catchup.csv", flat_rows)
 
     holdout_manifest = {
-        "schema_version": 2,
+        "schema_version": 3 if post_hoc_diagnostic else 2,
         "analysis": "portfolio_final_holdout_selection",
         "status": (
             "ready_confirmatory"
-            if all_caught_up
-            else "ready_diagnostic_terminal_3B"
+            if claim_eligible
+            else (
+                "ready_diagnostic"
+                if post_hoc_diagnostic
+                else "ready_diagnostic_terminal_3B"
+            )
         ),
         "selection_mode": selection_mode,
-        "claim_eligible": all_caught_up,
+        "claim_eligible": claim_eligible,
         "interpretation": (
             "confirmation_checkpoint_generalization"
-            if all_caught_up
-            else "terminal_3B_diagnostic_only_no_catchup_claim"
+            if claim_eligible
+            else (
+                "post_hoc_diagnostic_only_no_general_claim"
+                if post_hoc_diagnostic
+                else "terminal_3B_diagnostic_only_no_catchup_claim"
+            )
         ),
+        "comparison_arm_id": candidate_arm_id,
+        "candidate_budget_tokens": candidate_budget_tokens,
         "comparison_group_id": COMPARISON_GROUP_ID,
         "target_manifest_hash": targets["manifest_hash"],
         "shared_corpus_hash": targets["shared_provenance"]["corpus_hash"],
@@ -1055,13 +1218,21 @@ def final_holdout(
 ) -> dict[str, Any]:
     selection = _load_hashed_manifest(selection_manifest_path, "holdout selection")
     selection_mode = selection.get("selection_mode", "portfolio_confirmation")
-    if selection_mode not in {"portfolio_confirmation", "terminal_3B_censored"}:
+    confirmation_modes = {
+        "portfolio_confirmation",
+        "portfolio_confirmation_diagnostic",
+    }
+    terminal_modes = {
+        "terminal_3B_censored",
+        "terminal_candidate_budget_censored",
+    }
+    if selection_mode not in confirmation_modes | terminal_modes:
         raise PortfolioAnalysisError("Final-holdout selection mode is invalid")
     claim_eligible = selection.get(
         "claim_eligible", selection_mode == "portfolio_confirmation"
     )
-    if not isinstance(claim_eligible, bool) or claim_eligible != (
-        selection_mode == "portfolio_confirmation"
+    if not isinstance(claim_eligible, bool) or (
+        claim_eligible and selection_mode != "portfolio_confirmation"
     ):
         raise PortfolioAnalysisError(
             "Final-holdout claim eligibility contradicts its selection mode"
@@ -1082,8 +1253,12 @@ def final_holdout(
             if role == "standalone_reference"
             else (
                 "portfolio_confirmation"
-                if selection_mode == "portfolio_confirmation"
-                else "terminal_3B"
+                if selection_mode in confirmation_modes
+                else (
+                    "terminal_candidate_budget"
+                    if selection_mode == "terminal_candidate_budget_censored"
+                    else "terminal_3B"
+                )
             )
         )
         if checkpoint_selection != expected_selection:
@@ -1171,16 +1346,20 @@ def final_holdout(
             )
     all_pass = all(row["passes"] for row in comparisons)
     general_claim = all_pass and claim_eligible
-    diagnostic_equivalence = (
-        all_pass if selection_mode == "terminal_3B_censored" else None
-    )
-    if selection_mode == "portfolio_confirmation":
+    diagnostic_equivalence = all_pass if not claim_eligible else None
+    if claim_eligible:
         status = "portfolio_equivalent" if all_pass else "portfolio_not_equivalent"
-    else:
+    elif selection_mode == "terminal_3B_censored":
         status = (
             "diagnostic_terminal_3B_equivalent"
             if all_pass
             else "diagnostic_terminal_3B_not_equivalent"
+        )
+    else:
+        status = (
+            "diagnostic_arm_equivalent"
+            if all_pass
+            else "diagnostic_arm_not_equivalent"
         )
     report = {
         "schema_version": 2,
@@ -1188,8 +1367,14 @@ def final_holdout(
         "status": status,
         "selection_mode": selection_mode,
         "claim_eligible": claim_eligible,
+        "comparison_arm_id": selection.get("comparison_arm_id", "uniform_h1_3b"),
         "all_pairs_within_tolerance": all_pass,
-        "diagnostic_terminal_3B_equivalence": diagnostic_equivalence,
+        "diagnostic_terminal_3B_equivalence": (
+            diagnostic_equivalence
+            if selection_mode == "terminal_3B_censored"
+            else None
+        ),
+        "diagnostic_arm_equivalence": diagnostic_equivalence,
         "general_portfolio_equivalence_claim": general_claim,
         "perplexity_tolerance": PERPLEXITY_TOLERANCE,
         "required_checkpoint_count": 15,
@@ -1219,6 +1404,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         command.add_argument("--output-dir", required=True)
         if name == "portfolio-catchup":
             command.add_argument("--target-manifest", required=True)
+            command.add_argument(
+                "--candidate-arm",
+                choices=sorted(CANDIDATE_ARMS),
+                help=(
+                    "expected elastic arm; otherwise inferred from the saved "
+                    "run contracts"
+                ),
+            )
     holdout = commands.add_parser(
         "final-holdout", help="verify all 15 sealed holdout results"
     )
@@ -1240,6 +1433,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 run_dirs,
                 args.target_manifest,
                 args.output_dir,
+                candidate_arm=args.candidate_arm,
             )
     print(json.dumps({"status": result["status"]}, sort_keys=True))
 

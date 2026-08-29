@@ -2223,13 +2223,19 @@ def _generate_portfolio_comparison_figures(
                 else int(report["elastic_budget_cap_tokens"])
             )
             active = width if role == "standalone_reference" else "all four"
+            arm_fragment = (
+                f"; arm={report['comparison_arm_id']}"
+                if role == "elastic_candidate"
+                and report.get("post_hoc_diagnostic") is True
+                else ""
+            )
             axis.plot(
                 [row["tokens_seen"] for row in curve],
                 [row["mean"] for row in curve],
                 color=color,
                 linewidth=1.5,
                 label=(
-                    f"{role}; active={active}; budget={budget:,}; "
+                    f"{role}{arm_fragment}; active={active}; budget={budget:,}; "
                     f"scheduler=cosine; n={curve[0]['seed_count']} seeds"
                 ),
             )
@@ -2291,7 +2297,13 @@ def _generate_portfolio_comparison_figures(
             [row["tokens_seen"] for row in observations],
             [100.0 * math.expm1(float(row["joint_max_loss_gap"])) for row in observations],
             label=(
-                f"elastic_candidate seed {seed_record['seed']}; "
+                "elastic_candidate"
+                + (
+                    f" arm={report['comparison_arm_id']}"
+                    if report.get("post_hoc_diagnostic") is True
+                    else ""
+                )
+                + f" seed {seed_record['seed']}; "
                 f"budget={report['elastic_budget_cap_tokens']:,}; scheduler=cosine"
             ),
         )
@@ -2447,7 +2459,15 @@ def _load_portfolio_holdout_selection(
     ):
         raise ValueError("Portfolio holdout selection provenance mismatch")
     selection_mode = selection.get("selection_mode", "portfolio_confirmation")
-    if selection_mode not in {"portfolio_confirmation", "terminal_3B_censored"}:
+    confirmation_modes = {
+        "portfolio_confirmation",
+        "portfolio_confirmation_diagnostic",
+    }
+    terminal_modes = {
+        "terminal_3B_censored",
+        "terminal_candidate_budget_censored",
+    }
+    if selection_mode not in confirmation_modes | terminal_modes:
         raise ValueError("Portfolio holdout selection mode is invalid")
     if selection_mode != report.get(
         "final_holdout_selection_mode", selection_mode
@@ -2456,7 +2476,9 @@ def _load_portfolio_holdout_selection(
     claim_eligible = selection.get(
         "claim_eligible", selection_mode == "portfolio_confirmation"
     )
-    if claim_eligible is not (selection_mode == "portfolio_confirmation"):
+    if not isinstance(claim_eligible, bool) or (
+        claim_eligible and selection_mode != "portfolio_confirmation"
+    ):
         raise ValueError("Portfolio holdout claim eligibility is inconsistent")
 
     entries = selection.get("entries")
@@ -2479,8 +2501,12 @@ def _load_portfolio_holdout_selection(
             if role == "standalone_reference"
             else (
                 "portfolio_confirmation"
-                if selection_mode == "portfolio_confirmation"
-                else "terminal_3B"
+                if selection_mode in confirmation_modes
+                else (
+                    "terminal_candidate_budget"
+                    if selection_mode == "terminal_candidate_budget_censored"
+                    else "terminal_3B"
+                )
             )
         )
         if entry.get("checkpoint_selection") != expected_checkpoint_selection:
@@ -2658,10 +2684,27 @@ def _portfolio_selected_validation_rows(
 
 
 def _portfolio_elastic_selection_label(selection: Mapping[str, Any]) -> str:
-    if selection.get("selection_mode") == "terminal_3B_censored":
+    mode = selection.get("selection_mode")
+    if mode == "terminal_3B_censored":
         return (
             "elastic_candidate; checkpoint=terminal 3B diagnostic; "
             "run budget=3B; scheduler=cosine; claim-ineligible; n=3 seeds"
+        )
+    if mode == "terminal_candidate_budget_censored":
+        budget = int(selection["candidate_budget_tokens"])
+        return (
+            f"elastic_candidate; arm={selection['comparison_arm_id']}; "
+            "checkpoint=terminal arm-budget diagnostic; "
+            f"run budget={budget:,} tokens; scheduler=cosine; "
+            "claim-ineligible; n=3 seeds"
+        )
+    if mode == "portfolio_confirmation_diagnostic":
+        budget = int(selection["candidate_budget_tokens"])
+        return (
+            f"elastic_candidate; arm={selection['comparison_arm_id']}; "
+            "checkpoint=five-validation confirmation "
+            f"diagnostic; run budget={budget:,} tokens; scheduler=cosine; "
+            "claim-ineligible; n=3 seeds"
         )
     return (
         "elastic_candidate; checkpoint=five-validation confirmation; "

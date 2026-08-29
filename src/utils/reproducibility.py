@@ -494,6 +494,10 @@ def build_comparison_control_signature(config: Mapping[str, Any]) -> tuple[str, 
                 "stop_on_confirmation"
             ),
         }
+        if portfolio_catchup.get("schema_version") == 3:
+            portfolio_contract["comparison_arm_id"] = controlled_experiment.get(
+                "comparison_arm_id"
+            )
         # Preserve the exact signature shape used by already-running schema-1
         # standalone references. New schema-2 contracts omit this retired field.
         if "lr_selection_manifest_hash" in portfolio_catchup:
