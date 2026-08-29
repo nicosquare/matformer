@@ -25,6 +25,8 @@ Options:
   --python-bin PATH           Python executable; defaults to python.
   --final-holdout-only PATH   Evaluate a completed selected run without training.
                               Repeat to evaluate several runs sequentially.
+  --final-holdout-manifest PATH
+                              Evaluate all checkpoints in a portfolio manifest.
   -h, --help                  Show this message.
 
 All other arguments are forwarded to train.py. If --config is omitted, the
@@ -38,6 +40,7 @@ USAGE
 REPO_ROOT_ARG=""
 PYTHON_BIN="${PYTHON_BIN:-python}"
 FINAL_HOLDOUT_RUN_DIRS=()
+FINAL_HOLDOUT_MANIFEST=""
 FORWARDED_ARGS=()
 HAS_CONFIG=false
 
@@ -65,6 +68,14 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       FINAL_HOLDOUT_RUN_DIRS+=("$2")
+      shift 2
+      ;;
+    --final-holdout-manifest)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --final-holdout-manifest" >&2
+        exit 2
+      fi
+      FINAL_HOLDOUT_MANIFEST="$2"
       shift 2
       ;;
     --config)
@@ -95,6 +106,17 @@ else
   ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fi
 cd "$ROOT_DIR"
+
+if [[ -n "$FINAL_HOLDOUT_MANIFEST" ]]; then
+  if [[ ${#FINAL_HOLDOUT_RUN_DIRS[@]} -ne 0 || ${#FORWARDED_ARGS[@]} -ne 0 ]]; then
+    echo "--final-holdout-manifest cannot be combined with other work" >&2
+    exit 2
+  fi
+  exec "$PYTHON_BIN" scripts/evaluate_final_holdout.py \
+    --selection-manifest "$FINAL_HOLDOUT_MANIFEST" \
+    --device cuda \
+    --skip-existing
+fi
 
 if [[ ${#FINAL_HOLDOUT_RUN_DIRS[@]} -gt 0 ]]; then
   if [[ ${#FORWARDED_ARGS[@]} -ne 0 ]]; then

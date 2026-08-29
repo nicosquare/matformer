@@ -8,7 +8,9 @@ import hashlib
 import json
 import math
 import re
+import statistics
 import warnings
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -19,6 +21,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import BoundaryNorm, ListedColormap, to_rgb
 from matplotlib.collections import PolyCollection
+from src.utils.reproducibility import stable_hash
 
 from . import reporting_styles
 from .reporting_styles import PLOT_STYLE_BASE, PLOT_STYLE_PRESETS
@@ -2045,6 +2048,1032 @@ def generate_gradient_interference_figures(
     return paths
 
 
+def _generate_portfolio_comparison_figures(
+    input_root: Path,
+    comparison_manifest: Path,
+    output_dir: Path,
+    *,
+    dpi: int,
+    include_final_holdout: bool,
+    refresh_counts: bool,
+    validation_loss_log_y: bool,
+) -> list[Path]:
+    """Render the complete figure set for one sealed portfolio comparison."""
+
+    del input_root  # Membership comes exclusively from the immutable report.
+    manifest_path = comparison_manifest.expanduser().resolve()
+    try:
+        report = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"Cannot read portfolio comparison manifest: {manifest_path}") from error
+    if not isinstance(report, dict) or report.get("analysis") != (
+        "tinystories_instruct_four_granularity_portfolio_catchup"
+    ):
+        raise ValueError("Comparison manifest is not a portfolio catch-up report")
+    body = dict(report)
+    saved_hash = body.pop("report_hash", None)
+    if saved_hash != stable_hash(body):
+        raise ValueError("Portfolio catch-up report hash mismatch")
+
+    target_path = Path(str(report.get("target_manifest_path", ""))).expanduser().resolve()
+    try:
+        targets = json.loads(target_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"Cannot read portfolio target manifest: {target_path}") from error
+    if not isinstance(targets, dict):
+        raise ValueError("Portfolio target manifest must be a mapping")
+    target_body = dict(targets)
+    target_hash = target_body.pop("manifest_hash", None)
+    if target_hash != stable_hash(target_body) or target_hash != report.get(
+        "target_manifest_hash"
+    ):
+        raise ValueError("Portfolio target manifest hash mismatch")
+    selection = _load_portfolio_holdout_selection(
+        manifest_path.parent,
+        report=report,
+        targets=targets,
+    )
+
+    declared: list[dict[str, Any]] = []
+    for seed_text, seed_targets in targets.get("targets", {}).items():
+        if not isinstance(seed_targets, Mapping):
+            raise ValueError("Portfolio targets are malformed")
+        for width, target in seed_targets.items():
+            declared.append(
+                {
+                    "role": "standalone_reference",
+                    "seed": int(seed_text),
+                    "width": str(width),
+                    "run_dir": Path(str(target["run_dir"])).expanduser().resolve(),
+                    "budget": int(report["reference_budget_tokens"]),
+                }
+            )
+    for seed_record in report.get("seeds", []):
+        for width in targets.get("granularities", []):
+            declared.append(
+                {
+                    "role": "elastic_candidate",
+                    "seed": int(seed_record["seed"]),
+                    "width": str(width),
+                    "run_dir": Path(str(seed_record["run_dir"])).expanduser().resolve(),
+                    "budget": int(report["elastic_budget_cap_tokens"]),
+                }
+            )
+    expected_count = len(targets.get("seeds", [])) * len(
+        targets.get("granularities", [])
+    ) * 2
+    if len(declared) != expected_count or expected_count != 24:
+        raise ValueError("Portfolio report does not declare the complete 12+3 run set")
+
+    config_cache: dict[Path, dict[str, Any]] = {}
+    metrics_cache: dict[Path, list[dict[str, str]]] = {}
+    rows_by_key: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    provenance_values: set[str] = set()
+    for entry in declared:
+        run_dir = entry["run_dir"]
+        config_path = run_dir / "config.json"
+        metrics_path = run_dir / "metrics.csv"
+        if not config_path.is_file() or not metrics_path.is_file():
+            raise ValueError(f"Declared portfolio run is incomplete: {run_dir}")
+        if config_path not in config_cache:
+            with config_path.open("r", encoding="utf-8") as source:
+                config = json.load(source)
+            if not isinstance(config, dict):
+                raise ValueError(f"Saved portfolio config is malformed: {config_path}")
+            config_cache[config_path] = config
+        config = config_cache[config_path]
+        training = config.get("training", {})
+        controlled = config.get("controlled_experiment", {})
+        role = controlled.get("comparison_role") if isinstance(controlled, Mapping) else None
+        if role != entry["role"] or int(training.get("token_budget", -1)) != entry["budget"]:
+            raise ValueError("Declared portfolio role or budget differs from its saved config")
+        scheduler = str(training.get("scheduler_name"))
+        if scheduler != "cosine":
+            raise ValueError("Portfolio comparison requires cosine schedules")
+        provenance_values.add(_portfolio_reporting_provenance(config))
+        if metrics_path not in metrics_cache:
+            with metrics_path.open("r", encoding="utf-8", newline="") as source:
+                metrics_cache[metrics_path] = list(csv.DictReader(source))
+        metrics = metrics_cache[metrics_path]
+        validation = []
+        for raw in metrics:
+            if raw.get("split") != "validation" or raw.get("granularity") != entry["width"]:
+                continue
+            try:
+                step = int(float(raw["step"]))
+                tokens = int(float(raw["tokens_seen"]))
+                loss = float(raw["loss"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise ValueError(f"Invalid portfolio validation row: {metrics_path}") from error
+            if math.isfinite(loss):
+                validation.append(
+                    {
+                        "step": step,
+                        "tokens_seen": tokens,
+                        "loss": loss,
+                        "seed": entry["seed"],
+                    }
+                )
+        if not validation or max(row["tokens_seen"] for row in validation) > entry["budget"]:
+            raise ValueError("Portfolio validation trace exceeds or lacks its declared budget")
+        rows_by_key.setdefault((entry["role"], entry["width"]), []).extend(validation)
+    if len(provenance_values) != 1:
+        raise ValueError(
+            "Portfolio manifest mode requires identical corpus and holdout provenance"
+        )
+
+    granularities = [str(value) for value in targets["granularities"]]
+    parameter_counts = _portfolio_non_embedding_parameter_counts(
+        declared,
+        granularities=granularities,
+        config_cache=config_cache,
+        refresh_counts=refresh_counts,
+    )
+    selected_validation_rows = _portfolio_selected_validation_rows(
+        report,
+        targets=targets,
+        selection=selection,
+    )
+    selection_label = _portfolio_elastic_selection_label(selection)
+    for filename in (
+        "ppl_vs_size.png",
+        "portfolio_validation_loss_over_tokens.png",
+        "portfolio_per_granularity_deficits.png",
+        "portfolio_worst_width_deficit.png",
+        "learning_rate_schedule.png",
+        "final_holdout_ppl_vs_size.png",
+        "portfolio_final_holdout_perplexity.png",
+        "portfolio_final_holdout_deficit_vs_size.png",
+    ):
+        stale_path = output_dir / filename
+        if stale_path.is_file():
+            stale_path.unlink()
+
+    figure, axes = plt.subplots(2, 2, figsize=(12, 8), sharex=True)
+    for axis, width in zip(axes.flat, granularities, strict=True):
+        for role, color in (
+            ("standalone_reference", "tab:gray"),
+            ("elastic_candidate", "tab:blue"),
+        ):
+            group = rows_by_key[(role, width)]
+            curve = _portfolio_mean_curve(group)
+            budget = (
+                int(report["reference_budget_tokens"])
+                if role == "standalone_reference"
+                else int(report["elastic_budget_cap_tokens"])
+            )
+            active = width if role == "standalone_reference" else "all four"
+            axis.plot(
+                [row["tokens_seen"] for row in curve],
+                [row["mean"] for row in curve],
+                color=color,
+                linewidth=1.5,
+                label=(
+                    f"{role}; active={active}; budget={budget:,}; "
+                    f"scheduler=cosine; n={curve[0]['seed_count']} seeds"
+                ),
+            )
+            axis.fill_between(
+                [row["tokens_seen"] for row in curve],
+                [row["minimum"] for row in curve],
+                [row["maximum"] for row in curve],
+                color=color,
+                alpha=0.12,
+            )
+        width_targets = [
+            float(targets["targets"][str(seed)][width]["target_loss"])
+            for seed in targets["seeds"]
+        ]
+        lower = min(width_targets)
+        upper = max(width_targets)
+        tolerance = float(report["loss_tolerance"])
+        axis.axhspan(lower, upper, color="tab:green", alpha=0.12, label="standalone target range")
+        axis.axhspan(upper, upper + tolerance, color="tab:green", alpha=0.06, label="0.5% PPL tolerance band")
+        for seed_record in report["seeds"]:
+            if seed_record.get("confirmation_tokens") is not None:
+                axis.axvline(float(seed_record["confirmation_tokens"]), color="tab:red", linestyle=":", alpha=0.28)
+        axis.set_title(width)
+        axis.set_ylabel("ordinary-validation loss")
+        if validation_loss_log_y:
+            axis.set_yscale("log")
+    for axis in axes[-1]:
+        axis.set_xlabel("optimizer tokens")
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    figure.legend(handles, labels, loc="lower center", ncol=2, frameon=False, fontsize=8)
+    figure.tight_layout(rect=(0, 0.11, 1, 1))
+    curve_path = output_dir / "portfolio_validation_loss_over_tokens.png"
+    figure.savefig(curve_path, dpi=dpi)
+    plt.close(figure)
+
+    validation_size_path = _plot_portfolio_ppl_vs_size(
+        selected_validation_rows,
+        parameter_counts=parameter_counts,
+        granularities=granularities,
+        output_paths=[output_dir / "ppl_vs_size.png"],
+        title="Ordinary-validation perplexity at manifest-selected checkpoints",
+        ylabel="Perplexity",
+        elastic_label=selection_label,
+        perplexity_tolerance=float(report["perplexity_tolerance"]),
+        dpi=dpi,
+    )[0]
+
+    per_width_deficit_path = _plot_portfolio_per_granularity_deficits(
+        report,
+        granularities=granularities,
+        output_dir=output_dir,
+        dpi=dpi,
+    )
+
+    figure, axis = plt.subplots(figsize=(9, 5))
+    for seed_record in report["seeds"]:
+        observations = seed_record.get("validation_observations", [])
+        axis.plot(
+            [row["tokens_seen"] for row in observations],
+            [100.0 * math.expm1(float(row["joint_max_loss_gap"])) for row in observations],
+            label=(
+                f"elastic_candidate seed {seed_record['seed']}; "
+                f"budget={report['elastic_budget_cap_tokens']:,}; scheduler=cosine"
+            ),
+        )
+        if seed_record.get("onset_tokens") is not None:
+            onset = next(
+                row
+                for row in observations
+                if row["tokens_seen"] == seed_record["onset_tokens"]
+            )
+            axis.scatter(
+                [seed_record["onset_tokens"]],
+                [100.0 * math.expm1(float(onset["joint_max_loss_gap"]))],
+                s=36,
+                facecolors="none",
+                edgecolors="tab:orange",
+                label="joint-streak onset" if int(seed_record["seed"]) == 42 else None,
+                zorder=4,
+            )
+        if seed_record.get("confirmation_tokens") is not None:
+            confirmation = next(
+                row
+                for row in observations
+                if row["tokens_seen"] == seed_record["confirmation_tokens"]
+            )
+            axis.scatter(
+                [seed_record["confirmation_tokens"]],
+                [100.0 * math.expm1(float(confirmation["joint_max_loss_gap"]))],
+                marker="*",
+                s=70,
+                color="tab:red",
+                label="five-validation confirmation"
+                if int(seed_record["seed"]) == 42
+                else None,
+                zorder=5,
+            )
+    axis.axhline(
+        100.0 * float(report["perplexity_tolerance"]),
+        color="black",
+        linestyle="--",
+        label="joint 0.5% PPL threshold",
+    )
+    axis.set_yscale(
+        "symlog",
+        linthresh=100.0 * float(report["perplexity_tolerance"]),
+    )
+    axis.set(
+        xlabel="optimizer tokens",
+        ylabel="worst-width PPL deficit (%) · symlog",
+    )
+    axis.legend(frameon=False, fontsize=8)
+    figure.tight_layout()
+    deficit_path = output_dir / "portfolio_worst_width_deficit.png"
+    figure.savefig(deficit_path, dpi=dpi)
+    plt.close(figure)
+    learning_rate_path = _plot_portfolio_learning_rate_schedules(
+        declared,
+        config_cache=config_cache,
+        output_dir=output_dir,
+        dpi=dpi,
+    )
+    paths = [
+        validation_size_path,
+        curve_path,
+        per_width_deficit_path,
+        deficit_path,
+        learning_rate_path,
+    ]
+
+    if include_final_holdout:
+        holdout_paths = _plot_portfolio_final_holdout_if_complete(
+            selection,
+            output_dir,
+            parameter_counts=parameter_counts,
+            granularities=granularities,
+            perplexity_tolerance=float(report["perplexity_tolerance"]),
+            dpi=dpi,
+        )
+        paths.extend(holdout_paths)
+    return paths
+
+
+def _portfolio_reporting_provenance(config: Mapping[str, Any]) -> str:
+    model = config.get("model", {})
+    dataset = config.get("dataset", {})
+    return stable_hash(
+        {
+            "dataset_name": dataset.get("dataset_name"),
+            "dataset_config_name": dataset.get("dataset_config_name"),
+            "dataset_split": dataset.get("dataset_split"),
+            "dataset_phase": dataset.get("dataset_phase"),
+            "corpus_hash": dataset.get("corpus_hash", config.get("corpus_hash")),
+            "optimizer_training_manifest_hash": config.get("optimizer_training_manifest_hash"),
+            "validation_manifest_hash": config.get("validation_manifest_hash"),
+            "final_holdout_manifest_hash": config.get("final_holdout_manifest_hash"),
+            "tokenizer_manifest_hash": model.get("tokenizer_manifest_hash"),
+            "variant": model.get("variant"),
+            "correction_mode": model.get("correction_mode"),
+            "d_model": model.get("d_model", model.get("hidden_size")),
+            "num_layers": model.get("num_layers"),
+            "context_length": model.get("context_length"),
+            "vocab_size": model.get("vocab_size"),
+        }
+    )
+
+
+def _portfolio_mean_curve(rows: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    by_tokens: dict[int, list[float]] = {}
+    seeds_by_tokens: dict[int, set[int]] = {}
+    for row in rows:
+        tokens = int(row["tokens_seen"])
+        by_tokens.setdefault(tokens, []).append(float(row["loss"]))
+        seeds_by_tokens.setdefault(tokens, set()).add(int(row["seed"]))
+    seed_counts = {len(seeds) for seeds in seeds_by_tokens.values()}
+    if seed_counts != {3}:
+        raise ValueError("Portfolio replications do not share validation boundaries")
+    return [
+        {
+            "tokens_seen": tokens,
+            "mean": statistics.fmean(values),
+            "minimum": min(values),
+            "maximum": max(values),
+            "seed_count": len(seeds_by_tokens[tokens]),
+        }
+        for tokens, values in sorted(by_tokens.items())
+    ]
+
+
+def _load_portfolio_holdout_selection(
+    analysis_dir: Path,
+    *,
+    report: Mapping[str, Any],
+    targets: Mapping[str, Any],
+) -> dict[str, Any]:
+    selection_path = analysis_dir / "final_holdout_selection_manifest.json"
+    try:
+        with selection_path.open("r", encoding="utf-8") as source:
+            selection = json.load(source)
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(
+            f"Cannot read portfolio holdout selection: {selection_path}"
+        ) from error
+    if not isinstance(selection, dict) or selection.get("analysis") != (
+        "portfolio_final_holdout_selection"
+    ):
+        raise ValueError("Portfolio holdout selection manifest is malformed")
+    selection_body = dict(selection)
+    selection_hash = selection_body.pop("manifest_hash", None)
+    if selection_hash != stable_hash(selection_body):
+        raise ValueError("Portfolio holdout selection manifest hash mismatch")
+    if (
+        selection.get("target_manifest_hash") != targets.get("manifest_hash")
+        or selection.get("comparison_group_id") != report.get("comparison_group_id")
+    ):
+        raise ValueError("Portfolio holdout selection provenance mismatch")
+    selection_mode = selection.get("selection_mode", "portfolio_confirmation")
+    if selection_mode not in {"portfolio_confirmation", "terminal_3B_censored"}:
+        raise ValueError("Portfolio holdout selection mode is invalid")
+    if selection_mode != report.get(
+        "final_holdout_selection_mode", selection_mode
+    ):
+        raise ValueError("Portfolio report and holdout selection mode differ")
+    claim_eligible = selection.get(
+        "claim_eligible", selection_mode == "portfolio_confirmation"
+    )
+    if claim_eligible is not (selection_mode == "portfolio_confirmation"):
+        raise ValueError("Portfolio holdout claim eligibility is inconsistent")
+
+    entries = selection.get("entries")
+    if not isinstance(entries, list) or len(entries) != 15:
+        raise ValueError("Portfolio holdout selection must declare exactly 15 checkpoints")
+    expected_seeds = {int(seed) for seed in targets.get("seeds", [])}
+    granularities = [str(width) for width in targets.get("granularities", [])]
+    reference_keys: set[tuple[int, str]] = set()
+    elastic_seeds: set[int] = set()
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            raise ValueError("Portfolio holdout selection entry is malformed")
+        role = str(entry.get("comparison_role"))
+        seed = int(entry.get("seed", -1))
+        widths = [str(width) for width in entry.get("granularities", [])]
+        if seed not in expected_seeds:
+            raise ValueError("Portfolio holdout selection contains an unexpected seed")
+        expected_checkpoint_selection = (
+            "ordinary_validation_best"
+            if role == "standalone_reference"
+            else (
+                "portfolio_confirmation"
+                if selection_mode == "portfolio_confirmation"
+                else "terminal_3B"
+            )
+        )
+        if entry.get("checkpoint_selection") != expected_checkpoint_selection:
+            raise ValueError(
+                "Portfolio holdout checkpoint selection contradicts its mode"
+            )
+        if role == "standalone_reference" and len(widths) == 1:
+            reference_keys.add((seed, widths[0]))
+        elif role == "elastic_candidate" and widths == granularities:
+            if seed in elastic_seeds:
+                raise ValueError("Duplicate elastic portfolio holdout selection")
+            elastic_seeds.add(seed)
+        else:
+            raise ValueError("Portfolio holdout selection role or widths are invalid")
+    if reference_keys != {
+        (seed, width) for seed in expected_seeds for width in granularities
+    } or elastic_seeds != expected_seeds:
+        raise ValueError("Portfolio holdout selection does not contain the exact matrix")
+    return selection
+
+
+def _portfolio_non_embedding_parameter_counts(
+    declared: list[Mapping[str, Any]],
+    *,
+    granularities: list[str],
+    config_cache: Mapping[Path, Mapping[str, Any]],
+    refresh_counts: bool,
+) -> dict[str, int]:
+    """Resolve one x coordinate per width without mixing role replications."""
+
+    from . import reporting_io
+
+    representatives: dict[tuple[str, str], Mapping[str, Any]] = {}
+    model_contracts: dict[tuple[str, str], set[str]] = {}
+    for entry in declared:
+        key = (str(entry["role"]), str(entry["width"]))
+        representatives.setdefault(key, entry)
+        config_path = Path(entry["run_dir"]) / "config.json"
+        config = config_cache[config_path]
+        model_contracts.setdefault(key, set()).add(stable_hash(config.get("model", {})))
+    if any(len(values) != 1 for values in model_contracts.values()):
+        raise ValueError("Portfolio parameter-count model contract differs across seeds")
+
+    refreshed_cache: dict[Path, dict[str, dict[str, Any]]] = {}
+    saved_cache: dict[Path, list[dict[str, str]]] = {}
+    values: dict[tuple[str, str], int] = {}
+    for key, entry in representatives.items():
+        run_dir = Path(entry["run_dir"])
+        config_path = run_dir / "config.json"
+        width = key[1]
+        if refresh_counts:
+            if config_path not in refreshed_cache:
+                refreshed_cache[config_path] = reporting_io.recompute_parameter_counts(
+                    config_path
+                )
+            raw_count = refreshed_cache[config_path].get(width, {}).get(
+                "non_embedding_parameters"
+            )
+        else:
+            scaling_path = run_dir / "scaling_results.csv"
+            if scaling_path not in saved_cache:
+                try:
+                    with scaling_path.open(
+                        "r", encoding="utf-8", newline=""
+                    ) as source:
+                        saved_cache[scaling_path] = list(csv.DictReader(source))
+                except (OSError, csv.Error, UnicodeError) as error:
+                    raise ValueError(
+                        "--no-refresh-counts requires scaling_results.csv for every "
+                        f"manifest-selected run: {scaling_path}"
+                    ) from error
+            matches = [
+                row
+                for row in saved_cache[scaling_path]
+                if str(row.get("granularity")) == width
+            ]
+            if len(matches) != 1:
+                raise ValueError(
+                    "Manifest-scoped scaling_results.csv must contain one row per width"
+                )
+            raw_count = matches[0].get("non_embedding_parameters")
+        try:
+            numeric_count = float(raw_count)
+            count = int(numeric_count)
+        except (TypeError, ValueError) as error:
+            raise ValueError("Portfolio non-embedding parameter count is invalid") from error
+        if not math.isfinite(numeric_count) or numeric_count != count or count <= 0:
+            raise ValueError("Portfolio non-embedding parameter count must be positive")
+        values[key] = count
+
+    by_width: dict[str, int] = {}
+    for width in granularities:
+        standalone = values[("standalone_reference", width)]
+        elastic = values[("elastic_candidate", width)]
+        if standalone != elastic:
+            raise ValueError(
+                "Corresponding standalone and elastic widths have different "
+                f"non-embedding parameter counts for {width}: "
+                f"{standalone} != {elastic}"
+            )
+        by_width[width] = standalone
+    if len(set(by_width.values())) != len(granularities):
+        raise ValueError("Portfolio widths do not resolve to distinct model sizes")
+    return by_width
+
+
+def _portfolio_selected_validation_rows(
+    report: Mapping[str, Any],
+    *,
+    targets: Mapping[str, Any],
+    selection: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    granularities = [str(width) for width in targets["granularities"]]
+    rows: list[dict[str, Any]] = []
+    for seed in targets["seeds"]:
+        for width in granularities:
+            target = targets["targets"][str(seed)][width]
+            loss = float(target["target_loss"])
+            perplexity = float(target.get("target_perplexity", math.exp(loss)))
+            if not math.isfinite(loss) or not math.isfinite(perplexity) or perplexity <= 0:
+                raise ValueError("Portfolio standalone target metric is invalid")
+            rows.append(
+                {
+                    "role": "standalone_reference",
+                    "seed": int(seed),
+                    "width": width,
+                    "loss": loss,
+                    "perplexity": perplexity,
+                    "checkpoint_selection": "ordinary_validation_best",
+                }
+            )
+
+    elastic_entries = {
+        int(entry["seed"]): entry
+        for entry in selection["entries"]
+        if entry["comparison_role"] == "elastic_candidate"
+    }
+    seed_reports = {int(item["seed"]): item for item in report["seeds"]}
+    for seed in targets["seeds"]:
+        entry = elastic_entries[int(seed)]
+        seed_report = seed_reports[int(seed)]
+        matches = [
+            observation
+            for observation in seed_report.get("validation_observations", [])
+            if int(observation["step"]) == int(entry["checkpoint_step"])
+            and int(observation["tokens_seen"]) == int(entry["checkpoint_tokens"])
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                "Elastic selected checkpoint lacks an exact simultaneous ordinary "
+                f"validation for seed {seed}"
+            )
+        selected = matches[0]
+        width_values = selected.get("widths")
+        if not isinstance(width_values, Mapping) or set(width_values) != set(
+            granularities
+        ):
+            raise ValueError("Elastic selected validation does not contain all widths")
+        for width in granularities:
+            loss = float(width_values[width]["loss"])
+            perplexity = math.exp(loss)
+            if not math.isfinite(loss) or not math.isfinite(perplexity):
+                raise ValueError("Elastic selected validation metric is invalid")
+            rows.append(
+                {
+                    "role": "elastic_candidate",
+                    "seed": int(seed),
+                    "width": width,
+                    "loss": loss,
+                    "perplexity": perplexity,
+                    "checkpoint_selection": entry["checkpoint_selection"],
+                }
+            )
+    return rows
+
+
+def _portfolio_elastic_selection_label(selection: Mapping[str, Any]) -> str:
+    if selection.get("selection_mode") == "terminal_3B_censored":
+        return (
+            "elastic_candidate; checkpoint=terminal 3B diagnostic; "
+            "run budget=3B; scheduler=cosine; claim-ineligible; n=3 seeds"
+        )
+    return (
+        "elastic_candidate; checkpoint=five-validation confirmation; "
+        "run budget=3B; scheduler=cosine; n=3 seeds"
+    )
+
+
+def _plot_portfolio_ppl_vs_size(
+    rows: list[Mapping[str, Any]],
+    *,
+    parameter_counts: Mapping[str, int],
+    granularities: list[str],
+    output_paths: list[Path],
+    title: str,
+    ylabel: str,
+    elastic_label: str,
+    perplexity_tolerance: float,
+    dpi: int,
+) -> list[Path]:
+    from .reporting_impl import add_loss_secondary_axis
+
+    style_config = resolve_plot_style("default")
+    x_values = [int(parameter_counts[width]) for width in granularities]
+    colors = {
+        "standalone_reference": reporting_styles.STANDALONE_REFERENCE_COLOR,
+        "elastic_candidate": plt.get_cmap("tab10")(0),
+    }
+    figure, axis = plt.subplots(figsize=(14, 5.2))
+    means_by_role: dict[str, list[float]] = {}
+    ranges_by_role: dict[str, list[list[float]]] = {}
+    for role in ("standalone_reference", "elastic_candidate"):
+        role_rows = [row for row in rows if row["role"] == role]
+        by_seed_width = {
+            (int(row["seed"]), str(row["width"])): float(row["perplexity"])
+            for row in role_rows
+        }
+        seeds = sorted({int(row["seed"]) for row in role_rows})
+        if len(seeds) != 3 or set(by_seed_width) != {
+            (seed, width) for seed in seeds for width in granularities
+        }:
+            raise ValueError("Portfolio size plot requires the exact three-seed matrix")
+        values_by_width = [
+            [by_seed_width[(seed, width)] for seed in seeds]
+            for width in granularities
+        ]
+        means = [statistics.fmean(values) for values in values_by_width]
+        means_by_role[role] = means
+        ranges_by_role[role] = values_by_width
+        label = (
+            "standalone_reference; checkpoint=best ordinary validation <=B; "
+            "budget=B; scheduler=cosine; n=3 seeds"
+            if role == "standalone_reference"
+            else elastic_label
+        )
+        if role == "standalone_reference":
+            axis.scatter(
+                x_values,
+                means,
+                marker="^",
+                s=58,
+                color=colors[role],
+                edgecolors=reporting_styles.STANDALONE_REFERENCE_EDGE_COLOR,
+                linewidths=0.8,
+                label=label,
+                zorder=5,
+            )
+        else:
+            axis.plot(
+                x_values,
+                means,
+                color=colors[role],
+                marker="o",
+                linewidth=1.8,
+                label=label,
+                zorder=3,
+            )
+        axis.fill_between(
+            x_values,
+            [min(values) for values in values_by_width],
+            [max(values) for values in values_by_width],
+            color=colors[role],
+            alpha=0.12 if role == "standalone_reference" else 0.16,
+            linewidth=0,
+        )
+    standalone_means = means_by_role["standalone_reference"]
+    axis.fill_between(
+        x_values,
+        standalone_means,
+        [value * (1.0 + perplexity_tolerance) for value in standalone_means],
+        color="tab:green",
+        alpha=0.13,
+        label=f"paired standalone +{100.0 * perplexity_tolerance:.1f}% PPL tolerance",
+    )
+    plotted_values = [
+        value
+        for values_by_width in ranges_by_role.values()
+        for values in values_by_width
+        for value in values
+    ]
+    plotted_values.extend(
+        value * (1.0 + perplexity_tolerance) for value in standalone_means
+    )
+    y_limits = padded_limits(min(plotted_values), max(plotted_values))
+    if y_limits[0] <= 0.0:
+        y_limits = (min(plotted_values) * 0.92, y_limits[1])
+    axis.set_ylim(*y_limits)
+    axis.set(
+        xlabel="Non-embedding parameters",
+        ylabel=ylabel,
+    )
+    axis.set_title(
+        "Nested-random · Slicing · Global sampling",
+        fontsize=style_config["panel_title_fontsize"],
+        pad=6,
+    )
+    axis.tick_params(labelsize=style_config["tick_label_fontsize"])
+    axis.xaxis.label.set_size(style_config["axis_label_fontsize"])
+    axis.yaxis.label.set_size(style_config["axis_label_fontsize"])
+    axis.grid(True, alpha=0.3)
+    axis.set_axisbelow(True)
+    axis.legend(frameon=False, fontsize=style_config["legend_fontsize"])
+    add_loss_secondary_axis(axis)
+    figure.suptitle(title, fontsize=style_config["figure_title_fontsize"])
+    figure.tight_layout(rect=[0, 0, 1, 0.96])
+    for path in output_paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        figure.savefig(path, bbox_inches="tight", dpi=dpi)
+    plt.close(figure)
+    return output_paths
+
+
+def _plot_portfolio_per_granularity_deficits(
+    report: Mapping[str, Any],
+    *,
+    granularities: list[str],
+    output_dir: Path,
+    dpi: int,
+) -> Path:
+    figure, axes = plt.subplots(2, 2, figsize=(11, 7.5), sharex=True)
+    for axis, width in zip(axes.flat, granularities, strict=True):
+        for seed_record in report["seeds"]:
+            observations = seed_record.get("validation_observations", [])
+            axis.plot(
+                [row["tokens_seen"] for row in observations],
+                [
+                    100.0 * float(row["widths"][width]["perplexity_deficit"])
+                    for row in observations
+                ],
+                label=f"seed {seed_record['seed']}",
+            )
+            if seed_record.get("confirmation_tokens") is not None:
+                confirmation = next(
+                    row
+                    for row in observations
+                    if row["tokens_seen"] == seed_record["confirmation_tokens"]
+                )
+                axis.scatter(
+                    [seed_record["confirmation_tokens"]],
+                    [
+                        100.0
+                        * float(
+                            confirmation["widths"][width]["perplexity_deficit"]
+                        )
+                    ],
+                    marker="*",
+                    s=54,
+                    color="tab:red",
+                    zorder=4,
+                )
+        axis.axhline(
+            100.0 * float(report["perplexity_tolerance"]),
+            color="black",
+            linestyle="--",
+            label="0.5% threshold" if width == granularities[0] else None,
+        )
+        axis.set_yscale(
+            "symlog",
+            linthresh=100.0 * float(report["perplexity_tolerance"]),
+        )
+        axis.set_title(width)
+        axis.set_ylabel("PPL deficit (%) · symlog")
+    for axis in axes[-1]:
+        axis.set_xlabel("optimizer tokens")
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    figure.legend(handles, labels, loc="lower center", ncol=4, frameon=False)
+    figure.tight_layout(rect=(0, 0.08, 1, 1))
+    path = output_dir / "portfolio_per_granularity_deficits.png"
+    figure.savefig(path, dpi=dpi)
+    plt.close(figure)
+    return path
+
+
+def _plot_portfolio_learning_rate_schedules(
+    declared: list[Mapping[str, Any]],
+    *,
+    config_cache: Mapping[Path, Mapping[str, Any]],
+    output_dir: Path,
+    dpi: int,
+) -> Path:
+    from . import reporting_io
+
+    role_configs: dict[str, list[tuple[Path, Mapping[str, Any]]]] = {}
+    seen: set[tuple[str, Path]] = set()
+    for entry in declared:
+        role = str(entry["role"])
+        config_path = Path(entry["run_dir"]) / "config.json"
+        if (role, config_path) in seen:
+            continue
+        seen.add((role, config_path))
+        role_configs.setdefault(role, []).append((config_path, config_cache[config_path]))
+
+    schedules = []
+    for role in ("standalone_reference", "elastic_candidate"):
+        candidates = role_configs.get(role, [])
+        if not candidates:
+            raise ValueError(f"Portfolio comparison is missing scheduler role {role}")
+        resolved = [
+            reporting_io._learning_rate_schedule_from_saved_config(
+                config,
+                config_path=config_path,
+            )
+            for config_path, config in candidates
+        ]
+        schedule_contracts = {
+            stable_hash(
+                {
+                    "scheduler_name": item.scheduler_name,
+                    "scheduler_kwargs": item.scheduler_kwargs,
+                    "peak_learning_rate": item.peak_learning_rate,
+                    "warmup_steps": item.warmup_steps,
+                    "max_steps": item.max_steps,
+                    "expected_tokens_per_step": item.expected_tokens_per_step,
+                    "token_budget": item.token_budget,
+                    "scheduler_contract": item.scheduler_contract,
+                }
+            )
+            for item in resolved
+        }
+        if len(schedule_contracts) != 1:
+            raise ValueError(f"Portfolio {role} scheduler differs across runs")
+        role_label = (
+            "standalone_reference; active=one width; budget=B; n=3 seeds"
+            if role == "standalone_reference"
+            else "elastic_candidate; active=all four; budget=3B; n=3 seeds"
+        )
+        schedules.append(replace(resolved[0], run_id=role_label))
+    return plot_learning_rate_schedules(
+        schedules,
+        output_dir / "learning_rate_schedule.png",
+        dpi=dpi,
+    )
+
+
+def _plot_portfolio_final_holdout_if_complete(
+    selection: Mapping[str, Any],
+    output_dir: Path,
+    *,
+    parameter_counts: Mapping[str, int],
+    granularities: list[str],
+    perplexity_tolerance: float,
+    dpi: int,
+) -> list[Path]:
+    entries = selection["entries"]
+    result_paths = [Path(str(entry.get("result_path", ""))) for entry in entries]
+    available_count = sum(path.is_file() for path in result_paths)
+    if available_count == 0:
+        return []
+    if available_count != len(entries):
+        warnings.warn(
+            "Portfolio final-holdout figures require all 15 selected results; "
+            f"found {available_count}/15",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for entry in entries:
+        result_path = Path(str(entry["result_path"])).expanduser().resolve()
+        try:
+            with result_path.open("r", encoding="utf-8") as source:
+                result = json.load(source)
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError(
+                f"Cannot read manifest-scoped final-holdout result: {result_path}"
+            ) from error
+        if not isinstance(result, dict):
+            raise ValueError("Manifest-scoped final-holdout result is malformed")
+        result_body = dict(result)
+        result_hash = result_body.pop("result_hash", None)
+        if result_hash != stable_hash(result_body):
+            raise ValueError("Manifest-scoped final-holdout result hash mismatch")
+        if Path(str(result.get("checkpoint_path", ""))).resolve() != Path(
+            str(entry["checkpoint_path"])
+        ).resolve():
+            raise ValueError("Manifest-scoped final-holdout result uses a stale checkpoint")
+        if (
+            result.get("checkpoint_sha256") != entry.get("checkpoint_sha256")
+            or result.get("run_id") != entry.get("run_id")
+            or result.get("final_holdout_manifest_hash")
+            != selection.get("final_holdout_manifest_hash")
+        ):
+            raise ValueError("Manifest-scoped final-holdout result provenance mismatch")
+        components = result.get("ordered_per_granularity_losses")
+        if not isinstance(components, list):
+            raise ValueError("Manifest-scoped final-holdout result lacks components")
+        expected_widths = [str(value) for value in entry["granularities"]]
+        component_widths = [str(component.get("granularity")) for component in components]
+        if component_widths != expected_widths:
+            raise ValueError("Manifest-scoped final-holdout result width order differs")
+        for component in components:
+            perplexity = float(component["perplexity"])
+            if not math.isfinite(perplexity) or perplexity <= 0.0:
+                raise ValueError("Manifest-scoped final-holdout perplexity is invalid")
+            rows.append(
+                {
+                    "role": str(entry["comparison_role"]),
+                    "seed": int(entry["seed"]),
+                    "width": str(component["granularity"]),
+                    "perplexity": perplexity,
+                    "checkpoint_selection": str(entry["checkpoint_selection"]),
+                }
+            )
+
+    elastic_label = _portfolio_elastic_selection_label(selection)
+    size_paths = _plot_portfolio_ppl_vs_size(
+        rows,
+        parameter_counts=parameter_counts,
+        granularities=granularities,
+        output_paths=[
+            output_dir / "final_holdout_ppl_vs_size.png",
+            output_dir / "portfolio_final_holdout_perplexity.png",
+        ],
+        title="Final-holdout perplexity at manifest-selected checkpoints",
+        ylabel="Final holdout perplexity",
+        elastic_label=elastic_label,
+        perplexity_tolerance=perplexity_tolerance,
+        dpi=dpi,
+    )
+
+    by_key = {
+        (str(row["role"]), int(row["seed"]), str(row["width"])): float(
+            row["perplexity"]
+        )
+        for row in rows
+    }
+    expected_keys = {
+        (role, int(seed), width)
+        for role in ("standalone_reference", "elastic_candidate")
+        for seed in (42, 43, 44)
+        for width in granularities
+    }
+    if set(by_key) != expected_keys:
+        raise ValueError("Portfolio final holdout does not contain the exact matrix")
+    x_values = [parameter_counts[width] for width in granularities]
+    figure, axis = plt.subplots(figsize=(9, 5.5))
+    deficits_by_width: list[list[float]] = []
+    for seed in (42, 43, 44):
+        deficits = [
+            100.0
+            * (
+                by_key[("elastic_candidate", seed, width)]
+                / by_key[("standalone_reference", seed, width)]
+                - 1.0
+            )
+            for width in granularities
+        ]
+        deficits_by_width.append(deficits)
+        axis.plot(
+            x_values,
+            deficits,
+            marker="o",
+            linewidth=1.0,
+            alpha=0.5,
+            label=f"seed {seed}",
+        )
+    mean_deficits = [
+        statistics.fmean(values)
+        for values in zip(*deficits_by_width, strict=True)
+    ]
+    axis.plot(
+        x_values,
+        mean_deficits,
+        color="black",
+        marker="o",
+        linewidth=2.0,
+        label="three-seed mean",
+    )
+    axis.axhline(
+        100.0 * perplexity_tolerance,
+        color="tab:red",
+        linestyle="--",
+        label=f"{100.0 * perplexity_tolerance:.1f}% tolerance",
+    )
+    axis.set_xticks(
+        x_values,
+        [f"{width}\n{count:,}" for width, count in zip(granularities, x_values)],
+    )
+    axis.set(
+        xlabel="non-embedding parameters (granularity and exact count)",
+        ylabel="elastic minus same-seed standalone PPL (%)",
+        title=f"Final-holdout paired deficit · {elastic_label}",
+    )
+    axis.grid(True, alpha=0.22)
+    axis.legend(frameon=False, fontsize=8)
+    figure.tight_layout()
+    deficit_path = output_dir / "portfolio_final_holdout_deficit_vs_size.png"
+    figure.savefig(deficit_path, dpi=dpi)
+    plt.close(figure)
+    return [*size_paths, deficit_path]
+
+
 def generate_figures(
     input_root: str | Path,
     output_dir: str | Path,
@@ -2058,6 +3087,7 @@ def generate_figures(
     sampling_bin_steps: int = 50,
     sampling_zoom_steps: int | None = None,
     include_individual_size_panels: bool = False,
+    comparison_manifest: str | Path | None = None,
 ) -> list[Path]:
     from . import reporting_io
     from .reporting_impl import (
@@ -2077,6 +3107,16 @@ def generate_figures(
     input_root = Path(input_root)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    if comparison_manifest is not None:
+        return _generate_portfolio_comparison_figures(
+            input_root,
+            Path(comparison_manifest),
+            output_dir,
+            dpi=dpi,
+            include_final_holdout=include_final_holdout,
+            refresh_counts=refresh_counts,
+            validation_loss_log_y=validation_loss_log_y,
+        )
     _remove_stale_generator_artifacts(
         output_dir,
         sampling_zoom_steps=sampling_zoom_steps,

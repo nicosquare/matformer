@@ -111,6 +111,15 @@ TINYSTORIES_CONTROLLED_DATASET_PHASES = {
     "tinystories_controlled",
     "tinystories_instruct_controlled",
 }
+PORTFOLIO_COMPARISON_GROUP_ID = "tinystories_instruct_portfolio_catchup_v1"
+PORTFOLIO_REFERENCE_BUDGET_TOKENS = 713_785_344
+PORTFOLIO_ELASTIC_BUDGET_CAP_TOKENS = 2_141_356_032
+PORTFOLIO_AGGREGATE_REFERENCE_COUNT = 4
+PORTFOLIO_GRANULARITIES = ("g250", "g500", "g750", "g1000")
+PORTFOLIO_COMPARISON_ROLES = {
+    "standalone_reference",
+    "elastic_candidate",
+}
 DEFAULT_FFN_MULTIPLIER = 4
 CONFIG_ROOT = Path(__file__).resolve().parent.parent.parent
 PRESET_REGISTRY_ROOT = CONFIG_ROOT / "configs" / "presets"
@@ -292,6 +301,7 @@ def resolve_run_config(
     _resolve_adaptive_sampler_defaults(resolved)
     _resolve_distributed_contract_defaults(resolved)
     _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
+    _resolve_portfolio_controlled_experiment(resolved)
     _resolve_parameter_reporting_defaults(resolved)
     _resolve_long_run_defaults(resolved)
     validate_run_config(resolved)
@@ -337,6 +347,7 @@ def resolve_all_run_configs(
         _resolve_adaptive_sampler_defaults(resolved)
         _resolve_distributed_contract_defaults(resolved)
         _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
+        _resolve_portfolio_controlled_experiment(resolved)
         _resolve_parameter_reporting_defaults(resolved)
         _resolve_long_run_defaults(resolved)
         validate_run_config(resolved)
@@ -371,6 +382,7 @@ def resolve_all_run_configs(
         _resolve_adaptive_sampler_defaults(resolved)
         _resolve_distributed_contract_defaults(resolved)
         _resolve_training_length(resolved, explicit_override_keys=explicit_override_keys)
+        _resolve_portfolio_controlled_experiment(resolved)
         _resolve_parameter_reporting_defaults(resolved)
         _resolve_long_run_defaults(resolved)
         validate_run_config(resolved)
@@ -593,6 +605,7 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
     reproducibility = run.get("reproducibility")
     if not isinstance(reproducibility, Mapping):
         raise ConfigError("Missing mapping section: run.reproducibility")
+    _validate_portfolio_controlled_experiment(config)
 
     _require_fields(
         run,
@@ -1251,6 +1264,7 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
 
     _validate_derived_training_length(training, model)
     _validate_distributed_and_prepared_corpus_contract(config)
+    _validate_portfolio_aligned_epoch_contract(config)
 
 
 def _validate_distributed_and_prepared_corpus_contract(
@@ -1529,6 +1543,43 @@ def _validate_distributed_and_prepared_corpus_contract(
         dataset["training_order_version"] = manifest["training_order"][
             "permutation_version"
         ]
+
+
+def _validate_portfolio_aligned_epoch_contract(config: Mapping[str, Any]) -> None:
+    controlled = config.get("controlled_experiment", {})
+    contract = (
+        controlled.get("portfolio_catchup")
+        if isinstance(controlled, Mapping)
+        else None
+    )
+    if not isinstance(contract, Mapping):
+        return
+    iteration = config.get("dataset", {}).get("optimizer_iteration", {})
+    if not isinstance(iteration, Mapping):
+        raise ConfigError("Portfolio runs require a resolved optimizer epoch contract")
+    if iteration.get("aligned_epoch_tokens") != PORTFOLIO_REFERENCE_BUDGET_TOKENS:
+        raise ConfigError(
+            "Portfolio B must equal one optimizer-step-aligned corpus epoch"
+        )
+    role = controlled.get("comparison_role")
+    expected_epochs = 3 if role == "elastic_candidate" else 1
+    if (
+        iteration.get("complete_epochs") != expected_epochs
+        or iteration.get("partial_final_epoch_tokens") != 0
+    ):
+        raise ConfigError(
+            f"Portfolio {role} must resolve to exactly {expected_epochs} complete epoch(s)"
+        )
+    training = config.get("training", {})
+    expected_steps = 87_132 * expected_epochs
+    if (
+        training.get("expected_tokens_per_step") != 8_192
+        or training.get("derived_max_steps") != expected_steps
+        or training.get("max_steps") != expected_steps
+    ):
+        raise ConfigError(
+            "Portfolio budgets require 8,192 tokens per step and 87,132 steps per B"
+        )
 
 
 def _compose_single_run(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -3503,6 +3554,230 @@ def _resolve_distributed_contract_defaults(config: dict[str, Any]) -> None:
             f"expected={expected}, runtime={env_world_size}"
         )
     distributed["expected_world_size"] = expected
+
+
+def _resolve_portfolio_controlled_experiment(config: dict[str, Any]) -> None:
+    controlled = config.get("controlled_experiment")
+    if not isinstance(controlled, dict):
+        return
+    raw_contract = controlled.get("portfolio_catchup")
+    if raw_contract is None:
+        return
+    if not isinstance(raw_contract, dict):
+        raise ConfigError(
+            "controlled_experiment.portfolio_catchup must be a mapping"
+        )
+    role = controlled.get("comparison_role")
+    if not isinstance(role, str) or role not in PORTFOLIO_COMPARISON_ROLES:
+        raise ConfigError(
+            "controlled_experiment.comparison_role must be one of "
+            f"{sorted(PORTFOLIO_COMPARISON_ROLES)}"
+        )
+    schema_version = raw_contract.get("schema_version", 2)
+    legacy_reference = role == "standalone_reference" and schema_version == 1
+    if schema_version != 2 and not legacy_reference:
+        raise ConfigError(
+            "Portfolio catch-up schema 1 is accepted only for standalone references"
+        )
+    removed_lr_selection_fields = {
+        "lr_selection_manifest_path",
+        "lr_selection_manifest_hash",
+    }.intersection(raw_contract)
+    if removed_lr_selection_fields and (
+        not legacy_reference
+        or any(raw_contract[field] is not None for field in removed_lr_selection_fields)
+    ):
+        raise ConfigError(
+            "Portfolio catch-up uses the same fixed LR 0.008 for both roles; "
+            "LR-selection manifest fields are not supported except as null "
+            "legacy metadata on schema-1 standalone references"
+        )
+    group_id = controlled.get(
+        "comparison_group_id", PORTFOLIO_COMPARISON_GROUP_ID
+    )
+    if group_id != PORTFOLIO_COMPARISON_GROUP_ID:
+        raise ConfigError(
+            "controlled_experiment.comparison_group_id must be "
+            f"{PORTFOLIO_COMPARISON_GROUP_ID}"
+        )
+    controlled["comparison_group_id"] = group_id
+
+    defaults = {
+        "enabled": role == "elastic_candidate",
+        "schema_version": 2,
+        "reference_budget_tokens": PORTFOLIO_REFERENCE_BUDGET_TOKENS,
+        "elastic_budget_cap_tokens": PORTFOLIO_ELASTIC_BUDGET_CAP_TOKENS,
+        "aggregate_reference_count": PORTFOLIO_AGGREGATE_REFERENCE_COUNT,
+        "granularities": list(PORTFOLIO_GRANULARITIES),
+        "perplexity_tolerance": 0.005,
+        "required_consecutive_evaluations": 5,
+        "target_manifest_path": None,
+        "target_manifest_hash": None,
+        "save_confirmation_checkpoint": True,
+        "stop_on_confirmation": False,
+    }
+    contract = {**defaults, **raw_contract}
+    contract["target_manifest_path"] = _normalize_optional_string(
+        contract.get("target_manifest_path")
+    )
+    contract["target_manifest_hash"] = _normalize_optional_string(
+        contract.get("target_manifest_hash")
+    )
+    controlled["portfolio_catchup"] = contract
+    config["controlled_experiment"] = controlled
+
+    if role == "elastic_candidate":
+        _validate_portfolio_manifest_link(
+            contract["target_manifest_path"],
+            contract["target_manifest_hash"],
+            field_prefix="controlled_experiment.portfolio_catchup.target_manifest",
+        )
+
+
+def _validate_portfolio_manifest_link(
+    path_value: Any,
+    hash_value: Any,
+    *,
+    field_prefix: str,
+) -> dict[str, Any]:
+    if isinstance(path_value, os.PathLike):
+        path_value = os.fspath(path_value)
+    if not isinstance(path_value, str) or not path_value.strip():
+        raise ConfigError(f"{field_prefix}_path is required")
+    if not isinstance(hash_value, str) or len(hash_value) != 64:
+        raise ConfigError(f"{field_prefix}_hash must be a SHA256-style hash")
+    path = Path(path_value).expanduser().resolve()
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ConfigError(f"Cannot read immutable portfolio manifest: {path}") from error
+    if not isinstance(value, dict):
+        raise ConfigError(f"Immutable portfolio manifest must be a mapping: {path}")
+    body = copy.deepcopy(value)
+    embedded_hash = body.pop("manifest_hash", None)
+    actual_hash = stable_hash(body)
+    if embedded_hash != actual_hash or hash_value != actual_hash:
+        raise ConfigError(f"{field_prefix} hash mismatch")
+    return value
+
+
+def _validate_portfolio_controlled_experiment(config: Mapping[str, Any]) -> None:
+    controlled = config.get("controlled_experiment")
+    if not isinstance(controlled, Mapping):
+        return
+    contract = controlled.get("portfolio_catchup")
+    if contract is None:
+        return
+    if not isinstance(contract, Mapping):
+        raise ConfigError(
+            "controlled_experiment.portfolio_catchup must be a mapping"
+        )
+    role = controlled.get("comparison_role")
+    if role not in PORTFOLIO_COMPARISON_ROLES:
+        raise ConfigError(
+            "controlled_experiment.comparison_role must be one of "
+            f"{sorted(PORTFOLIO_COMPARISON_ROLES)}"
+        )
+    schema_version = contract.get("schema_version")
+    legacy_reference = role == "standalone_reference" and schema_version == 1
+    if schema_version != 2 and not legacy_reference:
+        raise ConfigError(
+            "Portfolio catch-up schema 1 is accepted only for standalone references"
+        )
+    removed_lr_selection_fields = {
+        "lr_selection_manifest_path",
+        "lr_selection_manifest_hash",
+    }.intersection(contract)
+    if removed_lr_selection_fields and (
+        not legacy_reference
+        or any(contract[field] is not None for field in removed_lr_selection_fields)
+    ):
+        raise ConfigError(
+            "Portfolio catch-up uses the same fixed LR 0.008 for both roles; "
+            "LR-selection manifest fields are not supported except as null "
+            "legacy metadata on schema-1 standalone references"
+        )
+    if controlled.get("comparison_group_id") != PORTFOLIO_COMPARISON_GROUP_ID:
+        raise ConfigError("Portfolio comparison group ID is invalid")
+
+    exact_fields = {
+        "reference_budget_tokens": PORTFOLIO_REFERENCE_BUDGET_TOKENS,
+        "elastic_budget_cap_tokens": PORTFOLIO_ELASTIC_BUDGET_CAP_TOKENS,
+        "aggregate_reference_count": PORTFOLIO_AGGREGATE_REFERENCE_COUNT,
+        "granularities": list(PORTFOLIO_GRANULARITIES),
+        "perplexity_tolerance": 0.005,
+        "required_consecutive_evaluations": 5,
+        "save_confirmation_checkpoint": True,
+        "stop_on_confirmation": False,
+    }
+    mismatches = {
+        field: (contract.get(field), expected)
+        for field, expected in exact_fields.items()
+        if contract.get(field) != expected
+    }
+    if mismatches:
+        raise ConfigError(f"Portfolio catch-up fixed contract mismatch: {mismatches}")
+
+    training = config.get("training", {})
+    model = config.get("model", {})
+    run = config.get("run", {})
+    expected_budget = (
+        PORTFOLIO_ELASTIC_BUDGET_CAP_TOKENS
+        if role == "elastic_candidate"
+        else PORTFOLIO_REFERENCE_BUDGET_TOKENS
+    )
+    if training.get("token_budget") != expected_budget:
+        raise ConfigError(
+            f"Portfolio {role} token budget must be exactly {expected_budget}"
+        )
+    if training.get("scheduler_name") != "cosine":
+        raise ConfigError("Portfolio runs require a cosine scheduler")
+
+    resolved_lr = float(training.get("resolved_learning_rate", -1.0))
+    granularities = list(model.get("granularities", []))
+    if not math.isclose(resolved_lr, 0.008, rel_tol=0.0, abs_tol=1e-12):
+        raise ConfigError("Portfolio references and candidates require fixed LR 0.008")
+
+    if role == "standalone_reference":
+        if contract.get("enabled") is not False:
+            raise ConfigError("Standalone references must disable online catch-up")
+        if run.get("model_family") != "standalone" or len(granularities) != 1:
+            raise ConfigError(
+                "Standalone references require exactly one active granularity"
+            )
+        if granularities[0] not in PORTFOLIO_GRANULARITIES:
+            raise ConfigError("Standalone reference granularity is outside the portfolio")
+    else:
+        if run.get("model_family") != "nested" or run.get(
+            "sampling_mode"
+        ) != "nested-random":
+            raise ConfigError("Elastic portfolio runs require nested-random topology")
+        if granularities != list(PORTFOLIO_GRANULARITIES):
+            raise ConfigError(
+                "Elastic portfolio runs require all four ordered granularities"
+            )
+        if model.get("granularity_sampling_mode") != "global":
+            raise ConfigError("Elastic portfolio runs require uniform global sampling")
+        if model.get("global_sampling_schedule") != "random_with_replacement":
+            raise ConfigError(
+                "Elastic portfolio runs require random-with-replacement sampling"
+            )
+        if model.get("global_sampling_interval_steps") != 1:
+            raise ConfigError("Elastic portfolio runs require H=1")
+
+    if role == "elastic_candidate":
+        if contract.get("enabled") is not True:
+            raise ConfigError("Elastic candidates must enable online catch-up")
+        if int(run.get("seed", -1)) not in {42, 43, 44}:
+            raise ConfigError("Elastic candidate seed must be 42, 43, or 44")
+        for name in (
+            "target_manifest_path",
+            "target_manifest_hash",
+        ):
+            if contract.get(name) in (None, ""):
+                raise ConfigError(
+                    f"controlled_experiment.portfolio_catchup.{name} is required"
+                )
 
 
 def _resolve_parameter_reporting_defaults(config: dict[str, Any]) -> None:

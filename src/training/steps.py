@@ -56,6 +56,13 @@ from src.training.distributed import (
 )
 from src.training.monitoring import NoopHeartbeatWriter
 from src.training.schedules import scheduler_metric_fields
+from src.training.portfolio_catchup import (
+    PortfolioCatchupError,
+    portfolio_metric_fields,
+    update_portfolio_catchup_state,
+    uses_portfolio_catchup,
+    validate_portfolio_catchup_state,
+)
 from src.utils.config import (
     ConfigError,
     resolve_optimizer_kwargs,
@@ -1141,6 +1148,18 @@ def train_for_steps(
                             ),
                             config=config,
                         )
+                    validation_results = _process_portfolio_catchup_validation(
+                        config,
+                        validation_results,
+                        model=model,
+                        optimizer=optimizer,
+                        scheduler=scheduler,
+                        step=step,
+                        tokens_seen=tokens_seen,
+                        heartbeat_writer=heartbeat_writer,
+                        run_state=run_state,
+                        distributed_context=distributed_context,
+                    )
                     validation_runtime_pattern_summary, validation_correction_context = _runtime_granularity_artifacts(
                         config,
                         model,
@@ -1254,6 +1273,8 @@ def train_for_steps(
             monitoring_session=monitoring_session,
             metrics_journal=metrics_journal,
             probabilistic_controller=probabilistic_controller,
+            optimizer=optimizer,
+            scheduler=scheduler,
         )
     training_checkpointing.maybe_write_latest_checkpoint(
         config,
@@ -1294,6 +1315,9 @@ def _runtime_sampler_artifact_fields(
     panelgrad_state = run_state.get("panelgrad_state")
     if isinstance(panelgrad_state, Mapping):
         fields.update(build_compact_controller_metric_fields(panelgrad_state))
+    portfolio_state = run_state.get("portfolio_catchup_state")
+    if isinstance(portfolio_state, Mapping):
+        fields.update(portfolio_metric_fields(portfolio_state))
     global_sampling_state = run_state.get("global_sampling_state")
     if isinstance(global_sampling_state, Mapping):
         fields.update(
@@ -1606,6 +1630,8 @@ def append_final_validation_if_needed(
     monitoring_session=None,
     metrics_journal=None,
     probabilistic_controller=None,
+    optimizer=None,
+    scheduler=None,
 ) -> None:
     validation_config = config.get("evaluation", {}).get("validation", {})
     if not validation_config.get("run_at_completion", False):
@@ -1660,6 +1686,22 @@ def append_final_validation_if_needed(
             ),
             config=config,
         )
+    validation_results = _process_portfolio_catchup_validation(
+        config,
+        validation_results,
+        model=model,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        step=step,
+        tokens_seen=tokens_seen,
+        heartbeat_writer=heartbeat_writer,
+        run_state=(
+            run_state
+            if run_state is not None
+            else training_checkpointing.build_initial_continuation_state(config)
+        ),
+        distributed_context=distributed_context,
+    )
     validation_metric_rows = validation_results_to_metric_rows(
         validation_results,
         config,
@@ -1697,6 +1739,58 @@ def append_final_validation_if_needed(
         else training_checkpointing.build_initial_continuation_state(config),
         distributed_context=distributed_context,
     )
+
+
+def _process_portfolio_catchup_validation(
+    config: dict[str, Any],
+    validation_results: list[dict[str, Any]],
+    *,
+    model,
+    optimizer,
+    scheduler,
+    step: int,
+    tokens_seen: int,
+    heartbeat_writer,
+    run_state: dict[str, Any],
+    distributed_context=None,
+) -> list[dict[str, Any]]:
+    if not uses_portfolio_catchup(config):
+        return validation_results
+    try:
+        state = validate_portfolio_catchup_state(
+            run_state.get("portfolio_catchup_state"),
+            config=config,
+        )
+        if state is None:
+            raise PortfolioCatchupError("Portfolio catch-up state is unavailable")
+        state, decorated, newly_confirmed = update_portfolio_catchup_state(
+            state,
+            validation_results,
+            step=step,
+            tokens_seen=tokens_seen,
+        )
+        run_state["portfolio_catchup_state"] = state
+        if newly_confirmed:
+            if not config["controlled_experiment"]["portfolio_catchup"].get(
+                "save_confirmation_checkpoint", True
+            ):
+                raise PortfolioCatchupError(
+                    "Portfolio catch-up confirmation checkpoint is disabled"
+                )
+            training_checkpointing.write_portfolio_confirmation_checkpoint(
+                config,
+                model,
+                optimizer,
+                scheduler,
+                heartbeat_writer,
+                run_state,
+                step=step,
+                joint_max_loss_gap=float(state["last_joint_max_loss_gap"]),
+                distributed_context=distributed_context,
+            )
+        return decorated
+    except PortfolioCatchupError as error:
+        raise ConfigError(str(error)) from error
 
 
 def _record_metric_rows(

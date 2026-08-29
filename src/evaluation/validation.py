@@ -342,6 +342,9 @@ def validation_results_to_metric_rows(
             ),
             "loss": result["loss"],
             "perplexity": result["perplexity"],
+            "portfolio_target_loss": result.get("portfolio_target_loss"),
+            "portfolio_loss_gap": result.get("portfolio_loss_gap"),
+            "portfolio_qualifies": result.get("portfolio_qualifies"),
             "tokens_seen": (
                 result["tokens_seen"] if tokens_seen is None else tokens_seen
             ),

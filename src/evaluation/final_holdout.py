@@ -32,6 +32,7 @@ class FinalHoldoutError(RuntimeError):
 
 def resolve_existing_final_holdout_result(
     run_dir: str | Path,
+    checkpoint_path: str | Path | None = None,
 ) -> dict[str, Any] | None:
     """Return an existing complete result, rejecting malformed artifacts."""
 
@@ -58,6 +59,26 @@ def resolve_existing_final_holdout_result(
     result_hash = result_without_hash.pop("result_hash", None)
     if result_hash != stable_hash(result_without_hash):
         raise FinalHoldoutError("Existing final holdout result hash mismatch")
+    if checkpoint_path is not None:
+        requested_checkpoint = _resolve_existing_checkpoint(
+            run_directory,
+            checkpoint_path,
+        )
+        result_checkpoint = _resolve_existing_checkpoint(
+            run_directory,
+            result.get("checkpoint_path"),
+        )
+        if not _paths_equal(requested_checkpoint, result_checkpoint):
+            raise FinalHoldoutError(
+                "Existing final holdout result belongs to a different checkpoint"
+            )
+        expected_sha256 = result.get("checkpoint_sha256")
+        if expected_sha256 in (None, "") or expected_sha256 != _sha256(
+            requested_checkpoint
+        ):
+            raise FinalHoldoutError(
+                "Existing final holdout result checkpoint is stale or unhashed"
+            )
     return result
 
 
@@ -333,6 +354,7 @@ def evaluate_final_holdout(
         "schema_version": FINAL_HOLDOUT_RESULT_VERSION,
         "run_id": provenance["run_id"],
         "checkpoint_path": provenance["checkpoint_path"],
+        "checkpoint_sha256": _sha256(resolved_checkpoint),
         "checkpoint_selection_provenance": provenance[
             "checkpoint_selection_provenance"
         ],
@@ -357,6 +379,14 @@ def evaluate_final_holdout(
     if written_path is None:
         raise FinalHoldoutError("Final holdout result was not written")
     return result
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(8 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _validate_training_artifact_hashes(

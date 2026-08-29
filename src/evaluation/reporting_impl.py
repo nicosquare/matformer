@@ -649,6 +649,7 @@ def generate_figures(
     sampling_bin_steps: int = 50,
     sampling_zoom_steps: int | None = None,
     include_individual_size_panels: bool = False,
+    comparison_manifest: str | Path | None = None,
 ) -> list[Path]:
     """Compatibility entrypoint forwarding to the canonical generator."""
 
@@ -666,6 +667,7 @@ def generate_figures(
         sampling_bin_steps=sampling_bin_steps,
         sampling_zoom_steps=sampling_zoom_steps,
         include_individual_size_panels=include_individual_size_panels,
+        comparison_manifest=comparison_manifest,
     )
 
 

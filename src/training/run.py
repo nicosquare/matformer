@@ -1890,6 +1890,9 @@ def run_training(
             "global_sampling_state": copy.deepcopy(
                 run_state.get("global_sampling_state")
             ),
+            "portfolio_catchup_state": copy.deepcopy(
+                run_state.get("portfolio_catchup_state")
+            ),
             "resolved_run_mode": resolved_run_mode,
             "resolved_sampling_mode": config["model"].get(
                 "granularity_sampling_mode",
@@ -2102,6 +2105,9 @@ def run_training(
                     ),
                     "global_sampling_state": copy.deepcopy(
                         run_state.get("global_sampling_state")
+                    ),
+                    "portfolio_catchup_state": copy.deepcopy(
+                        run_state.get("portfolio_catchup_state")
                     ),
                     "corpus_hash": config.get("corpus_hash"),
                     "corpus_permutation_version": config.get(

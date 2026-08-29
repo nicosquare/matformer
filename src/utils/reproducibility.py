@@ -411,12 +411,24 @@ def build_comparison_control_signature(config: Mapping[str, Any]) -> tuple[str, 
         "gradient_accumulation_steps": training.get(
             "gradient_accumulation_steps"
         ),
+        "effective_world_size": training.get("effective_world_size"),
+        "distributed_topology": training.get("distributed"),
         "expected_tokens_per_microstep": training.get(
             "expected_tokens_per_microstep"
         ),
         "expected_tokens_per_step": training.get("expected_tokens_per_step"),
         "precision": training.get("resolved_mixed_precision"),
         "context_length": model.get("context_length"),
+        "model_family": run.get("model_family"),
+        "sampling_mode": run.get("sampling_mode"),
+        "active_granularity": run.get("granularity"),
+        "ordered_granularities": model.get("granularities"),
+        "granularity_prefixes": model.get("granularity_prefixes"),
+        "granularity_sampling_mode": model.get("granularity_sampling_mode"),
+        "global_sampling_schedule": model.get("global_sampling_schedule"),
+        "global_sampling_interval_steps": model.get(
+            "global_sampling_interval_steps"
+        ),
         "validation_interval_steps": validation.get("interval_steps"),
         "validation_interval_tokens": validation.get("interval_tokens"),
         "validation_run_at_completion": validation.get("run_at_completion"),
@@ -444,6 +456,51 @@ def build_comparison_control_signature(config: Mapping[str, Any]) -> tuple[str, 
         inputs["selection_report_hash"] = controlled_experiment[
             "selection_report_hash"
         ]
+    portfolio_catchup = (
+        controlled_experiment.get("portfolio_catchup")
+        if isinstance(controlled_experiment, Mapping)
+        else None
+    )
+    if isinstance(portfolio_catchup, Mapping):
+        portfolio_contract = {
+            "comparison_group_id": controlled_experiment.get(
+                "comparison_group_id"
+            ),
+            "comparison_role": controlled_experiment.get("comparison_role"),
+            "schema_version": portfolio_catchup.get("schema_version"),
+            "reference_budget_tokens": portfolio_catchup.get(
+                "reference_budget_tokens"
+            ),
+            "elastic_budget_cap_tokens": portfolio_catchup.get(
+                "elastic_budget_cap_tokens"
+            ),
+            "aggregate_reference_count": portfolio_catchup.get(
+                "aggregate_reference_count"
+            ),
+            "granularities": portfolio_catchup.get("granularities"),
+            "perplexity_tolerance": portfolio_catchup.get(
+                "perplexity_tolerance"
+            ),
+            "required_consecutive_evaluations": portfolio_catchup.get(
+                "required_consecutive_evaluations"
+            ),
+            "target_manifest_hash": portfolio_catchup.get(
+                "target_manifest_hash"
+            ),
+            "save_confirmation_checkpoint": portfolio_catchup.get(
+                "save_confirmation_checkpoint"
+            ),
+            "stop_on_confirmation": portfolio_catchup.get(
+                "stop_on_confirmation"
+            ),
+        }
+        # Preserve the exact signature shape used by already-running schema-1
+        # standalone references. New schema-2 contracts omit this retired field.
+        if "lr_selection_manifest_hash" in portfolio_catchup:
+            portfolio_contract["lr_selection_manifest_hash"] = portfolio_catchup.get(
+                "lr_selection_manifest_hash"
+            )
+        inputs["portfolio_catchup_contract"] = portfolio_contract
     if _uses_probabilistic_adaptive_controller(config):
         inputs["probabilistic_seed_streams"] = probabilistic_seed_provenance(config)
         inputs["probabilistic_data_role_manifests"] = {

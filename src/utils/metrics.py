@@ -106,6 +106,19 @@ METRICS_COLUMNS = [
     "controller_episode_index",
     "controller_episode_offset_steps",
     "controller_selection_source",
+    "portfolio_target_loss",
+    "portfolio_loss_gap",
+    "portfolio_qualifies",
+    "portfolio_joint_max_loss_gap",
+    "portfolio_joint_qualifies",
+    "portfolio_streak_length",
+    "portfolio_onset_step",
+    "portfolio_onset_tokens",
+    "portfolio_confirmation_step",
+    "portfolio_confirmation_tokens",
+    "portfolio_target_manifest_hash",
+    "portfolio_confirmation_checkpoint_path",
+    "portfolio_confirmation_checkpoint_sha256",
     "reward",
     "correction_penalty",
     "learning_rate",
@@ -162,9 +175,13 @@ METRICS_COLUMNS = [
     "extraction_metadata_path",
 ]
 
+# Schema-1 portfolio references wrote this always-empty field before the LR
+# screen was removed. A resume rewrites the file onto METRICS_COLUMNS.
+RETIRED_METRICS_COLUMNS = {"portfolio_lr_selection_hash"}
+
 
 def _compatible_metrics_header(fieldnames: Iterable[str] | None) -> bool:
-    """Accept historical metrics schemas that are strict subsets of today's."""
+    """Accept known historical schemas that can be migrated onto today's."""
 
     if not fieldnames:
         return False
@@ -172,7 +189,7 @@ def _compatible_metrics_header(fieldnames: Iterable[str] | None) -> bool:
     return (
         len(fields) == len(set(fields))
         and {"run_id", "step", "split"}.issubset(fields)
-        and set(fields).issubset(METRICS_COLUMNS)
+        and set(fields).issubset(set(METRICS_COLUMNS) | RETIRED_METRICS_COLUMNS)
     )
 
 TASK_RESULTS_COLUMNS = [
@@ -3083,6 +3100,19 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "controller_episode_index": None,
         "controller_episode_offset_steps": None,
         "controller_selection_source": None,
+        "portfolio_target_loss": None,
+        "portfolio_loss_gap": None,
+        "portfolio_qualifies": None,
+        "portfolio_joint_max_loss_gap": None,
+        "portfolio_joint_qualifies": None,
+        "portfolio_streak_length": None,
+        "portfolio_onset_step": None,
+        "portfolio_onset_tokens": None,
+        "portfolio_confirmation_step": None,
+        "portfolio_confirmation_tokens": None,
+        "portfolio_target_manifest_hash": None,
+        "portfolio_confirmation_checkpoint_path": None,
+        "portfolio_confirmation_checkpoint_sha256": None,
         "reward": None,
         "correction_penalty": None,
         "learning_rate": None,

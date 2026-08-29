@@ -18,6 +18,7 @@ import os
 import random
 import shutil
 import tempfile
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -58,6 +59,12 @@ from src.training.gradient_interference import (
     GradientInterferenceError,
     uses_gradient_interference,
     validate_gradient_interference_state,
+)
+from src.training.portfolio_catchup import (
+    PortfolioCatchupError,
+    build_portfolio_catchup_state,
+    uses_portfolio_catchup,
+    validate_portfolio_catchup_state,
 )
 from src.utils.config import (
     BAYESIAN_CONTROLLER_METHOD_FAMILY,
@@ -1161,6 +1168,90 @@ def maybe_write_best_eval_checkpoint(
                 config.get("outputs", {}).get("best_eval_retention_count", 1)
             ),
         )
+
+
+def write_portfolio_confirmation_checkpoint(
+    config: dict[str, Any],
+    model,
+    optimizer,
+    scheduler,
+    heartbeat_writer,
+    run_state: dict[str, Any],
+    *,
+    step: int,
+    joint_max_loss_gap: float,
+    distributed_context=None,
+) -> Path:
+    """Save the first catch-up confirmation exactly once and never prune it."""
+
+    if not uses_portfolio_catchup(config):
+        raise ConfigError("Portfolio confirmation checkpoint requested for another role")
+    state = validate_portfolio_catchup_state(
+        run_state.get("portfolio_catchup_state"), config=config
+    )
+    if state is None or state.get("confirmed") is not True:
+        raise ConfigError("Portfolio confirmation checkpoint requires confirmed state")
+    if int(state.get("confirmation_step", -1)) != int(step):
+        raise ConfigError("Portfolio confirmation checkpoint step mismatch")
+    if state.get("confirmation_checkpoint_saved") is True:
+        raise ConfigError("Portfolio confirmation checkpoint was already saved")
+
+    output_path = (
+        Path(config["run"]["output_dir"])
+        / "checkpoints"
+        / f"portfolio_catchup_step_{int(step)}.pt"
+    )
+    if should_write_shared_artifact(distributed_context) and output_path.exists():
+        raise ConfigError(
+            f"Immutable portfolio confirmation checkpoint already exists: {output_path}"
+        )
+    state["confirmation_checkpoint_path"] = str(output_path)
+    run_state["portfolio_catchup_state"] = state
+    checkpoint_fields = {
+        "checkpoint_status": "portfolio_catchup_confirmation",
+        "checkpoint_metric": "portfolio_joint_max_loss_gap",
+        "checkpoint_metric_value": float(joint_max_loss_gap),
+        "checkpoint_selection_step": int(step),
+        "checkpoint_unavailable_reason": None,
+    }
+    checkpoint_stage = (
+        heartbeat_stage(
+            heartbeat_writer,
+            "checkpointing",
+            checkpoint_status="portfolio_catchup_confirmation",
+        )
+        if heartbeat_writer is not None
+        else nullcontext()
+    )
+    with checkpoint_stage:
+        save_model_checkpoint(
+            config,
+            model,
+            optimizer,
+            scheduler,
+            output_path,
+            checkpoint_fields,
+            run_state,
+            distributed_context=distributed_context,
+            heartbeat_writer=heartbeat_writer,
+        )
+
+    if should_write_shared_artifact(distributed_context):
+        digest = hashlib.sha256()
+        with output_path.open("rb") as source:
+            while chunk := source.read(8 * 1024 * 1024):
+                digest.update(chunk)
+        result = {"path": str(output_path), "sha256": digest.hexdigest()}
+    else:
+        result = None
+    result = broadcast_object(result, context=distributed_context, src=0)
+    if not isinstance(result, Mapping):
+        raise RuntimeError("Portfolio confirmation checkpoint provenance was not broadcast")
+    state["confirmation_checkpoint_path"] = str(result["path"])
+    state["confirmation_checkpoint_sha256"] = str(result["sha256"])
+    state["confirmation_checkpoint_saved"] = True
+    run_state["portfolio_catchup_state"] = state
+    return Path(str(result["path"]))
 def build_best_eval_checkpoint_payload(
     config: dict[str, Any],
     validation_results: list[dict[str, Any]],
@@ -1264,6 +1355,17 @@ def _save_model_checkpoint_rank_zero(
         )
     else:
         global_sampling_state = None
+    portfolio_catchup_state = run_state.get("portfolio_catchup_state")
+    if uses_portfolio_catchup(config):
+        try:
+            portfolio_catchup_state = validate_portfolio_catchup_state(
+                portfolio_catchup_state,
+                config=config,
+            )
+        except PortfolioCatchupError as error:
+            raise ConfigError(str(error)) from error
+    else:
+        portfolio_catchup_state = None
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -1374,6 +1476,11 @@ def _save_model_checkpoint_rank_zero(
             "panelgrad_state": panelgrad_state,
             "gradient_interference_state": gradient_interference_state,
             "global_sampling_state": global_sampling_state,
+            **(
+                {"portfolio_catchup_state": portfolio_catchup_state}
+                if uses_portfolio_catchup(config)
+                else {}
+            ),
             "adaptive_sampler_previous_loss": run_state.get(
                 "adaptive_sampler_previous_loss"
             ),
@@ -1566,6 +1673,15 @@ def save_model_checkpoint(
         if len(set(panelgrad_hashes)) != 1:
             raise ConfigError(
                 "PanelGrad state hashes differ across ranks at checkpoint"
+            )
+    if uses_portfolio_catchup(config):
+        local_hash = _controller_state_hash(
+            run_state.get("portfolio_catchup_state")
+        )
+        portfolio_hashes = gather_objects(local_hash, context=distributed_context)
+        if len(set(portfolio_hashes)) != 1:
+            raise ConfigError(
+                "Portfolio catch-up state hashes differ across ranks at checkpoint"
             )
     if uses_gradient_interference(config):
         local_hash = _controller_state_hash(
@@ -1912,6 +2028,11 @@ def build_initial_continuation_state(config: dict[str, Any]) -> dict[str, Any]:
         "panelgrad_state": None,
         "gradient_interference_state": None,
         "global_sampling_state": build_initial_global_sampling_state(config),
+        **(
+            {"portfolio_catchup_state": build_portfolio_catchup_state(config)}
+            if uses_portfolio_catchup(config)
+            else {}
+        ),
         "adaptive_sampler_previous_loss": None,
         "adaptive_sampler_previous_pattern": None,
         "adaptive_reward_summary": None,
@@ -2754,6 +2875,15 @@ def load_checkpoint_state(
                 if config is not None
                 else None
             ),
+            **(
+                {
+                    "portfolio_catchup_state": build_portfolio_catchup_state(
+                        config
+                    )
+                }
+                if config is not None and uses_portfolio_catchup(config)
+                else {}
+            ),
         }
         if output_dir is not None:
             state["output_dir"] = str(output_dir)
@@ -2887,6 +3017,17 @@ def load_checkpoint_state(
         )
     elif config is not None:
         global_sampling_state = None
+    portfolio_catchup_state = checkpoint.get("portfolio_catchup_state")
+    if config is not None and uses_portfolio_catchup(config):
+        try:
+            portfolio_catchup_state = validate_portfolio_catchup_state(
+                portfolio_catchup_state,
+                config=config,
+            )
+        except PortfolioCatchupError as error:
+            raise ConfigError(str(error)) from error
+    elif config is not None:
+        portfolio_catchup_state = None
     if config is not None and config.get("dataset", {}).get("mode") == "packed_mmap":
         optimizer_iteration = config.get("dataset", {}).get(
             "optimizer_iteration", {}
@@ -2997,6 +3138,11 @@ def load_checkpoint_state(
         "panelgrad_state": panelgrad_state,
         "gradient_interference_state": gradient_interference_state,
         "global_sampling_state": global_sampling_state,
+        **(
+            {"portfolio_catchup_state": portfolio_catchup_state}
+            if config is not None and uses_portfolio_catchup(config)
+            else {}
+        ),
         "adaptive_sampler_previous_loss": checkpoint.get(
             "adaptive_sampler_previous_loss"
         ),

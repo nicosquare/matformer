@@ -178,6 +178,30 @@ and launch final-holdout evaluation.
 
 ---
 
+## Phase 11: Amortized Four-Granularity Portfolio Catch-Up
+
+**Purpose**: Add a fixed-budget `4B` standalone portfolio versus fresh `3B`
+uniform-global elastic comparison without changing the historical plateau or WSD
+workflows.
+
+- [X] T060 Add the exact role/budget/fixed-LR/scheduler/manifest configuration contract and dedicated same-recipe comparison in `src/utils/config.py`, `src/utils/reproducibility.py`, and `configs/controlled_exps/tinystories_instruct_portfolio_catchup.yaml`
+- [X] T061 Add simultaneous four-width catch-up state, exact checkpoint resume, first-confirmation immutable checkpointing, and validation metrics in `src/training/portfolio_catchup.py`, `src/training/steps.py`, `src/training/checkpointing.py`, `src/training/run.py`, `src/evaluation/validation.py`, and `src/utils/metrics.py`
+- [X] T062 Add reference freezing, fixed-recipe completed-run catch-up verification, and final-holdout comparison in `scripts/analyze_tinystories_portfolio_catchup.py`
+- [X] T063 Add manifest-driven exact-checkpoint final-holdout execution and manifest-scoped mixed-budget figures in `scripts/evaluate_final_holdout.py`, `scripts/slurm_tinystories_controlled.sh`, `scripts/make_figures.py`, `src/evaluation/final_holdout.py`, and `src/evaluation/reporting.py`
+- [X] T064 Add focused contract, state, artifact, analyzer, reporting, holdout, and documentation coverage in `tests/test_tinystories_portfolio_catchup.py` and `docs/tinystories-portfolio-catchup.md`
+
+---
+
+## Phase 12: Censored Portfolio Diagnostic Holdout
+
+**Purpose**: Preserve the failed/censored primary catch-up conclusion while
+allowing researchers to inspect the untouched final holdout at the predefined
+terminal `3B` checkpoints.
+
+- [X] T065 Emit an exact 15-checkpoint terminal diagnostic manifest for censored runs, route elastic terminal checkpoints explicitly through final-holdout execution, prevent diagnostic results from becoming a general catch-up/equivalence claim, and document/test both confirmatory and diagnostic selection modes in `scripts/analyze_tinystories_portfolio_catchup.py`, `scripts/evaluate_final_holdout.py`, `tests/test_tinystories_portfolio_catchup.py`, and `docs/tinystories-portfolio-catchup.md`
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies

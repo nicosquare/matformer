@@ -23,6 +23,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--output", default="outputs/figures", help="Figure output directory."
     )
     parser.add_argument(
+        "--comparison-manifest",
+        default=None,
+        help=(
+            "Portfolio catch-up report whose declared runs exclusively determine "
+            "mixed-budget figure membership."
+        ),
+    )
+    parser.add_argument(
         "--no-refresh-counts",
         action="store_true",
         help=(
@@ -121,6 +129,7 @@ def main(argv: list[str] | None = None) -> None:
         sampling_bin_steps=args.sampling_bin_steps,
         sampling_zoom_steps=args.sampling_zoom_steps,
         include_individual_size_panels=args.individual_size_panels,
+        comparison_manifest=args.comparison_manifest,
     )
     for path in figure_paths:
         print(path)
