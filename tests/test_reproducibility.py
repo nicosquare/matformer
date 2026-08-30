@@ -183,6 +183,28 @@ def test_probabilistic_seed_provenance_is_in_comparison_signature():
     assert len(signature) == 64
 
 
+def test_model_initialization_recipe_is_resume_signature_control():
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+    )
+
+    baseline_signature, baseline_inputs = build_comparison_control_signature(
+        config
+    )
+    changed = copy.deepcopy(config)
+    changed["model"]["initializer_range"] = 0.03
+    changed_signature, changed_inputs = build_comparison_control_signature(changed)
+
+    assert baseline_inputs["model_initialization"] == {
+        "scheme": "llama_normal",
+        "initializer_range": 0.02,
+        "implementation_version": 1,
+    }
+    assert changed_inputs["model_initialization"]["initializer_range"] == 0.03
+    assert changed_signature != baseline_signature
+
+
 def test_config_migrates_legacy_validation_and_emits_only_canonical_fields():
     resolved = resolve_run_config(
         "configs/debug_matrix.yaml", run_id="debug-nested-001"

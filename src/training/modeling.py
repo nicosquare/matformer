@@ -97,6 +97,7 @@ def build_llama_config(config: dict[str, Any]) -> LlamaConfig:
         num_attention_heads=model["num_attention_heads"],
         num_key_value_heads=model["num_attention_heads"],
         max_position_embeddings=model["context_length"],
+        initializer_range=float(model.get("initializer_range", 0.02)),
         tie_word_embeddings=False,
         use_cache=False,
     )

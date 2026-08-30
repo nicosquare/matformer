@@ -29,9 +29,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=None,
         help=(
-            "Portfolio final-holdout selection manifest. Evaluates all 12 "
-            "ordinary-validation standalone checkpoints and all three explicit "
-            "elastic confirmation or terminal-3B checkpoints."
+            "Portfolio final-holdout selection manifest. Evaluates four paired "
+            "standalone checkpoints and one explicit elastic confirmation or "
+            "terminal checkpoint per observed seed."
         ),
     )
     parser.add_argument(
@@ -152,9 +152,66 @@ def _portfolio_selection_entries(path: Path) -> list[dict]:
     saved_hash = body.pop("manifest_hash", None)
     if saved_hash != stable_hash(body):
         raise RuntimeError("Portfolio selection manifest hash mismatch")
+    required_seeds = (42, 43, 44)
+    granularity_profiles = {
+        "tinystories_instruct_portfolio_catchup_v1": (
+            "g250",
+            "g500",
+            "g750",
+            "g1000",
+        ),
+        "tinystories_instruct_portfolio_catchup_matformer_granularities_v1": (
+            "g125",
+            "g250",
+            "g500",
+            "g1000",
+        ),
+    }
+    comparison_group_id = manifest.get(
+        "comparison_group_id", "tinystories_instruct_portfolio_catchup_v1"
+    )
+    expected_granularities = granularity_profiles.get(str(comparison_group_id))
+    if expected_granularities is None:
+        raise RuntimeError("Portfolio selection granularity profile is unsupported")
+    granularities = tuple(
+        manifest.get("granularities", expected_granularities)
+    )
+    if granularities != expected_granularities:
+        raise RuntimeError("Portfolio selection granularity profile is inconsistent")
+    expected_seeds = tuple(manifest.get("expected_seeds", required_seeds))
+    observed_seeds = tuple(manifest.get("observed_seeds", expected_seeds))
+    if expected_seeds != required_seeds:
+        raise RuntimeError("Portfolio selection expected-seed contract is invalid")
+    if (
+        not observed_seeds
+        or len(set(observed_seeds)) != len(observed_seeds)
+        or any(seed not in required_seeds for seed in observed_seeds)
+        or observed_seeds
+        != tuple(seed for seed in required_seeds if seed in set(observed_seeds))
+    ):
+        raise RuntimeError(
+            "Portfolio selection observed seeds must be a non-empty ordered subset"
+        )
+    missing_seeds = tuple(seed for seed in required_seeds if seed not in observed_seeds)
+    seed_coverage_complete = not missing_seeds
+    if (
+        manifest.get("missing_seeds", list(missing_seeds)) != list(missing_seeds)
+        or manifest.get("seed_coverage_complete", seed_coverage_complete)
+        is not seed_coverage_complete
+    ):
+        raise RuntimeError("Portfolio selection seed-coverage metadata is inconsistent")
+    required_checkpoint_count = len(observed_seeds) * (len(granularities) + 1)
     entries = manifest.get("entries")
-    if not isinstance(entries, list) or len(entries) != 15:
-        raise RuntimeError("Portfolio selection manifest must list exactly 15 checkpoints")
+    if (
+        not isinstance(entries, list)
+        or len(entries) != required_checkpoint_count
+        or manifest.get("required_checkpoint_count", required_checkpoint_count)
+        != required_checkpoint_count
+    ):
+        raise RuntimeError(
+            "Portfolio selection manifest must list exactly five checkpoints per "
+            f"observed seed ({required_checkpoint_count} total)"
+        )
     normalized = []
     selection_mode = manifest.get("selection_mode", "portfolio_confirmation")
     confirmation_modes = {
@@ -176,7 +233,13 @@ def _portfolio_selection_entries(path: Path) -> list[dict]:
         raise RuntimeError(
             "Portfolio selection claim eligibility contradicts its mode"
         )
+    if claim_eligible and not seed_coverage_complete:
+        raise RuntimeError(
+            "A partial-seed portfolio selection cannot support a general claim"
+        )
     role_counts = {"standalone_reference": 0, "elastic_candidate": 0}
+    reference_keys: set[tuple[int, str]] = set()
+    elastic_seeds: set[int] = set()
     for entry in entries:
         if not isinstance(entry, dict):
             raise RuntimeError("Portfolio selection entry must be a mapping")
@@ -191,7 +254,25 @@ def _portfolio_selection_entries(path: Path) -> list[dict]:
         role = entry.get("comparison_role")
         if role not in role_counts:
             raise RuntimeError("Portfolio selection entry role is invalid")
+        try:
+            seed = int(entry["seed"])
+            widths = tuple(str(width) for width in entry["granularities"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise RuntimeError("Portfolio selection seed or widths are invalid") from error
+        if seed not in observed_seeds:
+            raise RuntimeError("Portfolio selection entry has an undeclared seed")
         role_counts[role] += 1
+        if role == "standalone_reference" and len(widths) == 1:
+            key = (seed, widths[0])
+            if key in reference_keys:
+                raise RuntimeError("Duplicate standalone portfolio selection")
+            reference_keys.add(key)
+        elif role == "elastic_candidate" and widths == granularities:
+            if seed in elastic_seeds:
+                raise RuntimeError("Duplicate elastic portfolio selection")
+            elastic_seeds.add(seed)
+        else:
+            raise RuntimeError("Portfolio selection entry role or widths are invalid")
         expected_selection = (
             "ordinary_validation_best"
             if role == "standalone_reference"
@@ -225,9 +306,21 @@ def _portfolio_selection_entries(path: Path) -> list[dict]:
                 "Portfolio terminal checkpoint is not at the declared arm cap"
             )
         normalized.append(entry)
-    if role_counts != {"standalone_reference": 12, "elastic_candidate": 3}:
+    expected_reference_keys = {
+        (seed, width) for seed in observed_seeds for width in granularities
+    }
+    if (
+        role_counts
+        != {
+            "standalone_reference": len(observed_seeds) * len(granularities),
+            "elastic_candidate": len(observed_seeds),
+        }
+        or reference_keys != expected_reference_keys
+        or elastic_seeds != set(observed_seeds)
+    ):
         raise RuntimeError(
-            "Portfolio selection manifest must contain 12 standalone and 3 elastic entries"
+            "Portfolio selection manifest must contain four standalone and one "
+            "elastic entry per observed seed"
         )
     return normalized
 

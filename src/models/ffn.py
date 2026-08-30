@@ -145,6 +145,27 @@ class _ControlledFFNSupportMixin:
         return count
 
 
+@torch.no_grad()
+def _initialize_llama_mlp_projections(mlp: LlamaMLP, config) -> None:
+    """Apply the Llama initializer to an MLP created after ``post_init``.
+
+    ``ModifiedLlamaForCausalLM`` replaces the decoder MLPs after the parent
+    ``LlamaForCausalLM`` constructor has already initialized the model.  A
+    newly constructed ``LlamaMLP`` would otherwise retain ``nn.Linear``'s
+    Kaiming-uniform defaults.  Initialize the dense projections here, before
+    the concat variant splits them into independent parameter blocks.
+    """
+
+    initializer_range = float(getattr(config, "initializer_range", 0.02))
+    for projection in (mlp.gate_proj, mlp.up_proj, mlp.down_proj):
+        nn.init.normal_(projection.weight, mean=0.0, std=initializer_range)
+        if projection.bias is not None:
+            nn.init.zeros_(projection.bias)
+        # Match the state assigned by Hugging Face's model-level initializer
+        # so a later ``post_init`` cannot initialize slicing projections twice.
+        projection._is_hf_initialized = True
+
+
 class ModifiedLlamaMLP(_ControlledFFNSupportMixin, LlamaMLP):
     def __init__(
         self,
@@ -153,6 +174,7 @@ class ModifiedLlamaMLP(_ControlledFFNSupportMixin, LlamaMLP):
         gradient_membership_correction_enabled=True,
     ):
         super().__init__(config)
+        _initialize_llama_mlp_projections(self, config)
         self.intermediate_size = config.intermediate_size
         config_granularities = tuple(
             getattr(config, "granularities", MATFORMER_GRANULARITY_ORDER)
@@ -365,6 +387,7 @@ class CatLlamaMLP(_ControlledFFNSupportMixin, LlamaMLP):
         gradient_membership_correction_enabled=True,
     ):
         super().__init__(config)
+        _initialize_llama_mlp_projections(self, config)
         self.intermediate_size = config.intermediate_size
         config_granularities = tuple(
             getattr(config, "granularities", MATFORMER_GRANULARITY_ORDER)

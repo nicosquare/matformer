@@ -56,9 +56,15 @@ from src.utils.reproducibility import build_comparison_control_signature
 from src.utils.metrics import METRICS_COLUMNS, MetricsJournal
 
 
-def _contract(role: str, *, target=None):
+def _contract(
+    role: str,
+    *,
+    target=None,
+    granularities=GRANULARITIES,
+    comparison_group="tinystories_instruct_portfolio_catchup_v1",
+):
     return {
-        "comparison_group_id": "tinystories_instruct_portfolio_catchup_v1",
+        "comparison_group_id": comparison_group,
         "comparison_role": role,
         "portfolio_catchup": {
             "enabled": role == "elastic_candidate",
@@ -66,7 +72,7 @@ def _contract(role: str, *, target=None):
             "reference_budget_tokens": REFERENCE_BUDGET_TOKENS,
             "elastic_budget_cap_tokens": ELASTIC_BUDGET_CAP_TOKENS,
             "aggregate_reference_count": 4,
-            "granularities": list(GRANULARITIES),
+            "granularities": list(granularities),
             "perplexity_tolerance": 0.005,
             "required_consecutive_evaluations": 5,
             "target_manifest_path": str(target) if target else None,
@@ -102,7 +108,14 @@ def _config(
     width: str | None = None,
     lr: float = 0.008,
     target=None,
+    granularities=GRANULARITIES,
+    comparison_group="tinystories_instruct_portfolio_catchup_v1",
 ):
+    granularities = tuple(granularities)
+    prefixes = {
+        granularity: int(granularity.removeprefix("g")) / 1000.0
+        for granularity in granularities
+    }
     standalone = role == "standalone_reference"
     budget = (
         ELASTIC_BUDGET_CAP_TOKENS
@@ -110,7 +123,12 @@ def _config(
         else REFERENCE_BUDGET_TOKENS
     )
     config = {
-        "controlled_experiment": _contract(role, target=target),
+        "controlled_experiment": _contract(
+            role,
+            target=target,
+            granularities=granularities,
+            comparison_group=comparison_group,
+        ),
         "run": {
             "run_id": f"{role}-{width or 'elastic'}-s{seed}-lr{lr}",
             "seed": seed,
@@ -123,13 +141,13 @@ def _config(
             "variant": "slicing",
             "correction_mode": "none",
             "granularity_mode": "explicit",
-            "granularities": [width] if standalone else list(GRANULARITIES),
+            "granularities": [width] if standalone else list(granularities),
             "granularity_sampling_mode": "global",
             "global_sampling_schedule": "random_with_replacement",
             "global_sampling_interval_steps": 1,
             "d_model": 64,
             "intermediate_size": (
-                256 * (GRANULARITIES.index(width) + 1) // 4
+                int(256 * prefixes[str(width)])
                 if standalone
                 else 256
             ),
@@ -137,12 +155,7 @@ def _config(
             "granularity_prefixes": (
                 {width: 1.0}
                 if standalone
-                else {
-                    "g250": 0.25,
-                    "g500": 0.5,
-                    "g750": 0.75,
-                    "g1000": 1.0,
-                }
+                else prefixes
             ),
             "ffn_prefix_metadata": (
                 [
@@ -151,9 +164,7 @@ def _config(
                         "display_name": width.upper(),
                         "ffn_ratio": 1.0,
                         "full_intermediate_fraction": 1.0,
-                        "prefix_width": 256
-                        * (GRANULARITIES.index(width) + 1)
-                        // 4,
+                        "prefix_width": int(256 * prefixes[str(width)]),
                     }
                 ]
                 if standalone
@@ -161,11 +172,11 @@ def _config(
                     {
                         "name": item,
                         "display_name": item.upper(),
-                        "ffn_ratio": float(index),
-                        "full_intermediate_fraction": index / 4.0,
-                        "prefix_width": 64 * index,
+                        "ffn_ratio": 4.0 * prefixes[item],
+                        "full_intermediate_fraction": prefixes[item],
+                        "prefix_width": int(256 * prefixes[item]),
                     }
-                    for index, item in enumerate(GRANULARITIES, 1)
+                    for item in granularities
                 ]
             ),
             "num_layers": 4,
@@ -327,21 +338,46 @@ def _write_run(
     return run_dir, checkpoint_path
 
 
-def _reference_runs(tmp_path: Path):
+def _reference_runs(
+    tmp_path: Path,
+    *,
+    granularities=GRANULARITIES,
+    comparison_group="tinystories_instruct_portfolio_catchup_v1",
+):
     runs = []
     for seed in (42, 43, 44):
-        for width_index, width in enumerate(GRANULARITIES):
+        for width_index, width in enumerate(granularities):
             target_loss = 1.0 + width_index * 0.1 + (seed - 42) * 0.001
-            config = _config("standalone_reference", seed=seed, width=width)
+            config = _config(
+                "standalone_reference",
+                seed=seed,
+                width=width,
+                granularities=granularities,
+                comparison_group=comparison_group,
+            )
             values = [target_loss + 0.1, target_loss, target_loss + 0.02]
             run_dir, _ = _write_run(tmp_path / "references", config, {width: values})
             runs.append(run_dir)
     return runs
 
 
-def _freeze(tmp_path: Path):
+def _freeze(
+    tmp_path: Path,
+    *,
+    granularities=GRANULARITIES,
+    comparison_group="tinystories_instruct_portfolio_catchup_v1",
+    granularity_profile="quartile",
+):
     output = tmp_path / "reference-analysis"
-    manifest = freeze_references(_reference_runs(tmp_path), output)
+    manifest = freeze_references(
+        _reference_runs(
+            tmp_path,
+            granularities=granularities,
+            comparison_group=comparison_group,
+        ),
+        output,
+        granularity_profile=granularity_profile,
+    )
     return output / "standalone_portfolio_targets.json", manifest
 
 
@@ -351,6 +387,8 @@ def _candidate_runs(
     targets: dict,
     *,
     candidate_arm_id: str = "uniform_h1_3b",
+    granularities=GRANULARITIES,
+    comparison_group="tinystories_instruct_portfolio_catchup_v1",
 ):
     runs = []
     for seed in (42, 43, 44):
@@ -359,6 +397,8 @@ def _candidate_runs(
             seed=seed,
             lr=FIXED_LEARNING_RATE,
             target=target_path,
+            granularities=granularities,
+            comparison_group=comparison_group,
         )
         if candidate_arm_id != "uniform_h1_3b":
             arm = CANDIDATE_ARMS[candidate_arm_id]
@@ -373,8 +413,9 @@ def _candidate_runs(
             config["training"]["max_steps"] = 87132 * epochs
             config["dataset"]["optimizer_iteration"]["complete_epochs"] = epochs
             config["run"]["sampling_mode"] = arm["sampling_mode"]
+            config["model"]["variant"] = arm["model_variant"]
         losses = {}
-        for width in GRANULARITIES:
+        for width in granularities:
             target_loss = targets["targets"][str(seed)][width]["target_loss"]
             losses[width] = [target_loss + 0.02] + [target_loss] * 6
         run_id = config["run"]["run_id"]
@@ -484,7 +525,11 @@ def test_portfolio_config_contract_exact_budgets_roles_and_h1():
 
 def test_schema3_extension_arms_reuse_targets_with_arm_specific_budgets(tmp_path):
     target_path, _ = _freeze(tmp_path)
-    for arm_id in ("uniform_h1_4b", "nested_all_b"):
+    for arm_id in (
+        "uniform_h1_4b",
+        "nested_all_b",
+        "concat_uniform_h1_4b",
+    ):
         arm = CANDIDATE_ARMS[arm_id]
         config = _config(
             "elastic_candidate",
@@ -498,6 +543,7 @@ def test_schema3_extension_arms_reuse_targets_with_arm_specific_budgets(tmp_path
         contract["schema_version"] = 3
         contract["elastic_budget_cap_tokens"] = budget
         config["run"]["sampling_mode"] = arm["sampling_mode"]
+        config["model"]["variant"] = arm["model_variant"]
         config["training"]["token_budget"] = budget
         config["training"]["derived_max_steps"] = 87132 * epochs
         config["training"]["max_steps"] = 87132 * epochs
@@ -514,6 +560,11 @@ def test_schema3_extension_arms_reuse_targets_with_arm_specific_budgets(tmp_path
     mismatched["training"]["token_budget"] += REFERENCE_BUDGET_TOKENS
     with pytest.raises(ConfigError, match="exactly"):
         _validate_portfolio_controlled_experiment(mismatched)
+
+    wrong_variant = json.loads(json.dumps(config))
+    wrong_variant["model"]["variant"] = "slicing"
+    with pytest.raises(ConfigError, match="model variant"):
+        _validate_portfolio_controlled_experiment(wrong_variant)
 
 
 def test_extension_report_is_diagnostic_and_preserves_4b_cost_accounting(tmp_path):
@@ -562,6 +613,84 @@ def test_extension_report_is_diagnostic_and_preserves_4b_cost_accounting(tmp_pat
     assert "portfolio_worst_width_deficit.png" in {
         path.name for path in figure_paths
     }
+
+
+def test_concat_extension_reuses_targets_with_only_variant_provenance_delta(tmp_path):
+    target_path, targets = _freeze(tmp_path)
+    runs = _candidate_runs(
+        tmp_path,
+        target_path,
+        targets,
+        candidate_arm_id="concat_uniform_h1_4b",
+    )
+    output = tmp_path / "concat-uniform-h1-4b-analysis"
+    report = portfolio_catchup(
+        runs,
+        target_path,
+        output,
+        candidate_arm="concat_uniform_h1_4b",
+    )
+    assert report["comparison_arm_id"] == "concat_uniform_h1_4b"
+    assert report["post_hoc_diagnostic"] is True
+    assert report["general_portfolio_catchup_claim"] is False
+    assert report["reference_model_variant"] == "slicing"
+    assert report["candidate_model_variant"] == "concat"
+    assert report["allowed_reference_provenance_differences"] == ["model_variant"]
+
+    partial_output = tmp_path / "concat-seed-42-analysis"
+    partial_report = portfolio_catchup(
+        runs[:1],
+        target_path,
+        partial_output,
+        candidate_arm="concat_uniform_h1_4b",
+    )
+    assert partial_report["status"] == "provisional_seed_subset_confirmed"
+    assert partial_report["observed_seeds"] == [42]
+    assert partial_report["missing_seeds"] == [43, 44]
+    assert partial_report["post_hoc_diagnostic"] is True
+    assert partial_report["general_portfolio_catchup_claim"] is False
+    partial_selection = json.loads(
+        (partial_output / "final_holdout_selection_manifest.json").read_text()
+    )
+    assert partial_selection["required_checkpoint_count"] == 5
+    assert partial_selection["selection_mode"] == (
+        "portfolio_confirmation_diagnostic"
+    )
+
+    figure_paths = generate_figures(
+        tmp_path,
+        tmp_path / "concat-uniform-h1-4b-figures",
+        comparison_manifest=output / "portfolio_catchup_report.json",
+        include_final_holdout=False,
+        dpi=40,
+    )
+    assert {path.name for path in figure_paths} == {
+        "learning_rate_schedule.png",
+        "ppl_vs_size.png",
+        "portfolio_per_granularity_deficits.png",
+        "portfolio_validation_loss_over_tokens.png",
+        "portfolio_worst_width_deficit.png",
+    }
+
+    drifted_config_path = runs[0] / "config.json"
+    drifted = json.loads(drifted_config_path.read_text(encoding="utf-8"))
+    drifted["model"]["d_model"] = 128
+    drifted_config_path.write_text(json.dumps(drifted), encoding="utf-8")
+    with pytest.raises(PortfolioAnalysisError, match="d_model"):
+        portfolio_catchup(
+            runs,
+            target_path,
+            tmp_path / "drifted-concat-analysis",
+            candidate_arm="concat_uniform_h1_4b",
+        )
+    with pytest.raises(ValueError, match="d_model"):
+        generate_figures(
+            tmp_path,
+            tmp_path / "drifted-concat-figures",
+            comparison_manifest=output / "portfolio_catchup_report.json",
+            include_final_holdout=False,
+            dpi=40,
+        )
 
 
 def test_schema1_compatibility_is_narrowly_limited_to_legacy_references():
@@ -777,6 +906,10 @@ def test_portfolio_resume_signature_rejects_scientific_contract_changes(tmp_path
         (
             "widths",
             lambda value: value["model"].update(granularities=list(GRANULARITIES[:-1])),
+        ),
+        (
+            "initializer",
+            lambda value: value["model"].update(initializer_range=0.03),
         ),
         ("corpus", lambda value: value["dataset"].update(corpus_hash="other-corpus")),
         ("topology", lambda value: value["training"].update(effective_world_size=2)),
@@ -997,6 +1130,84 @@ def test_reference_matrix_fixed_recipe_and_portfolio_report(tmp_path):
     assert not stale_holdout_path.exists()
 
 
+def test_one_seed_candidate_emits_provisional_reports_holdout_and_figures(tmp_path):
+    target_path, targets = _freeze(tmp_path)
+    candidate_runs = _candidate_runs(tmp_path, target_path, targets)
+    seed_42_run = candidate_runs[:1]
+    output = tmp_path / "seed-42-catchup-analysis"
+
+    report = portfolio_catchup(seed_42_run, target_path, output)
+
+    assert report["status"] == "provisional_seed_subset_confirmed"
+    assert report["expected_seeds"] == [42, 43, 44]
+    assert report["observed_seeds"] == [42]
+    assert report["missing_seeds"] == [43, 44]
+    assert report["seed_coverage_complete"] is False
+    assert report["provisional_analysis"] is True
+    assert report["observed_seed_catchup_confirmed"] is True
+    assert report["arm_catchup_confirmed"] is False
+    assert report["general_portfolio_catchup_claim"] is False
+    assert report["budget_summary"] is None
+    assert report["observed_seed_budget_summary"]["scope"] == (
+        "observed_seed_subset"
+    )
+    assert report["observed_seed_budget_summary"][
+        "observed_seed_required_tokens"
+    ] == 600
+    assert report["final_holdout_selection_status"] == "ready_provisional"
+
+    selection_path = output / "final_holdout_selection_manifest.json"
+    selection = json.loads(selection_path.read_text(encoding="utf-8"))
+    assert selection["observed_seeds"] == [42]
+    assert selection["missing_seeds"] == [43, 44]
+    assert selection["claim_eligible"] is False
+    assert selection["required_checkpoint_count"] == 5
+    assert selection["expected_full_checkpoint_count"] == 15
+    assert len(selection["entries"]) == 5
+    assert {int(entry["seed"]) for entry in selection["entries"]} == {42}
+    assert len(evaluate_holdout_cli._portfolio_selection_entries(selection_path)) == 5
+
+    validation_figure_paths = generate_figures(
+        tmp_path,
+        tmp_path / "seed-42-validation-figures",
+        comparison_manifest=output / "portfolio_catchup_report.json",
+        include_final_holdout=False,
+        dpi=40,
+    )
+    assert "ppl_vs_size.png" in {path.name for path in validation_figure_paths}
+
+    _write_holdout_results(selection_path)
+    holdout_report = final_holdout(selection_path, tmp_path / "seed-42-holdout")
+    assert holdout_report["status"] == "provisional_seed_subset_equivalent"
+    assert holdout_report["observed_seeds"] == [42]
+    assert holdout_report["missing_seeds"] == [43, 44]
+    assert holdout_report["required_checkpoint_count"] == 5
+    assert holdout_report["all_pairs_within_tolerance"] is True
+    assert holdout_report["provisional_seed_subset_equivalence"] is True
+    assert holdout_report["general_portfolio_equivalence_claim"] is False
+
+    final_figure_paths = generate_figures(
+        tmp_path,
+        tmp_path / "seed-42-final-figures",
+        comparison_manifest=output / "portfolio_catchup_report.json",
+        dpi=40,
+    )
+    assert "final_holdout_ppl_vs_size.png" in {
+        path.name for path in final_figure_paths
+    }
+    assert "portfolio_final_holdout_deficit_vs_size.png" in {
+        path.name for path in final_figure_paths
+    }
+
+    complete_report = portfolio_catchup(candidate_runs, target_path, output)
+    assert complete_report["status"] == "portfolio_catchup_confirmed"
+    assert complete_report["observed_seeds"] == [42, 43, 44]
+    assert complete_report["seed_coverage_complete"] is True
+    replaced_selection = json.loads(selection_path.read_text(encoding="utf-8"))
+    assert replaced_selection["required_checkpoint_count"] == 15
+    assert len(replaced_selection["entries"]) == 15
+
+
 def test_freeze_references_accepts_null_metadata_schema1_runs(tmp_path):
     runs = _reference_runs(tmp_path)
     for run_dir in runs:
@@ -1081,6 +1292,27 @@ def test_censored_candidate_emits_terminal_diagnostic_holdout_selection(
         for entry in elastic_entries
     )
 
+    partial_output = tmp_path / "censored-seed-44-analysis"
+    partial_report = portfolio_catchup(
+        [censored_run], target_path, partial_output
+    )
+    assert partial_report["status"] == "provisional_seed_subset_censored"
+    assert partial_report["observed_seeds"] == [44]
+    assert partial_report["missing_seeds"] == [42, 43]
+    assert partial_report["observed_seed_catchup_confirmed"] is False
+    assert partial_report["arm_catchup_confirmed"] is False
+    assert partial_report["general_portfolio_catchup_claim"] is False
+    partial_selection = json.loads(
+        (partial_output / "final_holdout_selection_manifest.json").read_text()
+    )
+    assert partial_selection["required_checkpoint_count"] == 5
+    assert partial_selection["selection_mode"] == "terminal_3B_censored"
+    assert {
+        entry["checkpoint_selection"]
+        for entry in partial_selection["entries"]
+        if entry["comparison_role"] == "elastic_candidate"
+    } == {"terminal_3B"}
+
     _write_holdout_results(selection_path)
     holdout_report = final_holdout(selection_path, tmp_path / "diagnostic-holdout")
     assert holdout_report["selection_mode"] == "terminal_3B_censored"
@@ -1122,13 +1354,18 @@ def test_censored_candidate_emits_terminal_diagnostic_holdout_selection(
 
 def _write_holdout_results(selection_path: Path, *, failing=False):
     selection = json.loads(selection_path.read_text())
+    selected_granularities = tuple(selection.get("granularities", GRANULARITIES))
     standalone_ppl: dict[tuple[int, str], float] = {}
     for entry in selection["entries"]:
         seed = int(entry["seed"])
         role = entry["comparison_role"]
         components = []
         for width in entry["granularities"]:
-            base = 2.0 + GRANULARITIES.index(width) * 0.1 + (seed - 42) * 0.001
+            base = (
+                2.0
+                + selected_granularities.index(width) * 0.1
+                + (seed - 42) * 0.001
+            )
             if role == "standalone_reference":
                 standalone_ppl[(seed, width)] = base
                 ppl = base
@@ -1157,6 +1394,114 @@ def _write_holdout_results(selection_path: Path, *, failing=False):
         }
         result["result_hash"] = stable_hash(result)
         result_path.write_text(json.dumps(result), encoding="utf-8")
+
+
+def test_matformer_granularity_profile_isolated_pipeline(tmp_path):
+    granularities = ("g125", "g250", "g500", "g1000")
+    comparison_group = (
+        "tinystories_instruct_portfolio_catchup_matformer_granularities_v1"
+    )
+    target_path, targets = _freeze(
+        tmp_path,
+        granularities=granularities,
+        comparison_group=comparison_group,
+        granularity_profile="matformer",
+    )
+    assert targets["comparison_group_id"] == comparison_group
+    assert targets["granularity_profile"] == "matformer"
+    assert targets["granularities"] == list(granularities)
+    assert set(targets["targets"]["42"]) == set(granularities)
+
+    for width in granularities:
+        _validate_portfolio_controlled_experiment(
+            _config(
+                "standalone_reference",
+                seed=42,
+                width=width,
+                granularities=granularities,
+                comparison_group=comparison_group,
+            )
+        )
+    candidate_config = _config(
+        "elastic_candidate",
+        seed=42,
+        target=target_path,
+        granularities=granularities,
+        comparison_group=comparison_group,
+    )
+    _resolve_portfolio_controlled_experiment(candidate_config)
+    _validate_portfolio_controlled_experiment(candidate_config)
+    _validate_portfolio_aligned_epoch_contract(candidate_config)
+
+    candidate_runs = _candidate_runs(
+        tmp_path,
+        target_path,
+        targets,
+        granularities=granularities,
+        comparison_group=comparison_group,
+    )
+    catchup_output = tmp_path / "matformer-profile-catchup"
+    report = portfolio_catchup(
+        candidate_runs[:1],
+        target_path,
+        catchup_output,
+    )
+    assert report["comparison_group_id"] == comparison_group
+    assert report["granularity_profile"] == "matformer"
+    assert report["granularities"] == list(granularities)
+    assert report["observed_seeds"] == [42]
+
+    selection_path = catchup_output / "final_holdout_selection_manifest.json"
+    selection = json.loads(selection_path.read_text(encoding="utf-8"))
+    assert selection["comparison_group_id"] == comparison_group
+    assert selection["granularities"] == list(granularities)
+    normalized = evaluate_holdout_cli._portfolio_selection_entries(selection_path)
+    assert len(normalized) == 5
+    assert {
+        tuple(entry["granularities"])
+        for entry in normalized
+        if entry["comparison_role"] == "elastic_candidate"
+    } == {granularities}
+
+    _write_holdout_results(selection_path)
+    holdout_report = final_holdout(
+        selection_path,
+        tmp_path / "matformer-profile-holdout",
+    )
+    assert holdout_report["comparison_group_id"] == comparison_group
+    assert holdout_report["granularity_profile"] == "matformer"
+    assert {row["granularity"] for row in holdout_report["comparisons"]} == set(
+        granularities
+    )
+
+    figure_paths = generate_figures(
+        tmp_path,
+        tmp_path / "matformer-profile-figures",
+        comparison_manifest=catchup_output / "portfolio_catchup_report.json",
+        dpi=40,
+    )
+    assert "ppl_vs_size.png" in {path.name for path in figure_paths}
+    assert "portfolio_per_granularity_deficits.png" in {
+        path.name for path in figure_paths
+    }
+
+    extension_runs = _candidate_runs(
+        tmp_path / "matformer-profile-extension",
+        target_path,
+        targets,
+        candidate_arm_id="nested_all_b",
+        granularities=granularities,
+        comparison_group=comparison_group,
+    )
+    extension_report = portfolio_catchup(
+        extension_runs[:1],
+        target_path,
+        tmp_path / "matformer-profile-nested-all-analysis",
+        candidate_arm="nested_all_b",
+    )
+    assert extension_report["comparison_arm_id"] == "nested_all_b"
+    assert extension_report["granularities"] == list(granularities)
+    assert extension_report["granularity_profile"] == "matformer"
 
 
 def test_final_holdout_all_15_exact_checkpoints_and_failure_blocks_claim(tmp_path):

@@ -12,6 +12,7 @@ import json
 import math
 import statistics
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -33,23 +34,46 @@ PERPLEXITY_TOLERANCE = 0.005
 LOSS_TOLERANCE = math.log1p(PERPLEXITY_TOLERANCE)
 REQUIRED_STREAK = 5
 COMPARISON_GROUP_ID = "tinystories_instruct_portfolio_catchup_v1"
+GRANULARITY_PROFILES = {
+    "quartile": {
+        "comparison_group_id": COMPARISON_GROUP_ID,
+        "granularities": GRANULARITIES,
+    },
+    "matformer": {
+        "comparison_group_id": (
+            "tinystories_instruct_portfolio_catchup_matformer_granularities_v1"
+        ),
+        "granularities": ("g125", "g250", "g500", "g1000"),
+    },
+}
 CANDIDATE_ARMS = {
     "uniform_h1_3b": {
         "budget_tokens": ELASTIC_BUDGET_CAP_TOKENS,
         "schema_version": 2,
         "sampling_mode": "nested-random",
+        "model_variant": "slicing",
         "post_hoc_diagnostic": False,
     },
     "uniform_h1_4b": {
         "budget_tokens": AGGREGATE_REFERENCE_BUDGET_TOKENS,
         "schema_version": 3,
         "sampling_mode": "nested-random",
+        "model_variant": "slicing",
         "post_hoc_diagnostic": True,
     },
     "nested_all_b": {
         "budget_tokens": REFERENCE_BUDGET_TOKENS,
         "schema_version": 3,
         "sampling_mode": "nested-all",
+        "model_variant": "slicing",
+        "post_hoc_diagnostic": True,
+    },
+    "concat_uniform_h1_4b": {
+        "budget_tokens": AGGREGATE_REFERENCE_BUDGET_TOKENS,
+        "schema_version": 3,
+        "sampling_mode": "nested-random",
+        "model_variant": "concat",
+        "allowed_reference_provenance_differences": {"model_variant"},
         "post_hoc_diagnostic": True,
     },
 }
@@ -57,6 +81,39 @@ CANDIDATE_ARMS = {
 
 class PortfolioAnalysisError(ValueError):
     """Raised when saved artifacts violate the controlled experiment."""
+
+
+def _profile_name_for_group(comparison_group_id: Any) -> str:
+    matches = [
+        name
+        for name, profile in GRANULARITY_PROFILES.items()
+        if profile["comparison_group_id"] == comparison_group_id
+    ]
+    if len(matches) != 1:
+        raise PortfolioAnalysisError(
+            f"Unsupported portfolio comparison group: {comparison_group_id!r}"
+        )
+    return matches[0]
+
+
+@contextmanager
+def _active_granularity_profile(profile_name: str):
+    if profile_name not in GRANULARITY_PROFILES:
+        raise PortfolioAnalysisError(
+            f"Unknown granularity profile {profile_name!r}; expected one of "
+            f"{sorted(GRANULARITY_PROFILES)}"
+        )
+    global GRANULARITIES, COMPARISON_GROUP_ID
+    previous_granularities = GRANULARITIES
+    previous_group_id = COMPARISON_GROUP_ID
+    profile = GRANULARITY_PROFILES[profile_name]
+    GRANULARITIES = tuple(profile["granularities"])
+    COMPARISON_GROUP_ID = str(profile["comparison_group_id"])
+    try:
+        yield
+    finally:
+        GRANULARITIES = previous_granularities
+        COMPARISON_GROUP_ID = previous_group_id
 
 
 def _read_json(path: str | Path) -> dict[str, Any]:
@@ -410,7 +467,7 @@ def _load_hashed_manifest(path: str | Path, name: str) -> dict[str, Any]:
     return payload
 
 
-def freeze_references(
+def _freeze_references_active(
     run_dirs: Iterable[str | Path], output_dir: str | Path
 ) -> dict[str, Any]:
     runs = [_load_run(path) for path in run_dirs]
@@ -516,6 +573,7 @@ def freeze_references(
         "analysis": "tinystories_instruct_standalone_portfolio_targets",
         "status": "references_frozen",
         "comparison_group_id": COMPARISON_GROUP_ID,
+        "granularity_profile": _profile_name_for_group(COMPARISON_GROUP_ID),
         "reference_budget_tokens": REFERENCE_BUDGET_TOKENS,
         "aggregate_reference_count": 4,
         "aggregate_reference_budget_tokens": AGGREGATE_REFERENCE_BUDGET_TOKENS,
@@ -564,6 +622,16 @@ def freeze_references(
     return manifest
 
 
+def freeze_references(
+    run_dirs: Iterable[str | Path],
+    output_dir: str | Path,
+    *,
+    granularity_profile: str = "quartile",
+) -> dict[str, Any]:
+    with _active_granularity_profile(granularity_profile):
+        return _freeze_references_active(run_dirs, output_dir)
+
+
 def _validate_elastic_run(
     run: Mapping[str, Any], *, role: str, budget: int, candidate_arm_id: str
 ) -> list[str]:
@@ -583,6 +651,8 @@ def _validate_elastic_run(
         rejections.append("elastic topology does not match the comparison arm")
     if list(model.get("granularities", [])) != list(GRANULARITIES):
         rejections.append("elastic run does not expose the four-width portfolio")
+    if model.get("variant") != arm["model_variant"]:
+        rejections.append("elastic model variant does not match the comparison arm")
     if arm["sampling_mode"] == "nested-random":
         if model.get("granularity_sampling_mode") != "global":
             rejections.append("elastic run is not uniform-global")
@@ -590,6 +660,41 @@ def _validate_elastic_run(
             rejections.append("elastic run does not sample uniformly with replacement")
         if model.get("global_sampling_interval_steps") != 1:
             rejections.append("elastic run does not use H=1")
+    return rejections
+
+
+def _candidate_provenance_rejections(
+    run: Mapping[str, Any],
+    reference_provenance: Mapping[str, Any],
+    *,
+    candidate_arm_id: str,
+) -> list[str]:
+    """Compare provenance while honoring an arm's explicit diagnostic delta."""
+
+    arm = CANDIDATE_ARMS[candidate_arm_id]
+    candidate_provenance = _run_provenance(run)
+    allowed = set(arm.get("allowed_reference_provenance_differences", set()))
+    mismatches = {
+        key
+        for key in set(candidate_provenance) | set(reference_provenance)
+        if candidate_provenance.get(key) != reference_provenance.get(key)
+    }
+    unexpected = mismatches - allowed
+    rejections = []
+    if unexpected:
+        rejections.append(
+            "candidate data/model provenance differs from references: "
+            + ", ".join(sorted(unexpected))
+        )
+    if "model_variant" in allowed:
+        if reference_provenance.get("model_variant") != "slicing":
+            rejections.append(
+                "concat diagnostic requires slicing standalone references"
+            )
+        if candidate_provenance.get("model_variant") != arm["model_variant"]:
+            rejections.append(
+                "concat diagnostic candidate does not use the concat model variant"
+            )
     return rejections
 
 
@@ -793,7 +898,7 @@ def _terminal_checkpoint_selection(
     )
 
 
-def portfolio_catchup(
+def _portfolio_catchup_active(
     run_dirs: Iterable[str | Path],
     target_manifest_path: str | Path,
     output_dir: str | Path,
@@ -832,10 +937,17 @@ def portfolio_catchup(
         if seed in by_seed:
             raise PortfolioAnalysisError(f"Duplicate elastic candidate seed {seed}")
         by_seed[seed] = run
-    if set(by_seed) != set(REQUIRED_SEEDS):
+    unexpected_seeds = sorted(set(by_seed) - set(REQUIRED_SEEDS))
+    if unexpected_seeds:
         raise PortfolioAnalysisError(
-            f"Elastic candidates must contain seeds {list(REQUIRED_SEEDS)}"
+            "Elastic candidates contain out-of-contract seeds: "
+            f"{unexpected_seeds}; expected a subset of {list(REQUIRED_SEEDS)}"
         )
+    if not by_seed:
+        raise PortfolioAnalysisError("At least one elastic candidate is required")
+    observed_seeds = tuple(seed for seed in REQUIRED_SEEDS if seed in by_seed)
+    missing_seeds = tuple(seed for seed in REQUIRED_SEEDS if seed not in by_seed)
+    seed_coverage_complete = not missing_seeds
 
     reference_run_ids = {
         target["run_id"]
@@ -845,7 +957,7 @@ def portfolio_catchup(
     seed_reports: list[dict[str, Any]] = []
     observations_by_seed: dict[int, list[dict[str, Any]]] = {}
     holdout_entries: list[dict[str, Any]] = []
-    for seed in REQUIRED_SEEDS:
+    for seed in observed_seeds:
         run = by_seed[seed]
         rejections = _validate_elastic_run(
             run,
@@ -861,8 +973,13 @@ def portfolio_catchup(
             _learning_rate(run), FIXED_LEARNING_RATE, rel_tol=0.0, abs_tol=1e-12
         ):
             rejections.append("candidate learning rate is not fixed at 0.008")
-        if _run_provenance(run) != targets.get("shared_provenance"):
-            rejections.append("candidate data/model provenance differs from references")
+        rejections.extend(
+            _candidate_provenance_rejections(
+                run,
+                targets.get("shared_provenance", {}),
+                candidate_arm_id=candidate_arm_id,
+            )
+        )
         run_id = run["summary"].get("run_id", run["run_dir"].name)
         if run_id in reference_run_ids:
             rejections.append("candidate run is not fresh")
@@ -964,7 +1081,7 @@ def portfolio_catchup(
             "validation_observations": observations,
         }
         seed_reports.append(seed_report)
-    for seed in REQUIRED_SEEDS:
+    for seed in observed_seeds:
         for width in GRANULARITIES:
             target = targets["targets"][str(seed)][width]
             holdout_entries.append(
@@ -985,9 +1102,10 @@ def portfolio_catchup(
                 }
             )
 
-    all_caught_up = all(row["caught_up"] for row in seed_reports)
-    claim_eligible = all_caught_up and not post_hoc_diagnostic
-    if all_caught_up:
+    all_observed_caught_up = all(row["caught_up"] for row in seed_reports)
+    arm_catchup_confirmed = seed_coverage_complete and all_observed_caught_up
+    claim_eligible = arm_catchup_confirmed and not post_hoc_diagnostic
+    if all_observed_caught_up:
         selection_mode = (
             "portfolio_confirmation_diagnostic"
             if post_hoc_diagnostic
@@ -1002,7 +1120,7 @@ def portfolio_catchup(
     for seed_report in seed_reports:
         seed = int(seed_report["seed"])
         run = by_seed[seed]
-        if all_caught_up:
+        if all_observed_caught_up:
             checkpoint = Path(seed_report["confirmation_checkpoint_path"])
             checkpoint_sha = seed_report["confirmation_checkpoint_sha256"]
             checkpoint_step = int(seed_report["confirmation_step"])
@@ -1043,8 +1161,27 @@ def portfolio_catchup(
     confirmed_tokens = [
         row["confirmation_tokens"] for row in seed_reports if row["caught_up"]
     ]
+    observed_seed_budget_summary = None
+    if all_observed_caught_up:
+        required_tokens = max(confirmed_tokens)
+        observed_seed_budget_summary = {
+            "scope": (
+                "complete_required_seed_matrix"
+                if seed_coverage_complete
+                else "observed_seed_subset"
+            ),
+            "observed_seed_required_tokens": required_tokens,
+            "observed_seed_t_star_over_B": required_tokens
+            / REFERENCE_BUDGET_TOKENS,
+            "observed_seed_t_star_over_4B": required_tokens
+            / AGGREGATE_REFERENCE_BUDGET_TOKENS,
+            "observed_seed_required_savings_fraction": 1.0
+            - required_tokens / AGGREGATE_REFERENCE_BUDGET_TOKENS,
+            "mean_confirmation_tokens": statistics.fmean(confirmed_tokens),
+            "median_confirmation_tokens": statistics.median(confirmed_tokens),
+        }
     budget_summary = None
-    if all_caught_up:
+    if arm_catchup_confirmed:
         required_tokens = max(confirmed_tokens)
         budget_summary = {
             "cross_seed_required_tokens": required_tokens,
@@ -1056,15 +1193,41 @@ def portfolio_catchup(
             "mean_confirmation_tokens": statistics.fmean(confirmed_tokens),
             "median_confirmation_tokens": statistics.median(confirmed_tokens),
         }
+    if seed_coverage_complete:
+        status = "portfolio_catchup_confirmed" if arm_catchup_confirmed else "censored"
+    else:
+        status = (
+            "provisional_seed_subset_confirmed"
+            if all_observed_caught_up
+            else "provisional_seed_subset_censored"
+        )
+    if claim_eligible:
+        holdout_status = "ready_confirmatory"
+    elif not seed_coverage_complete:
+        holdout_status = "ready_provisional"
+    elif post_hoc_diagnostic:
+        holdout_status = "ready_diagnostic"
+    else:
+        holdout_status = "ready_diagnostic_terminal_3B"
     report = {
         "schema_version": 3 if post_hoc_diagnostic else 2,
         "analysis": "tinystories_instruct_four_granularity_portfolio_catchup",
-        "status": "portfolio_catchup_confirmed" if all_caught_up else "censored",
+        "status": status,
         "general_portfolio_catchup_claim": claim_eligible,
-        "arm_catchup_confirmed": all_caught_up,
+        "arm_catchup_confirmed": arm_catchup_confirmed,
+        "observed_seed_catchup_confirmed": all_observed_caught_up,
+        "provisional_analysis": not seed_coverage_complete,
+        "expected_seeds": list(REQUIRED_SEEDS),
+        "observed_seeds": list(observed_seeds),
+        "missing_seeds": list(missing_seeds),
+        "expected_seed_count": len(REQUIRED_SEEDS),
+        "observed_seed_count": len(observed_seeds),
+        "seed_coverage_complete": seed_coverage_complete,
         "post_hoc_diagnostic": post_hoc_diagnostic,
         "comparison_arm_id": candidate_arm_id,
         "comparison_group_id": COMPARISON_GROUP_ID,
+        "granularity_profile": _profile_name_for_group(COMPARISON_GROUP_ID),
+        "granularities": list(GRANULARITIES),
         "reference_budget_tokens": REFERENCE_BUDGET_TOKENS,
         "aggregate_reference_budget_tokens": AGGREGATE_REFERENCE_BUDGET_TOKENS,
         "elastic_budget_cap_tokens": candidate_budget_tokens,
@@ -1086,18 +1249,16 @@ def portfolio_catchup(
         "target_manifest_path": str(Path(target_manifest_path).expanduser().resolve()),
         "target_manifest_hash": targets["manifest_hash"],
         "learning_rate": FIXED_LEARNING_RATE,
+        "reference_model_variant": targets["shared_provenance"]["model_variant"],
+        "candidate_model_variant": arm["model_variant"],
+        "allowed_reference_provenance_differences": sorted(
+            arm.get("allowed_reference_provenance_differences", set())
+        ),
         "optimizer_recipe_policy": "same_fixed_recipe_across_roles",
         "seeds": seed_reports,
         "budget_summary": budget_summary,
-        "final_holdout_selection_status": (
-            "ready_confirmatory"
-            if claim_eligible
-            else (
-                "ready_diagnostic"
-                if post_hoc_diagnostic
-                else "ready_diagnostic_terminal_3B"
-            )
-        ),
+        "observed_seed_budget_summary": observed_seed_budget_summary,
+        "final_holdout_selection_status": holdout_status,
         "final_holdout_selection_mode": selection_mode,
         "final_holdout_claim_eligible": claim_eligible,
     }
@@ -1129,34 +1290,44 @@ def portfolio_catchup(
         "schema_version": 3 if post_hoc_diagnostic else 2,
         "analysis": "portfolio_final_holdout_selection",
         "status": (
-            "ready_confirmatory"
-            if claim_eligible
-            else (
-                "ready_diagnostic"
-                if post_hoc_diagnostic
-                else "ready_diagnostic_terminal_3B"
-            )
+            holdout_status
         ),
         "selection_mode": selection_mode,
         "claim_eligible": claim_eligible,
+        "provisional_analysis": not seed_coverage_complete,
+        "expected_seeds": list(REQUIRED_SEEDS),
+        "observed_seeds": list(observed_seeds),
+        "missing_seeds": list(missing_seeds),
+        "expected_seed_count": len(REQUIRED_SEEDS),
+        "observed_seed_count": len(observed_seeds),
+        "seed_coverage_complete": seed_coverage_complete,
         "interpretation": (
             "confirmation_checkpoint_generalization"
             if claim_eligible
             else (
-                "post_hoc_diagnostic_only_no_general_claim"
-                if post_hoc_diagnostic
-                else "terminal_3B_diagnostic_only_no_catchup_claim"
+                "provisional_seed_subset_only_no_general_claim"
+                if not seed_coverage_complete
+                else (
+                    "post_hoc_diagnostic_only_no_general_claim"
+                    if post_hoc_diagnostic
+                    else "terminal_3B_diagnostic_only_no_catchup_claim"
+                )
             )
         ),
         "comparison_arm_id": candidate_arm_id,
         "candidate_budget_tokens": candidate_budget_tokens,
         "comparison_group_id": COMPARISON_GROUP_ID,
+        "granularity_profile": _profile_name_for_group(COMPARISON_GROUP_ID),
+        "granularities": list(GRANULARITIES),
         "target_manifest_hash": targets["manifest_hash"],
         "shared_corpus_hash": targets["shared_provenance"]["corpus_hash"],
         "final_holdout_manifest_hash": targets["shared_provenance"][
             "final_holdout_manifest_hash"
         ],
-        "required_checkpoint_count": 15,
+        "required_checkpoint_count": len(observed_seeds)
+        * (len(GRANULARITIES) + 1),
+        "expected_full_checkpoint_count": len(REQUIRED_SEEDS)
+        * (len(GRANULARITIES) + 1),
         "entries": sorted(
             holdout_entries,
             key=lambda row: (
@@ -1167,9 +1338,7 @@ def portfolio_catchup(
         ),
     }
     holdout_manifest["manifest_hash"] = manifest_hash(holdout_manifest)
-    _write_immutable_json(
-        output / "final_holdout_selection_manifest.json", holdout_manifest
-    )
+    _write_json(output / "final_holdout_selection_manifest.json", holdout_manifest)
 
     pyplot = _pyplot()
     figure, axis = pyplot.subplots(figsize=(9, 5))
@@ -1213,10 +1382,61 @@ def portfolio_catchup(
     return report
 
 
-def final_holdout(
+def portfolio_catchup(
+    run_dirs: Iterable[str | Path],
+    target_manifest_path: str | Path,
+    output_dir: str | Path,
+    candidate_arm: str | None = None,
+) -> dict[str, Any]:
+    targets = _load_hashed_manifest(target_manifest_path, "standalone targets")
+    profile_name = _profile_name_for_group(targets.get("comparison_group_id"))
+    profile = GRANULARITY_PROFILES[profile_name]
+    if targets.get("granularities") != list(profile["granularities"]):
+        raise PortfolioAnalysisError(
+            "Standalone target manifest granularity profile is inconsistent"
+        )
+    with _active_granularity_profile(profile_name):
+        return _portfolio_catchup_active(
+            run_dirs,
+            target_manifest_path,
+            output_dir,
+            candidate_arm=candidate_arm,
+        )
+
+
+def _final_holdout_active(
     selection_manifest_path: str | Path, output_dir: str | Path
 ) -> dict[str, Any]:
     selection = _load_hashed_manifest(selection_manifest_path, "holdout selection")
+    expected_seeds = tuple(selection.get("expected_seeds", REQUIRED_SEEDS))
+    observed_seeds = tuple(selection.get("observed_seeds", expected_seeds))
+    if expected_seeds != REQUIRED_SEEDS:
+        raise PortfolioAnalysisError(
+            f"Final holdout expected seeds must be {list(REQUIRED_SEEDS)}"
+        )
+    if (
+        not observed_seeds
+        or len(set(observed_seeds)) != len(observed_seeds)
+        or any(seed not in REQUIRED_SEEDS for seed in observed_seeds)
+        or observed_seeds
+        != tuple(seed for seed in REQUIRED_SEEDS if seed in set(observed_seeds))
+    ):
+        raise PortfolioAnalysisError(
+            "Final holdout observed seeds must be a non-empty ordered subset of "
+            f"{list(REQUIRED_SEEDS)}"
+        )
+    missing_seeds = tuple(seed for seed in REQUIRED_SEEDS if seed not in observed_seeds)
+    seed_coverage_complete = not missing_seeds
+    if (
+        selection.get("missing_seeds", list(missing_seeds)) != list(missing_seeds)
+        or selection.get("seed_coverage_complete", seed_coverage_complete)
+        is not seed_coverage_complete
+        or selection.get("observed_seed_count", len(observed_seeds))
+        != len(observed_seeds)
+    ):
+        raise PortfolioAnalysisError(
+            "Final-holdout selection seed-coverage metadata is inconsistent"
+        )
     selection_mode = selection.get("selection_mode", "portfolio_confirmation")
     confirmation_modes = {
         "portfolio_confirmation",
@@ -1237,10 +1457,21 @@ def final_holdout(
         raise PortfolioAnalysisError(
             "Final-holdout claim eligibility contradicts its selection mode"
         )
-    entries = selection.get("entries")
-    if not isinstance(entries, list) or len(entries) != 15:
+    if claim_eligible and not seed_coverage_complete:
         raise PortfolioAnalysisError(
-            "Final holdout requires all 15 selected checkpoints"
+            "A partial-seed final holdout cannot be eligible for a general claim"
+        )
+    entries = selection.get("entries")
+    required_checkpoint_count = len(observed_seeds) * (len(GRANULARITIES) + 1)
+    if (
+        not isinstance(entries, list)
+        or len(entries) != required_checkpoint_count
+        or selection.get("required_checkpoint_count", required_checkpoint_count)
+        != required_checkpoint_count
+    ):
+        raise PortfolioAnalysisError(
+            "Final holdout requires exactly five selected checkpoints per "
+            f"observed seed ({required_checkpoint_count} total)"
         )
     results: dict[tuple[str, int], dict[str, Any]] = {}
     for entry in entries:
@@ -1304,7 +1535,7 @@ def final_holdout(
         results[key] = result
 
     comparisons: list[dict[str, Any]] = []
-    for seed in REQUIRED_SEEDS:
+    for seed in observed_seeds:
         elastic = results.get(("elastic_candidate", seed))
         if elastic is None:
             raise PortfolioAnalysisError(
@@ -1347,7 +1578,13 @@ def final_holdout(
     all_pass = all(row["passes"] for row in comparisons)
     general_claim = all_pass and claim_eligible
     diagnostic_equivalence = all_pass if not claim_eligible else None
-    if claim_eligible:
+    if not seed_coverage_complete:
+        status = (
+            "provisional_seed_subset_equivalent"
+            if all_pass
+            else "provisional_seed_subset_not_equivalent"
+        )
+    elif claim_eligible:
         status = "portfolio_equivalent" if all_pass else "portfolio_not_equivalent"
     elif selection_mode == "terminal_3B_censored":
         status = (
@@ -1367,8 +1604,21 @@ def final_holdout(
         "status": status,
         "selection_mode": selection_mode,
         "claim_eligible": claim_eligible,
+        "provisional_analysis": not seed_coverage_complete,
+        "expected_seeds": list(REQUIRED_SEEDS),
+        "observed_seeds": list(observed_seeds),
+        "missing_seeds": list(missing_seeds),
+        "expected_seed_count": len(REQUIRED_SEEDS),
+        "observed_seed_count": len(observed_seeds),
+        "seed_coverage_complete": seed_coverage_complete,
         "comparison_arm_id": selection.get("comparison_arm_id", "uniform_h1_3b"),
+        "comparison_group_id": COMPARISON_GROUP_ID,
+        "granularity_profile": _profile_name_for_group(COMPARISON_GROUP_ID),
+        "granularities": list(GRANULARITIES),
         "all_pairs_within_tolerance": all_pass,
+        "provisional_seed_subset_equivalence": (
+            all_pass if not seed_coverage_complete else None
+        ),
         "diagnostic_terminal_3B_equivalence": (
             diagnostic_equivalence
             if selection_mode == "terminal_3B_censored"
@@ -1377,7 +1627,9 @@ def final_holdout(
         "diagnostic_arm_equivalence": diagnostic_equivalence,
         "general_portfolio_equivalence_claim": general_claim,
         "perplexity_tolerance": PERPLEXITY_TOLERANCE,
-        "required_checkpoint_count": 15,
+        "required_checkpoint_count": required_checkpoint_count,
+        "expected_full_checkpoint_count": len(REQUIRED_SEEDS)
+        * (len(GRANULARITIES) + 1),
         "selection_manifest_path": str(
             Path(selection_manifest_path).expanduser().resolve()
         ),
@@ -1391,18 +1643,45 @@ def final_holdout(
     return report
 
 
+def final_holdout(
+    selection_manifest_path: str | Path, output_dir: str | Path
+) -> dict[str, Any]:
+    selection = _load_hashed_manifest(selection_manifest_path, "holdout selection")
+    profile_name = _profile_name_for_group(selection.get("comparison_group_id"))
+    profile = GRANULARITY_PROFILES[profile_name]
+    saved_granularities = selection.get(
+        "granularities", list(profile["granularities"])
+    )
+    if saved_granularities != list(profile["granularities"]):
+        raise PortfolioAnalysisError(
+            "Final-holdout selection granularity profile is inconsistent"
+        )
+    with _active_granularity_profile(profile_name):
+        return _final_holdout_active(selection_manifest_path, output_dir)
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     for name, help_text in (
         ("freeze-references", "freeze the exact 12-run standalone matrix"),
-        ("portfolio-catchup", "verify the three fresh 3B elastic candidates"),
+        (
+            "portfolio-catchup",
+            "verify one or more fresh elastic candidates (three for a general claim)",
+        ),
     ):
         command = commands.add_parser(name, help=help_text)
         command.add_argument("--run-dir", action="append", default=[])
         command.add_argument("--runs-root", action="append", default=[])
         command.add_argument("--output-dir", required=True)
-        if name == "portfolio-catchup":
+        if name == "freeze-references":
+            command.add_argument(
+                "--granularity-profile",
+                choices=sorted(GRANULARITY_PROFILES),
+                default="quartile",
+                help="standalone matrix geometry to freeze",
+            )
+        else:
             command.add_argument("--target-manifest", required=True)
             command.add_argument(
                 "--candidate-arm",
@@ -1413,7 +1692,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                 ),
             )
     holdout = commands.add_parser(
-        "final-holdout", help="verify all 15 sealed holdout results"
+        "final-holdout",
+        help="verify all manifest-selected holdout results",
     )
     holdout.add_argument("--selection-manifest", required=True)
     holdout.add_argument("--output-dir", required=True)
@@ -1427,7 +1707,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     else:
         run_dirs = discover_run_dirs(args.run_dir, args.runs_root)
         if args.command == "freeze-references":
-            result = freeze_references(run_dirs, args.output_dir)
+            result = freeze_references(
+                run_dirs,
+                args.output_dir,
+                granularity_profile=args.granularity_profile,
+            )
         else:
             result = portfolio_catchup(
                 run_dirs,

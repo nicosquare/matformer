@@ -48,6 +48,7 @@ model:
   num_attention_heads: 4
   context_length: 128
   vocab_size: 2048
+  initializer_range: 0.02
   granularities: [g250, g500, g750, g1000]
   granularity_prefixes:
     g250: 0.25

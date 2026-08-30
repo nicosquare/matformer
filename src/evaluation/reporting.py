@@ -2093,9 +2093,12 @@ def _generate_portfolio_comparison_figures(
         report=report,
         targets=targets,
     )
+    observed_seeds = tuple(int(seed) for seed in selection["observed_seeds"])
 
     declared: list[dict[str, Any]] = []
     for seed_text, seed_targets in targets.get("targets", {}).items():
+        if int(seed_text) not in observed_seeds:
+            continue
         if not isinstance(seed_targets, Mapping):
             raise ValueError("Portfolio targets are malformed")
         for width, target in seed_targets.items():
@@ -2119,16 +2122,20 @@ def _generate_portfolio_comparison_figures(
                     "budget": int(report["elastic_budget_cap_tokens"]),
                 }
             )
-    expected_count = len(targets.get("seeds", [])) * len(
-        targets.get("granularities", [])
-    ) * 2
-    if len(declared) != expected_count or expected_count != 24:
-        raise ValueError("Portfolio report does not declare the complete 12+3 run set")
+    expected_count = len(observed_seeds) * len(targets.get("granularities", [])) * 2
+    if len(declared) != expected_count:
+        raise ValueError(
+            "Portfolio report does not declare both roles for every observed "
+            "seed and width"
+        )
 
     config_cache: dict[Path, dict[str, Any]] = {}
     metrics_cache: dict[Path, list[dict[str, str]]] = {}
     rows_by_key: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    provenance_values: set[str] = set()
+    provenance_by_role: dict[str, list[dict[str, Any]]] = {
+        "standalone_reference": [],
+        "elastic_candidate": [],
+    }
     for entry in declared:
         run_dir = entry["run_dir"]
         config_path = run_dir / "config.json"
@@ -2150,7 +2157,9 @@ def _generate_portfolio_comparison_figures(
         scheduler = str(training.get("scheduler_name"))
         if scheduler != "cosine":
             raise ValueError("Portfolio comparison requires cosine schedules")
-        provenance_values.add(_portfolio_reporting_provenance(config))
+        provenance_by_role[entry["role"]].append(
+            _portfolio_reporting_provenance_fields(config)
+        )
         if metrics_path not in metrics_cache:
             with metrics_path.open("r", encoding="utf-8", newline="") as source:
                 metrics_cache[metrics_path] = list(csv.DictReader(source))
@@ -2177,10 +2186,10 @@ def _generate_portfolio_comparison_figures(
         if not validation or max(row["tokens_seen"] for row in validation) > entry["budget"]:
             raise ValueError("Portfolio validation trace exceeds or lacks its declared budget")
         rows_by_key.setdefault((entry["role"], entry["width"]), []).extend(validation)
-    if len(provenance_values) != 1:
-        raise ValueError(
-            "Portfolio manifest mode requires identical corpus and holdout provenance"
-        )
+    _validate_portfolio_reporting_provenance(
+        provenance_by_role,
+        report=report,
+    )
 
     granularities = [str(value) for value in targets["granularities"]]
     parameter_counts = _portfolio_non_embedding_parameter_counts(
@@ -2248,7 +2257,7 @@ def _generate_portfolio_comparison_figures(
             )
         width_targets = [
             float(targets["targets"][str(seed)][width]["target_loss"])
-            for seed in targets["seeds"]
+            for seed in observed_seeds
         ]
         lower = min(width_targets)
         upper = max(width_targets)
@@ -2385,28 +2394,107 @@ def _generate_portfolio_comparison_figures(
     return paths
 
 
-def _portfolio_reporting_provenance(config: Mapping[str, Any]) -> str:
+def _portfolio_reporting_provenance_fields(
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
     model = config.get("model", {})
     dataset = config.get("dataset", {})
-    return stable_hash(
-        {
-            "dataset_name": dataset.get("dataset_name"),
-            "dataset_config_name": dataset.get("dataset_config_name"),
-            "dataset_split": dataset.get("dataset_split"),
-            "dataset_phase": dataset.get("dataset_phase"),
-            "corpus_hash": dataset.get("corpus_hash", config.get("corpus_hash")),
-            "optimizer_training_manifest_hash": config.get("optimizer_training_manifest_hash"),
-            "validation_manifest_hash": config.get("validation_manifest_hash"),
-            "final_holdout_manifest_hash": config.get("final_holdout_manifest_hash"),
-            "tokenizer_manifest_hash": model.get("tokenizer_manifest_hash"),
-            "variant": model.get("variant"),
-            "correction_mode": model.get("correction_mode"),
-            "d_model": model.get("d_model", model.get("hidden_size")),
-            "num_layers": model.get("num_layers"),
-            "context_length": model.get("context_length"),
-            "vocab_size": model.get("vocab_size"),
-        }
-    )
+    return {
+        "dataset_name": dataset.get("dataset_name"),
+        "dataset_config_name": dataset.get("dataset_config_name"),
+        "dataset_split": dataset.get("dataset_split"),
+        "dataset_phase": dataset.get("dataset_phase"),
+        "corpus_hash": dataset.get("corpus_hash", config.get("corpus_hash")),
+        "optimizer_training_manifest_hash": config.get(
+            "optimizer_training_manifest_hash"
+        ),
+        "validation_manifest_hash": config.get("validation_manifest_hash"),
+        "final_holdout_manifest_hash": config.get("final_holdout_manifest_hash"),
+        "tokenizer_manifest_hash": model.get("tokenizer_manifest_hash"),
+        "model_variant": model.get("variant"),
+        "correction_mode": model.get("correction_mode"),
+        "d_model": model.get("d_model", model.get("hidden_size")),
+        "num_layers": model.get("num_layers"),
+        "context_length": model.get("context_length"),
+        "vocab_size": model.get("vocab_size"),
+    }
+
+
+def _portfolio_reporting_provenance(config: Mapping[str, Any]) -> str:
+    """Retain the historical strict provenance digest for external callers."""
+
+    return stable_hash(_portfolio_reporting_provenance_fields(config))
+
+
+def _validate_portfolio_reporting_provenance(
+    provenance_by_role: Mapping[str, list[dict[str, Any]]],
+    *,
+    report: Mapping[str, Any],
+) -> None:
+    """Allow only the report-declared cross-role diagnostic provenance delta."""
+
+    allowed_raw = report.get("allowed_reference_provenance_differences", [])
+    if not isinstance(allowed_raw, list) or any(
+        not isinstance(value, str) for value in allowed_raw
+    ):
+        raise ValueError(
+            "Portfolio report has malformed allowed provenance differences"
+        )
+    allowed = set(allowed_raw)
+    supported_differences = {"model_variant"}
+    if not allowed.issubset(supported_differences):
+        raise ValueError(
+            "Portfolio report declares unsupported provenance differences: "
+            + ", ".join(sorted(allowed - supported_differences))
+        )
+
+    representatives: dict[str, dict[str, Any]] = {}
+    for role in ("standalone_reference", "elastic_candidate"):
+        records = provenance_by_role.get(role, [])
+        if not records:
+            raise ValueError(f"Portfolio manifest has no {role} provenance")
+        digests = {stable_hash(record) for record in records}
+        if len(digests) != 1:
+            baseline = records[0]
+            differing_fields = {
+                key
+                for record in records[1:]
+                for key in set(baseline) | set(record)
+                if baseline.get(key) != record.get(key)
+            }
+            raise ValueError(
+                f"Portfolio {role} provenance differs across declared seeds or widths: "
+                + ", ".join(sorted(differing_fields))
+            )
+        representatives[role] = records[0]
+
+    reference = representatives["standalone_reference"]
+    candidate = representatives["elastic_candidate"]
+    differences = {
+        key
+        for key in set(reference) | set(candidate)
+        if reference.get(key) != candidate.get(key)
+    }
+    if differences != allowed:
+        unexpected = differences - allowed
+        missing = allowed - differences
+        details = []
+        if unexpected:
+            details.append("unexpected=" + ",".join(sorted(unexpected)))
+        if missing:
+            details.append("declared-but-identical=" + ",".join(sorted(missing)))
+        raise ValueError(
+            "Portfolio manifest provenance differs outside its declared policy"
+            + (": " + "; ".join(details) if details else "")
+        )
+
+    if "model_variant" in allowed and (
+        reference.get("model_variant") != report.get("reference_model_variant")
+        or candidate.get("model_variant") != report.get("candidate_model_variant")
+    ):
+        raise ValueError(
+            "Portfolio manifest model variants disagree with the comparison report"
+        )
 
 
 def _portfolio_mean_curve(rows: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -2417,7 +2505,7 @@ def _portfolio_mean_curve(rows: list[Mapping[str, Any]]) -> list[dict[str, Any]]
         by_tokens.setdefault(tokens, []).append(float(row["loss"]))
         seeds_by_tokens.setdefault(tokens, set()).add(int(row["seed"]))
     seed_counts = {len(seeds) for seeds in seeds_by_tokens.values()}
-    if seed_counts != {3}:
+    if len(seed_counts) != 1:
         raise ValueError("Portfolio replications do not share validation boundaries")
     return [
         {
@@ -2481,10 +2569,50 @@ def _load_portfolio_holdout_selection(
     ):
         raise ValueError("Portfolio holdout claim eligibility is inconsistent")
 
+    required_seeds = tuple(int(seed) for seed in targets.get("seeds", []))
+    if required_seeds != (42, 43, 44):
+        raise ValueError("Portfolio target manifest has an unexpected seed contract")
+    expected_seeds = tuple(selection.get("expected_seeds", required_seeds))
+    observed_seeds = tuple(selection.get("observed_seeds", expected_seeds))
+    if expected_seeds != required_seeds:
+        raise ValueError("Portfolio holdout selection expected seeds differ from targets")
+    if (
+        not observed_seeds
+        or len(set(observed_seeds)) != len(observed_seeds)
+        or any(seed not in required_seeds for seed in observed_seeds)
+        or observed_seeds
+        != tuple(seed for seed in required_seeds if seed in set(observed_seeds))
+    ):
+        raise ValueError(
+            "Portfolio holdout observed seeds must be a non-empty ordered subset"
+        )
+    missing_seeds = tuple(seed for seed in required_seeds if seed not in observed_seeds)
+    seed_coverage_complete = not missing_seeds
+    if (
+        selection.get("missing_seeds", list(missing_seeds)) != list(missing_seeds)
+        or selection.get("seed_coverage_complete", seed_coverage_complete)
+        is not seed_coverage_complete
+        or tuple(report.get("observed_seeds", observed_seeds)) != observed_seeds
+        or report.get("seed_coverage_complete", seed_coverage_complete)
+        is not seed_coverage_complete
+    ):
+        raise ValueError("Portfolio report and selection seed coverage differ")
+    if selection.get("claim_eligible") is True and not seed_coverage_complete:
+        raise ValueError("A partial-seed portfolio selection cannot support a claim")
+
     entries = selection.get("entries")
-    if not isinstance(entries, list) or len(entries) != 15:
-        raise ValueError("Portfolio holdout selection must declare exactly 15 checkpoints")
-    expected_seeds = {int(seed) for seed in targets.get("seeds", [])}
+    required_checkpoint_count = len(observed_seeds) * 5
+    if (
+        not isinstance(entries, list)
+        or len(entries) != required_checkpoint_count
+        or selection.get("required_checkpoint_count", required_checkpoint_count)
+        != required_checkpoint_count
+    ):
+        raise ValueError(
+            "Portfolio holdout selection must declare five checkpoints per "
+            f"observed seed ({required_checkpoint_count} total)"
+        )
+    observed_seed_set = set(observed_seeds)
     granularities = [str(width) for width in targets.get("granularities", [])]
     reference_keys: set[tuple[int, str]] = set()
     elastic_seeds: set[int] = set()
@@ -2494,7 +2622,7 @@ def _load_portfolio_holdout_selection(
         role = str(entry.get("comparison_role"))
         seed = int(entry.get("seed", -1))
         widths = [str(width) for width in entry.get("granularities", [])]
-        if seed not in expected_seeds:
+        if seed not in observed_seed_set:
             raise ValueError("Portfolio holdout selection contains an unexpected seed")
         expected_checkpoint_selection = (
             "ordinary_validation_best"
@@ -2522,8 +2650,8 @@ def _load_portfolio_holdout_selection(
         else:
             raise ValueError("Portfolio holdout selection role or widths are invalid")
     if reference_keys != {
-        (seed, width) for seed in expected_seeds for width in granularities
-    } or elastic_seeds != expected_seeds:
+        (seed, width) for seed in observed_seeds for width in granularities
+    } or elastic_seeds != observed_seed_set:
         raise ValueError("Portfolio holdout selection does not contain the exact matrix")
     return selection
 
@@ -2620,8 +2748,9 @@ def _portfolio_selected_validation_rows(
     selection: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
     granularities = [str(width) for width in targets["granularities"]]
+    observed_seeds = [int(seed) for seed in selection["observed_seeds"]]
     rows: list[dict[str, Any]] = []
-    for seed in targets["seeds"]:
+    for seed in observed_seeds:
         for width in granularities:
             target = targets["targets"][str(seed)][width]
             loss = float(target["target_loss"])
@@ -2645,7 +2774,7 @@ def _portfolio_selected_validation_rows(
         if entry["comparison_role"] == "elastic_candidate"
     }
     seed_reports = {int(item["seed"]): item for item in report["seeds"]}
-    for seed in targets["seeds"]:
+    for seed in observed_seeds:
         entry = elastic_entries[int(seed)]
         seed_report = seed_reports[int(seed)]
         matches = [
@@ -2685,10 +2814,13 @@ def _portfolio_selected_validation_rows(
 
 def _portfolio_elastic_selection_label(selection: Mapping[str, Any]) -> str:
     mode = selection.get("selection_mode")
+    seed_count = len(selection.get("observed_seeds", (42, 43, 44)))
+    seed_word = "seed" if seed_count == 1 else "seeds"
     if mode == "terminal_3B_censored":
         return (
             "elastic_candidate; checkpoint=terminal 3B diagnostic; "
-            "run budget=3B; scheduler=cosine; claim-ineligible; n=3 seeds"
+            "run budget=3B; scheduler=cosine; claim-ineligible; "
+            f"n={seed_count} {seed_word}"
         )
     if mode == "terminal_candidate_budget_censored":
         budget = int(selection["candidate_budget_tokens"])
@@ -2696,7 +2828,7 @@ def _portfolio_elastic_selection_label(selection: Mapping[str, Any]) -> str:
             f"elastic_candidate; arm={selection['comparison_arm_id']}; "
             "checkpoint=terminal arm-budget diagnostic; "
             f"run budget={budget:,} tokens; scheduler=cosine; "
-            "claim-ineligible; n=3 seeds"
+            f"claim-ineligible; n={seed_count} {seed_word}"
         )
     if mode == "portfolio_confirmation_diagnostic":
         budget = int(selection["candidate_budget_tokens"])
@@ -2704,11 +2836,15 @@ def _portfolio_elastic_selection_label(selection: Mapping[str, Any]) -> str:
             f"elastic_candidate; arm={selection['comparison_arm_id']}; "
             "checkpoint=five-validation confirmation "
             f"diagnostic; run budget={budget:,} tokens; scheduler=cosine; "
-            "claim-ineligible; n=3 seeds"
+            f"claim-ineligible; n={seed_count} {seed_word}"
         )
+    claim_fragment = (
+        "claim-ineligible; " if selection.get("claim_eligible") is False else ""
+    )
     return (
         "elastic_candidate; checkpoint=five-validation confirmation; "
-        "run budget=3B; scheduler=cosine; n=3 seeds"
+        f"run budget=3B; scheduler=cosine; {claim_fragment}"
+        f"n={seed_count} {seed_word}"
     )
 
 
@@ -2742,10 +2878,10 @@ def _plot_portfolio_ppl_vs_size(
             for row in role_rows
         }
         seeds = sorted({int(row["seed"]) for row in role_rows})
-        if len(seeds) != 3 or set(by_seed_width) != {
+        if not seeds or set(by_seed_width) != {
             (seed, width) for seed in seeds for width in granularities
         }:
-            raise ValueError("Portfolio size plot requires the exact three-seed matrix")
+            raise ValueError("Portfolio size plot requires an exact observed-seed matrix")
         values_by_width = [
             [by_seed_width[(seed, width)] for seed in seeds]
             for width in granularities
@@ -2755,7 +2891,8 @@ def _plot_portfolio_ppl_vs_size(
         ranges_by_role[role] = values_by_width
         label = (
             "standalone_reference; checkpoint=best ordinary validation <=B; "
-            "budget=B; scheduler=cosine; n=3 seeds"
+            f"budget=B; scheduler=cosine; n={len(seeds)} "
+            f"{'seed' if len(seeds) == 1 else 'seeds'}"
             if role == "standalone_reference"
             else elastic_label
         )
@@ -2945,10 +3082,22 @@ def _plot_portfolio_learning_rate_schedules(
         }
         if len(schedule_contracts) != 1:
             raise ValueError(f"Portfolio {role} scheduler differs across runs")
+        seed_count = len(
+            {
+                int(entry["seed"])
+                for entry in declared
+                if str(entry["role"]) == role
+            }
+        )
+        budget = int(resolved[0].token_budget)
         role_label = (
-            "standalone_reference; active=one width; budget=B; n=3 seeds"
+            "standalone_reference; active=one width; "
+            f"budget={budget:,} tokens; scheduler=cosine; n={seed_count} "
+            f"{'seed' if seed_count == 1 else 'seeds'}"
             if role == "standalone_reference"
-            else "elastic_candidate; active=all four; budget=3B; n=3 seeds"
+            else "elastic_candidate; active=all four; "
+            f"budget={budget:,} tokens; scheduler=cosine; n={seed_count} "
+            f"{'seed' if seed_count == 1 else 'seeds'}"
         )
         schedules.append(replace(resolved[0], run_id=role_label))
     return plot_learning_rate_schedules(
@@ -2974,8 +3123,8 @@ def _plot_portfolio_final_holdout_if_complete(
         return []
     if available_count != len(entries):
         warnings.warn(
-            "Portfolio final-holdout figures require all 15 selected results; "
-            f"found {available_count}/15",
+            "Portfolio final-holdout figures require every manifest-selected "
+            f"result; found {available_count}/{len(entries)}",
             RuntimeWarning,
             stacklevel=2,
         )
@@ -3051,10 +3200,11 @@ def _plot_portfolio_final_holdout_if_complete(
         )
         for row in rows
     }
+    observed_seeds = tuple(int(seed) for seed in selection["observed_seeds"])
     expected_keys = {
         (role, int(seed), width)
         for role in ("standalone_reference", "elastic_candidate")
-        for seed in (42, 43, 44)
+        for seed in observed_seeds
         for width in granularities
     }
     if set(by_key) != expected_keys:
@@ -3062,7 +3212,7 @@ def _plot_portfolio_final_holdout_if_complete(
     x_values = [parameter_counts[width] for width in granularities]
     figure, axis = plt.subplots(figsize=(9, 5.5))
     deficits_by_width: list[list[float]] = []
-    for seed in (42, 43, 44):
+    for seed in observed_seeds:
         deficits = [
             100.0
             * (
@@ -3081,18 +3231,19 @@ def _plot_portfolio_final_holdout_if_complete(
             alpha=0.5,
             label=f"seed {seed}",
         )
-    mean_deficits = [
-        statistics.fmean(values)
-        for values in zip(*deficits_by_width, strict=True)
-    ]
-    axis.plot(
-        x_values,
-        mean_deficits,
-        color="black",
-        marker="o",
-        linewidth=2.0,
-        label="three-seed mean",
-    )
+    if len(observed_seeds) > 1:
+        mean_deficits = [
+            statistics.fmean(values)
+            for values in zip(*deficits_by_width, strict=True)
+        ]
+        axis.plot(
+            x_values,
+            mean_deficits,
+            color="black",
+            marker="o",
+            linewidth=2.0,
+            label=f"{len(observed_seeds)}-seed mean",
+        )
     axis.axhline(
         100.0 * perplexity_tolerance,
         color="tab:red",

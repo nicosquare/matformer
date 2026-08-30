@@ -12,7 +12,6 @@ from src.utils.reproducibility import stable_hash
 
 
 PORTFOLIO_SCHEMA_VERSIONS = {2, 3}
-PORTFOLIO_GRANULARITIES = ("g250", "g500", "g750", "g1000")
 
 
 class PortfolioCatchupError(ValueError):

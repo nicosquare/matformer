@@ -1,6 +1,7 @@
 import pytest
 import torch
 from transformers import LlamaConfig
+from transformers.models.llama.modeling_llama import LlamaMLP
 
 from src.models.ffn import (
     CatLlamaMLP,
@@ -53,6 +54,31 @@ def tiny_llama_config(
     if granularities is not None:
         config.granularities = granularities
     return config
+
+
+def active_mlp_projection_weights(mlp):
+    if isinstance(mlp, ModifiedLlamaMLP):
+        prefix_width = mlp.current_subset_hd
+        return {
+            "gate": mlp.gate_proj.weight[:prefix_width],
+            "up": mlp.up_proj.weight[:prefix_width],
+            "down": mlp.down_proj.weight[:, :prefix_width],
+        }
+
+    block_count = mlp.current_subset_blocks
+    return {
+        "gate": torch.cat(list(mlp.gate_weight_blocks[:block_count]), dim=0),
+        "up": torch.cat(list(mlp.up_weight_blocks[:block_count]), dim=0),
+        "down": torch.cat(list(mlp.down_weight_blocks[:block_count]), dim=1),
+    }
+
+
+def copy_active_mlp_to_reference(mlp, reference):
+    active = active_mlp_projection_weights(mlp)
+    with torch.no_grad():
+        reference.gate_proj.weight.copy_(active["gate"])
+        reference.up_proj.weight.copy_(active["up"])
+        reference.down_proj.weight.copy_(active["down"])
 
 
 def test_granularity_metadata_matches_paper_ratios_and_prefix_widths():
@@ -227,6 +253,102 @@ def test_mlp_configures_prefix_tensor_shapes_and_forward_output():
             prefix_width,
         )
         assert mlp(x).shape == x.shape
+
+
+@pytest.mark.parametrize("mlp_cls", [ModifiedLlamaMLP, CatLlamaMLP])
+def test_full_elastic_model_initializes_replacement_mlp_with_llama_recipe(
+    monkeypatch,
+    mlp_cls,
+):
+    config = tiny_llama_config(num_hidden_layers=1, mlp_bias=True)
+    config.initializer_range = 0.03125
+
+    def fill_with_requested_normal(tensor, mean=0.0, std=1.0, generator=None):
+        del generator
+        with torch.no_grad():
+            return tensor.fill_(mean + std)
+
+    monkeypatch.setattr(torch.nn.init, "normal_", fill_with_requested_normal)
+
+    model = ModifiedLlamaForCausalLM(config, mlp_cls=mlp_cls)
+    mlp = model.model.layers[0].mlp
+    mlp.configure_subnetwork("xl")
+
+    for weight in active_mlp_projection_weights(mlp).values():
+        torch.testing.assert_close(
+            weight,
+            torch.full_like(weight, config.initializer_range),
+        )
+
+    if isinstance(mlp, ModifiedLlamaMLP):
+        biases = (mlp.gate_proj.bias, mlp.up_proj.bias, mlp.down_proj.bias)
+    else:
+        biases = (
+            *mlp.gate_bias_blocks,
+            *mlp.up_bias_blocks,
+            mlp.down_bias,
+        )
+    for bias in biases:
+        torch.testing.assert_close(bias, torch.zeros_like(bias))
+
+
+@pytest.mark.parametrize("mlp_cls", [ModifiedLlamaMLP, CatLlamaMLP])
+def test_elastic_mlp_matches_fixed_width_reference_forward_and_optimizer_step(
+    mlp_cls,
+):
+    torch.manual_seed(7)
+    elastic_config = tiny_llama_config(num_hidden_layers=1)
+    elastic = mlp_cls(
+        elastic_config,
+        gradient_membership_correction_enabled=False,
+    )
+    elastic.configure_subnetwork("m")
+
+    reference_config = tiny_llama_config(
+        num_hidden_layers=1,
+        intermediate_size=elastic.current_subset_hd,
+    )
+    reference = LlamaMLP(reference_config)
+    copy_active_mlp_to_reference(elastic, reference)
+
+    elastic_optimizer = torch.optim.AdamW(
+        elastic.parameters(),
+        lr=0.01,
+        betas=(0.9, 0.95),
+        eps=1.0e-8,
+        weight_decay=0.1,
+    )
+    reference_optimizer = torch.optim.AdamW(
+        reference.parameters(),
+        lr=0.01,
+        betas=(0.9, 0.95),
+        eps=1.0e-8,
+        weight_decay=0.1,
+    )
+    inputs = torch.randn(2, 3, elastic_config.hidden_size)
+
+    elastic_output = elastic(inputs)
+    reference_output = reference(inputs)
+    torch.testing.assert_close(elastic_output, reference_output)
+
+    elastic_output.square().mean().backward()
+    reference_output.square().mean().backward()
+    elastic_optimizer.step()
+    reference_optimizer.step()
+
+    active_after_step = active_mlp_projection_weights(elastic)
+    torch.testing.assert_close(
+        active_after_step["gate"],
+        reference.gate_proj.weight,
+    )
+    torch.testing.assert_close(
+        active_after_step["up"],
+        reference.up_proj.weight,
+    )
+    torch.testing.assert_close(
+        active_after_step["down"],
+        reference.down_proj.weight,
+    )
 
 
 def test_modified_mlp_uses_configured_prefix_metadata():

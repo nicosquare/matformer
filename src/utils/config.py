@@ -112,11 +112,21 @@ TINYSTORIES_CONTROLLED_DATASET_PHASES = {
     "tinystories_instruct_controlled",
 }
 PORTFOLIO_COMPARISON_GROUP_ID = "tinystories_instruct_portfolio_catchup_v1"
+PORTFOLIO_MATFORMER_GRANULARITIES_COMPARISON_GROUP_ID = (
+    "tinystories_instruct_portfolio_catchup_matformer_granularities_v1"
+)
 PORTFOLIO_REFERENCE_BUDGET_TOKENS = 713_785_344
 PORTFOLIO_ELASTIC_BUDGET_CAP_TOKENS = 2_141_356_032
 PORTFOLIO_AGGREGATE_REFERENCE_BUDGET_TOKENS = 2_855_141_376
 PORTFOLIO_AGGREGATE_REFERENCE_COUNT = 4
 PORTFOLIO_GRANULARITIES = ("g250", "g500", "g750", "g1000")
+PORTFOLIO_MATFORMER_GRANULARITIES = ("g125", "g250", "g500", "g1000")
+PORTFOLIO_GRANULARITIES_BY_COMPARISON_GROUP = {
+    PORTFOLIO_COMPARISON_GROUP_ID: PORTFOLIO_GRANULARITIES,
+    PORTFOLIO_MATFORMER_GRANULARITIES_COMPARISON_GROUP_ID: (
+        PORTFOLIO_MATFORMER_GRANULARITIES
+    ),
+}
 PORTFOLIO_COMPARISON_ROLES = {
     "standalone_reference",
     "elastic_candidate",
@@ -125,10 +135,17 @@ PORTFOLIO_EXTENSION_ARMS = {
     "uniform_h1_4b": {
         "budget_tokens": PORTFOLIO_AGGREGATE_REFERENCE_BUDGET_TOKENS,
         "sampling_mode": "nested-random",
+        "model_variant": "slicing",
     },
     "nested_all_b": {
         "budget_tokens": PORTFOLIO_REFERENCE_BUDGET_TOKENS,
         "sampling_mode": "nested-all",
+        "model_variant": "slicing",
+    },
+    "concat_uniform_h1_4b": {
+        "budget_tokens": PORTFOLIO_AGGREGATE_REFERENCE_BUDGET_TOKENS,
+        "sampling_mode": "nested-random",
+        "model_variant": "concat",
     },
 }
 DEFAULT_FFN_MULTIPLIER = 4
@@ -3632,12 +3649,15 @@ def _resolve_portfolio_controlled_experiment(config: dict[str, Any]) -> None:
     group_id = controlled.get(
         "comparison_group_id", PORTFOLIO_COMPARISON_GROUP_ID
     )
-    if group_id != PORTFOLIO_COMPARISON_GROUP_ID:
+    if group_id not in PORTFOLIO_GRANULARITIES_BY_COMPARISON_GROUP:
         raise ConfigError(
-            "controlled_experiment.comparison_group_id must be "
-            f"{PORTFOLIO_COMPARISON_GROUP_ID}"
+            "controlled_experiment.comparison_group_id must identify a supported "
+            "portfolio granularity profile"
         )
     controlled["comparison_group_id"] = group_id
+    portfolio_granularities = PORTFOLIO_GRANULARITIES_BY_COMPARISON_GROUP[
+        str(group_id)
+    ]
 
     defaults = {
         "enabled": role == "elastic_candidate",
@@ -3645,7 +3665,7 @@ def _resolve_portfolio_controlled_experiment(config: dict[str, Any]) -> None:
         "reference_budget_tokens": PORTFOLIO_REFERENCE_BUDGET_TOKENS,
         "elastic_budget_cap_tokens": PORTFOLIO_ELASTIC_BUDGET_CAP_TOKENS,
         "aggregate_reference_count": PORTFOLIO_AGGREGATE_REFERENCE_COUNT,
-        "granularities": list(PORTFOLIO_GRANULARITIES),
+        "granularities": list(portfolio_granularities),
         "perplexity_tolerance": 0.005,
         "required_consecutive_evaluations": 5,
         "target_manifest_path": None,
@@ -3664,11 +3684,19 @@ def _resolve_portfolio_controlled_experiment(config: dict[str, Any]) -> None:
     config["controlled_experiment"] = controlled
 
     if role == "elastic_candidate":
-        _validate_portfolio_manifest_link(
+        target_manifest = _validate_portfolio_manifest_link(
             contract["target_manifest_path"],
             contract["target_manifest_hash"],
             field_prefix="controlled_experiment.portfolio_catchup.target_manifest",
         )
+        if (
+            target_manifest.get("comparison_group_id") != group_id
+            or target_manifest.get("granularities")
+            != list(portfolio_granularities)
+        ):
+            raise ConfigError(
+                "Portfolio target manifest uses a different granularity profile"
+            )
 
 
 def _validate_portfolio_manifest_link(
@@ -3748,8 +3776,12 @@ def _validate_portfolio_controlled_experiment(config: Mapping[str, Any]) -> None
             "LR-selection manifest fields are not supported except as null "
             "legacy metadata on schema-1 standalone references"
         )
-    if controlled.get("comparison_group_id") != PORTFOLIO_COMPARISON_GROUP_ID:
+    group_id = controlled.get("comparison_group_id")
+    if group_id not in PORTFOLIO_GRANULARITIES_BY_COMPARISON_GROUP:
         raise ConfigError("Portfolio comparison group ID is invalid")
+    portfolio_granularities = PORTFOLIO_GRANULARITIES_BY_COMPARISON_GROUP[
+        str(group_id)
+    ]
 
     expected_elastic_budget = (
         PORTFOLIO_EXTENSION_ARMS[str(comparison_arm_id)]["budget_tokens"]
@@ -3760,7 +3792,7 @@ def _validate_portfolio_controlled_experiment(config: Mapping[str, Any]) -> None
         "reference_budget_tokens": PORTFOLIO_REFERENCE_BUDGET_TOKENS,
         "elastic_budget_cap_tokens": expected_elastic_budget,
         "aggregate_reference_count": PORTFOLIO_AGGREGATE_REFERENCE_COUNT,
-        "granularities": list(PORTFOLIO_GRANULARITIES),
+        "granularities": list(portfolio_granularities),
         "perplexity_tolerance": 0.005,
         "required_consecutive_evaluations": 5,
         "save_confirmation_checkpoint": True,
@@ -3801,12 +3833,17 @@ def _validate_portfolio_controlled_experiment(config: Mapping[str, Any]) -> None
             raise ConfigError(
                 "Standalone references require exactly one active granularity"
             )
-        if granularities[0] not in PORTFOLIO_GRANULARITIES:
+        if granularities[0] not in portfolio_granularities:
             raise ConfigError("Standalone reference granularity is outside the portfolio")
     else:
-        expected_sampling_mode = (
-            PORTFOLIO_EXTENSION_ARMS[str(comparison_arm_id)]["sampling_mode"]
+        extension_arm = (
+            PORTFOLIO_EXTENSION_ARMS[str(comparison_arm_id)]
             if extension_candidate
+            else None
+        )
+        expected_sampling_mode = (
+            extension_arm["sampling_mode"]
+            if extension_arm is not None
             else "nested-random"
         )
         if run.get("model_family") != "nested" or run.get(
@@ -3815,9 +3852,15 @@ def _validate_portfolio_controlled_experiment(config: Mapping[str, Any]) -> None
             raise ConfigError(
                 "Elastic portfolio topology does not match its comparison arm"
             )
-        if granularities != list(PORTFOLIO_GRANULARITIES):
+        if granularities != list(portfolio_granularities):
             raise ConfigError(
                 "Elastic portfolio runs require all four ordered granularities"
+            )
+        if extension_arm is not None and model.get("variant") != extension_arm.get(
+            "model_variant"
+        ):
+            raise ConfigError(
+                "Elastic portfolio model variant does not match its comparison arm"
             )
         if expected_sampling_mode == "nested-random":
             if model.get("granularity_sampling_mode") != "global":
