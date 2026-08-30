@@ -1,6 +1,6 @@
 # Notes Index and Status
 
-Reviewed: 2026-08-07
+Reviewed: 2026-08-31
 
 The `specs/` tree and resolved runtime configuration are authoritative for
 implemented behavior. Notes explain design history, experimental evidence, or
@@ -22,6 +22,8 @@ configuration.
 | Note | Status | Still necessary? | Recommended treatment |
 | --- | --- | --- | --- |
 | [H-window gradient-interference diagnostic](h-window-gradient-interference-diagnostic_2026-08-20.md) | Active diagnostic proposal | Yes while evaluating uniform persistence | Inventories existing pipeline artifacts, limits additions to missing diagnostic evidence, and defines shared-support gradient measurements plus a partial-Adam-adaptation explanation for H=1 outperforming H=5. |
+| [Per-width optimizer Spec Kit prompt](tinystories_per_width_optimizer_speckit_prompt.md) | Active feature prompt | Yes while specifying the experiment | Defines independent optimizer-state semantics, global scheduler-clock fairness, resume requirements, and the paired TinyStories-Instruct comparison. |
+| [Per-width optimizer experiment commands](../docs/tinystories-per-width-optimizer-experiment.md) | Proposed operational runbook | Yes after implementation | Provides preflight, Slurm submission, completion checks, explicit terminal-checkpoint holdout evaluation, and optional three-epoch confirmation commands. |
 | [MatFormer reproduction specification](step_1.md) | Foundational brief, partially superseded | Historical reference | Keep for project origin and paper-reproduction intent. Use `specs/001-matformer-lm-reproduction/` for implemented requirements. |
 | [Granularity sampling discussion](granularity_sampling_discussion_2026-06-09.md) | Superseded early ideation | No for current decisions | Archive or remove after confirming no external references depend on it. Its useful Bayesian direction is represented by feature 010 and the current discussion. |
 | `adaptive_per_block_proposal.md` | Superseded heuristic proposal; currently deleted in the working tree | No | The proposal used training-batch loss and the legacy pseudo-Thompson path. Its pending deletion is consistent with the current method history; do not restore it as active guidance. |
@@ -38,7 +40,9 @@ Keep directly visible for ongoing adaptive-controller work:
 - the probabilistic adaptive granularity discussion;
 - the balanced warmup note;
 - the episodic-reset proposal;
-- the checkpoint-selection discussion.
+- the checkpoint-selection discussion;
+- the per-width optimizer Spec Kit prompt and experiment runbook while that
+  comparison is active.
 
 Keep the fixed-$Q$ calibration record and Cat Llama report as historical
 evidence. The reproduction brief remains useful project provenance. The early
