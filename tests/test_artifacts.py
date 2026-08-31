@@ -54,6 +54,76 @@ from src.training.steps import build_training_metric_row
 from src.utils.reproducibility import configure_strict_determinism, derive_seed
 
 
+def test_optimizer_ownership_metric_and_summary_schemas_are_reconciled():
+    config = resolve_run_config(
+        "tests/fixtures/per_granularity_optimizer_smoke.yaml",
+        overrides={"run.continuation.enabled": False},
+    )
+    row = build_training_metric_row(
+        config,
+        step=1,
+        granularity="narrow",
+        loss=0.5,
+        tokens_seen=64,
+        content_tokens_seen=64,
+        wall_clock_seconds=0.25,
+        peak_memory_bytes=1024,
+        adaptive_artifacts={
+            "optimizer_action_id": "balanced-cycle:0:0",
+            "optimizer_batch_provenance": {"epoch": 0, "batch_index": 0},
+            "selected_optimizer_granularity": "narrow",
+            "optimizer_step_attempted": True,
+            "optimizer_step_committed": True,
+            "optimizer_successful_update_counts": {"narrow": 1, "full": 0},
+            "optimizer_exposure_counts": {"narrow": 1, "full": 0},
+            "global_scheduler_position": 1,
+        },
+    )
+
+    assert row["optimizer_state_scope"] == "per_granularity"
+    assert row["selected_optimizer_granularity"] == "narrow"
+    assert row["optimizer_step_attempted"] is True
+    assert row["optimizer_step_committed"] is True
+    assert row["global_scheduler_position"] == 1
+    assert {
+        "optimizer_state_scope",
+        "selected_optimizer_granularity",
+        "optimizer_step_attempted",
+        "optimizer_step_committed",
+        "optimizer_failure_stage",
+        "optimizer_action_id",
+        "optimizer_batch_provenance",
+        "optimizer_successful_update_counts",
+        "optimizer_exposure_counts",
+        "global_scheduler_position",
+    }.issubset(METRICS_COLUMNS)
+
+    from src.utils.metrics import build_optimizer_state_summary_fields
+
+    fields = build_optimizer_state_summary_fields(
+        config,
+        run_state={
+            "last_completed_step": 4,
+            "optimizer_update_counts": {"narrow": 2, "full": 2},
+            "global_sampling_state": {
+                "total_successful_updates": 4,
+                "exposure_counts": {"narrow": 2, "full": 2},
+            },
+        },
+        attempted_steps=4,
+        wall_time_seconds=1.5,
+        peak_memory_bytes=2048,
+        checkpoint_path=None,
+    )
+    assert fields["optimizer_state_scope"] == "per_granularity"
+    assert fields["attempted_optimizer_steps"] == 4
+    assert fields["committed_optimizer_steps"] == 4
+    assert fields["failed_optimizer_attempts"] == 0
+    assert fields["optimizer_accounting_reconciled"] is True
+    assert fields["training_wall_time_seconds"] == pytest.approx(1.5)
+    assert fields["peak_accelerator_memory_bytes"] == 2048
+
+
 class TinyExtractionModel(torch.nn.Module):
     def __init__(self):
         super().__init__()

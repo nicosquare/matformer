@@ -77,6 +77,9 @@ PANELGRAD_RELATIVE_TOLERANCE = 1e-6
 PANELGRAD_ABSOLUTE_TOLERANCE = 1e-8
 VALID_LEARNING_RATE_SCALE_RULES = {"none", "linear", "sqrt"}
 VALID_OPTIMIZER_NAMES = {"adamw", "sgd"}
+OPTIMIZER_STATE_CONTRACT_SCHEMA_VERSION = 1
+VALID_OPTIMIZER_STATE_SCOPES = {"shared", "per_granularity"}
+VALID_OPTIMIZER_SCHEDULER_CLOCKS = {"global_step"}
 VALID_COMPLETION_LABELS = {"debug", "run"}
 VALID_GRANULARITY_SAMPLING = {"all", "random"}
 VALID_PRE_NESTED_WARMUP_UNITS = {"epochs", "steps"}
@@ -709,8 +712,32 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
             "optimizer",
             "optimizer_name",
             "optimizer_kwargs",
+            "optimizer_state_scope",
+            "optimizer_scheduler_clock",
+            "optimizer_state_contract",
             "preset_selections",
             "preset_registry_paths",
+        ],
+    )
+    optimizer_state_contract = training.get("optimizer_state_contract")
+    if not isinstance(optimizer_state_contract, Mapping):
+        raise ConfigError(
+            "Missing mapping section: training.optimizer_state_contract"
+        )
+    _require_fields(
+        optimizer_state_contract,
+        "training.optimizer_state_contract",
+        [
+            "schema_version",
+            "state_scope",
+            "scheduler_clock",
+            "ordered_granularities",
+            "optimizer_name",
+            "optimizer_kwargs",
+            "base_learning_rate",
+            "resolved_learning_rate",
+            "scheduler_contract",
+            "single_process_required",
         ],
     )
     _require_fields(
@@ -4013,6 +4040,7 @@ def resolve_training_length_for_world_size(
         effective_world_size,
         explicit_override_keys=explicit_override_keys,
     )
+    _resolve_optimizer_state_contract(config)
 
 
 def _resolve_effective_world_size() -> int:
@@ -4066,6 +4094,24 @@ def _resolve_training_schedule_defaults(
             explicit_override_keys=explicit_override_keys,
         )
     )
+    requested_state_scope = optimizer.get(
+        "state_scope",
+        training.get("requested_optimizer_state_scope"),
+    )
+    requested_scheduler_clock = optimizer.get(
+        "scheduler_clock",
+        training.get("requested_optimizer_scheduler_clock"),
+    )
+    optimizer_state_scope = _normalize_optimizer_state_scope(
+        requested_state_scope
+        if requested_state_scope is not None
+        else training.get("optimizer_state_scope", "shared")
+    )
+    optimizer_scheduler_clock = _normalize_optimizer_scheduler_clock(
+        requested_scheduler_clock
+        if requested_scheduler_clock is not None
+        else training.get("optimizer_scheduler_clock", "global_step")
+    )
     optimizer_name = _normalize_optimizer_name(optimizer.get("name", "adamw"))
     optimizer_kwargs = _resolve_optimizer_kwargs(
         optimizer_name,
@@ -4081,6 +4127,18 @@ def _resolve_training_schedule_defaults(
     }
     training["optimizer_name"] = optimizer_name
     training["optimizer_kwargs"] = optimizer_kwargs
+    training["requested_optimizer_state_scope"] = (
+        _normalize_optimizer_state_scope(requested_state_scope)
+        if requested_state_scope is not None
+        else None
+    )
+    training["requested_optimizer_scheduler_clock"] = (
+        _normalize_optimizer_scheduler_clock(requested_scheduler_clock)
+        if requested_scheduler_clock is not None
+        else None
+    )
+    training["optimizer_state_scope"] = optimizer_state_scope
+    training["optimizer_scheduler_clock"] = optimizer_scheduler_clock
     training["preset_selections"] = (
         {"optimizer": optimizer_preset_name} if optimizer_preset_name else {}
     )
@@ -4156,6 +4214,63 @@ def _resolve_training_schedule_defaults(
     training["scheduler_kwargs"] = scheduler_kwargs
     training["scheduler_specific_kwargs"] = copy.deepcopy(scheduler_kwargs)
     training["scheduler_contract"] = copy.deepcopy(scheduler_contract)
+
+
+def _normalize_optimizer_state_scope(raw_scope: Any) -> str:
+    if not isinstance(raw_scope, str):
+        raise ConfigError("training.optimizer.state_scope must be a string")
+    state_scope = raw_scope.strip()
+    if state_scope not in VALID_OPTIMIZER_STATE_SCOPES:
+        raise ConfigError(
+            "training.optimizer.state_scope must be one of "
+            f"{sorted(VALID_OPTIMIZER_STATE_SCOPES)}"
+        )
+    return state_scope
+
+
+def _normalize_optimizer_scheduler_clock(raw_clock: Any) -> str:
+    if not isinstance(raw_clock, str):
+        raise ConfigError("training.optimizer.scheduler_clock must be a string")
+    scheduler_clock = raw_clock.strip()
+    if scheduler_clock not in VALID_OPTIMIZER_SCHEDULER_CLOCKS:
+        raise ConfigError(
+            "training.optimizer.scheduler_clock must be one of "
+            f"{sorted(VALID_OPTIMIZER_SCHEDULER_CLOCKS)}"
+        )
+    return scheduler_clock
+
+
+def _resolve_optimizer_state_contract(config: dict[str, Any]) -> None:
+    training = config.get("training")
+    model = config.get("model")
+    if not isinstance(training, dict) or not isinstance(model, Mapping):
+        return
+
+    ordered_granularities = model.get("granularities")
+    if not isinstance(ordered_granularities, list):
+        raise ConfigError("model.granularities must be an ordered list")
+    canonical_granularities = [str(label) for label in ordered_granularities]
+
+    state_scope = _normalize_optimizer_state_scope(
+        training.get("optimizer_state_scope", "shared")
+    )
+    scheduler_clock = _normalize_optimizer_scheduler_clock(
+        training.get("optimizer_scheduler_clock", "global_step")
+    )
+    training["optimizer_state_scope"] = state_scope
+    training["optimizer_scheduler_clock"] = scheduler_clock
+    training["optimizer_state_contract"] = {
+        "schema_version": OPTIMIZER_STATE_CONTRACT_SCHEMA_VERSION,
+        "state_scope": state_scope,
+        "scheduler_clock": scheduler_clock,
+        "ordered_granularities": canonical_granularities,
+        "optimizer_name": training["optimizer_name"],
+        "optimizer_kwargs": copy.deepcopy(training["optimizer_kwargs"]),
+        "base_learning_rate": training["base_learning_rate"],
+        "resolved_learning_rate": training["resolved_learning_rate"],
+        "scheduler_contract": copy.deepcopy(training["scheduler"]),
+        "single_process_required": state_scope == "per_granularity",
+    }
 
 
 def _resolve_continuation_defaults(config: dict[str, Any]) -> None:

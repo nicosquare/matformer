@@ -22,6 +22,7 @@ from src.training.checkpointing import (
     maybe_write_latest_checkpoint,
 )
 from src.training.monitoring import NoopHeartbeatWriter
+from src.training.optimizer_state import PerGranularityOptimizerCollection
 from src.utils.config import (
     ConfigError,
 )
@@ -229,6 +230,40 @@ def should_run_pre_nested_warmup(
     return not bool(run_state.get("warmup_completed", False))
 
 
+def _validate_per_granularity_warmup_ownership(
+    config: Mapping[str, Any],
+    optimizer,
+) -> None:
+    """Reject any warmup plan that cannot name one width owner per step."""
+
+    if not isinstance(optimizer, PerGranularityOptimizerCollection):
+        return
+    warmup = config.get("training", {}).get("pre_nested_warmup", {})
+    if not isinstance(warmup, Mapping) or not bool(warmup.get("enabled", False)):
+        return
+    policy = str(warmup.get("policy", "full_only"))
+    if policy == "full_only":
+        planned_owners: list[Any] = [config["model"]["granularities"][-1]]
+    elif policy == "balanced_global":
+        schedule = warmup.get("schedule")
+        if not isinstance(schedule, list) or not schedule:
+            raise ConfigError(
+                "Per-granularity balanced warmup requires a non-empty owner schedule"
+            )
+        planned_owners = schedule
+    else:
+        raise ConfigError(
+            "Per-granularity warmup requires full_only or balanced_global ownership"
+        )
+
+    for owner in planned_owners:
+        if isinstance(owner, (list, tuple, set, Mapping)):
+            raise ConfigError(
+                "Per-granularity warmup steps must apply exactly one global width"
+            )
+        optimizer.optimizer_for(str(owner))
+
+
 def run_pre_nested_warmup_phase(
     config: dict[str, Any],
     model,
@@ -251,6 +286,7 @@ def run_pre_nested_warmup_phase(
     warmup = config["training"].get("pre_nested_warmup", {})
     if not isinstance(warmup, Mapping):
         warmup = {}
+    _validate_per_granularity_warmup_ownership(config, optimizer)
 
     saved_warmup_state = run_state.get("pre_nested_warmup_state")
     if isinstance(saved_warmup_state, Mapping):

@@ -2242,6 +2242,196 @@ def test_optimizer_preset_resolution_merges_registry_defaults_and_partial_overri
     )
 
 
+def test_optimizer_state_scope_omission_resolves_historical_shared_contract():
+    resolved = resolve_run_config(
+        "tests/fixtures/experiment_config_resolution.yaml"
+    )
+    training = resolved["training"]
+
+    assert training["optimizer"] == {
+        "name": "adamw",
+        "kwargs": {
+            "betas": [0.9, 0.95],
+            "eps": 1.0e-8,
+            "weight_decay": 0.1,
+        },
+    }
+    assert set(training["optimizer"]) == {"name", "kwargs"}
+    assert training["optimizer_state_scope"] == "shared"
+    assert training["optimizer_scheduler_clock"] == "global_step"
+    assert training["optimizer_state_contract"] == {
+        "schema_version": 1,
+        "state_scope": "shared",
+        "scheduler_clock": "global_step",
+        "ordered_granularities": ["s", "m", "l", "xl"],
+        "optimizer_name": "adamw",
+        "optimizer_kwargs": {
+            "betas": [0.9, 0.95],
+            "eps": 1.0e-8,
+            "weight_decay": 0.1,
+        },
+        "base_learning_rate": 0.0003,
+        "resolved_learning_rate": 0.0003,
+        "scheduler_contract": training["scheduler"],
+        "single_process_required": False,
+    }
+
+
+def test_optimizer_state_scope_and_clock_accept_dotted_overrides():
+    resolved = resolve_run_config(
+        "tests/fixtures/per_granularity_optimizer_smoke.yaml",
+        overrides=[
+            "training.optimizer.state_scope=shared",
+            "training.optimizer.scheduler_clock=global_step",
+        ],
+    )
+    training = resolved["training"]
+
+    assert training["optimizer_state_scope"] == "shared"
+    assert training["optimizer_scheduler_clock"] == "global_step"
+    assert training["optimizer_state_contract"]["state_scope"] == "shared"
+    assert training["optimizer_state_contract"]["scheduler_clock"] == "global_step"
+    assert training["optimizer_state_contract"]["ordered_granularities"] == [
+        "narrow",
+        "full",
+    ]
+    assert set(training["optimizer"]) == {"name", "kwargs"}
+
+
+def test_per_granularity_optimizer_state_contract_preserves_width_order():
+    resolved = resolve_run_config(
+        "tests/fixtures/per_granularity_optimizer_smoke.yaml"
+    )
+    training = resolved["training"]
+
+    assert training["optimizer_state_scope"] == "per_granularity"
+    assert training["optimizer_scheduler_clock"] == "global_step"
+    assert training["optimizer_state_contract"]["ordered_granularities"] == [
+        "narrow",
+        "full",
+    ]
+    assert training["optimizer_state_contract"]["single_process_required"] is True
+    assert training["optimizer"] == {
+        "name": "adamw",
+        "kwargs": {
+            "betas": [0.9, 0.95],
+            "eps": 1.0e-8,
+            "weight_decay": 0.1,
+        },
+    }
+
+
+def _patch_optimizer_scope_recipe_artifacts(monkeypatch):
+    import src.training.fineweb_tokenizer as fineweb_tokenizer
+    import src.training.packed_corpus as packed_corpus
+
+    tokenizer = {
+        "tokenizer_name": "tinystories-instruct-2048",
+        "manifest_hash": "tokenizer-hash",
+        "sentencepiece_model_sha256": "model-hash",
+        "vocab_size": 2048,
+    }
+    manifest = {
+        "context_length": 128,
+        "data_seed": 42,
+        "corpus_hash": "corpus-hash",
+        "source": {
+            "dataset_name": "roneneldan/TinyStoriesInstruct",
+            "dataset_config_name": "default",
+            "split": "train+validation",
+        },
+        "tokenizer": {
+            "name": tokenizer["tokenizer_name"],
+            "revision": tokenizer["manifest_hash"],
+            "manifest_hash": tokenizer["manifest_hash"],
+            "sentencepiece_model_sha256": tokenizer[
+                "sentencepiece_model_sha256"
+            ],
+            "vocab_size": 2048,
+        },
+        "training_order": {
+            "permutation_version": "numpy_pcg64_uint64_le_v1",
+            "sha256": "order-hash",
+        },
+        "role_manifest_hashes": {
+            "optimizer_training": "optimizer-hash",
+            "ordinary_validation": "validation-hash",
+            "controller": "controller-hash",
+            "final_holdout": "holdout-hash",
+        },
+        "roles": {
+            "optimizer_training": {
+                "token_count": 713_785_344,
+                "sequence_count": 5_576_448,
+                "manifest_hash": "optimizer-hash",
+            },
+            "ordinary_validation": {"manifest_hash": "validation-hash"},
+            "controller": {"manifest_hash": "controller-hash"},
+            "final_holdout": {"manifest_hash": "holdout-hash"},
+        },
+    }
+    monkeypatch.setattr(
+        fineweb_tokenizer, "load_tokenizer_manifest", lambda *args, **kwargs: tokenizer
+    )
+    monkeypatch.setattr(
+        packed_corpus, "load_corpus_manifest", lambda *args, **kwargs: manifest
+    )
+
+
+def test_frozen_tinystories_optimizer_scope_recipe_resolves_exact_pilot_controls(
+    monkeypatch,
+):
+    _patch_optimizer_scope_recipe_artifacts(monkeypatch)
+    resolved = resolve_run_config(
+        "configs/controlled_exps/tinystories_instruct_per_width_optimizers.yaml"
+    )
+
+    assert resolved["controlled_experiment"]["seeds"] == [42, 43, 44]
+    assert resolved["controlled_experiment"]["pilot_budget_tokens"] == 713_785_344
+    assert resolved["controlled_experiment"]["confirmation_budget_tokens"] == 2_141_356_032
+    assert resolved["model"]["granularities"] == ["g250", "g500", "g750", "g1000"]
+    assert resolved["model"]["granularity_prefixes"] == {
+        "g250": 0.25,
+        "g500": 0.5,
+        "g750": 0.75,
+        "g1000": 1.0,
+    }
+    assert resolved["model"]["global_sampling_schedule"] == "balanced_cycle"
+    assert resolved["model"]["global_sampling_interval_steps"] == 1
+    assert resolved["training"]["optimizer_state_scope"] == "shared"
+    assert resolved["training"]["optimizer_name"] == "adamw"
+    assert resolved["training"]["resolved_learning_rate"] == pytest.approx(0.008)
+    assert resolved["training"]["scheduler_name"] == "cosine"
+    assert resolved["training"]["resolved_warmup_steps"] == 64
+    assert resolved["training"]["max_steps"] == 87_132
+    assert resolved["training"]["expected_tokens_per_step"] == 8_192
+    assert resolved["dataset"]["fixed_four_role_partition"] is True
+    assert resolved["dataset"]["optimizer_iteration"]["mode"] == "repeat_epochs"
+    assert resolved["evaluation"]["validation"]["interval_steps"] == 64
+    assert resolved["evaluation"]["final_holdout"]["examples"] == 512
+
+
+def test_frozen_tinystories_optimizer_scope_recipe_resolves_confirmation_override(
+    monkeypatch,
+):
+    _patch_optimizer_scope_recipe_artifacts(monkeypatch)
+    resolved = resolve_run_config(
+        "configs/controlled_exps/tinystories_instruct_per_width_optimizers.yaml",
+        overrides=[
+            "run.seed=44",
+            "training.token_budget=2141356032",
+            "training.optimizer.state_scope=per_granularity",
+        ],
+    )
+
+    assert resolved["run"]["seed"] == 44
+    assert resolved["training"]["max_steps"] == 261_396
+    assert resolved["training"]["optimizer_state_scope"] == "per_granularity"
+    assert resolved["training"]["optimizer_state_contract"][
+        "ordered_granularities"
+    ] == ["g250", "g500", "g750", "g1000"]
+
+
 def test_invalid_optimizer_preset_names_fail_before_training_starts():
     with pytest.raises(
         ConfigError,

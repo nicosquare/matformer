@@ -62,3 +62,60 @@ def test_preflight_reports_balanced_warmup_without_full_schedule(tmp_path):
         "unit": "steps",
     }
     assert "schedule" not in payload["pre_nested_warmup"]
+
+
+def test_preflight_reports_complete_optimizer_state_identity(tmp_path):
+    payload = _run_preflight(
+        "--config",
+        "tests/fixtures/per_granularity_optimizer_smoke.yaml",
+        "--output-dir",
+        str(tmp_path / "per-granularity-optimizer-smoke-001"),
+    )
+
+    assert payload["optimizer_state_scope"] == "per_granularity"
+    assert payload["optimizer_scheduler_clock"] == "global_step"
+    assert payload["optimizer_state_contract"]["ordered_granularities"] == [
+        "narrow",
+        "full",
+    ]
+    assert payload["optimizer_state_contract"]["optimizer_name"] == "adamw"
+    assert payload["optimizer_state_contract"]["scheduler_contract"] == payload[
+        "scheduler"
+    ]
+    assert payload["sampling_policy"] == {
+        "mode": "global",
+        "schedule": "balanced_cycle",
+        "schedule_version": 1,
+        "interval_steps": 1,
+    }
+    assert payload["data_roles"] == {
+        "data_roles_manifest_hash": None,
+        "optimizer_training_manifest_hash": None,
+        "controller_manifest_hash": None,
+        "ordinary_validation_manifest_hash": None,
+        "final_holdout_manifest_hash": None,
+    }
+    assert payload["run_budget"] == {
+        "token_budget": 256,
+        "global_steps": 4,
+        "expected_tokens_per_step": 64,
+    }
+    assert len(payload["full_run_signature"]) == 64
+    assert len(payload["paired_control_signature"]) == 64
+
+
+def test_preflight_honors_shared_scope_and_global_clock_overrides(tmp_path):
+    payload = _run_preflight(
+        "--config",
+        "tests/fixtures/per_granularity_optimizer_smoke.yaml",
+        "--output-dir",
+        str(tmp_path / "per-granularity-optimizer-smoke-001"),
+        "--override",
+        "training.optimizer.state_scope=shared",
+        "--override",
+        "training.optimizer.scheduler_clock=global_step",
+    )
+
+    assert payload["optimizer_state_scope"] == "shared"
+    assert payload["optimizer_scheduler_clock"] == "global_step"
+    assert payload["optimizer_state_contract"]["state_scope"] == "shared"

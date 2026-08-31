@@ -33,6 +33,8 @@ __all__ = [
     "PanelGradAction",
     "PanelGradHistory",
     "PanelGradRefresh",
+    "OptimizerStateRunArtifacts",
+    "OptimizerStateReportingError",
     "config_path_for_scaling_row",
     "correction_mode_from_saved_config",
     "enrich_metrics_metadata_from_run_config",
@@ -61,6 +63,7 @@ __all__ = [
     "seed_independent_validation_contract",
     "validation_split_filter",
     "with_default_model_variant",
+    "load_optimizer_state_run",
 ]
 
 
@@ -73,6 +76,172 @@ PANELGRAD_METHOD_FAMILIES = {
 
 class FinalHoldoutReportingError(ValueError):
     """Raised when final-holdout rows cannot form one valid comparison set."""
+
+
+class OptimizerStateReportingError(ValueError):
+    """Raised when one explicit paired-run directory is not auditable."""
+
+
+@dataclass(frozen=True)
+class OptimizerStateRunArtifacts:
+    run_dir: Path
+    config: Mapping[str, Any]
+    summary: Mapping[str, Any]
+    metrics: tuple[Mapping[str, str], ...]
+    run_id: str
+    seed: int
+    state_scope: str
+    ordered_widths: tuple[str, ...]
+    paired_control_signature: str
+    checkpoint_path: Path
+    checkpoint_sha256: str
+
+
+def load_optimizer_state_run(run_dir: str | Path) -> OptimizerStateRunArtifacts:
+    """Load and validate one explicit optimizer-state comparison directory."""
+
+    root = Path(run_dir).expanduser().resolve()
+    required = {
+        "config": root / "config.json",
+        "summary": root / "run_summary.json",
+        "metrics": root / "metrics.csv",
+    }
+    missing = [name for name, path in required.items() if not path.is_file()]
+    if missing:
+        raise OptimizerStateReportingError(
+            f"Run {root} is missing required artifacts: {', '.join(missing)}"
+        )
+    config = _read_json_mapping(required["config"], artifact_name="config.json")
+    summary = _read_json_mapping(
+        required["summary"], artifact_name="run_summary.json"
+    )
+    try:
+        with required["metrics"].open("r", encoding="utf-8", newline="") as source:
+            metrics = tuple(dict(row) for row in csv.DictReader(source))
+    except (OSError, csv.Error, UnicodeError) as error:
+        raise OptimizerStateReportingError(
+            f"Cannot read metrics.csv for {root}"
+        ) from error
+    if summary.get("status") != "completed":
+        raise OptimizerStateReportingError(f"Run {root} is not completed")
+    training = config.get("training", {})
+    model = config.get("model", {})
+    scope = str(
+        summary.get("optimizer_state_scope")
+        or training.get("optimizer_state_scope")
+        or "shared"
+    )
+    if scope not in {"shared", "per_granularity"}:
+        raise OptimizerStateReportingError(
+            f"Run {root} has unknown optimizer state scope {scope!r}"
+        )
+    ordered = tuple(
+        str(label)
+        for label in (
+            summary.get("ordered_optimizer_granularities")
+            or training.get("optimizer_state_contract", {}).get(
+                "ordered_granularities", []
+            )
+            or model.get("granularities", [])
+        )
+    )
+    if len(ordered) < 2 or len(set(ordered)) != len(ordered):
+        raise OptimizerStateReportingError(
+            f"Run {root} has invalid ordered optimizer widths"
+        )
+    signature = summary.get("comparison_control_signature") or config.get(
+        "comparison_control_signature"
+    )
+    if not signature:
+        raise OptimizerStateReportingError(
+            f"Run {root} lacks comparison_control_signature"
+        )
+    checkpoint_value = (
+        summary.get("terminal_checkpoint_path")
+        or summary.get("latest_checkpoint_path")
+        or summary.get("final_checkpoint_path")
+    )
+    if checkpoint_value in (None, ""):
+        raise OptimizerStateReportingError(f"Run {root} lacks a terminal checkpoint")
+    checkpoint = Path(str(checkpoint_value)).expanduser()
+    if not checkpoint.is_absolute():
+        checkpoint = root / checkpoint
+    if not checkpoint.is_file():
+        alternate = root / "checkpoints" / checkpoint.name
+        checkpoint = alternate if alternate.is_file() else checkpoint
+    if not checkpoint.is_file():
+        raise OptimizerStateReportingError(
+            f"Run {root} terminal checkpoint does not exist: {checkpoint}"
+        )
+    purpose = summary.get("terminal_checkpoint_purpose", "resumable_training")
+    if purpose != "resumable_training":
+        raise OptimizerStateReportingError(
+            f"Run {root} terminal checkpoint is not resumable_training"
+        )
+    committed = int(summary.get("committed_optimizer_steps", 0))
+    updates = summary.get("optimizer_successful_update_counts", {})
+    exposures = summary.get("optimizer_exposure_counts", {})
+    if (
+        not summary.get("optimizer_accounting_reconciled", False)
+        or sum(int(value) for value in updates.values()) != committed
+        or {str(key): int(value) for key, value in updates.items()}
+        != {str(key): int(value) for key, value in exposures.items()}
+    ):
+        raise OptimizerStateReportingError(
+            f"Run {root} optimizer ownership counts do not reconcile"
+        )
+    committed_rows = [
+        row
+        for row in metrics
+        if row.get("split") == "train"
+        and str(row.get("optimizer_step_committed", "")).strip().lower()
+        in {"1", "true", "yes"}
+    ]
+    if len(committed_rows) != committed:
+        raise OptimizerStateReportingError(
+            f"Run {root} committed metric rows do not match the summary"
+        )
+    action_ids = [row.get("optimizer_action_id") for row in committed_rows]
+    if any(value in (None, "") for value in action_ids) or len(set(action_ids)) != committed:
+        raise OptimizerStateReportingError(
+            f"Run {root} lacks one unique action ID per committed step"
+        )
+    owner_counts = {width: 0 for width in ordered}
+    for row in committed_rows:
+        owner = str(row.get("selected_optimizer_granularity") or "")
+        if owner not in owner_counts:
+            raise OptimizerStateReportingError(
+                f"Run {root} metric row has unknown optimizer owner {owner!r}"
+            )
+        owner_counts[owner] += 1
+    if owner_counts != {str(key): int(value) for key, value in exposures.items()}:
+        raise OptimizerStateReportingError(
+            f"Run {root} metric ownership does not match exposures"
+        )
+    recorded_bytes = summary.get("terminal_checkpoint_bytes")
+    if recorded_bytes is not None and int(recorded_bytes) != checkpoint.stat().st_size:
+        raise OptimizerStateReportingError(
+            f"Run {root} terminal checkpoint byte count changed"
+        )
+    checkpoint_sha256 = _sha256_file(checkpoint)
+    recorded_hash = summary.get("terminal_checkpoint_sha256")
+    if recorded_hash not in (None, checkpoint_sha256):
+        raise OptimizerStateReportingError(
+            f"Run {root} terminal checkpoint hash changed"
+        )
+    return OptimizerStateRunArtifacts(
+        run_dir=root,
+        config=config,
+        summary=summary,
+        metrics=metrics,
+        run_id=str(summary.get("run_id") or config.get("run", {}).get("run_id")),
+        seed=int(summary.get("seed", config.get("run", {}).get("seed"))),
+        state_scope=scope,
+        ordered_widths=ordered,
+        paired_control_signature=str(signature),
+        checkpoint_path=checkpoint.resolve(),
+        checkpoint_sha256=checkpoint_sha256,
+    )
 
 
 @dataclass(frozen=True)

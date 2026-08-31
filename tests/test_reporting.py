@@ -19,6 +19,240 @@ from src.utils.metrics import write_metrics_csv, write_scaling_results_csv
 from src.utils.monitoring import group_loss_rows_by_series
 
 
+def test_optimizer_scope_public_reporting_models_default_historical_scope_to_shared():
+    from src.evaluation.reporting import OptimizerStateRunOutcome, ResourceCosts
+
+    outcome = OptimizerStateRunOutcome.from_artifacts(
+        config={"model": {"granularities": ["g250", "g1000"]}, "training": {}},
+        summary={"run_id": "historical", "seed": 42},
+        per_width_outcomes={"g250": {"loss": 2.0}, "g1000": {"loss": 3.0}},
+        resources=ResourceCosts(1.0, 1024, 2048),
+    )
+
+    assert outcome.state_scope == "shared"
+    assert outcome.ordered_widths == ("g250", "g1000")
+    assert outcome.uniform_mean_loss == pytest.approx(2.5)
+    assert outcome.worst_width_loss == pytest.approx(3.0)
+    assert outcome.evidence_label == "diagnostic"
+
+
+def test_optimizer_scope_reporting_requires_explicit_six_run_manifest(tmp_path):
+    from scripts.analyze_tinystories_per_width_optimizer import (
+        OptimizerStateAnalysisError,
+        freeze_manifest,
+    )
+
+    with pytest.raises(OptimizerStateAnalysisError, match="exactly six"):
+        freeze_manifest(
+            phase="pilot",
+            run_dirs=[tmp_path / "one"],
+            output_dir=tmp_path / "analysis",
+        )
+
+
+def _write_optimizer_scope_reporting_runs(root: Path) -> list[Path]:
+    from src.utils.metrics import METRICS_COLUMNS
+    from src.utils.reproducibility import stable_hash
+
+    run_dirs = []
+    widths = ("g250", "g500", "g750", "g1000")
+    for seed in (42, 43, 44):
+        for scope in ("shared", "per_granularity"):
+            run_id = f"optimizer-state-{scope}-s{seed}"
+            run_dir = root / run_id
+            checkpoint = run_dir / "checkpoints" / "latest.pt"
+            checkpoint.parent.mkdir(parents=True)
+            checkpoint.write_bytes(f"checkpoint-{seed}-{scope}".encode())
+            signature = stable_hash({"seed": seed, "controls": "frozen"})
+            config = {
+                "controlled_experiment": {
+                    "holdout_opened_during_pilot": False,
+                },
+                "run": {"run_id": run_id, "seed": seed},
+                "model": {"granularities": list(widths)},
+                "training": {
+                    "optimizer_state_scope": scope,
+                    "optimizer_state_contract": {
+                        "ordered_granularities": list(widths)
+                    },
+                },
+                "comparison_control_signature": signature,
+            }
+            summary = {
+                "run_id": run_id,
+                "seed": seed,
+                "status": "completed",
+                "optimizer_state_scope": scope,
+                "ordered_optimizer_granularities": list(widths),
+                "comparison_control_signature": signature,
+                "committed_optimizer_steps": 4,
+                "attempted_optimizer_steps": 4,
+                "optimizer_successful_update_counts": {
+                    width: 1 for width in widths
+                },
+                "optimizer_exposure_counts": {width: 1 for width in widths},
+                "optimizer_accounting_reconciled": True,
+                "training_wall_time_seconds": 10.0 + (scope != "shared"),
+                "peak_accelerator_memory_bytes": 1024
+                + 256 * (scope != "shared"),
+                "terminal_checkpoint_path": str(checkpoint),
+                "terminal_checkpoint_bytes": checkpoint.stat().st_size,
+                "terminal_checkpoint_purpose": "resumable_training",
+            }
+            (run_dir / "config.json").write_text(
+                json.dumps(config), encoding="utf-8"
+            )
+            (run_dir / "run_summary.json").write_text(
+                json.dumps(summary), encoding="utf-8"
+            )
+            metric_rows = []
+            for step, width in enumerate(widths, start=1):
+                metric_rows.append(
+                    {
+                        "run_id": run_id,
+                        "step": step,
+                        "split": "train",
+                        "granularity": width,
+                        "optimizer_state_scope": scope,
+                        "selected_optimizer_granularity": width,
+                        "optimizer_step_attempted": True,
+                        "optimizer_step_committed": True,
+                        "optimizer_action_id": f"balanced:{step}:{width}",
+                        "optimizer_batch_provenance": {"batch": step},
+                        "learning_rate": 0.008,
+                        "global_scheduler_position": step,
+                    }
+                )
+                loss = 2.0 + step / 10 + seed / 1000
+                if scope == "per_granularity":
+                    loss -= 0.01
+                metric_rows.append(
+                    {
+                        "run_id": run_id,
+                        "step": 4,
+                        "split": "validation",
+                        "granularity": width,
+                        "loss": loss,
+                        "perplexity": math.exp(loss),
+                    }
+                )
+            for row in metric_rows:
+                for field in METRICS_COLUMNS:
+                    row.setdefault(field, None)
+            write_metrics_csv(run_dir, metric_rows)
+            run_dirs.append(run_dir)
+    return run_dirs
+
+
+def test_optimizer_scope_freeze_and_report_emit_auditable_endpoint_resource_tables(
+    tmp_path,
+):
+    from scripts.analyze_tinystories_per_width_optimizer import (
+        OptimizerStateAnalysisError,
+        freeze_manifest,
+        write_report,
+    )
+
+    run_dirs = _write_optimizer_scope_reporting_runs(tmp_path / "runs")
+    from dataclasses import replace
+    from src.evaluation.reporting_impl import validate_optimizer_state_pairs
+    from src.evaluation.reporting_io import load_optimizer_state_run
+
+    loaded = [load_optimizer_state_run(path) for path in run_dirs]
+    mismatched = [*loaded[:-1], replace(loaded[-1], paired_control_signature="bad")]
+    with pytest.raises(ValueError, match="paired-control signatures differ"):
+        validate_optimizer_state_pairs(mismatched)
+    analysis = tmp_path / "analysis"
+    manifest_path = freeze_manifest(
+        phase="pilot", run_dirs=run_dirs, output_dir=analysis
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert len(manifest["runs"]) == 6
+    assert {entry["seed"] for entry in manifest["runs"]} == {42, 43, 44}
+    assert {entry["state_scope"] for entry in manifest["runs"]} == {
+        "shared",
+        "per_granularity",
+    }
+    assert freeze_manifest(
+        phase="pilot", run_dirs=reversed(run_dirs), output_dir=analysis
+    ) == manifest_path
+    with pytest.raises(OptimizerStateAnalysisError, match="Immutable manifest"):
+        freeze_manifest(
+            phase="confirmation", run_dirs=run_dirs, output_dir=analysis
+        )
+
+    report_path, csv_path = write_report(
+        manifest_path=manifest_path, output_dir=analysis
+    )
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["evidence_label"] == "diagnostic"
+    assert report["matched_compute_claim"] is False
+    assert report["holdout_results_complete"] is False
+    assert len(report["outcomes"]) == 6
+    assert len(report["paired_deltas"]) == 3
+    assert report["seed_aggregate"]["seed_count"] == 3
+    assert set(report["resource_summary_by_scope"]) == {
+        "shared",
+        "per_granularity",
+    }
+    with csv_path.open("r", encoding="utf-8", newline="") as source:
+        rows = list(csv.DictReader(source))
+    assert len(rows) == 24
+    assert {
+        "loss",
+        "perplexity",
+        "uniform_mean_loss",
+        "worst_width_loss",
+        "wall_time_seconds",
+        "peak_accelerator_memory_bytes",
+        "resumable_checkpoint_bytes",
+    }.issubset(rows[0])
+
+
+def test_optimizer_scope_confirmation_report_requires_complete_explicit_holdout(
+    tmp_path,
+):
+    from scripts.analyze_tinystories_per_width_optimizer import (
+        freeze_manifest,
+        write_report,
+    )
+
+    run_dirs = _write_optimizer_scope_reporting_runs(tmp_path / "runs")
+    manifest = freeze_manifest(
+        phase="confirmation",
+        run_dirs=run_dirs,
+        output_dir=tmp_path / "analysis",
+    )
+    for run_dir in run_dirs:
+        summary = json.loads((run_dir / "run_summary.json").read_text())
+        widths = summary["ordered_optimizer_granularities"]
+        checkpoint = Path(summary["terminal_checkpoint_path"])
+        import hashlib
+
+        checkpoint_hash = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+        result = {
+            "checkpoint_sha256": checkpoint_hash,
+            "ordered_granularities": widths,
+            "ordered_per_granularity_losses": [
+                {
+                    "granularity": width,
+                    "loss": 2.0 + index / 10,
+                    "perplexity": math.exp(2.0 + index / 10),
+                }
+                for index, width in enumerate(widths)
+            ],
+        }
+        (run_dir / "final_holdout_results.json").write_text(
+            json.dumps(result), encoding="utf-8"
+        )
+    report_path, _ = write_report(
+        manifest_path=manifest, output_dir=tmp_path / "analysis"
+    )
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["holdout_results_complete"] is True
+    assert report["evidence_label"] == "confirmatory"
+
+
 def _write_final_holdout_reporting_run(
     root: Path,
     *,

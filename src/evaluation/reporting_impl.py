@@ -10,7 +10,7 @@ import math
 import re
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -5059,6 +5059,288 @@ def to_float_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def validate_optimizer_state_pairs(
+    runs: Sequence[Any], *, phase: str | None = None
+) -> tuple[Any, ...]:
+    """Validate the frozen six-run, three-seed paired-control contract."""
+
+    if len(runs) != 6:
+        raise ValueError("Optimizer-state comparison requires exactly six runs")
+    by_key: dict[tuple[int, str], Any] = {}
+    for run in runs:
+        key = (int(run.seed), str(run.state_scope))
+        if key in by_key:
+            raise ValueError(f"Duplicate optimizer-state arm for seed/scope {key}")
+        by_key[key] = run
+        controlled = run.config.get("controlled_experiment", {})
+        if phase is not None and isinstance(controlled, Mapping):
+            budget = controlled.get(f"{phase}_budget_tokens")
+            expected_steps = controlled.get(f"{phase}_steps")
+            expected_updates = controlled.get(f"{phase}_updates_per_width")
+            if budget is not None and int(run.config["training"]["token_budget"]) != int(
+                budget
+            ):
+                raise ValueError(f"Run {run.run_id} has the wrong {phase} token budget")
+            if budget is not None and int(run.summary.get("tokens_seen", budget)) != int(
+                budget
+            ):
+                raise ValueError(f"Run {run.run_id} did not reach its token budget")
+            if expected_steps is not None and int(
+                run.summary.get("committed_optimizer_steps", -1)
+            ) != int(expected_steps):
+                raise ValueError(f"Run {run.run_id} has the wrong committed-step count")
+            if expected_updates is not None and any(
+                int(run.summary["optimizer_successful_update_counts"].get(width, -1))
+                != int(expected_updates)
+                for width in run.ordered_widths
+            ):
+                raise ValueError(f"Run {run.run_id} has the wrong per-width updates")
+    seeds = sorted({seed for seed, _ in by_key})
+    if seeds != [42, 43, 44]:
+        raise ValueError("Optimizer-state comparison requires seeds 42, 43, and 44")
+    for seed in seeds:
+        pair = [by_key.get((seed, scope)) for scope in ("shared", "per_granularity")]
+        if any(run is None for run in pair):
+            raise ValueError(f"Seed {seed} lacks one shared/per_granularity arm")
+        shared, isolated = pair
+        if shared.paired_control_signature != isolated.paired_control_signature:
+            raise ValueError(f"Seed {seed} paired-control signatures differ")
+        if shared.ordered_widths != isolated.ordered_widths:
+            raise ValueError(f"Seed {seed} ordered widths differ")
+        if _optimizer_state_trace(shared) != _optimizer_state_trace(isolated):
+            raise ValueError(
+                f"Seed {seed} action, batch, learning-rate, or cadence traces differ"
+            )
+    return tuple(by_key[key] for key in sorted(by_key))
+
+
+def _optimizer_state_trace(run: Any) -> dict[str, Any]:
+    committed = [
+        row
+        for row in run.metrics
+        if row.get("split") == "train"
+        and str(row.get("optimizer_step_committed", "")).lower()
+        in {"1", "true", "yes"}
+    ]
+    actions = [
+        (
+            row.get("optimizer_action_id"),
+            row.get("optimizer_batch_provenance"),
+            row.get("selected_optimizer_granularity"),
+            row.get("learning_rate"),
+            row.get("global_scheduler_position"),
+        )
+        for row in committed
+    ]
+    validation_steps = sorted(
+        {int(row["step"]) for row in run.metrics if row.get("split") == "validation"}
+    )
+    return {"actions": actions, "validation_steps": validation_steps}
+
+
+def build_optimizer_state_run_outcome(
+    run: Any,
+    *,
+    evidence_label: str,
+) -> Any:
+    """Compute ordered endpoints and operational costs for one run."""
+
+    from src.evaluation.reporting import OptimizerStateRunOutcome, ResourceCosts
+
+    holdout_path = run.run_dir / "final_holdout_results.json"
+    per_width: dict[str, dict[str, float]] = {}
+    if holdout_path.is_file():
+        result = json.loads(holdout_path.read_text(encoding="utf-8"))
+        result_hash = result.get("result_hash")
+        if result_hash is not None:
+            from src.utils.reproducibility import stable_hash
+
+            unhashed = {key: value for key, value in result.items() if key != "result_hash"}
+            if result_hash != stable_hash(unhashed):
+                raise ValueError(f"Final-holdout result hash mismatch for {run.run_id}")
+        if result.get("run_id") not in (None, run.run_id):
+            raise ValueError(f"Final-holdout run identity mismatch for {run.run_id}")
+        if result.get("checkpoint_sha256") not in (None, run.checkpoint_sha256):
+            raise ValueError(f"Final-holdout checkpoint hash mismatch for {run.run_id}")
+        expected_holdout_hash = run.summary.get(
+            "final_holdout_manifest_hash",
+            run.config.get("final_holdout_manifest_hash"),
+        )
+        if expected_holdout_hash not in (None, "") and result.get(
+            "final_holdout_manifest_hash"
+        ) != expected_holdout_hash:
+            raise ValueError(f"Final-holdout role hash mismatch for {run.run_id}")
+        if tuple(result.get("ordered_granularities", [])) != run.ordered_widths:
+            raise ValueError(f"Final-holdout width order mismatch for {run.run_id}")
+        per_width = {
+            str(row["granularity"]): {
+                "loss": float(row["loss"]),
+                "perplexity": float(row["perplexity"]),
+            }
+            for row in result.get("ordered_per_granularity_losses", [])
+        }
+        uniform_average = result.get("uniform_average_loss")
+        if uniform_average is not None and not math.isclose(
+            float(uniform_average),
+            sum(row["loss"] for row in per_width.values()) / len(per_width),
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            raise ValueError(f"Final-holdout uniform mean mismatch for {run.run_id}")
+    else:
+        for width in run.ordered_widths:
+            rows = [
+                row
+                for row in run.metrics
+                if row.get("split") == "validation"
+                and row.get("granularity") == width
+                and row.get("loss") not in (None, "")
+            ]
+            if not rows:
+                raise ValueError(f"Run {run.run_id} has no endpoint for {width}")
+            trailing = rows[-5:]
+            losses = [float(row["loss"]) for row in trailing]
+            loss = sum(losses) / len(losses)
+            per_width[width] = {"loss": loss, "perplexity": math.exp(loss)}
+    resources = ResourceCosts(
+        wall_time_seconds=float(run.summary["training_wall_time_seconds"]),
+        peak_accelerator_memory_bytes=int(
+            run.summary["peak_accelerator_memory_bytes"]
+        ),
+        resumable_checkpoint_bytes=int(
+            run.summary.get("terminal_checkpoint_bytes")
+            or run.checkpoint_path.stat().st_size
+        ),
+    )
+    return OptimizerStateRunOutcome.from_artifacts(
+        config=run.config,
+        summary=run.summary,
+        per_width_outcomes=per_width,
+        resources=resources,
+        evidence_label=evidence_label,
+    )
+
+
+def build_optimizer_state_comparison_report(
+    runs: Sequence[Any],
+    *,
+    phase: str,
+    holdout_opened_during_pilot: bool = False,
+) -> dict[str, Any]:
+    validated = validate_optimizer_state_pairs(runs, phase=phase)
+    all_have_holdout = all(
+        (run.run_dir / "final_holdout_results.json").is_file() for run in validated
+    )
+    if holdout_opened_during_pilot:
+        evidence_label = "descriptive_after_holdout_open"
+    elif phase == "confirmation" and all_have_holdout:
+        evidence_label = "confirmatory"
+    else:
+        evidence_label = "diagnostic"
+    outcomes = [
+        build_optimizer_state_run_outcome(run, evidence_label=evidence_label)
+        for run in validated
+    ]
+    by_key = {(outcome.seed, outcome.state_scope): outcome for outcome in outcomes}
+    pairs = []
+    for seed in (42, 43, 44):
+        shared = by_key[(seed, "shared")]
+        isolated = by_key[(seed, "per_granularity")]
+        pairs.append(
+            {
+                "seed": seed,
+                "uniform_mean_loss_delta": (
+                    isolated.uniform_mean_loss - shared.uniform_mean_loss
+                ),
+                "worst_width_loss_delta": (
+                    isolated.worst_width_loss - shared.worst_width_loss
+                ),
+                "per_width_loss_deltas": {
+                    width: (
+                        isolated.per_width_outcomes[width]["loss"]
+                        - shared.per_width_outcomes[width]["loss"]
+                    )
+                    for width in shared.ordered_widths
+                },
+                "wall_time_seconds_delta": (
+                    isolated.resources.wall_time_seconds
+                    - shared.resources.wall_time_seconds
+                ),
+                "peak_accelerator_memory_bytes_delta": (
+                    isolated.resources.peak_accelerator_memory_bytes
+                    - shared.resources.peak_accelerator_memory_bytes
+                ),
+                "resumable_checkpoint_bytes_delta": (
+                    isolated.resources.resumable_checkpoint_bytes
+                    - shared.resources.resumable_checkpoint_bytes
+                ),
+            }
+        )
+    uniform_deltas = [float(pair["uniform_mean_loss_delta"]) for pair in pairs]
+    worst_deltas = [float(pair["worst_width_loss_delta"]) for pair in pairs]
+    seed_aggregate = {
+        "seed_count": len(pairs),
+        "uniform_mean_loss_delta_mean": sum(uniform_deltas) / len(uniform_deltas),
+        "uniform_mean_loss_delta_min": min(uniform_deltas),
+        "uniform_mean_loss_delta_max": max(uniform_deltas),
+        "worst_width_loss_delta_mean": sum(worst_deltas) / len(worst_deltas),
+        "per_width_loss_delta_means": {
+            width: sum(
+                float(pair["per_width_loss_deltas"][width]) for pair in pairs
+            )
+            / len(pairs)
+            for width in outcomes[0].ordered_widths
+        },
+    }
+    resource_summary_by_scope = {}
+    for scope in ("shared", "per_granularity"):
+        scoped = [outcome.resources for outcome in outcomes if outcome.state_scope == scope]
+        resource_summary_by_scope[scope] = {
+            "mean_wall_time_seconds": sum(item.wall_time_seconds for item in scoped)
+            / len(scoped),
+            "mean_peak_accelerator_memory_bytes": sum(
+                item.peak_accelerator_memory_bytes for item in scoped
+            )
+            / len(scoped),
+            "mean_resumable_checkpoint_bytes": sum(
+                item.resumable_checkpoint_bytes for item in scoped
+            )
+            / len(scoped),
+        }
+    return {
+        "schema_version": 1,
+        "phase": phase,
+        "evidence_label": evidence_label,
+        "matched_compute_claim": False,
+        "holdout_results_complete": all_have_holdout,
+        "outcomes": [
+            {
+                "run_id": outcome.run_id,
+                "seed": outcome.seed,
+                "state_scope": outcome.state_scope,
+                "ordered_widths": list(outcome.ordered_widths),
+                "per_width_outcomes": outcome.per_width_outcomes,
+                "uniform_mean_loss": outcome.uniform_mean_loss,
+                "worst_width_loss": outcome.worst_width_loss,
+                "resources": {
+                    "wall_time_seconds": outcome.resources.wall_time_seconds,
+                    "peak_accelerator_memory_bytes": (
+                        outcome.resources.peak_accelerator_memory_bytes
+                    ),
+                    "resumable_checkpoint_bytes": (
+                        outcome.resources.resumable_checkpoint_bytes
+                    ),
+                },
+                "evidence_label": outcome.evidence_label,
+            }
+            for outcome in outcomes
+        ],
+        "paired_deltas": pairs,
+        "seed_aggregate": seed_aggregate,
+        "resource_summary_by_scope": resource_summary_by_scope,
+    }
 
 
 if __name__ == "__main__":

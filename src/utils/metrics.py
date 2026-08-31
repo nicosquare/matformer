@@ -123,6 +123,7 @@ METRICS_COLUMNS = [
     "correction_penalty",
     "learning_rate",
     "scheduler_position",
+    "global_scheduler_position",
     "scheduler_phase",
     "scheduler_phase_step",
     "scheduler_phase_progress",
@@ -146,6 +147,15 @@ METRICS_COLUMNS = [
     "content_tokens_seen",
     "optimizer_window_microsteps",
     "committed_tokens_this_step",
+    "optimizer_state_scope",
+    "selected_optimizer_granularity",
+    "optimizer_step_attempted",
+    "optimizer_step_committed",
+    "optimizer_failure_stage",
+    "optimizer_action_id",
+    "optimizer_batch_provenance",
+    "optimizer_successful_update_counts",
+    "optimizer_exposure_counts",
     "optimizer_iteration_mode",
     "optimizer_epoch_order",
     "optimizer_epoch_ordering_policy_version",
@@ -337,6 +347,22 @@ RUN_SUMMARY_FIELDS = [
     "scheduler_contract",
     "optimizer_name",
     "optimizer_kwargs",
+    "optimizer_state_scope",
+    "optimizer_scheduler_clock",
+    "ordered_optimizer_granularities",
+    "attempted_optimizer_steps",
+    "committed_optimizer_steps",
+    "failed_optimizer_attempts",
+    "optimizer_successful_update_counts",
+    "optimizer_exposure_counts",
+    "optimizer_accounting_reconciled",
+    "global_scheduler_position",
+    "training_wall_time_seconds",
+    "peak_accelerator_memory_bytes",
+    "terminal_checkpoint_path",
+    "terminal_checkpoint_bytes",
+    "terminal_checkpoint_sha256",
+    "terminal_checkpoint_purpose",
     "requested_mixed_precision",
     "resolved_mixed_precision",
     "requested_activation_checkpointing",
@@ -456,6 +482,18 @@ class StreamingMetricsAccumulator:
             str(key): int(value)
             for key, value in dict(state.get("selection_counts", {})).items()
         }
+        self.optimizer_attempt_ids = {
+            str(value) for value in state.get("optimizer_attempt_ids", [])
+        }
+        self.attempted_optimizer_steps = int(
+            state.get("attempted_optimizer_steps", 0)
+        )
+        self.committed_optimizer_steps = int(
+            state.get("committed_optimizer_steps", 0)
+        )
+        self.failed_optimizer_attempts = int(
+            state.get("failed_optimizer_attempts", 0)
+        )
         self.checkpoint_selection = copy_json_mapping(
             state.get("checkpoint_selection")
         )
@@ -465,6 +503,19 @@ class StreamingMetricsAccumulator:
             row = dict(raw_row)
             split = str(row.get("split") or "")
             if split == "train":
+                attempt_id = row.get("optimizer_action_id")
+                if attempt_id not in (None, ""):
+                    attempt_key = str(attempt_id)
+                    if attempt_key not in self.optimizer_attempt_ids:
+                        self.optimizer_attempt_ids.add(attempt_key)
+                        attempted = _bool_value(row.get("optimizer_step_attempted"))
+                        committed = _bool_value(row.get("optimizer_step_committed"))
+                        if attempted:
+                            self.attempted_optimizer_steps += 1
+                        if committed:
+                            self.committed_optimizer_steps += 1
+                        elif attempted:
+                            self.failed_optimizer_attempts += 1
                 self.training_row_count += 1
                 step = _int_value(row.get("step"))
                 if step >= self.last_training_step:
@@ -520,6 +571,10 @@ class StreamingMetricsAccumulator:
                 self.trailing_validation_by_granularity
             ),
             "selection_counts": self.selection_counts,
+            "optimizer_attempt_ids": sorted(self.optimizer_attempt_ids),
+            "attempted_optimizer_steps": self.attempted_optimizer_steps,
+            "committed_optimizer_steps": self.committed_optimizer_steps,
+            "failed_optimizer_attempts": self.failed_optimizer_attempts,
             "checkpoint_selection": self.checkpoint_selection,
         }
 
@@ -903,6 +958,106 @@ def summarize_runtime_granularity_pattern_from_config(
     )
 
 
+def build_optimizer_state_summary_fields(
+    config: Mapping[str, Any],
+    *,
+    run_state: Mapping[str, Any] | None = None,
+    attempted_steps: int | None = None,
+    wall_time_seconds: float | None = None,
+    peak_memory_bytes: int | None = None,
+    checkpoint_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Build the compact ownership, reconciliation, and resource contract."""
+
+    training = config.get("training", {})
+    state = dict(run_state or {})
+    contract = training.get("optimizer_state_contract", {})
+    ordered = [
+        str(label)
+        for label in contract.get(
+            "ordered_granularities",
+            config.get("model", {}).get("granularities", []),
+        )
+    ]
+    scope = str(training.get("optimizer_state_scope") or "shared")
+    committed = int(state.get("last_completed_step", state.get("step", 0)))
+    sampling_state = state.get("global_sampling_state")
+    exposures = (
+        {
+            str(label): int(value)
+            for label, value in sampling_state.get("exposure_counts", {}).items()
+        }
+        if isinstance(sampling_state, Mapping)
+        else {}
+    )
+    saved_updates = state.get("optimizer_update_counts")
+    updates = (
+        {str(label): int(value) for label, value in saved_updates.items()}
+        if isinstance(saved_updates, Mapping)
+        else dict(exposures)
+    )
+    if ordered:
+        exposures = {label: int(exposures.get(label, 0)) for label in ordered}
+        updates = {label: int(updates.get(label, 0)) for label in ordered}
+    attempted = committed if attempted_steps is None else int(attempted_steps)
+    failed = max(attempted - committed, 0)
+    reconciled = (
+        attempted >= committed
+        and sum(updates.values()) == committed
+        and updates == exposures
+        and (
+            not isinstance(sampling_state, Mapping)
+            or int(sampling_state.get("total_successful_updates", committed))
+            == committed
+        )
+    )
+
+    resolved_checkpoint: Path | None = None
+    checkpoint_bytes = None
+    checkpoint_sha256 = None
+    if checkpoint_path not in (None, ""):
+        candidate = Path(str(checkpoint_path)).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path(str(config["run"]["output_dir"])) / candidate
+        if candidate.is_file():
+            resolved_checkpoint = candidate.resolve()
+            checkpoint_bytes = resolved_checkpoint.stat().st_size
+            digest = hashlib.sha256()
+            with resolved_checkpoint.open("rb") as checkpoint_file:
+                while chunk := checkpoint_file.read(8 * 1024 * 1024):
+                    digest.update(chunk)
+            checkpoint_sha256 = digest.hexdigest()
+
+    return {
+        "optimizer_state_scope": scope,
+        "optimizer_scheduler_clock": str(
+            training.get("optimizer_scheduler_clock") or "global_step"
+        ),
+        "ordered_optimizer_granularities": ordered,
+        "attempted_optimizer_steps": attempted,
+        "committed_optimizer_steps": committed,
+        "failed_optimizer_attempts": failed,
+        "optimizer_successful_update_counts": updates,
+        "optimizer_exposure_counts": exposures,
+        "optimizer_accounting_reconciled": reconciled,
+        "global_scheduler_position": committed,
+        "training_wall_time_seconds": (
+            None if wall_time_seconds is None else float(wall_time_seconds)
+        ),
+        "peak_accelerator_memory_bytes": (
+            None if peak_memory_bytes is None else int(peak_memory_bytes)
+        ),
+        "terminal_checkpoint_path": (
+            str(resolved_checkpoint) if resolved_checkpoint is not None else None
+        ),
+        "terminal_checkpoint_bytes": checkpoint_bytes,
+        "terminal_checkpoint_sha256": checkpoint_sha256,
+        "terminal_checkpoint_purpose": (
+            "resumable_training" if resolved_checkpoint is not None else None
+        ),
+    }
+
+
 def build_run_summary(
     config: Mapping[str, Any],
     tokens_seen: int | None = None,
@@ -1061,6 +1216,7 @@ def build_run_summary(
         ),
         "optimizer_name": training["optimizer_name"],
         "optimizer_kwargs": training["optimizer_kwargs"],
+        **build_optimizer_state_summary_fields(config),
         "requested_mixed_precision": training.get("requested_mixed_precision"),
         "resolved_mixed_precision": training.get("resolved_mixed_precision"),
         "requested_activation_checkpointing": training.get(
@@ -3117,6 +3273,7 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "correction_penalty": None,
         "learning_rate": None,
         "scheduler_position": None,
+        "global_scheduler_position": None,
         "scheduler_phase": None,
         "scheduler_phase_step": None,
         "scheduler_phase_progress": None,
@@ -3149,6 +3306,15 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "content_tokens_seen": normalized_row.get("tokens_seen"),
         "optimizer_window_microsteps": None,
         "committed_tokens_this_step": None,
+        "optimizer_state_scope": None,
+        "selected_optimizer_granularity": None,
+        "optimizer_step_attempted": None,
+        "optimizer_step_committed": None,
+        "optimizer_failure_stage": None,
+        "optimizer_action_id": None,
+        "optimizer_batch_provenance": None,
+        "optimizer_successful_update_counts": None,
+        "optimizer_exposure_counts": None,
         "optimizer_iteration_mode": None,
         "optimizer_epoch_order": None,
         "optimizer_epoch_ordering_policy_version": None,
@@ -3387,6 +3553,12 @@ def _int_value(value: Any) -> int:
     if value in (None, ""):
         return -1
     return int(value)
+
+
+def _bool_value(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes"}
+    return bool(value)
 
 
 def _float_value(value: Any) -> float | None:

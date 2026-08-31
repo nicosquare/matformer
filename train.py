@@ -7,7 +7,10 @@ import json
 
 import src.training.run as training_run
 from src.utils.config import resolve_run_config
-from src.utils.reproducibility import build_comparison_control_signature
+from src.utils.reproducibility import (
+    build_full_run_signature,
+    build_paired_control_signature,
+)
 
 
 def _pre_nested_warmup_preflight(training: dict) -> dict:
@@ -64,21 +67,39 @@ def main(argv: list[str] | None = None) -> None:
             overrides=overrides,
             output_dir=args.output_dir,
         )
-        _, control_inputs = build_comparison_control_signature(resolved)
+        paired_control_signature, control_inputs = build_paired_control_signature(
+            resolved
+        )
+        full_run_signature, _ = build_full_run_signature(resolved)
+        training = resolved["training"]
+        model = resolved["model"]
         print(
             json.dumps(
                 {
                     "seed": resolved["run"]["seed"],
                     "reproducibility": resolved["run"]["reproducibility"],
-                    "optimizer": resolved["training"]["optimizer"],
-                    "learning_rate": resolved["training"][
-                        "resolved_learning_rate"
+                    "optimizer": training["optimizer"],
+                    "optimizer_state_scope": training["optimizer_state_scope"],
+                    "requested_optimizer_state_scope": training.get(
+                        "requested_optimizer_state_scope"
+                    ),
+                    "optimizer_scheduler_clock": training[
+                        "optimizer_scheduler_clock"
                     ],
-                    "token_budget": resolved["training"]["token_budget"],
-                    "batch_size_per_process": resolved["training"][
+                    "requested_optimizer_scheduler_clock": training.get(
+                        "requested_optimizer_scheduler_clock"
+                    ),
+                    "optimizer_state_contract": training[
+                        "optimizer_state_contract"
+                    ],
+                    "full_run_signature": full_run_signature,
+                    "paired_control_signature": paired_control_signature,
+                    "learning_rate": training["resolved_learning_rate"],
+                    "token_budget": training["token_budget"],
+                    "batch_size_per_process": training[
                         "batch_size_per_process"
                     ],
-                    "gradient_accumulation_steps": resolved["training"][
+                    "gradient_accumulation_steps": training[
                         "gradient_accumulation_steps"
                     ],
                     "dataset_sample_limit": resolved["dataset"].get(
@@ -155,6 +176,40 @@ def main(argv: list[str] | None = None) -> None:
                         "final_holdout"
                     ),
                     "validation": resolved["evaluation"]["validation"],
+                    "sampling_policy": {
+                        "mode": model.get("resolved_sampling_mode"),
+                        "schedule": model.get("global_sampling_schedule"),
+                        "schedule_version": model.get(
+                            "global_sampling_schedule_version"
+                        ),
+                        "interval_steps": model.get(
+                            "global_sampling_interval_steps"
+                        ),
+                    },
+                    "data_roles": {
+                        "data_roles_manifest_hash": resolved.get(
+                            "data_roles_manifest_hash"
+                        ),
+                        "optimizer_training_manifest_hash": resolved.get(
+                            "optimizer_training_manifest_hash"
+                        ),
+                        "controller_manifest_hash": resolved.get(
+                            "controller_manifest_hash"
+                        ),
+                        "ordinary_validation_manifest_hash": resolved.get(
+                            "validation_manifest_hash"
+                        ),
+                        "final_holdout_manifest_hash": resolved.get(
+                            "final_holdout_manifest_hash"
+                        ),
+                    },
+                    "run_budget": {
+                        "token_budget": training["token_budget"],
+                        "global_steps": training["max_steps"],
+                        "expected_tokens_per_step": training[
+                            "expected_tokens_per_step"
+                        ],
+                    },
                     "comparison_control_inputs": control_inputs,
                 },
                 indent=2,
