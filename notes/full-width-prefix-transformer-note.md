@@ -6,6 +6,11 @@ existing FFN-only MatFormer implementation
 **Question**: can one train a single Transformer whose extracted *whole-model*
 width prefixes approach independently trained models of the same widths?
 
+**Related direct reference**:
+[Fully Nested Transformers (StairFormer)](https://openreview.net/pdf?id=yv7Ie3UzlA)
+by Trost et al. (ICML 2026 AdaptFM workshop), with a public
+[reference implementation](https://github.com/SprocketLab/fully-nested-transformers).
+
 ## Motivation
 
 The current MatFormer model changes only the FFN intermediate width.  The
@@ -23,6 +28,56 @@ scale down together.
 
 This is a new experimental family, not a small extension of the current
 `slicing` or `concat` variants.
+
+## Two meanings of nestedness
+
+The phrase “fully nested Transformer” can refer to two different properties.
+They should not be conflated.
+
+### Nested parameters: sufficient for ordinary elastic inference
+
+A whole-model prefix supernet has nested parameter supports:
+
+$$
+\theta_1\subset\theta_2\subset\cdots\subset\theta_K.
+$$
+
+For example, a width-$D_g$ model reads the appropriate prefixes of the
+maximum-width embedding, attention, FFN, normalization, and output-head
+tensors.  At inference, a serving system selects one width before the forward
+pass and runs that selected prefix model.  The width-$D_g$ forward is cheaper
+than the width-$D_K$ forward, even though both reuse the same stored
+parameters.
+
+This property is enough to ask the main scientific question in this note:
+can elastic training of a *whole-model* parameter-nested family approach its
+same-shape standalone references?
+
+### Fully nested activations: an additional systems property
+
+The stronger property requires the wide model to reproduce every narrow
+model's intermediate states as prefixes:
+
+$$
+P_g F_{D_K}(x) = F_{D_g}(P_gx)
+\qquad\text{for every width }g\text{ and input }x,
+$$
+
+where $P_g$ selects the first $D_g$ coordinates.  A single widest-model
+forward can then supply exact narrow-model logits and activations.
+
+This is not necessary merely to select and run one elastic width.  It is
+valuable when the system wants to:
+
+- compute losses for several widths from one shared forward during training;
+- begin at a small inference budget and progressively activate more capacity;
+- reuse intermediate states in cascading or self-speculative-style inference;
+- expose prefix representations whose semantics are stable across widths.
+
+The constraint is consequential: it restricts information flow in the wide
+model and may reduce its quality.  It should therefore be studied as a
+separate method, not assumed to be automatically better for the standalone
+equivalence question.
 
 ## Model definition
 
@@ -260,6 +315,51 @@ emitted before the extra dimensions and later layers are introduced, so it
 does not need those later computations to reproduce the smaller model.  It
 does not need in-place prefix KQV matrices.
 
+### Fully nested activation reuse: StairFormer
+
+[Fully Nested Transformers](https://openreview.net/pdf?id=yv7Ie3UzlA) proposes
+**StairFormer**, which directly addresses the non-reuse problem above.  It
+makes every layer prefix-preserving by combining block-lower-triangular
+weights with PrefixRMSNorm.  For a width ladder divided into three channel
+blocks, a dense projection has the form
+
+$$
+W=
+\begin{bmatrix}
+A_{11} & 0      & 0\\
+A_{21} & A_{22} & 0\\
+A_{31} & A_{32} & A_{33}
+\end{bmatrix}.
+$$
+
+The first block is independent of all added channels:
+
+$$
+(Wx)_{\mathrm{block}\,1}=A_{11}x_{\mathrm{block}\,1}.
+$$
+
+The second block may read the first, and the third may read both preceding
+blocks.  This is intentionally **not** block diagonal:
+
+$$
+\begin{bmatrix}
+A_{11}&0&0\\
+0&A_{22}&0\\
+0&0&A_{33}
+\end{bmatrix}
+$$
+
+would prevent newly added channels from building on the shared core.  The
+block-lower-triangular structure instead preserves every prefix while allowing
+the full model to accumulate richer later blocks.
+
+StairFormer applies the analogous filtration-preserving requirement to its
+attention-head blocks, FFN blocks, normalization, and output heads.  Its
+implementation explicitly stores only the live blocks, provides prefix
+cross-entropy objectives, and tests exact submodel equivalence.  It is the
+direct architectural reference if the objective becomes whole-model elastic
+training **and** exact reuse of wide-forward activations.
+
 ## Topology constraint
 
 All Transformer layers in one extracted prefix model must use the same global
@@ -400,9 +500,11 @@ tokens alone are insufficient as a cost claim.  Report at least:
 
 ## Recommended staged experiment
 
-1. **Correctness only**: implement a separate `full_width_prefix` model family
-   with global width selection.  Do not modify the existing FFN-only
-   `slicing`/`concat` contracts.
+1. **Parameter-nested correctness only**: implement a separate
+   `full_width_prefix` model family with global width selection.  Do not
+   modify the existing FFN-only `slicing`/`concat` contracts.  This is the
+   cleanest first experiment for whole-model standalone equivalence; it does
+   not attempt activation reuse.
 2. **Shape sanity**: choose a small feasible width ladder from
    $(D_g,H_g,H_{\mathrm{kv},g},F_g)$ tuples, rather than reinterpreting legacy
    FFN granularity labels implicitly.
@@ -417,6 +519,11 @@ tokens alone are insufficient as a cost claim.  Report at least:
 6. **Only then ablate**: non-uniform sampling, loss weights, membership
    correction, separate optimizer states, and largest-to-smallest
    distillation.
+7. **Separate fully-nested method**: if exact shared activations or cascading
+   inference is required, reproduce/adapt StairFormer rather than adding
+   block-triangular and PrefixRMSNorm constraints silently to the first
+   full-width-prefix experiment.  Compare it both to standalones and to the
+   unrestricted parameter-nested variant at matched FLOPs.
 
 ## Interpretation
 
