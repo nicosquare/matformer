@@ -266,7 +266,7 @@ def test_optimizer_scope_freeze_and_report_emit_auditable_endpoint_resource_tabl
             phase="confirmation", run_dirs=run_dirs, output_dir=analysis
         )
 
-    report_path, csv_path = write_report(
+    report_path, csv_path, *figure_paths = write_report(
         manifest_path=manifest_path, output_dir=analysis
     )
     report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -292,6 +292,12 @@ def test_optimizer_scope_freeze_and_report_emit_auditable_endpoint_resource_tabl
         "peak_accelerator_memory_bytes",
         "resumable_checkpoint_bytes",
     }.issubset(rows[0])
+    assert {path.name for path in figure_paths} == {
+        "optimizer_state_validation_loss_over_tokens.png",
+        "optimizer_state_endpoint_by_width.png",
+        "optimizer_state_resource_costs.png",
+    }
+    assert all(path.is_file() and path.stat().st_size > 0 for path in figure_paths)
 
 
 def test_optimizer_scope_confirmation_report_requires_complete_explicit_holdout(
@@ -330,7 +336,7 @@ def test_optimizer_scope_confirmation_report_requires_complete_explicit_holdout(
         (run_dir / "final_holdout_results.json").write_text(
             json.dumps(result), encoding="utf-8"
         )
-    report_path, _ = write_report(
+    report_path, *_ = write_report(
         manifest_path=manifest, output_dir=tmp_path / "analysis"
     )
     report = json.loads(report_path.read_text(encoding="utf-8"))

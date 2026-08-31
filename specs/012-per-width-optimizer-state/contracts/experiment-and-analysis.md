@@ -89,6 +89,12 @@ before emitting:
 
 - `optimizer_state_comparison.json`: full structured provenance and results;
 - `optimizer_state_comparison.csv`: tidy seed/width/endpoint/resource rows.
+- `optimizer_state_validation_loss_over_tokens.png`: scope-aware, three-seed
+  ordinary-validation trajectories with seed min/max bands;
+- `optimizer_state_endpoint_by_width.png`: loss, perplexity, and paired deltas
+  by width without merging optimizer scopes;
+- `optimizer_state_resource_costs.png`: per-seed wall time, peak accelerator
+  memory, and terminal-checkpoint size by scope.
 
 If final-holdout results are absent, the report is an ordinary-validation and
 resource diagnostic only. If present, their checkpoint and role hashes must

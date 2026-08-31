@@ -105,7 +105,12 @@ Each run directory must contain `config.json`, `metrics.csv`,
 `checkpoints/latest.pt`. Freeze writes
 `analysis/optimizer_state_manifest.json`; report writes
 `analysis/optimizer_state_comparison.json` and
-`analysis/optimizer_state_comparison.csv`.
+`analysis/optimizer_state_comparison.csv`, plus scope-aware validation,
+endpoint, and resource figures:
+
+- `analysis/optimizer_state_validation_loss_over_tokens.png`;
+- `analysis/optimizer_state_endpoint_by_width.png`;
+- `analysis/optimizer_state_resource_costs.png`.
 
 ## Holdout and confirmation decision
 
