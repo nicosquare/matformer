@@ -533,3 +533,35 @@ def build_comparison_control_signature(config: Mapping[str, Any]) -> tuple[str, 
             "final_holdout": config.get("final_holdout_manifest_hash"),
         }
     return stable_hash(inputs), inputs
+
+
+def build_paired_control_signature(
+    config: Mapping[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    """Return the arm-invariant scientific controls for a paired comparison."""
+
+    return build_comparison_control_signature(config)
+
+
+def build_full_run_signature(
+    config: Mapping[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    """Return run identity including the optimizer-state intervention scope."""
+
+    _, paired_inputs = build_paired_control_signature(config)
+    training = config.get("training", {})
+    state_scope = (
+        training.get("optimizer_state_scope")
+        if isinstance(training, Mapping)
+        else None
+    )
+    if state_scope is None and isinstance(training, Mapping):
+        state_contract = training.get("optimizer_state_contract")
+        if isinstance(state_contract, Mapping):
+            state_scope = state_contract.get("state_scope")
+    if state_scope is None:
+        state_scope = "shared"
+
+    full_inputs = dict(paired_inputs)
+    full_inputs["optimizer_state_scope"] = str(state_scope)
+    return stable_hash(full_inputs), full_inputs

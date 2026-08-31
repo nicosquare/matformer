@@ -13,8 +13,10 @@ from src.training.checkpointing import (
 from src.training.steps import (
     _commit_global_sampling_window_action,
     _select_optimizer_window_action,
+    build_optimizer_and_scheduler,
     select_training_granularities,
 )
+from src.training.optimizer_state import PerGranularityOptimizerCollection
 from src.utils.config import ConfigError, resolve_run_config
 from src.utils.reproducibility import (
     capture_rng_state,
@@ -76,6 +78,76 @@ def _draw_and_commit(config, state, step):
     )
     _commit_global_sampling_window_action(config, state, action)
     return action
+
+
+def test_per_width_moments_use_local_age_while_learning_rate_uses_global_step():
+    shared_model = torch.nn.Linear(2, 1, bias=False)
+    isolated_model = torch.nn.Linear(2, 1, bias=False)
+    isolated_model.load_state_dict(shared_model.state_dict())
+    base_training = {
+        "optimizer_name": "adamw",
+        "optimizer_kwargs": {
+            "betas": [0.9, 0.95],
+            "eps": 1e-8,
+            "weight_decay": 0.0,
+        },
+        "resolved_learning_rate": 0.02,
+        "scheduler_name": "cosine",
+        "scheduler_kwargs": {},
+        "resolved_warmup_steps": 2,
+        "max_steps": 8,
+        "optimizer_state_contract": {
+            "ordered_granularities": ["narrow", "full"]
+        },
+    }
+    shared_optimizer, shared_scheduler = build_optimizer_and_scheduler(
+        shared_model,
+        {**base_training, "optimizer_state_scope": "shared"},
+    )
+    collection, global_clock = build_optimizer_and_scheduler(
+        isolated_model,
+        {**base_training, "optimizer_state_scope": "per_granularity"},
+    )
+    assert isinstance(collection, PerGranularityOptimizerCollection)
+
+    for step in range(8):
+        owner = ("narrow", "full")[step % 2]
+        shared_rate = float(shared_optimizer.param_groups[0]["lr"])
+        assert collection.validate_synchronized_learning_rates() == pytest.approx(
+            (shared_rate,)
+        )
+
+        shared_optimizer.zero_grad(set_to_none=True)
+        shared_model.weight.grad = torch.ones_like(shared_model.weight)
+        shared_optimizer.step()
+        shared_scheduler.step()
+
+        collection.zero_grad(set_to_none=True)
+        isolated_model.weight.grad = torch.full_like(
+            isolated_model.weight, float(step + 1)
+        )
+        collection.optimizer_for(owner).step()
+        global_clock.step()
+        global_clock.synchronize(collection)
+        collection.record_successful_update(owner)
+
+        assert collection.validate_synchronized_learning_rates() == pytest.approx(
+            (float(shared_optimizer.param_groups[0]["lr"]),)
+        )
+        other = "full" if owner == "narrow" else "narrow"
+        expected_other_age = collection.successful_update_counts[other]
+        other_state = collection.optimizer_for(other).state.get(
+            isolated_model.weight, {}
+        )
+        if expected_other_age == 0:
+            assert other_state == {}
+        else:
+            assert int(other_state["step"].item()) == expected_other_age
+
+    assert collection.successful_update_counts == {"narrow": 4, "full": 4}
+    for entry in collection.entries:
+        assert int(entry.optimizer.state[isolated_model.weight]["step"].item()) == 4
+    assert global_clock.position == 8
 
 
 def test_h1_matches_existing_per_update_uniform_sequence(tmp_path):
