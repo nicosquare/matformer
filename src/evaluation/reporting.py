@@ -2191,6 +2191,25 @@ def _generate_portfolio_comparison_figures(
         report=report,
     )
 
+    candidate_configs = [
+        config_cache[Path(entry["run_dir"]) / "config.json"]
+        for entry in declared
+        if entry["role"] == "elastic_candidate"
+    ]
+    if not candidate_configs:
+        raise ValueError("Portfolio comparison has no elastic candidate config")
+    candidate_identities = [
+        _portfolio_figure_identity(
+            report,
+            config,
+            seed_count=len(observed_seeds),
+        )
+        for config in candidate_configs
+    ]
+    if len({stable_hash(identity) for identity in candidate_identities}) != 1:
+        raise ValueError("Portfolio candidate plotting identity differs across runs")
+    figure_identity = candidate_identities[0]
+
     granularities = [str(value) for value in targets["granularities"]]
     parameter_counts = _portfolio_non_embedding_parameter_counts(
         declared,
@@ -2203,7 +2222,10 @@ def _generate_portfolio_comparison_figures(
         targets=targets,
         selection=selection,
     )
-    selection_label = _portfolio_elastic_selection_label(selection)
+    selection_label = _portfolio_compact_selection_label(
+        selection,
+        figure_identity=figure_identity,
+    )
     for filename in (
         "ppl_vs_size.png",
         "portfolio_validation_loss_over_tokens.png",
@@ -2226,26 +2248,15 @@ def _generate_portfolio_comparison_figures(
         ):
             group = rows_by_key[(role, width)]
             curve = _portfolio_mean_curve(group)
-            budget = (
-                int(report["reference_budget_tokens"])
-                if role == "standalone_reference"
-                else int(report["elastic_budget_cap_tokens"])
-            )
-            active = width if role == "standalone_reference" else "all four"
-            arm_fragment = (
-                f"; arm={report['comparison_arm_id']}"
-                if role == "elastic_candidate"
-                and report.get("post_hoc_diagnostic") is True
-                else ""
-            )
             axis.plot(
                 [row["tokens_seen"] for row in curve],
                 [row["mean"] for row in curve],
                 color=color,
                 linewidth=1.5,
                 label=(
-                    f"{role}{arm_fragment}; active={active}; budget={budget:,}; "
-                    f"scheduler=cosine; n={curve[0]['seed_count']} seeds"
+                    "Standalone (B)"
+                    if role == "standalone_reference"
+                    else str(figure_identity["elastic_short_label"])
                 ),
             )
             axis.fill_between(
@@ -2262,11 +2273,28 @@ def _generate_portfolio_comparison_figures(
         lower = min(width_targets)
         upper = max(width_targets)
         tolerance = float(report["loss_tolerance"])
-        axis.axhspan(lower, upper, color="tab:green", alpha=0.12, label="standalone target range")
-        axis.axhspan(upper, upper + tolerance, color="tab:green", alpha=0.06, label="0.5% PPL tolerance band")
+        axis.axhspan(
+            lower,
+            upper,
+            color="tab:green",
+            alpha=0.12,
+            label="Standalone target",
+        )
+        axis.axhspan(
+            upper,
+            upper + tolerance,
+            color="tab:green",
+            alpha=0.06,
+            label="0.5% tolerance",
+        )
         for seed_record in report["seeds"]:
             if seed_record.get("confirmation_tokens") is not None:
-                axis.axvline(float(seed_record["confirmation_tokens"]), color="tab:red", linestyle=":", alpha=0.28)
+                axis.axvline(
+                    float(seed_record["confirmation_tokens"]),
+                    color="tab:red",
+                    linestyle=":",
+                    alpha=0.28,
+                )
         axis.set_title(width)
         axis.set_ylabel("ordinary-validation loss")
         if validation_loss_log_y:
@@ -2274,8 +2302,20 @@ def _generate_portfolio_comparison_figures(
     for axis in axes[-1]:
         axis.set_xlabel("optimizer tokens")
     handles, labels = axes[0, 0].get_legend_handles_labels()
-    figure.legend(handles, labels, loc="lower center", ncol=2, frameon=False, fontsize=8)
-    figure.tight_layout(rect=(0, 0.11, 1, 1))
+    figure.legend(
+        handles,
+        labels,
+        loc="lower center",
+        ncol=2,
+        frameon=False,
+        fontsize=8,
+    )
+    figure.suptitle(
+        "Ordinary-validation loss by granularity\n"
+        + str(figure_identity["protocol_subtitle"]),
+        fontsize=13,
+    )
+    figure.tight_layout(rect=(0, 0.11, 1, 0.93))
     curve_path = output_dir / "portfolio_validation_loss_over_tokens.png"
     figure.savefig(curve_path, dpi=dpi)
     plt.close(figure)
@@ -2288,6 +2328,7 @@ def _generate_portfolio_comparison_figures(
         title="Ordinary-validation perplexity at manifest-selected checkpoints",
         ylabel="Perplexity",
         elastic_label=selection_label,
+        protocol_subtitle=str(figure_identity["protocol_subtitle"]),
         perplexity_tolerance=float(report["perplexity_tolerance"]),
         dpi=dpi,
     )[0]
@@ -2296,6 +2337,7 @@ def _generate_portfolio_comparison_figures(
         report,
         granularities=granularities,
         output_dir=output_dir,
+        protocol_subtitle=str(figure_identity["protocol_subtitle"]),
         dpi=dpi,
     )
 
@@ -2304,17 +2346,11 @@ def _generate_portfolio_comparison_figures(
         observations = seed_record.get("validation_observations", [])
         axis.plot(
             [row["tokens_seen"] for row in observations],
-            [100.0 * math.expm1(float(row["joint_max_loss_gap"])) for row in observations],
-            label=(
-                "elastic_candidate"
-                + (
-                    f" arm={report['comparison_arm_id']}"
-                    if report.get("post_hoc_diagnostic") is True
-                    else ""
-                )
-                + f" seed {seed_record['seed']}; "
-                f"budget={report['elastic_budget_cap_tokens']:,}; scheduler=cosine"
-            ),
+            [
+                100.0 * math.expm1(float(row["joint_max_loss_gap"]))
+                for row in observations
+            ],
+            label=f"seed {seed_record['seed']}",
         )
         if seed_record.get("onset_tokens") is not None:
             onset = next(
@@ -2354,13 +2390,28 @@ def _generate_portfolio_comparison_figures(
         linestyle="--",
         label="joint 0.5% PPL threshold",
     )
-    axis.set_yscale(
-        "symlog",
-        linthresh=100.0 * float(report["perplexity_tolerance"]),
-    )
+    plotted_deficits = [
+        100.0 * math.expm1(float(row["joint_max_loss_gap"]))
+        for seed_record in report["seeds"]
+        for row in seed_record.get("validation_observations", [])
+    ]
+    plotted_deficits.append(100.0 * float(report["perplexity_tolerance"]))
+    if plotted_deficits and min(plotted_deficits) > 0.0:
+        axis.set_yscale("log")
+        scale_label = "log"
+    else:
+        axis.set_yscale(
+            "symlog",
+            linthresh=100.0 * float(report["perplexity_tolerance"]),
+        )
+        scale_label = "symlog"
     axis.set(
         xlabel="optimizer tokens",
-        ylabel="worst-width PPL deficit (%) · symlog",
+        ylabel=f"worst-width PPL deficit (%) · {scale_label}",
+        title=(
+            "Joint catch-up: worst-width deficit\n"
+            + str(figure_identity["protocol_subtitle"])
+        ),
     )
     axis.legend(frameon=False, fontsize=8)
     figure.tight_layout()
@@ -2371,6 +2422,7 @@ def _generate_portfolio_comparison_figures(
         declared,
         config_cache=config_cache,
         output_dir=output_dir,
+        figure_identity=figure_identity,
         dpi=dpi,
     )
     paths = [
@@ -2388,6 +2440,7 @@ def _generate_portfolio_comparison_figures(
             parameter_counts=parameter_counts,
             granularities=granularities,
             perplexity_tolerance=float(report["perplexity_tolerance"]),
+            figure_identity=figure_identity,
             dpi=dpi,
         )
         paths.extend(holdout_paths)
@@ -2569,9 +2622,27 @@ def _load_portfolio_holdout_selection(
     ):
         raise ValueError("Portfolio holdout claim eligibility is inconsistent")
 
-    required_seeds = tuple(int(seed) for seed in targets.get("seeds", []))
+    required_seeds = tuple(
+        int(seed)
+        for seed in targets.get("expected_seeds", targets.get("seeds", []))
+    )
     if required_seeds != (42, 43, 44):
         raise ValueError("Portfolio target manifest has an unexpected seed contract")
+    target_seeds = tuple(
+        int(seed)
+        for seed in targets.get("observed_seeds", targets.get("seeds", []))
+    )
+    if (
+        not target_seeds
+        or len(set(target_seeds)) != len(target_seeds)
+        or any(seed not in required_seeds for seed in target_seeds)
+        or target_seeds
+        != tuple(seed for seed in required_seeds if seed in set(target_seeds))
+        or set(targets.get("targets", {})) != {str(seed) for seed in target_seeds}
+    ):
+        raise ValueError(
+            "Portfolio target manifest must contain a non-empty ordered seed subset"
+        )
     expected_seeds = tuple(selection.get("expected_seeds", required_seeds))
     observed_seeds = tuple(selection.get("observed_seeds", expected_seeds))
     if expected_seeds != required_seeds:
@@ -2579,7 +2650,7 @@ def _load_portfolio_holdout_selection(
     if (
         not observed_seeds
         or len(set(observed_seeds)) != len(observed_seeds)
-        or any(seed not in required_seeds for seed in observed_seeds)
+        or any(seed not in target_seeds for seed in observed_seeds)
         or observed_seeds
         != tuple(seed for seed in required_seeds if seed in set(observed_seeds))
     ):
@@ -2601,7 +2672,8 @@ def _load_portfolio_holdout_selection(
         raise ValueError("A partial-seed portfolio selection cannot support a claim")
 
     entries = selection.get("entries")
-    required_checkpoint_count = len(observed_seeds) * 5
+    granularities = [str(width) for width in targets.get("granularities", [])]
+    required_checkpoint_count = len(observed_seeds) * (len(granularities) + 1)
     if (
         not isinstance(entries, list)
         or len(entries) != required_checkpoint_count
@@ -2609,11 +2681,11 @@ def _load_portfolio_holdout_selection(
         != required_checkpoint_count
     ):
         raise ValueError(
-            "Portfolio holdout selection must declare five checkpoints per "
+            "Portfolio holdout selection must declare one elastic checkpoint plus "
+            "one standalone checkpoint per granularity for each "
             f"observed seed ({required_checkpoint_count} total)"
         )
     observed_seed_set = set(observed_seeds)
-    granularities = [str(width) for width in targets.get("granularities", [])]
     reference_keys: set[tuple[int, str]] = set()
     elastic_seeds: set[int] = set()
     for entry in entries:
@@ -2848,6 +2920,91 @@ def _portfolio_elastic_selection_label(selection: Mapping[str, Any]) -> str:
     )
 
 
+def _portfolio_budget_label(tokens: int, reference_budget_tokens: int) -> str:
+    if tokens <= 0 or reference_budget_tokens <= 0:
+        raise ValueError("Portfolio figure budgets must be positive")
+    quotient, remainder = divmod(tokens, reference_budget_tokens)
+    if remainder == 0:
+        return "B" if quotient == 1 else f"{quotient}B"
+    return f"{tokens:,} tokens"
+
+
+def _portfolio_figure_identity(
+    report: Mapping[str, Any],
+    candidate_config: Mapping[str, Any],
+    *,
+    seed_count: int,
+) -> dict[str, str]:
+    """Derive human-facing plot identity from the sealed run contract."""
+
+    if seed_count <= 0:
+        raise ValueError("Portfolio figures require at least one observed seed")
+    run = candidate_config.get("run", {})
+    model = candidate_config.get("model", {})
+    training = candidate_config.get("training", {})
+    sampling_mode = str(run.get("sampling_mode", ""))
+    variant = str(model.get("variant", ""))
+    report_variant = str(report.get("candidate_model_variant", variant))
+    if variant != report_variant:
+        raise ValueError("Portfolio figure model variant differs from its report")
+    if str(training.get("scheduler_name")) != "cosine":
+        raise ValueError("Portfolio figures require a cosine candidate schedule")
+
+    if sampling_mode == "nested-all":
+        sampling_label = "Nested-all"
+        short_sampling_label = sampling_label
+    elif sampling_mode == "nested-random":
+        if (
+            model.get("granularity_sampling_mode") == "global"
+            and model.get("global_sampling_schedule")
+            == "random_with_replacement"
+            and int(model.get("global_sampling_interval_steps", -1)) == 1
+        ):
+            sampling_label = "Nested-random, uniform H=1"
+            short_sampling_label = "Uniform H=1"
+        else:
+            sampling_label = "Nested-random"
+            short_sampling_label = sampling_label
+    else:
+        raise ValueError(
+            f"Unsupported portfolio candidate sampling mode: {sampling_mode!r}"
+        )
+    variant_label = {"slicing": "Slicing", "concat": "Concat"}.get(
+        variant,
+        variant.replace("_", " ").title(),
+    )
+    reference_budget = int(report["reference_budget_tokens"])
+    candidate_budget = int(report["elastic_budget_cap_tokens"])
+    budget_label = _portfolio_budget_label(candidate_budget, reference_budget)
+    seed_label = f"n={seed_count} {'seed' if seed_count == 1 else 'seeds'}"
+    return {
+        "sampling_label": sampling_label,
+        "variant_label": variant_label,
+        "budget_label": budget_label,
+        "elastic_short_label": (
+            f"Elastic: {short_sampling_label} ({budget_label})"
+        ),
+        "protocol_subtitle": (
+            f"{sampling_label} · {variant_label} · cosine over {budget_label} · "
+            f"{seed_label}"
+        ),
+    }
+
+
+def _portfolio_compact_selection_label(
+    selection: Mapping[str, Any],
+    *,
+    figure_identity: Mapping[str, str],
+) -> str:
+    mode = str(selection.get("selection_mode", "portfolio_confirmation"))
+    checkpoint_label = (
+        "terminal checkpoint"
+        if mode in {"terminal_3B_censored", "terminal_candidate_budget_censored"}
+        else "confirmation checkpoint"
+    )
+    return f"{figure_identity['elastic_short_label']} · {checkpoint_label}"
+
+
 def _plot_portfolio_ppl_vs_size(
     rows: list[Mapping[str, Any]],
     *,
@@ -2857,6 +3014,7 @@ def _plot_portfolio_ppl_vs_size(
     title: str,
     ylabel: str,
     elastic_label: str,
+    protocol_subtitle: str,
     perplexity_tolerance: float,
     dpi: int,
 ) -> list[Path]:
@@ -2890,9 +3048,7 @@ def _plot_portfolio_ppl_vs_size(
         means_by_role[role] = means
         ranges_by_role[role] = values_by_width
         label = (
-            "standalone_reference; checkpoint=best ordinary validation <=B; "
-            f"budget=B; scheduler=cosine; n={len(seeds)} "
-            f"{'seed' if len(seeds) == 1 else 'seeds'}"
+            "Standalone (best checkpoint within B)"
             if role == "standalone_reference"
             else elastic_label
         )
@@ -2933,7 +3089,7 @@ def _plot_portfolio_ppl_vs_size(
         [value * (1.0 + perplexity_tolerance) for value in standalone_means],
         color="tab:green",
         alpha=0.13,
-        label=f"paired standalone +{100.0 * perplexity_tolerance:.1f}% PPL tolerance",
+        label=f"Standalone +{100.0 * perplexity_tolerance:.1f}% tolerance",
     )
     plotted_values = [
         value
@@ -2953,7 +3109,7 @@ def _plot_portfolio_ppl_vs_size(
         ylabel=ylabel,
     )
     axis.set_title(
-        "Nested-random · Slicing · Global sampling",
+        protocol_subtitle,
         fontsize=style_config["panel_title_fontsize"],
         pad=6,
     )
@@ -2978,6 +3134,7 @@ def _plot_portfolio_per_granularity_deficits(
     *,
     granularities: list[str],
     output_dir: Path,
+    protocol_subtitle: str,
     dpi: int,
 ) -> Path:
     figure, axes = plt.subplots(2, 2, figsize=(11, 7.5), sharex=True)
@@ -3027,7 +3184,11 @@ def _plot_portfolio_per_granularity_deficits(
         axis.set_xlabel("optimizer tokens")
     handles, labels = axes[0, 0].get_legend_handles_labels()
     figure.legend(handles, labels, loc="lower center", ncol=4, frameon=False)
-    figure.tight_layout(rect=(0, 0.08, 1, 1))
+    figure.suptitle(
+        "Per-granularity perplexity deficit\n" + protocol_subtitle,
+        fontsize=13,
+    )
+    figure.tight_layout(rect=(0, 0.08, 1, 0.93))
     path = output_dir / "portfolio_per_granularity_deficits.png"
     figure.savefig(path, dpi=dpi)
     plt.close(figure)
@@ -3039,6 +3200,7 @@ def _plot_portfolio_learning_rate_schedules(
     *,
     config_cache: Mapping[Path, Mapping[str, Any]],
     output_dir: Path,
+    figure_identity: Mapping[str, str],
     dpi: int,
 ) -> Path:
     from . import reporting_io
@@ -3051,7 +3213,9 @@ def _plot_portfolio_learning_rate_schedules(
         if (role, config_path) in seen:
             continue
         seen.add((role, config_path))
-        role_configs.setdefault(role, []).append((config_path, config_cache[config_path]))
+        role_configs.setdefault(role, []).append(
+            (config_path, config_cache[config_path])
+        )
 
     schedules = []
     for role in ("standalone_reference", "elastic_candidate"):
@@ -3082,22 +3246,10 @@ def _plot_portfolio_learning_rate_schedules(
         }
         if len(schedule_contracts) != 1:
             raise ValueError(f"Portfolio {role} scheduler differs across runs")
-        seed_count = len(
-            {
-                int(entry["seed"])
-                for entry in declared
-                if str(entry["role"]) == role
-            }
-        )
-        budget = int(resolved[0].token_budget)
         role_label = (
-            "standalone_reference; active=one width; "
-            f"budget={budget:,} tokens; scheduler=cosine; n={seed_count} "
-            f"{'seed' if seed_count == 1 else 'seeds'}"
+            "Standalone (B)"
             if role == "standalone_reference"
-            else "elastic_candidate; active=all four; "
-            f"budget={budget:,} tokens; scheduler=cosine; n={seed_count} "
-            f"{'seed' if seed_count == 1 else 'seeds'}"
+            else str(figure_identity["elastic_short_label"])
         )
         schedules.append(replace(resolved[0], run_id=role_label))
     return plot_learning_rate_schedules(
@@ -3114,6 +3266,7 @@ def _plot_portfolio_final_holdout_if_complete(
     parameter_counts: Mapping[str, int],
     granularities: list[str],
     perplexity_tolerance: float,
+    figure_identity: Mapping[str, str],
     dpi: int,
 ) -> list[Path]:
     entries = selection["entries"]
@@ -3149,7 +3302,9 @@ def _plot_portfolio_final_holdout_if_complete(
         if Path(str(result.get("checkpoint_path", ""))).resolve() != Path(
             str(entry["checkpoint_path"])
         ).resolve():
-            raise ValueError("Manifest-scoped final-holdout result uses a stale checkpoint")
+            raise ValueError(
+                "Manifest-scoped final-holdout result uses a stale checkpoint"
+            )
         if (
             result.get("checkpoint_sha256") != entry.get("checkpoint_sha256")
             or result.get("run_id") != entry.get("run_id")
@@ -3161,7 +3316,9 @@ def _plot_portfolio_final_holdout_if_complete(
         if not isinstance(components, list):
             raise ValueError("Manifest-scoped final-holdout result lacks components")
         expected_widths = [str(value) for value in entry["granularities"]]
-        component_widths = [str(component.get("granularity")) for component in components]
+        component_widths = [
+            str(component.get("granularity")) for component in components
+        ]
         if component_widths != expected_widths:
             raise ValueError("Manifest-scoped final-holdout result width order differs")
         for component in components:
@@ -3178,18 +3335,19 @@ def _plot_portfolio_final_holdout_if_complete(
                 }
             )
 
-    elastic_label = _portfolio_elastic_selection_label(selection)
+    elastic_label = _portfolio_compact_selection_label(
+        selection,
+        figure_identity=figure_identity,
+    )
     size_paths = _plot_portfolio_ppl_vs_size(
         rows,
         parameter_counts=parameter_counts,
         granularities=granularities,
-        output_paths=[
-            output_dir / "final_holdout_ppl_vs_size.png",
-            output_dir / "portfolio_final_holdout_perplexity.png",
-        ],
+        output_paths=[output_dir / "final_holdout_ppl_vs_size.png"],
         title="Final-holdout perplexity at manifest-selected checkpoints",
         ylabel="Final holdout perplexity",
         elastic_label=elastic_label,
+        protocol_subtitle=str(figure_identity["protocol_subtitle"]),
         perplexity_tolerance=perplexity_tolerance,
         dpi=dpi,
     )
@@ -3257,7 +3415,10 @@ def _plot_portfolio_final_holdout_if_complete(
     axis.set(
         xlabel="non-embedding parameters (granularity and exact count)",
         ylabel="elastic minus same-seed standalone PPL (%)",
-        title=f"Final-holdout paired deficit · {elastic_label}",
+        title=(
+            "Final-holdout paired deficit\n"
+            + str(figure_identity["protocol_subtitle"])
+        ),
     )
     axis.grid(True, alpha=0.22)
     axis.legend(frameon=False, fontsize=8)

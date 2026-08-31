@@ -4,6 +4,9 @@ import csv
 import hashlib
 import json
 import math
+import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -31,6 +34,7 @@ from src.evaluation.final_holdout import (
 )
 from src.evaluation.reporting import (
     _portfolio_elastic_selection_label,
+    _portfolio_figure_identity,
     generate_figures,
 )
 from src.training import checkpointing
@@ -343,9 +347,10 @@ def _reference_runs(
     *,
     granularities=GRANULARITIES,
     comparison_group="tinystories_instruct_portfolio_catchup_v1",
+    seeds=(42, 43, 44),
 ):
     runs = []
-    for seed in (42, 43, 44):
+    for seed in seeds:
         for width_index, width in enumerate(granularities):
             target_loss = 1.0 + width_index * 0.1 + (seed - 42) * 0.001
             config = _config(
@@ -367,6 +372,7 @@ def _freeze(
     granularities=GRANULARITIES,
     comparison_group="tinystories_instruct_portfolio_catchup_v1",
     granularity_profile="quartile",
+    seeds=(42, 43, 44),
 ):
     output = tmp_path / "reference-analysis"
     manifest = freeze_references(
@@ -374,6 +380,7 @@ def _freeze(
             tmp_path,
             granularities=granularities,
             comparison_group=comparison_group,
+            seeds=seeds,
         ),
         output,
         granularity_profile=granularity_profile,
@@ -389,9 +396,10 @@ def _candidate_runs(
     candidate_arm_id: str = "uniform_h1_3b",
     granularities=GRANULARITIES,
     comparison_group="tinystories_instruct_portfolio_catchup_v1",
+    seeds=(42, 43, 44),
 ):
     runs = []
-    for seed in (42, 43, 44):
+    for seed in seeds:
         config = _config(
             "elastic_candidate",
             seed=seed,
@@ -528,6 +536,7 @@ def test_schema3_extension_arms_reuse_targets_with_arm_specific_budgets(tmp_path
     for arm_id in (
         "uniform_h1_4b",
         "nested_all_b",
+        "nested_all_4b",
         "concat_uniform_h1_4b",
     ):
         arm = CANDIDATE_ARMS[arm_id]
@@ -613,6 +622,58 @@ def test_extension_report_is_diagnostic_and_preserves_4b_cost_accounting(tmp_pat
     assert "portfolio_worst_width_deficit.png" in {
         path.name for path in figure_paths
     }
+
+
+def test_portfolio_figure_identity_comes_from_candidate_contract():
+    report = {
+        "reference_budget_tokens": REFERENCE_BUDGET_TOKENS,
+        "elastic_budget_cap_tokens": AGGREGATE_REFERENCE_BUDGET_TOKENS,
+        "candidate_model_variant": "slicing",
+    }
+    nested_all = _config("elastic_candidate", seed=42)
+    nested_all["run"]["sampling_mode"] = "nested-all"
+    nested_all["training"]["token_budget"] = AGGREGATE_REFERENCE_BUDGET_TOKENS
+    identity = _portfolio_figure_identity(report, nested_all, seed_count=1)
+    assert identity["elastic_short_label"] == "Elastic: Nested-all (4B)"
+    assert identity["protocol_subtitle"] == (
+        "Nested-all · Slicing · cosine over 4B · n=1 seed"
+    )
+
+    concat = _config("elastic_candidate", seed=42)
+    concat["model"]["variant"] = "concat"
+    report["candidate_model_variant"] = "concat"
+    identity = _portfolio_figure_identity(report, concat, seed_count=3)
+    assert identity["elastic_short_label"] == "Elastic: Uniform H=1 (4B)"
+    assert "Concat" in identity["protocol_subtitle"]
+    assert identity["protocol_subtitle"].endswith("n=3 seeds")
+
+
+def test_nested_all_4b_reports_full_optimizer_and_subnetwork_exposure(tmp_path):
+    target_path, targets = _freeze(tmp_path)
+    runs = _candidate_runs(
+        tmp_path,
+        target_path,
+        targets,
+        candidate_arm_id="nested_all_4b",
+    )
+    report = portfolio_catchup(
+        runs[:1],
+        target_path,
+        tmp_path / "nested-all-4b-analysis",
+        candidate_arm="nested_all_4b",
+    )
+
+    assert report["comparison_arm_id"] == "nested_all_4b"
+    assert report["post_hoc_diagnostic"] is True
+    assert report["general_portfolio_catchup_claim"] is False
+    assert report["elastic_budget_cap_tokens"] == (
+        AGGREGATE_REFERENCE_BUDGET_TOKENS
+    )
+    assert report["realized_full_run_spend_over_4B"] == 1.0
+    assert report["subnetwork_gradient_evaluations_per_optimizer_step"] == 4
+    assert report["realized_subnetwork_target_tokens"] == (
+        4 * AGGREGATE_REFERENCE_BUDGET_TOKENS
+    )
 
 
 def test_concat_extension_reuses_targets_with_only_variant_provenance_delta(tmp_path):
@@ -1344,7 +1405,6 @@ def test_censored_candidate_emits_terminal_diagnostic_holdout_selection(
         "learning_rate_schedule.png",
         "ppl_vs_size.png",
         "portfolio_final_holdout_deficit_vs_size.png",
-        "portfolio_final_holdout_perplexity.png",
         "portfolio_per_granularity_deficits.png",
         "portfolio_validation_loss_over_tokens.png",
         "portfolio_worst_width_deficit.png",
@@ -1406,10 +1466,14 @@ def test_matformer_granularity_profile_isolated_pipeline(tmp_path):
         granularities=granularities,
         comparison_group=comparison_group,
         granularity_profile="matformer",
+        seeds=(42,),
     )
     assert targets["comparison_group_id"] == comparison_group
     assert targets["granularity_profile"] == "matformer"
     assert targets["granularities"] == list(granularities)
+    assert targets["status"] == "references_frozen_provisional"
+    assert targets["observed_seeds"] == [42]
+    assert targets["missing_seeds"] == [43, 44]
     assert set(targets["targets"]["42"]) == set(granularities)
 
     for width in granularities:
@@ -1439,6 +1503,7 @@ def test_matformer_granularity_profile_isolated_pipeline(tmp_path):
         targets,
         granularities=granularities,
         comparison_group=comparison_group,
+        seeds=(42,),
     )
     catchup_output = tmp_path / "matformer-profile-catchup"
     report = portfolio_catchup(
@@ -1489,17 +1554,18 @@ def test_matformer_granularity_profile_isolated_pipeline(tmp_path):
         tmp_path / "matformer-profile-extension",
         target_path,
         targets,
-        candidate_arm_id="nested_all_b",
+        candidate_arm_id="nested_all_4b",
         granularities=granularities,
         comparison_group=comparison_group,
+        seeds=(42,),
     )
     extension_report = portfolio_catchup(
         extension_runs[:1],
         target_path,
         tmp_path / "matformer-profile-nested-all-analysis",
-        candidate_arm="nested_all_b",
+        candidate_arm="nested_all_4b",
     )
-    assert extension_report["comparison_arm_id"] == "nested_all_b"
+    assert extension_report["comparison_arm_id"] == "nested_all_4b"
     assert extension_report["granularities"] == list(granularities)
     assert extension_report["granularity_profile"] == "matformer"
 
@@ -1627,12 +1693,53 @@ def test_skip_existing_verifies_requested_checkpoint(tmp_path):
         resolve_existing_final_holdout_result(run_dir, checkpoint_path=checkpoint_path)
 
 
-def test_reference_matrix_rejects_missing_and_docs_commands_are_valid_bash(tmp_path):
+def test_reference_matrix_accepts_seed_subsets_but_rejects_incomplete_panels(
+    tmp_path,
+):
     runs = _reference_runs(tmp_path)
-    with pytest.raises(PortfolioAnalysisError, match="exactly 12"):
-        freeze_references(runs[:-1], tmp_path / "bad-reference-analysis")
+    targets = freeze_references(runs[:4], tmp_path / "one-seed-reference-analysis")
+    assert targets["status"] == "references_frozen_provisional"
+    assert targets["observed_seeds"] == [42]
+    assert targets["missing_seeds"] == [43, 44]
+    assert set(targets["targets"]) == {"42"}
+
+    with pytest.raises(PortfolioAnalysisError, match="complete four-width panel"):
+        freeze_references(runs[:3], tmp_path / "bad-reference-analysis")
+
+
+def test_portfolio_docs_referenced_commands_exist():
     assert Path(
         "configs/controlled_exps/tinystories_instruct_portfolio_catchup.yaml"
     ).is_file()
     assert Path("scripts/analyze_tinystories_portfolio_catchup.py").is_file()
-    assert Path("docs/tinystories-portfolio-catchup.md").is_file()
+    doc_path = Path("docs/tinystories-portfolio-catchup.md")
+    assert doc_path.is_file()
+    doc = doc_path.read_text(encoding="utf-8")
+    assert doc.count("## Shell requirement") == 1
+    assert "executable in **zsh**" in doc
+    assert "exec bash" not in doc
+    assert "mapfile" not in doc
+    assert "declare -A" not in doc
+    assert "```zsh" not in doc
+    assert "```bash" in doc
+    assert doc.count("## One-time environment and all paths") == 1
+    assert doc.count("## Analyze every currently completed result") == 1
+    assert doc.count("## Evaluate and analyze every available holdout") == 1
+    assert doc.count("## Generate figures for every available report") == 1
+    assert doc.count("export TARGET_MANIFEST=") == 1
+    assert doc.count("mkdir -p") == 1
+    assert "mkdir -p logs" in doc
+
+    shell_blocks = re.findall(r"```bash\n(.*?)\n```", doc, flags=re.DOTALL)
+    assert shell_blocks
+    syntax_shell = shutil.which("zsh") or shutil.which("bash")
+    assert syntax_shell is not None
+    for index, block in enumerate(shell_blocks):
+        result = subprocess.run(
+            [syntax_shell, "-n"],
+            input=block,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, f"shell block {index}: {result.stderr}"

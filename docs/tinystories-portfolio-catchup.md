@@ -17,6 +17,13 @@ settings, warmup, batch construction, and cosine schedule family. The cosine
 horizon follows each declared budget (`B` or `3B`); there is no LR screen or
 separate tuning cost.
 
+## Shell requirement
+
+Every command block in this guide is executable in **zsh**. Run the one-time
+environment block and all later stages in the same zsh session so its arrays,
+functions, and paths remain available. No Bash subshell or shell switch is
+required.
+
 ## Choose the MatFormer granularities
 
 Copy and paste this before the environment block to use
@@ -26,7 +33,12 @@ Copy and paste this before the environment block to use
 export USE_MATFORMER_GRANULARITIES=1
 ```
 
-## Environment and isolated roots
+## One-time environment and all paths
+
+Run this block once in every new shell. It defines every training, analysis,
+holdout, and figure path used by the complete workflow. It creates only
+`logs/`, which Slurm needs when a job is submitted; every artifact-producing
+command creates its own destination only when it actually has work to write.
 
 ```bash
 export TINYSTORIES_PROFILE=instruct
@@ -66,6 +78,79 @@ export CANDIDATE_ROOT="$PORTFOLIO_ROOT/elastic-candidate-runs"
 export ANALYSIS_ROOT="$PORTFOLIO_ROOT/analysis"
 export HOLDOUT_ROOT="$PORTFOLIO_ROOT/final-holdout-analysis"
 export FIGURES_ROOT="$PORTFOLIO_ROOT/figures"
+export REFERENCE_ANALYSIS="$ANALYSIS_ROOT/references"
+export TARGET_MANIFEST="$REFERENCE_ANALYSIS/standalone_portfolio_targets.json"
+
+export CATCHUP_ANALYSIS="$ANALYSIS_ROOT/portfolio-catchup"
+export CATCHUP_REPORT="$CATCHUP_ANALYSIS/portfolio_catchup_report.json"
+export HOLDOUT_SELECTION="$CATCHUP_ANALYSIS/final_holdout_selection_manifest.json"
+
+export EXTENSION_ROOT="$PORTFOLIO_ROOT/diagnostic-extension"
+export UNIFORM_4B_ROOT="$EXTENSION_ROOT/uniform-h1-4b-runs"
+export NESTED_ALL_ROOT="$EXTENSION_ROOT/nested-all-b-runs"
+export NESTED_ALL_4B_ROOT="$EXTENSION_ROOT/nested-all-4b-runs"
+export CONCAT_4B_ROOT="$EXTENSION_ROOT/concat-uniform-h1-4b-runs"
+export EXTENSION_ANALYSIS_ROOT="$EXTENSION_ROOT/analysis"
+export EXTENSION_HOLDOUT_ROOT="$EXTENSION_ROOT/final-holdout-analysis"
+export EXTENSION_FIGURES_ROOT="$EXTENSION_ROOT/figures"
+
+export UNIFORM_4B_ANALYSIS="$EXTENSION_ANALYSIS_ROOT/uniform-h1-4b"
+export NESTED_ALL_ANALYSIS="$EXTENSION_ANALYSIS_ROOT/nested-all-b"
+export NESTED_ALL_4B_ANALYSIS="$EXTENSION_ANALYSIS_ROOT/nested-all-4b"
+export CONCAT_4B_ANALYSIS="$EXTENSION_ANALYSIS_ROOT/concat-uniform-h1-4b"
+
+PORTFOLIO_ARMS=(
+  uniform_h1_3b
+  uniform_h1_4b
+  nested_all_b
+  nested_all_4b
+  concat_uniform_h1_4b
+)
+
+arm_run_root() {
+  case "$1" in
+    uniform_h1_3b) echo "$CANDIDATE_ROOT" ;;
+    uniform_h1_4b) echo "$UNIFORM_4B_ROOT" ;;
+    nested_all_b) echo "$NESTED_ALL_ROOT" ;;
+    nested_all_4b) echo "$NESTED_ALL_4B_ROOT" ;;
+    concat_uniform_h1_4b) echo "$CONCAT_4B_ROOT" ;;
+    *) return 2 ;;
+  esac
+}
+
+arm_analysis_dir() {
+  case "$1" in
+    uniform_h1_3b) echo "$CATCHUP_ANALYSIS" ;;
+    uniform_h1_4b) echo "$UNIFORM_4B_ANALYSIS" ;;
+    nested_all_b) echo "$NESTED_ALL_ANALYSIS" ;;
+    nested_all_4b) echo "$NESTED_ALL_4B_ANALYSIS" ;;
+    concat_uniform_h1_4b) echo "$CONCAT_4B_ANALYSIS" ;;
+    *) return 2 ;;
+  esac
+}
+
+arm_holdout_dir() {
+  case "$1" in
+    uniform_h1_3b) echo "$HOLDOUT_ROOT" ;;
+    uniform_h1_4b) echo "$EXTENSION_HOLDOUT_ROOT/uniform-h1-4b" ;;
+    nested_all_b) echo "$EXTENSION_HOLDOUT_ROOT/nested-all-b" ;;
+    nested_all_4b) echo "$EXTENSION_HOLDOUT_ROOT/nested-all-4b" ;;
+    concat_uniform_h1_4b) echo "$EXTENSION_HOLDOUT_ROOT/concat-uniform-h1-4b" ;;
+    *) return 2 ;;
+  esac
+}
+
+arm_figure_dir() {
+  case "$1" in
+    uniform_h1_3b) echo "$FIGURES_ROOT" ;;
+    uniform_h1_4b) echo "$EXTENSION_FIGURES_ROOT/uniform-h1-4b" ;;
+    nested_all_b) echo "$EXTENSION_FIGURES_ROOT/nested-all-b" ;;
+    nested_all_4b) echo "$EXTENSION_FIGURES_ROOT/nested-all-4b" ;;
+    concat_uniform_h1_4b) echo "$EXTENSION_FIGURES_ROOT/concat-uniform-h1-4b" ;;
+    *) return 2 ;;
+  esac
+}
+
 export B=713785344
 export THREE_B=2141356032
 export FOUR_B=2855141376
@@ -74,8 +159,10 @@ test "$B" -eq 713785344
 test "$THREE_B" -eq 2141356032
 test "$FOUR_B" -eq 2855141376
 test "${#PORTFOLIO_WIDTHS[@]}" -eq 4
-mkdir -p "$REFERENCE_ROOT" "$CANDIDATE_ROOT" \
-  "$ANALYSIS_ROOT" "$HOLDOUT_ROOT" "$FIGURES_ROOT" logs
+if test -r "$TARGET_MANIFEST"; then
+  export TARGET_HASH="$(jq -er '.manifest_hash' "$TARGET_MANIFEST")"
+fi
+mkdir -p logs
 ```
 
 Leave the variable unset for the existing quartile geometry
@@ -109,7 +196,7 @@ These overrides are only for an existing schema-1 standalone run. New
 standalone references and every elastic candidate use the schema-2 base
 configuration.
 
-## Acquire the 12 standalone references
+## Acquire the standalone references
 
 Preflight the complete matrix before submitting it:
 
@@ -154,23 +241,143 @@ for SEED in 42 43 44; do
 done
 ```
 
-After all 12 runs reach `B`, freeze their best ordinary-validation checkpoints:
+## Analyze every currently completed result
+
+Run this block after a complete four-width reference panel finishes, then rerun
+the same block unchanged whenever candidate arms finish. It ignores missing and
+in-progress runs, freezes references only when no target manifest exists, and
+analyzes every arm with at least one completed candidate for a target-manifest
+seed. No empty analysis directory is created for an unavailable arm.
 
 ```bash
-export REFERENCE_ANALYSIS="$ANALYSIS_ROOT/references"
+completed_runs_under() {
+  local ROOT="$1"
+  local SUMMARY
+  test -d "$ROOT" || return 0
+  while IFS= read -r SUMMARY; do
+    if jq -e '.status == "completed"' "$SUMMARY" >/dev/null; then
+      dirname -- "$SUMMARY"
+    fi
+  done < <(find "$ROOT" -type f -name run_summary.json -print)
+}
 
-"$PYTHON_BIN" scripts/analyze_tinystories_portfolio_catchup.py \
-  freeze-references \
-  "${ANALYZER_PROFILE_ARGS[@]}" \
-  --runs-root "$REFERENCE_ROOT" \
-  --output-dir "$REFERENCE_ANALYSIS"
+if ! test -r "$TARGET_MANIFEST"; then
+  REFERENCE_ARGS=()
+  for SEED in 42 43 44; do
+    PANEL_ARGS=()
+    PANEL_READY=1
+    for WIDTH in "${PORTFOLIO_WIDTHS[@]}"; do
+      MATCHES=()
+      while IFS= read -r MATCH; do
+        MATCHES+=("$MATCH")
+      done < <(completed_runs_under "$REFERENCE_ROOT/$WIDTH/s$SEED" | sort)
+      if test "${#MATCHES[@]}" -ne 1; then
+        PANEL_READY=0
+        if test "${#MATCHES[@]}" -gt 1; then
+          echo "Skipping ambiguous reference seed $SEED width $WIDTH" >&2
+        fi
+        break
+      fi
+      for MATCH in "${MATCHES[@]}"; do
+        PANEL_ARGS+=(--run-dir "$MATCH")
+      done
+    done
+    if test "$PANEL_READY" -eq 1; then
+      REFERENCE_ARGS+=("${PANEL_ARGS[@]}")
+    fi
+  done
 
-export TARGET_MANIFEST="$REFERENCE_ANALYSIS/standalone_portfolio_targets.json"
-export TARGET_HASH="$(jq -r '.manifest_hash' "$TARGET_MANIFEST")"
-test -r "$REFERENCE_ANALYSIS/standalone_portfolio_targets.csv"
-test -r "$REFERENCE_ANALYSIS/standalone_portfolio_diagnostics.json"
-test -r "$REFERENCE_ANALYSIS/standalone_portfolio_diagnostics.png"
+  if test "${#REFERENCE_ARGS[@]}" -gt 0; then
+    "$PYTHON_BIN" scripts/analyze_tinystories_portfolio_catchup.py \
+      freeze-references \
+      "${ANALYZER_PROFILE_ARGS[@]}" \
+      "${REFERENCE_ARGS[@]}" \
+      --output-dir "$REFERENCE_ANALYSIS"
+  else
+    echo "No complete four-width reference panel is available yet"
+  fi
+else
+  echo "Keeping existing immutable target manifest: $TARGET_MANIFEST"
+fi
+
+if test -r "$TARGET_MANIFEST"; then
+  export TARGET_HASH="$(jq -er '.manifest_hash' "$TARGET_MANIFEST")"
+  TARGET_SEEDS=()
+  while IFS= read -r SEED; do
+    TARGET_SEEDS+=("$SEED")
+  done < <(jq -r '.observed_seeds[]' "$TARGET_MANIFEST")
+
+  for ARM in "${PORTFOLIO_ARMS[@]}"; do
+    ARM_RUN_DIR="$(arm_run_root "$ARM")"
+    ARM_ANALYSIS="$(arm_analysis_dir "$ARM")"
+    CANDIDATE_ARGS=()
+    ARM_UNAMBIGUOUS=1
+    for SEED in "${TARGET_SEEDS[@]}"; do
+      MATCHES=()
+      while IFS= read -r MATCH; do
+        MATCHES+=("$MATCH")
+      done < <(completed_runs_under "$ARM_RUN_DIR/s$SEED" | sort)
+      if test "${#MATCHES[@]}" -eq 1; then
+        for MATCH in "${MATCHES[@]}"; do
+          CANDIDATE_ARGS+=(--run-dir "$MATCH")
+        done
+      elif test "${#MATCHES[@]}" -gt 1; then
+        echo "Skipping arm $ARM: multiple completed runs for seed $SEED" >&2
+        ARM_UNAMBIGUOUS=0
+      fi
+    done
+
+    if test "$ARM_UNAMBIGUOUS" -eq 1 && test "${#CANDIDATE_ARGS[@]}" -gt 0; then
+      "$PYTHON_BIN" scripts/analyze_tinystories_portfolio_catchup.py \
+        portfolio-catchup \
+        "${CANDIDATE_ARGS[@]}" \
+        --target-manifest "$TARGET_MANIFEST" \
+        --candidate-arm "$ARM" \
+        --output-dir "$ARM_ANALYSIS"
+      jq '{
+        arm: .comparison_arm_id,
+        status,
+        observed_seeds,
+        missing_seeds,
+        general_claim: .general_portfolio_catchup_claim
+      }' "$ARM_ANALYSIS/portfolio_catchup_report.json"
+    else
+      echo "No analyzable completed candidates for $ARM"
+    fi
+  done
+
+  AVAILABLE_REPORTS=()
+  for ARM in "${PORTFOLIO_ARMS[@]}"; do
+    REPORT="$(arm_analysis_dir "$ARM")/portfolio_catchup_report.json"
+    if test -r "$REPORT"; then
+      AVAILABLE_REPORTS+=("$REPORT")
+    fi
+  done
+  if test "${#AVAILABLE_REPORTS[@]}" -gt 0; then
+    jq -s '[.[] | {
+      arm: .comparison_arm_id,
+      variant: .candidate_model_variant,
+      status,
+      observed_seeds,
+      optimizer_spend_over_4B: .realized_full_run_spend_over_4B,
+      subnetwork_target_tokens: .realized_subnetwork_target_tokens,
+      worst_terminal_ppl_deficit_by_seed: [
+        .seeds[] | {
+          seed,
+          value: ([.final_per_width_deficits[].perplexity_deficit] | max)
+        }
+      ]
+    }]' "${AVAILABLE_REPORTS[@]}"
+  fi
+fi
 ```
+
+A one-seed freeze records `observed_seeds: [42]`, `missing_seeds: [43, 44]`,
+and `status: references_frozen_provisional`. Its target manifest can drive the
+matching candidate, holdout, and figures. Because that manifest becomes a
+hashed training input, the block deliberately never overwrites it. To freeze a
+larger reference set for newly launched candidates, choose a new
+`REFERENCE_ANALYSIS` in the one-time path block.
 
 ## Run fresh `3B` elastic candidates
 
@@ -236,145 +443,15 @@ for SEED in 42 43 44; do
 done
 ```
 
-## Verify catch-up, final holdout, and figures
+After any `3B` candidate completes, rerun **Analyze every currently completed
+result**. A one-seed report selects five checkpoints, a two-seed report selects
+ten, and a complete report selects fifteen. Derived reports may be refreshed as
+more candidate seeds finish; the frozen target manifest is never changed.
 
-For a provisional analysis before all three seeds are complete, point the
-analyzer at only the completed seed roots. The same analysis directory can be
-regenerated as more seeds finish. For example, after seed 42 completes:
-
-```bash
-export CATCHUP_ANALYSIS="$ANALYSIS_ROOT/portfolio-catchup"
-
-"$PYTHON_BIN" scripts/analyze_tinystories_portfolio_catchup.py \
-  portfolio-catchup \
-  --runs-root "$CANDIDATE_ROOT/s42" \
-  --target-manifest "$TARGET_MANIFEST" \
-  --output-dir "$CATCHUP_ANALYSIS"
-
-jq '{
-  status,
-  observed_seeds,
-  missing_seeds,
-  seed_coverage_complete,
-  observed_seed_catchup_confirmed,
-  general_claim: .general_portfolio_catchup_claim
-}' "$CATCHUP_ANALYSIS/portfolio_catchup_report.json"
-```
-
-This emits a five-checkpoint holdout manifest for seed 42: its four frozen
-standalone checkpoints and the selected elastic checkpoint. The holdout
-evaluator, final-holdout analyzer, and manifest-driven figure command accept
-that provisional manifest. A two-seed analysis analogously contains ten
-checkpoints. `general_portfolio_catchup_claim` and
-`general_portfolio_equivalence_claim` remain false until seeds 42, 43, and 44
-are all present and pass. The report and holdout-selection manifest are
-replaceable derived artifacts, so
-rerunning the analyzer in the same output directory updates their seed
-membership. Their hashes still protect downstream holdout and figure commands
-from silently using stale checkpoint selections.
-
-After all three seeds complete, produce the confirmatory analysis in its
-canonical output directory:
-
-```bash
-export CATCHUP_ANALYSIS="$ANALYSIS_ROOT/portfolio-catchup"
-
-"$PYTHON_BIN" scripts/analyze_tinystories_portfolio_catchup.py \
-  portfolio-catchup \
-  --runs-root "$CANDIDATE_ROOT" \
-  --target-manifest "$TARGET_MANIFEST" \
-  --output-dir "$CATCHUP_ANALYSIS"
-
-export CATCHUP_REPORT="$CATCHUP_ANALYSIS/portfolio_catchup_report.json"
-export HOLDOUT_SELECTION="$CATCHUP_ANALYSIS/final_holdout_selection_manifest.json"
-test -r "$CATCHUP_ANALYSIS/portfolio_catchup.csv"
-test -r "$CATCHUP_ANALYSIS/portfolio_joint_deficit.png"
-test -r "$CATCHUP_ANALYSIS/portfolio_per_granularity_deficits.png"
-test -r "$HOLDOUT_SELECTION"
-```
-
-The report uses the fifth simultaneous qualifying validation as `t*`, reports
-`t*/B`, `t*/4B`, required savings, and separately reports the realized `75%`
-full-run spend. A censored seed prevents the general claim.
-
-The analyzer seals exactly five checkpoints per observed seed. Standalone
-entries use their ordinary-validation best checkpoints. When every observed
-seed confirms, elastic entries use their immutable confirmation checkpoints.
-Only a complete three-seed manifest is eligible for the predefined general
-claim. If any observed seed is censored, every observed elastic entry instead
-uses its exact terminal `3B` checkpoint. That mode is diagnostic only: it
-reports terminal holdout equivalence without creating `t*`, savings, catch-up,
-or general portfolio-equivalence claims.
-
-Inspect which selection rule was recorded:
-
-```bash
-jq '{
-  status: .final_holdout_selection_status,
-  mode: .final_holdout_selection_mode,
-  claim_eligible: .final_holdout_claim_eligible
-}' "$CATCHUP_REPORT"
-```
-
-Evaluate exactly the selected checkpoints in one Slurm allocation:
-
-```bash
-sbatch \
-  --job-name=portfolio-final-holdout \
-  --time=24:00:00 \
-  scripts/slurm_tinystories_controlled.sh \
-  --python-bin "$PYTHON_BIN" \
-  --final-holdout-manifest "$HOLDOUT_SELECTION"
-```
-
-After every result selected by the manifest exists (5, 10, or 15 results):
-
-```bash
-"$PYTHON_BIN" scripts/analyze_tinystories_portfolio_catchup.py \
-  final-holdout \
-  --selection-manifest "$HOLDOUT_SELECTION" \
-  --output-dir "$HOLDOUT_ROOT"
-
-test -r "$HOLDOUT_ROOT/portfolio_final_holdout_report.json"
-test -r "$HOLDOUT_ROOT/portfolio_final_holdout.csv"
-```
-
-For confirmation-selected manifests, a general portfolio-equivalence claim is
-emitted only if all 12 comparisons from the complete three-seed matrix pass the
-`0.5%` perplexity tolerance. A partial manifest reports
-`provisional_seed_subset_equivalence` over only its four or eight observed
-pairs. For censored terminal-`3B` manifests, the report instead sets
-`diagnostic_terminal_3B_equivalence`; its
-`general_portfolio_equivalence_claim` remains false regardless of the holdout
-result.
-
-Generate only the manifest-declared mixed-budget figures:
-
-```bash
-"$PYTHON_BIN" scripts/make_figures.py \
-  --input "$PORTFOLIO_ROOT" \
-  --comparison-manifest "$CATCHUP_REPORT" \
-  --output "$FIGURES_ROOT"
-
-test -r "$FIGURES_ROOT/portfolio_validation_loss_over_tokens.png"
-test -r "$FIGURES_ROOT/ppl_vs_size.png"
-test -r "$FIGURES_ROOT/portfolio_per_granularity_deficits.png"
-test -r "$FIGURES_ROOT/portfolio_worst_width_deficit.png"
-test -r "$FIGURES_ROOT/learning_rate_schedule.png"
-test -r "$FIGURES_ROOT/final_holdout_ppl_vs_size.png"
-test -r "$FIGURES_ROOT/portfolio_final_holdout_deficit_vs_size.png"
-```
-
-Standalone curves end naturally at `B`; elastic curves continue to `3B`.
-Labels include role, active width, budget, cosine scheduler, and seed count.
-Target/tolerance bands and joint confirmation markers come from the immutable
-comparison report. Both size plots use exact non-embedding parameter counts and
-the manifest-selected checkpoints. A censored report remains fully plottable;
-its elastic series is labeled as a claim-ineligible terminal-`3B` diagnostic and
-has no confirmation marker. `portfolio_final_holdout_perplexity.png` is retained
-as a compatibility alias of `final_holdout_ppl_vs_size.png`. Without
-`--comparison-manifest`, figure generation retains its historical strict
-same-contract behavior.
+The report uses the fifth simultaneous qualifying validation as `t*`. If an
+observed seed is censored, its elastic holdout entry uses the exact terminal
+candidate-budget checkpoint and remains diagnostic rather than creating a
+catch-up or savings claim.
 
 ## Post-hoc diagnostic extension: `4B` uniform H=1 and nested-all
 
@@ -382,14 +459,16 @@ Use this extension after the frozen `3B` uniform-H1 arm is censored. It reuses
 the existing 12 standalone runs, their best checkpoints, and the exact frozen
 target manifest. Do **not** rerun or refreeze the standalone references.
 
-The two additional arms are:
+The three additional arms are:
 
 - `uniform_h1_4b`: a fresh uniform-global, random-with-replacement, `H=1`
   elastic run with a cosine horizon of `4B`;
 - `nested_all_b`: a fresh nested-all run with a cosine horizon of `B`, where
-  every optimizer update averages the four width losses.
+  every optimizer update averages the four width losses;
+- `nested_all_4b`: the same nested-all procedure continued over a cosine
+  horizon of `4B` optimizer/data tokens.
 
-Both arms retain LR `0.008`, AdamW, warmup, batch construction, corpus,
+All three arms retain LR `0.008`, AdamW, warmup, batch construction, corpus,
 ordinary-validation manifest, targets, tolerance, and five-validation streak.
 They use schema 3 so their arm, topology, and budget are immutable resume
 inputs. Existing schema-1/2 references and `3B` candidates remain unchanged
@@ -403,33 +482,21 @@ new untouched holdout protocol fixed before inspecting these arm results.
 
 ### Reuse and verify the frozen inputs
 
-Start from the same environment used above. The manifest hash must be read from
-the already-frozen artifact rather than regenerated:
+Start from the one-time environment above. The manifest hash comes from the
+already-frozen artifact rather than a regenerated target set:
 
 ```bash
-export TARGET_MANIFEST="$ANALYSIS_ROOT/references/standalone_portfolio_targets.json"
 export TARGET_HASH="$(jq -r '.manifest_hash' "$TARGET_MANIFEST")"
-export CATCHUP_REPORT="$ANALYSIS_ROOT/portfolio-catchup/portfolio_catchup_report.json"
-export EXTENSION_ROOT="$PORTFOLIO_ROOT/diagnostic-extension"
-export UNIFORM_4B_ROOT="$EXTENSION_ROOT/uniform-h1-4b-runs"
-export NESTED_ALL_ROOT="$EXTENSION_ROOT/nested-all-b-runs"
-export EXTENSION_ANALYSIS_ROOT="$EXTENSION_ROOT/analysis"
-export EXTENSION_HOLDOUT_ROOT="$EXTENSION_ROOT/final-holdout-analysis"
-export EXTENSION_FIGURES_ROOT="$EXTENSION_ROOT/figures"
-
 test -r "$TARGET_MANIFEST"
 test -r "$CATCHUP_REPORT"
 test "$(jq -r '.reference_budget_tokens' "$TARGET_MANIFEST")" -eq "$B"
 test "$(jq -r '.aggregate_reference_budget_tokens' "$TARGET_MANIFEST")" -eq "$FOUR_B"
 test "${#TARGET_HASH}" -eq 64
-mkdir -p "$UNIFORM_4B_ROOT" "$NESTED_ALL_ROOT" \
-  "$EXTENSION_ANALYSIS_ROOT" "$EXTENSION_HOLDOUT_ROOT" \
-  "$EXTENSION_FIGURES_ROOT" logs
 ```
 
-Never continue a `3B` checkpoint into the `4B` arm. Its cosine horizon was
-resolved for `3B`, so the `4B` diagnosis must use fresh run IDs and empty output
-roots. Likewise, nested-all is a new topology and must start from scratch.
+Never continue a `3B` checkpoint into either `4B` arm. Its cosine horizon was
+resolved for `3B`, so each `4B` diagnosis must use fresh run IDs and an empty
+output root. Likewise, nested-all is a new topology and must start from scratch.
 
 ### Preflight and launch fresh uniform-H1 `4B`
 
@@ -565,64 +632,84 @@ both `realized_full_run_spend_over_4B = 0.25` in optimizer-token units and
 `realized_subnetwork_target_tokens = 4B` as a compute-exposure diagnostic. Do
 not describe it as a quarter-compute run.
 
-### Analyze each arm against the unchanged targets
+### Preflight and launch fresh nested-all `4B`
 
-An arm may be analyzed provisionally after any non-empty subset of its seeds
-has completed its declared cap. Use a seed-specific analysis directory for that
-snapshot; the general arm result still requires all three seeds. Analyze the
-arms separately so `B`, `3B`, and `4B` runs are never aggregated as
-replications:
-
-```bash
-export UNIFORM_4B_ANALYSIS="$EXTENSION_ANALYSIS_ROOT/uniform-h1-4b"
-export NESTED_ALL_ANALYSIS="$EXTENSION_ANALYSIS_ROOT/nested-all-b"
-
-"$PYTHON_BIN" scripts/analyze_tinystories_portfolio_catchup.py \
-  portfolio-catchup \
-  --runs-root "$UNIFORM_4B_ROOT" \
-  --target-manifest "$TARGET_MANIFEST" \
-  --candidate-arm uniform_h1_4b \
-  --output-dir "$UNIFORM_4B_ANALYSIS"
-
-"$PYTHON_BIN" scripts/analyze_tinystories_portfolio_catchup.py \
-  portfolio-catchup \
-  --runs-root "$NESTED_ALL_ROOT" \
-  --target-manifest "$TARGET_MANIFEST" \
-  --candidate-arm nested_all_b \
-  --output-dir "$NESTED_ALL_ANALYSIS"
-
-export UNIFORM_4B_REPORT="$UNIFORM_4B_ANALYSIS/portfolio_catchup_report.json"
-export NESTED_ALL_REPORT="$NESTED_ALL_ANALYSIS/portfolio_catchup_report.json"
-export UNIFORM_4B_HOLDOUT_SELECTION="$UNIFORM_4B_ANALYSIS/final_holdout_selection_manifest.json"
-export NESTED_ALL_HOLDOUT_SELECTION="$NESTED_ALL_ANALYSIS/final_holdout_selection_manifest.json"
-
-test -r "$UNIFORM_4B_REPORT"
-test -r "$NESTED_ALL_REPORT"
-test -r "$UNIFORM_4B_HOLDOUT_SELECTION"
-test -r "$NESTED_ALL_HOLDOUT_SELECTION"
-```
-
-Inspect ordinary-validation outcomes together with the original `3B` report:
+This is the full-optimizer-budget nested-all stress test. It uses the same
+`4B` optimizer/data-token budget as the standalone portfolio acquisition cost,
+but each optimizer step evaluates all four widths. Its aggregate subnetwork
+exposure is therefore `16B`, four times the standalone portfolio's aggregate
+target-token count. Treat it as a high-compute diagnostic, not a compute-matched
+efficiency comparison.
 
 ```bash
-jq -s '[.[] | {
-  arm: (.comparison_arm_id // "uniform_h1_3b"),
-  status,
-  all_seeds_confirmed: (.arm_catchup_confirmed // ([.seeds[].caught_up] | all)),
-  general_claim: .general_portfolio_catchup_claim,
-  optimizer_spend_over_4B: .realized_full_run_spend_over_4B,
-  subnetwork_target_tokens: (.realized_subnetwork_target_tokens // .elastic_budget_cap_tokens),
-  worst_terminal_ppl_deficit_by_seed: [
-    .seeds[] | {
-      seed,
-      value: ([.final_per_width_deficits[].perplexity_deficit] | max)
-    }
-  ]
-}]' \
-  "$CATCHUP_REPORT" "$UNIFORM_4B_REPORT" "$NESTED_ALL_REPORT"
+for SEED in 42 43 44; do
+  RUN_ID="tiny-instruct-portfolio-nested-all-4b-s${SEED}"
+  "$PYTHON_BIN" train.py \
+    --config "$BASE" \
+    "${GRANULARITY_OVERRIDES[@]}" \
+    --output-root "$NESTED_ALL_4B_ROOT/s$SEED" \
+    --override "run.run_id=$RUN_ID" \
+    --override "run.seed=$SEED" \
+    --override run.model_family=nested \
+    --override run.sampling_mode=nested-all \
+    --override run.granularity=null \
+    --override controlled_experiment.comparison_role=elastic_candidate \
+    --override controlled_experiment.comparison_arm_id=nested_all_4b \
+    --override controlled_experiment.portfolio_catchup.schema_version=3 \
+    --override controlled_experiment.portfolio_catchup.enabled=true \
+    --override "controlled_experiment.portfolio_catchup.elastic_budget_cap_tokens=$FOUR_B" \
+    --override "controlled_experiment.portfolio_catchup.target_manifest_path=$TARGET_MANIFEST" \
+    --override "controlled_experiment.portfolio_catchup.target_manifest_hash=$TARGET_HASH" \
+    --override "training.token_budget=$FOUR_B" \
+    --override training.learning_rate=0.008 \
+    --override "model.tokenizer_dir=$TOKENIZER" \
+    --override "dataset.prepared_corpus_dir=$CORPUS" \
+    --preflight
+done
 ```
 
-Interpret the two new arms against the censored uniform-H1 `3B` result:
+Submit the fresh runs. This arm is approximately four times as expensive as
+`nested_all_b`; adjust `--time` to the cluster limit and resubmit the identical
+command if checkpoint continuation is required.
+
+```bash
+for SEED in 42 43 44; do
+  RUN_ID="tiny-instruct-portfolio-nested-all-4b-s${SEED}"
+  sbatch \
+    --job-name="portfolio-nested-all-4b-s${SEED}" \
+    --time=168:00:00 \
+    scripts/slurm_tinystories_controlled.sh \
+    --python-bin "$PYTHON_BIN" \
+    --config "$BASE" \
+    "${GRANULARITY_OVERRIDES[@]}" \
+    --output-root "$NESTED_ALL_4B_ROOT/s$SEED" \
+    --override "run.run_id=$RUN_ID" \
+    --override "run.seed=$SEED" \
+    --override run.model_family=nested \
+    --override run.sampling_mode=nested-all \
+    --override run.granularity=null \
+    --override controlled_experiment.comparison_role=elastic_candidate \
+    --override controlled_experiment.comparison_arm_id=nested_all_4b \
+    --override controlled_experiment.portfolio_catchup.schema_version=3 \
+    --override controlled_experiment.portfolio_catchup.enabled=true \
+    --override "controlled_experiment.portfolio_catchup.elastic_budget_cap_tokens=$FOUR_B" \
+    --override "controlled_experiment.portfolio_catchup.target_manifest_path=$TARGET_MANIFEST" \
+    --override "controlled_experiment.portfolio_catchup.target_manifest_hash=$TARGET_HASH" \
+    --override "training.token_budget=$FOUR_B" \
+    --override training.learning_rate=0.008 \
+    --override "model.tokenizer_dir=$TOKENIZER" \
+    --override "dataset.prepared_corpus_dir=$CORPUS"
+done
+```
+
+### Interpret the completed extension arms
+
+Rerun **Analyze every currently completed result** after any extension seed
+reaches its cap. Each arm is processed separately, so `B`, `3B`, and `4B` runs
+are never aggregated as replications.
+
+First interpret `nested_all_b` and `uniform_h1_4b` against the censored
+uniform-H1 `3B` result:
 
 | nested-all `B` | uniform-H1 `4B` | Main diagnosis |
 |---|---|---|
@@ -631,61 +718,18 @@ Interpret the two new arms against the censored uniform-H1 `3B` result:
 | fails | passes | Extra sequential updates overcome simultaneous-gradient interference. |
 | fails | fails | The shared architecture/optimizer recipe does not meet the frozen tolerance under either reasonable extension. |
 
+Compare `nested_all_4b` directly with `nested_all_b`. If only the `4B` arm
+passes, simultaneous all-width training is viable but needs substantially more
+optimizer/data exposure than the compute-matched `B` test. If both fail, the
+negative result persists even after spending the entire `4B` optimizer-token
+portfolio budget—and `16B` subnetwork-target tokens—under nested-all.
+
 “Passes” means five consecutive **joint** validations for all four widths and
 all three seeds. Independently passing widths at different validations does not
 count.
 
-### Optional descriptive final holdout and figures
-
-Each complete arm report writes its own 12-reference-plus-3-elastic checkpoint
-manifest; a provisional report writes four references plus one elastic entry per
-observed seed. The same standalone holdout results may be reused only when
-their stored checkpoint hashes match; the elastic checkpoints are arm-specific.
-
-```bash
-for ARM in uniform-h1-4b nested-all-b; do
-  if test "$ARM" = uniform-h1-4b; then
-    SELECTION="$UNIFORM_4B_HOLDOUT_SELECTION"
-  else
-    SELECTION="$NESTED_ALL_HOLDOUT_SELECTION"
-  fi
-  sbatch \
-    --job-name="portfolio-${ARM}-holdout" \
-    --time=24:00:00 \
-    scripts/slurm_tinystories_controlled.sh \
-    --python-bin "$PYTHON_BIN" \
-    --final-holdout-manifest "$SELECTION"
-done
-```
-
-After those allocations finish:
-
-```bash
-"$PYTHON_BIN" scripts/analyze_tinystories_portfolio_catchup.py \
-  final-holdout \
-  --selection-manifest "$UNIFORM_4B_HOLDOUT_SELECTION" \
-  --output-dir "$EXTENSION_HOLDOUT_ROOT/uniform-h1-4b"
-
-"$PYTHON_BIN" scripts/analyze_tinystories_portfolio_catchup.py \
-  final-holdout \
-  --selection-manifest "$NESTED_ALL_HOLDOUT_SELECTION" \
-  --output-dir "$EXTENSION_HOLDOUT_ROOT/nested-all-b"
-
-"$PYTHON_BIN" scripts/make_figures.py \
-  --input "$EXTENSION_ROOT" \
-  --comparison-manifest "$UNIFORM_4B_REPORT" \
-  --output "$EXTENSION_FIGURES_ROOT/uniform-h1-4b"
-
-"$PYTHON_BIN" scripts/make_figures.py \
-  --input "$EXTENSION_ROOT" \
-  --comparison-manifest "$NESTED_ALL_REPORT" \
-  --output "$EXTENSION_FIGURES_ROOT/nested-all-b"
-```
-
-The extension holdout reports may set `diagnostic_arm_equivalence`, but they
-always leave `general_portfolio_equivalence_claim` false. The figure roots are
-separate by arm; each plot overlays that arm with the same frozen standalone
-targets and labels its actual budget and selected checkpoint.
+Extension holdout reports may set `diagnostic_arm_equivalence`, but they always
+leave `general_portfolio_equivalence_claim` false.
 
 ## Post-hoc optimizer-isolation diagnostic: concat uniform-H1 `4B`
 
@@ -712,21 +756,11 @@ standalone references.
 ### Isolate roots and verify frozen inputs
 
 ```bash
-export TARGET_MANIFEST="$ANALYSIS_ROOT/references/standalone_portfolio_targets.json"
 export TARGET_HASH="$(jq -r '.manifest_hash' "$TARGET_MANIFEST")"
-export EXTENSION_ROOT="$PORTFOLIO_ROOT/diagnostic-extension"
-export UNIFORM_4B_REPORT="$EXTENSION_ROOT/analysis/uniform-h1-4b/portfolio_catchup_report.json"
-export CONCAT_4B_ROOT="$EXTENSION_ROOT/concat-uniform-h1-4b-runs"
-export CONCAT_4B_ANALYSIS="$EXTENSION_ROOT/analysis/concat-uniform-h1-4b"
-export CONCAT_4B_HOLDOUT_ROOT="$EXTENSION_ROOT/final-holdout-analysis/concat-uniform-h1-4b"
-export CONCAT_4B_FIGURES_ROOT="$EXTENSION_ROOT/figures/concat-uniform-h1-4b"
-
 test -r "$TARGET_MANIFEST"
-test -r "$UNIFORM_4B_REPORT"
+test -r "$UNIFORM_4B_ANALYSIS/portfolio_catchup_report.json"
 test "$(jq -r '.shared_provenance.model_variant' "$TARGET_MANIFEST")" = slicing
 test "${#TARGET_HASH}" -eq 64
-mkdir -p "$CONCAT_4B_ROOT" "$CONCAT_4B_ANALYSIS" \
-  "$CONCAT_4B_HOLDOUT_ROOT" "$CONCAT_4B_FIGURES_ROOT" logs
 ```
 
 Use fresh run IDs and output roots. A slicing checkpoint cannot be resumed into
@@ -820,62 +854,14 @@ submit_concat_4b_seed 44
 Completing only seed 42 is sufficient for a provisional optimizer-mechanism
 analysis. The analyzer will emit a five-checkpoint seed-42 holdout manifest and
 figures, but it will mark seeds 43 and 44 missing and keep every general claim
-false. Rerun the same command in `$CONCAT_4B_ANALYSIS` after adding seeds 43 and
-44; the derived report and selection manifest will update to the complete
-matrix.
-
-```bash
-"$PYTHON_BIN" scripts/analyze_tinystories_portfolio_catchup.py \
-  portfolio-catchup \
-  --runs-root "$CONCAT_4B_ROOT/s42" \
-  --target-manifest "$TARGET_MANIFEST" \
-  --candidate-arm concat_uniform_h1_4b \
-  --output-dir "$CONCAT_4B_ANALYSIS"
-
-jq '{status, observed_seeds, missing_seeds, general_claim: .general_portfolio_catchup_claim}' \
-  "$CONCAT_4B_ANALYSIS/portfolio_catchup_report.json"
-```
+false. Rerun **Analyze every currently completed result** after seed 42 and
+again after adding seeds 43 and 44; the derived report and selection manifest
+will update to the complete matrix.
 
 ### Analyze against the same targets
 
-```bash
-"$PYTHON_BIN" scripts/analyze_tinystories_portfolio_catchup.py \
-  portfolio-catchup \
-  --runs-root "$CONCAT_4B_ROOT" \
-  --target-manifest "$TARGET_MANIFEST" \
-  --candidate-arm concat_uniform_h1_4b \
-  --output-dir "$CONCAT_4B_ANALYSIS"
-
-export CONCAT_4B_REPORT="$CONCAT_4B_ANALYSIS/portfolio_catchup_report.json"
-export CONCAT_4B_HOLDOUT_SELECTION="$CONCAT_4B_ANALYSIS/final_holdout_selection_manifest.json"
-
-test -r "$CONCAT_4B_REPORT"
-test -r "$CONCAT_4B_HOLDOUT_SELECTION"
-jq '{
-  arm: .comparison_arm_id,
-  status,
-  reference_variant: .reference_model_variant,
-  candidate_variant: .candidate_model_variant,
-  allowed_provenance_delta: .allowed_reference_provenance_differences,
-  general_claim: .general_portfolio_catchup_claim
-}' "$CONCAT_4B_REPORT"
-```
-
-Compare the slicing and concat `4B` arms without aggregating them:
-
-```bash
-jq -s '[.[] | {
-  arm: .comparison_arm_id,
-  variant: (.candidate_model_variant // "slicing"),
-  status,
-  worst_terminal_ppl_deficit_by_seed: [
-    .seeds[] | {
-      seed,
-      value: ([.final_per_width_deficits[].perplexity_deficit] | max)
-    }
-  ]
-}]' "$UNIFORM_4B_REPORT" "$CONCAT_4B_REPORT"
-```
+The centralized analysis block compares the concat report with the slicing
+`4B` report without aggregating their seeds as replications.
 
 Interpretation is deliberately narrow:
 
@@ -886,37 +872,119 @@ Interpretation is deliberately narrow:
 - worse concat results require checking numerical/layout equivalence before
   drawing an optimizer conclusion.
 
-### Optional descriptive holdout and figures
-
-```bash
-sbatch \
-  --job-name=portfolio-concat-h1-4b-holdout \
-  --time=24:00:00 \
-  scripts/slurm_tinystories_controlled.sh \
-  --python-bin "$PYTHON_BIN" \
-  --final-holdout-manifest "$CONCAT_4B_HOLDOUT_SELECTION"
-```
-
-After the allocation finishes:
-
-```bash
-"$PYTHON_BIN" scripts/analyze_tinystories_portfolio_catchup.py \
-  final-holdout \
-  --selection-manifest "$CONCAT_4B_HOLDOUT_SELECTION" \
-  --output-dir "$CONCAT_4B_HOLDOUT_ROOT"
-
-"$PYTHON_BIN" scripts/make_figures.py \
-  --input "$EXTENSION_ROOT" \
-  --comparison-manifest "$CONCAT_4B_REPORT" \
-  --output "$CONCAT_4B_FIGURES_ROOT"
-
-test -r "$CONCAT_4B_HOLDOUT_ROOT/portfolio_final_holdout_report.json"
-test -r "$CONCAT_4B_HOLDOUT_ROOT/portfolio_final_holdout.csv"
-test -r "$CONCAT_4B_FIGURES_ROOT/ppl_vs_size.png"
-test -r "$CONCAT_4B_FIGURES_ROOT/final_holdout_ppl_vs_size.png"
-test -r "$CONCAT_4B_FIGURES_ROOT/portfolio_worst_width_deficit.png"
-```
-
 As with the earlier diagnostic arms, holdout results may establish descriptive
 `diagnostic_arm_equivalence` but cannot set a general portfolio-equivalence or
 catch-up claim.
+
+## Evaluate and analyze every available holdout
+
+Run this block after the centralized analysis block. For each available
+selection manifest it does one of three things: summarizes already-matching
+results, leaves an active Slurm allocation alone, or submits one allocation for
+the missing or stale results. Rerun it after submitted jobs finish. Arms without
+a selection manifest are skipped and do not get a holdout directory.
+
+```bash
+selection_results_ready() {
+  local SELECTION="$1"
+  local RESULT_PATH CHECKPOINT_SHA RUN_ID CHECKPOINT_PATH
+  local ENTRY_COUNT=0
+  while IFS=$'\t' read -r RESULT_PATH CHECKPOINT_SHA RUN_ID CHECKPOINT_PATH; do
+    ENTRY_COUNT=$((ENTRY_COUNT + 1))
+    test -r "$RESULT_PATH" || return 1
+    jq -e \
+      --arg checkpoint_sha "$CHECKPOINT_SHA" \
+      --arg run_id "$RUN_ID" \
+      --arg checkpoint_path "$CHECKPOINT_PATH" \
+      '.checkpoint_sha256 == $checkpoint_sha
+       and .run_id == $run_id
+       and .checkpoint_path == $checkpoint_path' \
+      "$RESULT_PATH" >/dev/null || return 1
+  done < <(
+    jq -r '.entries[] |
+      [.result_path, .checkpoint_sha256, .run_id, .checkpoint_path] | @tsv' \
+      "$SELECTION"
+  )
+  test "$ENTRY_COUNT" -gt 0
+}
+
+for ARM in "${PORTFOLIO_ARMS[@]}"; do
+  ARM_ANALYSIS="$(arm_analysis_dir "$ARM")"
+  ARM_HOLDOUT="$(arm_holdout_dir "$ARM")"
+  SELECTION="$ARM_ANALYSIS/final_holdout_selection_manifest.json"
+  if ! test -r "$SELECTION"; then
+    echo "No holdout selection for $ARM"
+    continue
+  fi
+
+  if selection_results_ready "$SELECTION"; then
+    "$PYTHON_BIN" scripts/analyze_tinystories_portfolio_catchup.py \
+      final-holdout \
+      --selection-manifest "$SELECTION" \
+      --output-dir "$ARM_HOLDOUT"
+    jq '{
+      arm: .comparison_arm_id,
+      status,
+      observed_seeds,
+      all_pairs_within_tolerance,
+      general_claim: .general_portfolio_equivalence_claim
+    }' "$ARM_HOLDOUT/portfolio_final_holdout_report.json"
+    continue
+  fi
+
+  JOB_NAME="portfolio-${ARM//_/-}-holdout"
+  PENDING_JOB=""
+  if command -v squeue >/dev/null; then
+    PENDING_JOB="$(squeue -h -u "$USER" -n "$JOB_NAME" | head -n 1)"
+  fi
+  if test -n "$PENDING_JOB"; then
+    echo "Holdout allocation already active for $ARM"
+  else
+    sbatch \
+      --job-name="$JOB_NAME" \
+      --time=24:00:00 \
+      scripts/slurm_tinystories_controlled.sh \
+      --python-bin "$PYTHON_BIN" \
+      --final-holdout-manifest "$SELECTION"
+  fi
+done
+```
+
+The Slurm wrapper uses `--skip-existing`, which hash-checks every requested
+checkpoint before reusing a result. A provisional manifest evaluates five or
+ten checkpoints; a complete manifest evaluates fifteen. Confirmation-selected
+complete reports can support the predefined equivalence claim. Terminal or
+post-hoc selections remain descriptive regardless of their holdout outcome.
+
+## Generate figures for every available report
+
+This block generates one manifest-scoped figure set per available analysis
+report. It skips unavailable arms and therefore creates no empty figure roots.
+Final-holdout panels appear automatically only when every result selected by
+that arm's manifest is present and checkpoint-matched.
+
+```bash
+for ARM in "${PORTFOLIO_ARMS[@]}"; do
+  ARM_ANALYSIS="$(arm_analysis_dir "$ARM")"
+  ARM_FIGURES="$(arm_figure_dir "$ARM")"
+  REPORT="$ARM_ANALYSIS/portfolio_catchup_report.json"
+  if ! test -r "$REPORT"; then
+    echo "No figure input for $ARM"
+    continue
+  fi
+
+  "$PYTHON_BIN" scripts/make_figures.py \
+    --input "$PORTFOLIO_ROOT" \
+    --comparison-manifest "$REPORT" \
+    --output "$ARM_FIGURES"
+done
+```
+
+Figure membership comes exclusively from each sealed report. Standalone curves
+end at `B`; elastic curves end at the arm's actual budget. Titles are derived
+from the saved sampling mode, model variant, scheduler, budget, and seed count.
+Legends use short role/arm labels, while panel titles identify the active
+granularity. `final_holdout_ppl_vs_size.png` is the single final-holdout size
+plot; the old duplicate `portfolio_final_holdout_perplexity.png` alias is
+removed on regeneration. Without `--comparison-manifest`, figure generation
+retains its historical strict same-contract behavior.
