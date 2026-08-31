@@ -5,6 +5,9 @@ The two arms share model weights, batches, global width actions, optimizer
 hyperparameters, and one global learning-rate clock. The intervention is only
 `training.optimizer.state_scope` (`shared` or `per_granularity`).
 
+For a copy-paste six-arm execution guide, see
+[run-per-width-optimizer-experiments.md](./run-per-width-optimizer-experiments.md).
+
 ## Corpus audit
 
 Select the prepared instruct profile and audit its four immutable roles before
@@ -119,12 +122,12 @@ checkpoint:
 ```bash
 python scripts/analyze_tinystories_per_width_optimizer.py freeze \
   --phase confirmation \
-  --run-dir "$CONFIRM_ROOT/optimizer-state-shared-s42" \
-  --run-dir "$CONFIRM_ROOT/optimizer-state-per-granularity-s42" \
-  --run-dir "$CONFIRM_ROOT/optimizer-state-shared-s43" \
-  --run-dir "$CONFIRM_ROOT/optimizer-state-per-granularity-s43" \
-  --run-dir "$CONFIRM_ROOT/optimizer-state-shared-s44" \
-  --run-dir "$CONFIRM_ROOT/optimizer-state-per-granularity-s44" \
+  --run-dir "$CONFIRM_ROOT/optimizer-state-confirmation-shared-s42" \
+  --run-dir "$CONFIRM_ROOT/optimizer-state-confirmation-per-granularity-s42" \
+  --run-dir "$CONFIRM_ROOT/optimizer-state-confirmation-shared-s43" \
+  --run-dir "$CONFIRM_ROOT/optimizer-state-confirmation-per-granularity-s43" \
+  --run-dir "$CONFIRM_ROOT/optimizer-state-confirmation-shared-s44" \
+  --run-dir "$CONFIRM_ROOT/optimizer-state-confirmation-per-granularity-s44" \
   --output-dir "$CONFIRM_ROOT/analysis"
 ```
 
