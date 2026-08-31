@@ -54,6 +54,202 @@ from src.training.steps import build_training_metric_row
 from src.utils.reproducibility import configure_strict_determinism, derive_seed
 
 
+def test_optimizer_ownership_metric_and_summary_schemas_are_reconciled():
+    config = resolve_run_config(
+        "tests/fixtures/per_granularity_optimizer_smoke.yaml",
+        overrides={"run.continuation.enabled": False},
+    )
+    row = build_training_metric_row(
+        config,
+        step=1,
+        granularity="narrow",
+        loss=0.5,
+        tokens_seen=64,
+        content_tokens_seen=64,
+        wall_clock_seconds=0.25,
+        peak_memory_bytes=1024,
+        adaptive_artifacts={
+            "optimizer_action_id": "balanced-cycle:0:0",
+            "optimizer_batch_provenance": {"epoch": 0, "batch_index": 0},
+            "selected_optimizer_granularity": "narrow",
+            "optimizer_step_attempted": True,
+            "optimizer_step_committed": True,
+            "optimizer_successful_update_counts": {"narrow": 1, "full": 0},
+            "optimizer_exposure_counts": {"narrow": 1, "full": 0},
+            "global_scheduler_position": 1,
+        },
+    )
+
+    assert row["optimizer_state_scope"] == "per_granularity"
+    assert row["selected_optimizer_granularity"] == "narrow"
+    assert row["optimizer_step_attempted"] is True
+    assert row["optimizer_step_committed"] is True
+    assert row["global_scheduler_position"] == 1
+    assert {
+        "optimizer_state_scope",
+        "selected_optimizer_granularity",
+        "optimizer_step_attempted",
+        "optimizer_step_committed",
+        "optimizer_failure_stage",
+        "optimizer_action_id",
+        "optimizer_batch_provenance",
+        "optimizer_successful_update_counts",
+        "optimizer_exposure_counts",
+        "global_scheduler_position",
+    }.issubset(METRICS_COLUMNS)
+
+    from src.utils.metrics import build_optimizer_state_summary_fields
+
+    fields = build_optimizer_state_summary_fields(
+        config,
+        run_state={
+            "last_completed_step": 4,
+            "optimizer_update_counts": {"narrow": 2, "full": 2},
+            "global_sampling_state": {
+                "total_successful_updates": 4,
+                "exposure_counts": {"narrow": 2, "full": 2},
+            },
+        },
+        attempted_steps=4,
+        wall_time_seconds=1.5,
+        peak_memory_bytes=2048,
+        checkpoint_path=None,
+    )
+    assert fields["optimizer_state_scope"] == "per_granularity"
+    assert fields["attempted_optimizer_steps"] == 4
+    assert fields["committed_optimizer_steps"] == 4
+    assert fields["failed_optimizer_attempts"] == 0
+    assert fields["optimizer_accounting_reconciled"] is True
+    assert fields["training_wall_time_seconds"] == pytest.approx(1.5)
+    assert fields["peak_accelerator_memory_bytes"] == 2048
+
+
+def test_checkpoint_payloads_distinguish_resumable_and_model_only_purpose(tmp_path):
+    import src.training.checkpointing as training_checkpointing
+    from src.training.steps import build_optimizer_and_scheduler
+
+    output_dir = tmp_path / "per-granularity-optimizer-smoke-001"
+    config = resolve_run_config(
+        "tests/fixtures/per_granularity_optimizer_smoke.yaml",
+        output_dir=output_dir,
+        overrides={"evaluation.validation": False},
+    )
+    model = torch.nn.Linear(2, 1)
+    optimizer, scheduler = build_optimizer_and_scheduler(model, config["training"])
+    run_state = training_checkpointing.build_initial_continuation_state(config)
+    latest = output_dir / "checkpoints" / "latest.pt"
+    best = output_dir / "checkpoints" / "best_eval_step_0.pt"
+    common = {
+        "checkpoint_metric": None,
+        "checkpoint_metric_value": None,
+        "checkpoint_selection_step": None,
+    }
+
+    training_checkpointing.save_model_checkpoint(
+        config,
+        model,
+        optimizer,
+        scheduler,
+        latest,
+        {"checkpoint_status": "latest", **common},
+        run_state,
+    )
+    training_checkpointing.save_model_checkpoint(
+        config,
+        model,
+        None,
+        None,
+        best,
+        {"checkpoint_status": "best_eval", **common},
+        run_state,
+    )
+
+    resumable = torch.load(latest, map_location="cpu", weights_only=False)
+    model_only = torch.load(best, map_location="cpu", weights_only=False)
+    assert resumable["checkpoint_kind"] == "resumable_training"
+    assert resumable["checkpoint_schema_version"] == 1
+    assert resumable["optimizer_state_dict"] is None
+    assert resumable["optimizer_state_collection"]["ordered_entries"]
+    assert resumable["optimizer_state_contract"]["state_scope"] == "per_granularity"
+    assert resumable["scheduler_state_dict"]["position"] == 0
+    assert resumable["optimizer_state_collection"]["successful_update_counts"] == {
+        "narrow": 0,
+        "full": 0,
+    }
+    assert resumable["optimizer_state_collection"]["last_active_granularity"] is None
+
+    assert model_only["checkpoint_kind"] == "model_only_evaluation"
+    assert model_only["optimizer_state_dict"] is None
+    assert model_only["optimizer_state_collection"] is None
+    assert model_only["scheduler_state_dict"] is None
+
+    restored_model = torch.nn.Linear(2, 1)
+    restored_optimizer, restored_scheduler = build_optimizer_and_scheduler(
+        restored_model, config["training"]
+    )
+    with pytest.raises(ConfigError, match="model_only_evaluation"):
+        training_checkpointing.load_checkpoint_state(
+            best,
+            restored_model,
+            restored_optimizer,
+            restored_scheduler,
+            config=config,
+        )
+
+
+def test_historical_checkpoint_without_purpose_resumes_shared_state_only(tmp_path):
+    import src.training.checkpointing as training_checkpointing
+
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides={"run.continuation.enabled": True},
+    )
+    model = torch.nn.Linear(2, 1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    checkpoint_path = output_dir / "checkpoints/latest.pt"
+    training_checkpointing.save_model_checkpoint(
+        config,
+        model,
+        optimizer,
+        None,
+        checkpoint_path,
+        {
+            "checkpoint_status": "latest",
+            "checkpoint_metric": None,
+            "checkpoint_metric_value": None,
+            "checkpoint_selection_step": None,
+        },
+        training_checkpointing.build_initial_continuation_state(config),
+    )
+    historical = torch.load(
+        checkpoint_path, map_location="cpu", weights_only=False
+    )
+    for field in (
+        "checkpoint_kind",
+        "checkpoint_schema_version",
+        "optimizer_state_contract",
+        "optimizer_state_collection",
+    ):
+        historical.pop(field)
+    torch.save(historical, checkpoint_path)
+
+    restored_model = torch.nn.Linear(2, 1)
+    restored_optimizer = torch.optim.SGD(restored_model.parameters(), lr=0.01)
+    restored = training_checkpointing.load_checkpoint_state(
+        checkpoint_path,
+        restored_model,
+        restored_optimizer,
+        None,
+        config=config,
+    )
+    assert restored["status"] == "resumed"
+    for expected, actual in zip(model.parameters(), restored_model.parameters()):
+        assert torch.equal(expected, actual)
+
+
 class TinyExtractionModel(torch.nn.Module):
     def __init__(self):
         super().__init__()

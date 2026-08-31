@@ -10,7 +10,7 @@ import math
 import re
 import statistics
 import warnings
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -71,6 +71,8 @@ __all__ = [
     "to_float",
     "to_float_or_none",
     "main",
+    "OptimizerStateRunOutcome",
+    "ResourceCosts",
 ]
 
 
@@ -79,6 +81,74 @@ PANELGRAD_METHOD_FAMILIES = {
     "panelgrad_gradient_rms",
     "panelgrad_gradient_l2",
 }
+
+
+@dataclass(frozen=True)
+class ResourceCosts:
+    """Operational costs recorded for one optimizer-state arm."""
+
+    wall_time_seconds: float
+    peak_accelerator_memory_bytes: int
+    resumable_checkpoint_bytes: int
+
+
+@dataclass(frozen=True)
+class OptimizerStateRunOutcome:
+    """Scope-aware scientific outcome for one frozen run."""
+
+    run_id: str
+    seed: int
+    state_scope: str
+    ordered_widths: tuple[str, ...]
+    per_width_outcomes: Mapping[str, Mapping[str, float]]
+    uniform_mean_loss: float
+    worst_width_loss: float
+    resources: ResourceCosts
+    evidence_label: str
+
+    @classmethod
+    def from_artifacts(
+        cls,
+        *,
+        config: Mapping[str, Any],
+        summary: Mapping[str, Any],
+        per_width_outcomes: Mapping[str, Mapping[str, float]],
+        resources: ResourceCosts,
+        evidence_label: str = "diagnostic",
+    ) -> "OptimizerStateRunOutcome":
+        training = config.get("training", {})
+        model = config.get("model", {})
+        scope = str(
+            summary.get("optimizer_state_scope")
+            or training.get("optimizer_state_scope")
+            or "shared"
+        )
+        ordered = tuple(
+            str(width)
+            for width in (
+                summary.get("ordered_optimizer_granularities")
+                or training.get("optimizer_state_contract", {}).get(
+                    "ordered_granularities", []
+                )
+                or model.get("granularities", [])
+            )
+        )
+        losses = [float(per_width_outcomes[width]["loss"]) for width in ordered]
+        if not losses:
+            raise ValueError("Optimizer-state reporting requires per-width losses")
+        return cls(
+            run_id=str(summary.get("run_id") or config.get("run", {}).get("run_id")),
+            seed=int(summary.get("seed", config.get("run", {}).get("seed", 0))),
+            state_scope=scope,
+            ordered_widths=ordered,
+            per_width_outcomes={
+                width: dict(per_width_outcomes[width]) for width in ordered
+            },
+            uniform_mean_loss=sum(losses) / len(losses),
+            worst_width_loss=max(losses),
+            resources=resources,
+            evidence_label=str(evidence_label),
+        )
 
 
 def resolve_plot_style(style_name: str) -> dict[str, Any]:

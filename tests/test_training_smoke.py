@@ -1,4 +1,5 @@
 import csv
+import ast
 import json
 import sys
 import types
@@ -15,6 +16,7 @@ import src.training.checkpointing as training_checkpointing
 import src.training.modeling as training_modeling
 import src.training.monitoring as training_monitoring
 import src.training.steps as training_steps
+from src.training.optimizer_state import PerGranularityOptimizerCollection
 from src.training.run import run_training
 from src.training.panelgrad import PanelGradController
 from src.utils.config import ConfigError, resolve_run_config
@@ -190,6 +192,22 @@ class TinyNestedTrainingModel(torch.nn.Module):
         return SimpleNamespace(loss=loss)
 
 
+class TwoWidthOptimizerSmokeModel(TinyNestedTrainingModel):
+    def __init__(self):
+        super().__init__(granularities=["narrow", "full"])
+        self.wide_only = torch.nn.Parameter(torch.tensor(0.25))
+
+    def forward(self, input_ids, attention_mask=None, labels=None):
+        output = super().forward(
+            input_ids,
+            attention_mask=attention_mask,
+            labels=labels,
+        )
+        if self.current_granularity == "full":
+            output.loss = output.loss + self.wide_only.pow(2)
+        return output
+
+
 class BackwardOrderingTrainingModel(TinyNestedTrainingModel):
     def __init__(self, loss_scale_by_granularity=None):
         super().__init__(loss_scale_by_granularity=loss_scale_by_granularity)
@@ -210,6 +228,483 @@ class BackwardOrderingTrainingModel(TinyNestedTrainingModel):
                 )
             )
         return outputs
+
+
+@pytest.mark.parametrize("optimizer_name", ["adamw", "sgd"])
+def test_per_granularity_optimizer_families_use_normal_training_entrypoint(
+    tmp_path,
+    monkeypatch,
+    optimizer_name,
+):
+    output_dir = tmp_path / optimizer_name / "per-granularity-optimizer-smoke-001"
+    overrides = {
+        "run.continuation.enabled": False,
+        "outputs.save_checkpoints": False,
+        "training.max_steps": 2,
+        "training.token_budget": 64,
+        "training.batch_size_per_process": 1,
+        "training.scheduler.name": "constant",
+        "training.warmup_steps": 0,
+        "training.eval_interval": 0,
+        "evaluation.validation": False,
+        "evaluation.validation.interval_steps": 0,
+        "evaluation.validation.run_at_completion": False,
+    }
+    if optimizer_name == "sgd":
+        overrides["training.optimizer"] = {
+            "name": "sgd",
+            "state_scope": "per_granularity",
+            "scheduler_clock": "global_step",
+            "kwargs": {"momentum": 0.9, "weight_decay": 0.1},
+        }
+    config = resolve_run_config(
+        "tests/fixtures/per_granularity_optimizer_smoke.yaml",
+        output_dir=output_dir,
+        overrides=overrides,
+    )
+
+    dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3] for _ in range(4)],
+            "attention_mask": [[1, 1, 1] for _ in range(4)],
+        }
+    )
+    model = TwoWidthOptimizerSmokeModel()
+    captured = {}
+    original_builder = training_steps.build_optimizer_and_scheduler
+
+    def capture_runtime(model_arg, training):
+        runtime = original_builder(model_arg, training)
+        captured["optimizer"], captured["scheduler"] = runtime
+        return runtime
+
+    monkeypatch.setattr(
+        training_steps,
+        "build_optimizer_and_scheduler",
+        capture_runtime,
+    )
+
+    result = run_training(
+        config,
+        model=model,
+        tokenized_dataset=dataset,
+        device="cpu",
+    )
+
+    collection = captured["optimizer"]
+    assert isinstance(collection, PerGranularityOptimizerCollection)
+    assert collection.successful_update_counts == {"narrow": 1, "full": 1}
+    assert set(model.train_forward_granularities) == {"narrow", "full"}
+    assert model.wide_only not in collection.optimizer_for("narrow").state
+    assert model.wide_only in collection.optimizer_for("full").state
+    assert [
+        row["granularity"]
+        for row in result["metrics_rows"]
+        if row["split"] == "train"
+    ] == model.train_forward_granularities
+
+
+def test_omitted_optimizer_scope_keeps_normal_shared_training_runtime(
+    tmp_path,
+    monkeypatch,
+):
+    output_dir = tmp_path / "debug-nested-001"
+    config = resolve_run_config(
+        "configs/debug_matrix.yaml",
+        run_id="debug-nested-001",
+        output_dir=output_dir,
+        overrides=[
+            "run.continuation.enabled=false",
+            "outputs.save_checkpoints=false",
+            "training.max_steps=1",
+            "training.batch_size_per_process=1",
+            "training.eval_interval=0",
+            "evaluation.validation=false",
+            "evaluation.validation.interval_steps=0",
+            "evaluation.validation.run_at_completion=false",
+        ],
+    )
+    dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3], [3, 2, 1]],
+            "attention_mask": [[1, 1, 1], [1, 1, 1]],
+        }
+    )
+    captured = {}
+    original_builder = training_steps.build_optimizer_and_scheduler
+
+    def capture_runtime(model_arg, training):
+        runtime = original_builder(model_arg, training)
+        captured["optimizer"] = runtime[0]
+        return runtime
+
+    monkeypatch.setattr(
+        training_steps,
+        "build_optimizer_and_scheduler",
+        capture_runtime,
+    )
+
+    result = run_training(
+        config,
+        model=TinyNestedTrainingModel(),
+        tokenized_dataset=dataset,
+        device="cpu",
+    )
+
+    assert config["training"]["requested_optimizer_state_scope"] is None
+    assert config["training"]["optimizer_state_scope"] == "shared"
+    assert isinstance(captured["optimizer"], torch.optim.Optimizer)
+    assert not isinstance(captured["optimizer"], PerGranularityOptimizerCollection)
+    shared_rows = [row for row in result["metrics_rows"] if row["split"] == "train"]
+    assert {row["step"] for row in shared_rows} == {1}
+    assert {row["granularity"] for row in shared_rows} == {"s", "m", "l", "xl"}
+
+
+def test_paired_optimizer_scope_short_runs_keep_actions_batches_and_clock_matched(
+    tmp_path,
+):
+    dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3] for _ in range(8)],
+            "attention_mask": [[1, 1, 1] for _ in range(8)],
+        }
+    )
+    results = {}
+    for scope in ("shared", "per_granularity"):
+        run_id = f"paired-{scope}"
+        config = resolve_run_config(
+            "tests/fixtures/per_granularity_optimizer_smoke.yaml",
+            output_dir=tmp_path / scope / run_id,
+            overrides={
+                "run.run_id": run_id,
+                "run.continuation.enabled": False,
+                "outputs.save_checkpoints": False,
+                "training.max_steps": 4,
+                "training.token_budget": 128,
+                "training.batch_size_per_process": 1,
+                "training.optimizer.state_scope": scope,
+                "training.scheduler.name": "constant",
+                "training.warmup_steps": 0,
+                "training.eval_interval": 0,
+                "evaluation.validation": False,
+                "evaluation.validation.interval_steps": 0,
+                "evaluation.validation.run_at_completion": False,
+            },
+        )
+        torch.manual_seed(7)
+        results[scope] = run_training(
+            config,
+            model=TwoWidthOptimizerSmokeModel(),
+            tokenized_dataset=dataset,
+            device="cpu",
+        )
+
+    shared = [row for row in results["shared"]["metrics_rows"] if row["split"] == "train"]
+    isolated = [
+        row
+        for row in results["per_granularity"]["metrics_rows"]
+        if row["split"] == "train"
+    ]
+    compared_fields = (
+        "optimizer_action_id",
+        "optimizer_batch_provenance",
+        "selected_optimizer_granularity",
+        "learning_rate",
+        "global_scheduler_position",
+    )
+    assert [[row[field] for field in compared_fields] for row in shared] == [
+        [row[field] for field in compared_fields] for row in isolated
+    ]
+    assert [row["optimizer_state_scope"] for row in shared] == ["shared"] * 4
+    assert [row["optimizer_state_scope"] for row in isolated] == [
+        "per_granularity"
+    ] * 4
+    from src.utils.reproducibility import (
+        build_full_run_signature,
+        build_paired_control_signature,
+    )
+
+    shared_config = results["shared"]["config"]
+    isolated_config = results["per_granularity"]["config"]
+    assert build_paired_control_signature(shared_config) == (
+        build_paired_control_signature(isolated_config)
+    )
+    assert build_full_run_signature(shared_config) != build_full_run_signature(
+        isolated_config
+    )
+    assert shared_config["evaluation"]["validation"]["interval_steps"] == (
+        isolated_config["evaluation"]["validation"]["interval_steps"]
+    )
+    for result in results.values():
+        summary = json.loads(Path(result["summary_path"]).read_text(encoding="utf-8"))
+        assert summary["optimizer_successful_update_counts"] == {
+            "narrow": 2,
+            "full": 2,
+        }
+        assert summary["optimizer_exposure_counts"] == {"narrow": 2, "full": 2}
+        assert summary["optimizer_accounting_reconciled"] is True
+
+
+def test_per_granularity_normal_loop_does_not_count_a_failed_commit(
+    tmp_path,
+    monkeypatch,
+):
+    class FailingSecondOwnerModel(TwoWidthOptimizerSmokeModel):
+        def __init__(self):
+            super().__init__()
+            self.training_forwards = 0
+
+        def forward(self, *args, **kwargs):
+            if self.training:
+                self.training_forwards += 1
+                if self.training_forwards == 2:
+                    raise RuntimeError("injected per-width pre-commit failure")
+            return super().forward(*args, **kwargs)
+
+    output_dir = tmp_path / "per-granularity-optimizer-smoke-001"
+    config = resolve_run_config(
+        "tests/fixtures/per_granularity_optimizer_smoke.yaml",
+        output_dir=output_dir,
+        overrides=[
+            "run.continuation.enabled=false",
+            "outputs.save_checkpoints=false",
+            "training.max_steps=2",
+            "training.token_budget=64",
+            "training.batch_size_per_process=1",
+            "training.scheduler.name=constant",
+            "training.warmup_steps=0",
+            "training.eval_interval=0",
+            "evaluation.validation=false",
+            "evaluation.validation.interval_steps=0",
+            "evaluation.validation.run_at_completion=false",
+        ],
+    )
+    dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3] for _ in range(4)],
+            "attention_mask": [[1, 1, 1] for _ in range(4)],
+        }
+    )
+    model = FailingSecondOwnerModel()
+    captured = {}
+    original_builder = training_steps.build_optimizer_and_scheduler
+
+    def capture_runtime(model_arg, training):
+        runtime = original_builder(model_arg, training)
+        captured["optimizer"], captured["scheduler"] = runtime
+        return runtime
+
+    monkeypatch.setattr(
+        training_steps,
+        "build_optimizer_and_scheduler",
+        capture_runtime,
+    )
+
+    with pytest.raises(RuntimeError, match="per-width pre-commit failure"):
+        run_training(
+            config,
+            model=model,
+            tokenized_dataset=dataset,
+            device="cpu",
+        )
+
+    collection = captured["optimizer"]
+    assert sum(collection.successful_update_counts.values()) == 1
+    assert collection.total_successful_updates == 1
+    assert captured["scheduler"].position == 1
+    assert model.weight.grad is None
+    assert model.wide_only.grad is None
+
+
+@pytest.mark.parametrize("failure_forward", [2, 3])
+def test_per_granularity_terminal_checkpoint_resumes_exactly_after_precommit_failure(
+    tmp_path,
+    failure_forward,
+):
+    class FailOnSelectedWindow(TwoWidthOptimizerSmokeModel):
+        def __init__(self):
+            super().__init__()
+            self.training_forwards = 0
+
+        def forward(self, *args, **kwargs):
+            if self.training:
+                self.training_forwards += 1
+                if self.training_forwards == failure_forward:
+                    raise RuntimeError("simulated resumable pre-commit interruption")
+            return super().forward(*args, **kwargs)
+
+    dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3] for _ in range(8)],
+            "attention_mask": [[1, 1, 1] for _ in range(8)],
+        }
+    )
+
+    def make_config(output_dir):
+        return resolve_run_config(
+            "tests/fixtures/per_granularity_optimizer_smoke.yaml",
+            output_dir=output_dir,
+            overrides={
+                "training.max_steps": 4,
+                "training.token_budget": 128,
+                "training.batch_size_per_process": 1,
+                "training.scheduler.name": "constant",
+                "training.warmup_steps": 0,
+                "training.eval_interval": 0,
+                "evaluation.validation": False,
+                "evaluation.validation.interval_steps": 0,
+                "evaluation.validation.run_at_completion": False,
+                "run.continuation.latest_checkpoint_save_interval_steps": 1,
+            },
+        )
+
+    uninterrupted_config = make_config(
+        tmp_path / "uninterrupted" / "per-granularity-optimizer-smoke-001"
+    )
+    uninterrupted_model = TwoWidthOptimizerSmokeModel()
+    uninterrupted = run_training(
+        uninterrupted_config,
+        model=uninterrupted_model,
+        tokenized_dataset=dataset,
+        device="cpu",
+    )
+
+    resumed_config = make_config(
+        tmp_path / "resumed" / "per-granularity-optimizer-smoke-001"
+    )
+    with pytest.raises(RuntimeError, match="resumable pre-commit interruption"):
+        run_training(
+            resumed_config,
+            model=FailOnSelectedWindow(),
+            tokenized_dataset=dataset,
+            device="cpu",
+        )
+    resumed_model = TwoWidthOptimizerSmokeModel()
+    resumed = run_training(
+        resumed_config,
+        model=resumed_model,
+        tokenized_dataset=dataset,
+        device="cpu",
+    )
+
+    torch.testing.assert_close(
+        resumed_model.weight, uninterrupted_model.weight, rtol=0.0, atol=0.0
+    )
+    torch.testing.assert_close(
+        resumed_model.wide_only,
+        uninterrupted_model.wide_only,
+        rtol=0.0,
+        atol=0.0,
+    )
+    def ownership_record(row):
+        def counts(value):
+            return ast.literal_eval(value) if isinstance(value, str) else value
+
+        return (
+            int(row["step"]),
+            row["optimizer_action_id"],
+            row["selected_optimizer_granularity"],
+            float(row["learning_rate"]),
+            int(row["global_scheduler_position"]),
+            counts(row["optimizer_successful_update_counts"]),
+            counts(row["optimizer_exposure_counts"]),
+        )
+    uninterrupted_rows = [
+        row for row in uninterrupted["metrics_rows"] if row["split"] == "train"
+    ]
+    resumed_rows = [row for row in resumed["metrics_rows"] if row["split"] == "train"]
+    assert [ownership_record(row) for row in resumed_rows] == [
+        ownership_record(row) for row in uninterrupted_rows
+    ]
+    assert len({int(row["step"]) for row in resumed_rows}) == 4
+
+    uninterrupted_checkpoint = torch.load(
+        Path(uninterrupted_config["run"]["output_dir"]) / "checkpoints/latest.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    resumed_checkpoint = torch.load(
+        Path(resumed_config["run"]["output_dir"]) / "checkpoints/latest.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert resumed_checkpoint["checkpoint_kind"] == "resumable_training"
+    assert resumed_checkpoint["optimizer_state_collection"][
+        "successful_update_counts"
+    ] == {"narrow": 2, "full": 2}
+    assert resumed_checkpoint["scheduler_state_dict"]["position"] == 4
+    assert resumed_checkpoint["global_sampling_state"]["total_successful_updates"] == 4
+    assert resumed_checkpoint["optimizer_active_owner_granularity"] is None
+    for key in ("model_state_dict", "optimizer_state_collection", "scheduler_state_dict"):
+        left = uninterrupted_checkpoint[key]
+        right = resumed_checkpoint[key]
+        if key == "model_state_dict":
+            for parameter_name in left:
+                assert torch.equal(left[parameter_name], right[parameter_name])
+        else:
+            assert str(left) == str(right)
+
+
+def test_per_granularity_post_commit_failure_preserves_previous_durable_checkpoint(
+    tmp_path, monkeypatch
+):
+    from src.training.optimizer_state import GlobalSchedulerClock
+
+    output_dir = (
+        tmp_path / "post-commit" / "per-granularity-optimizer-smoke-001"
+    )
+    config = resolve_run_config(
+        "tests/fixtures/per_granularity_optimizer_smoke.yaml",
+        output_dir=output_dir,
+        overrides={
+            "training.max_steps": 4,
+            "training.token_budget": 128,
+            "training.batch_size_per_process": 1,
+            "training.scheduler.name": "constant",
+            "training.eval_interval": 0,
+            "evaluation.validation": False,
+            "evaluation.validation.interval_steps": 0,
+            "evaluation.validation.run_at_completion": False,
+            "run.continuation.latest_checkpoint_save_interval_steps": 1,
+        },
+    )
+    dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3] for _ in range(6)],
+            "attention_mask": [[1, 1, 1] for _ in range(6)],
+        }
+    )
+    original_synchronize = GlobalSchedulerClock.synchronize
+    calls = {"value": 0}
+
+    def fail_second_commit(self, collection):
+        calls["value"] += 1
+        if calls["value"] == 3:
+            raise RuntimeError("simulated post-commit scheduler failure")
+        return original_synchronize(self, collection)
+
+    monkeypatch.setattr(GlobalSchedulerClock, "synchronize", fail_second_commit)
+    with pytest.raises(RuntimeError, match="post-commit scheduler failure"):
+        run_training(
+            config,
+            model=TwoWidthOptimizerSmokeModel(),
+            tokenized_dataset=dataset,
+            device="cpu",
+        )
+
+    checkpoint_path = output_dir / "checkpoints/latest.pt"
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    assert checkpoint["step"] == 1
+    assert checkpoint["optimizer_state_collection"][
+        "total_successful_updates"
+    ] == 1
+    assert checkpoint["scheduler_state_dict"]["position"] == 1
+    with (output_dir / "metrics.csv").open(
+        "r", encoding="utf-8", newline=""
+    ) as source:
+        rows = list(csv.DictReader(source))
+    failed = next(row for row in rows if row["optimizer_step_committed"] == "True" and row["optimizer_failure_stage"])
+    assert failed["optimizer_failure_stage"] == "post_commit_accounting"
 
 
 class TinyNestedRuntimePatternModel(torch.nn.Module):
@@ -1631,7 +2126,11 @@ def test_training_failure_flushes_the_valid_metrics_prefix(tmp_path):
         newline="",
     ) as metrics_file:
         rows = list(csv.DictReader(metrics_file))
-    assert [row["step"] for row in rows] == ["1"]
+    assert [row["step"] for row in rows] == ["1", "2"]
+    assert rows[0]["optimizer_step_committed"] == "True"
+    assert rows[1]["optimizer_step_attempted"] == "True"
+    assert rows[1]["optimizer_step_committed"] == "False"
+    assert rows[1]["optimizer_failure_stage"] == "forward_backward"
 
 
 def test_failed_continuation_load_never_overwrites_existing_checkpoint(tmp_path):
@@ -3919,3 +4418,106 @@ def test_panelgrad_balanced_warmup_has_no_exposure_and_refreshes_only_if_trainin
         assert state["refresh"]["active_epsilon"] == pytest.approx(
             0.5 if scheduled else 0.1
         )
+
+
+def test_per_granularity_balanced_warmup_uses_the_same_owner_lifecycle(tmp_path):
+    import src.training.warmup as training_warmup
+
+    config = resolve_run_config(
+        "tests/fixtures/panelgrad_smoke.yaml",
+        output_dir=tmp_path / "panelgrad-smoke-001",
+        overrides=[
+            "training.max_steps=6",
+            "training.pre_nested_warmup.enabled=true",
+            "training.pre_nested_warmup.duration=6",
+            "training.pre_nested_warmup.unit=steps",
+            "training.pre_nested_warmup.policy=balanced_global",
+            "training.pre_nested_warmup.action_interval_steps=1",
+            "training.optimizer.state_scope=per_granularity",
+            "training.eval_interval=0",
+            "evaluation.validation.interval_steps=0",
+            "evaluation.validation.run_at_completion=false",
+            "run.continuation.enabled=false",
+            "outputs.save_checkpoints=false",
+        ],
+    )
+    model = TinyNestedTrainingModel(
+        loss_scale_by_granularity={"micro": 1.0, "medium": 2.0, "full": 3.0},
+        granularities=config["model"]["granularities"],
+    )
+    optimizer, scheduler = training_steps.build_optimizer_and_scheduler(
+        model, config["training"]
+    )
+    run_state = training_checkpointing.build_initial_continuation_state(config)
+
+    training_warmup.run_pre_nested_warmup_phase(
+        config,
+        model,
+        _tiny_training_batches(8),
+        [],
+        optimizer,
+        scheduler,
+        torch.device("cpu"),
+        run_state=run_state,
+    )
+
+    assert isinstance(optimizer, PerGranularityOptimizerCollection)
+    expected = {label: 2 for label in config["model"]["granularities"]}
+    assert optimizer.successful_update_counts == expected
+    assert optimizer.total_successful_updates == 6
+    assert scheduler.position == 6
+    assert model.train_forward_granularities == config["training"][
+        "pre_nested_warmup"
+    ]["schedule"]
+
+
+def test_per_granularity_warmup_rejects_a_multi_width_owner_before_forward(
+    tmp_path,
+):
+    import src.training.warmup as training_warmup
+
+    config = resolve_run_config(
+        "tests/fixtures/panelgrad_smoke.yaml",
+        output_dir=tmp_path / "panelgrad-smoke-001",
+        overrides=[
+            "training.max_steps=6",
+            "training.pre_nested_warmup.enabled=true",
+            "training.pre_nested_warmup.duration=6",
+            "training.pre_nested_warmup.unit=steps",
+            "training.pre_nested_warmup.policy=balanced_global",
+            "training.pre_nested_warmup.action_interval_steps=1",
+            "training.optimizer.state_scope=per_granularity",
+            "run.continuation.enabled=false",
+            "outputs.save_checkpoints=false",
+        ],
+    )
+    model = TinyNestedTrainingModel(
+        granularities=config["model"]["granularities"]
+    )
+    optimizer, scheduler = training_steps.build_optimizer_and_scheduler(
+        model, config["training"]
+    )
+    config["training"]["pre_nested_warmup"]["schedule"][0] = [
+        "micro",
+        "full",
+    ]
+
+    with pytest.raises(
+        ConfigError, match="warmup steps must apply exactly one global width"
+    ):
+        training_warmup.run_pre_nested_warmup_phase(
+            config,
+            model,
+            _tiny_training_batches(8),
+            [],
+            optimizer,
+            scheduler,
+            torch.device("cpu"),
+            run_state=training_checkpointing.build_initial_continuation_state(
+                config
+            ),
+        )
+
+    assert model.train_forward_granularities == []
+    assert optimizer.total_successful_updates == 0
+    assert scheduler.position == 0

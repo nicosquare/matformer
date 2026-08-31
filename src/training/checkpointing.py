@@ -66,6 +66,10 @@ from src.training.portfolio_catchup import (
     uses_portfolio_catchup,
     validate_portfolio_catchup_state,
 )
+from src.training.optimizer_state import (
+    GlobalSchedulerClock,
+    PerGranularityOptimizerCollection,
+)
 from src.utils.config import (
     BAYESIAN_CONTROLLER_METHOD_FAMILY,
     BAYESIAN_CONTROLLER_METHOD_VERSION,
@@ -104,6 +108,170 @@ PROBABILISTIC_CONTROLLER_PHASES = {
 
 BALANCED_GLOBAL_SAMPLING_SCHEMA_VERSION = 2
 BALANCED_GLOBAL_SAMPLING_SCHEDULE_VERSION = 1
+CHECKPOINT_SCHEMA_VERSION = 1
+RESUMABLE_CHECKPOINT_KIND = "resumable_training"
+MODEL_ONLY_CHECKPOINT_KIND = "model_only_evaluation"
+
+
+def _optimizer_checkpoint_contract(config: Mapping[str, Any]) -> dict[str, Any]:
+    training = config.get("training", {})
+    model = config.get("model", {})
+    run = config.get("run", {})
+    contract = copy.deepcopy(training.get("optimizer_state_contract", {}))
+    if not isinstance(contract, dict):
+        raise ConfigError("training.optimizer_state_contract must be resolved")
+    contract["topology_identity"] = {
+        "model_family": run.get("model_family"),
+        "model_size_label": run.get("model_size_label"),
+        "base_model_name": model.get("base_model_name"),
+        "variant": model.get("variant"),
+        "d_model": model.get("d_model"),
+        "num_layers": model.get("num_layers"),
+        "num_attention_heads": model.get("num_attention_heads"),
+        "context_length": model.get("context_length"),
+        "vocab_size": model.get("vocab_size"),
+        "ordered_granularities": copy.deepcopy(model.get("granularities")),
+        "granularity_prefixes": copy.deepcopy(model.get("granularity_prefixes")),
+    }
+    return contract
+
+
+def _checkpoint_kind_for_save(
+    checkpoint_status: str,
+    optimizer,
+) -> str:
+    if checkpoint_status == "best_eval":
+        return MODEL_ONLY_CHECKPOINT_KIND
+    if optimizer is None:
+        raise ConfigError(
+            "A resumable training checkpoint requires complete optimizer state"
+        )
+    return RESUMABLE_CHECKPOINT_KIND
+
+
+def _validate_model_state_before_load(model, state_dict: Mapping[str, Any]) -> None:
+    if not isinstance(state_dict, Mapping):
+        raise ConfigError("Checkpoint model_state_dict must be a mapping")
+    runtime = model.state_dict()
+    if set(state_dict) != set(runtime):
+        raise ConfigError("Checkpoint model state keys do not match the current model")
+    for key, runtime_value in runtime.items():
+        saved_value = state_dict[key]
+        if torch.is_tensor(runtime_value):
+            if not torch.is_tensor(saved_value) or tuple(saved_value.shape) != tuple(
+                runtime_value.shape
+            ):
+                raise ConfigError(
+                    f"Checkpoint model tensor shape does not match for {key}"
+                )
+            if not bool(torch.isfinite(saved_value).all()):
+                raise ConfigError(f"Checkpoint model tensor is non-finite for {key}")
+
+
+def _validate_optimizer_resume_contract(
+    checkpoint: Mapping[str, Any],
+    *,
+    config: Mapping[str, Any] | None,
+    optimizer,
+    scheduler,
+) -> str:
+    """Validate purpose, identity, ordered state, and accounting before mutation."""
+
+    checkpoint_kind = checkpoint.get("checkpoint_kind")
+    historical = checkpoint_kind is None
+    if historical:
+        if (
+            checkpoint.get("checkpoint_status") == "best_eval"
+            or checkpoint.get("optimizer_state_dict") is None
+        ):
+            raise ConfigError(
+                "Checkpoint purpose is model_only_evaluation and cannot resume training"
+            )
+        saved_scope = "shared"
+    else:
+        if checkpoint.get("checkpoint_schema_version") != CHECKPOINT_SCHEMA_VERSION:
+            raise ConfigError("Checkpoint schema version is not supported")
+        if checkpoint_kind != RESUMABLE_CHECKPOINT_KIND:
+            raise ConfigError(
+                f"Checkpoint purpose is {checkpoint_kind!r}; expected resumable_training"
+            )
+        saved_contract = checkpoint.get("optimizer_state_contract")
+        if not isinstance(saved_contract, Mapping):
+            raise ConfigError("Checkpoint optimizer-state contract is missing")
+        saved_scope = str(saved_contract.get("state_scope"))
+
+    runtime_scope = (
+        str(config.get("training", {}).get("optimizer_state_scope", "shared"))
+        if config is not None
+        else (
+            "per_granularity"
+            if isinstance(optimizer, PerGranularityOptimizerCollection)
+            else "shared"
+        )
+    )
+    if saved_scope != runtime_scope:
+        raise ConfigError(
+            "Checkpoint optimizer state scope does not match the current run; "
+            "cross-scope conversion is not supported"
+        )
+    if historical and runtime_scope != "shared":
+        raise ConfigError(
+            "Historical checkpoints without optimizer scope can resume shared state only"
+        )
+    if not historical and config is not None:
+        expected_contract = _optimizer_checkpoint_contract(config)
+        if dict(checkpoint["optimizer_state_contract"]) != expected_contract:
+            raise ConfigError(
+                "Checkpoint optimizer family, hyperparameters, scheduler clock, "
+                "ordered widths, scheduler, or topology contract does not match"
+            )
+
+    step = checkpoint.get("step", checkpoint.get("last_completed_step", 0))
+    if isinstance(step, bool) or not isinstance(step, int) or step < 0:
+        raise ConfigError("Checkpoint committed step is invalid")
+    if runtime_scope == "per_granularity":
+        if not isinstance(optimizer, PerGranularityOptimizerCollection):
+            raise ConfigError("Per-granularity checkpoint requires an optimizer collection")
+        if not isinstance(scheduler, GlobalSchedulerClock):
+            raise ConfigError("Per-granularity checkpoint requires a global scheduler clock")
+        if checkpoint.get("optimizer_state_dict") is not None:
+            raise ConfigError(
+                "Per-granularity checkpoint cannot contain a shared optimizer state"
+            )
+        collection_state = optimizer.validate_state_dict(
+            checkpoint.get("optimizer_state_collection")
+        )
+        clock_state = scheduler.validate_state_dict(
+            checkpoint.get("scheduler_state_dict")
+        )
+        if (
+            collection_state["total_successful_updates"] != step
+            or clock_state["position"] != step
+        ):
+            raise ConfigError(
+                "Checkpoint optimizer counts, scheduler position, and committed step do not reconcile"
+            )
+        sampling_state = checkpoint.get("global_sampling_state")
+        if isinstance(sampling_state, Mapping):
+            exposures = sampling_state.get("exposure_counts")
+            sampling_total = sampling_state.get("total_successful_updates")
+            if (
+                not isinstance(exposures, Mapping)
+                or dict(exposures)
+                != collection_state["successful_update_counts"]
+                or sampling_total != step
+            ):
+                raise ConfigError(
+                    "Checkpoint optimizer updates and global sampling exposures do not reconcile"
+                )
+    else:
+        if isinstance(optimizer, PerGranularityOptimizerCollection):
+            raise ConfigError("Shared checkpoint cannot load into an optimizer collection")
+        if checkpoint.get("optimizer_state_collection") is not None:
+            raise ConfigError("Shared checkpoint contains an optimizer collection")
+        if optimizer is not None and checkpoint.get("optimizer_state_dict") is None:
+            raise ConfigError("Shared resumable checkpoint is missing optimizer state")
+    return runtime_scope
 
 
 def uses_probabilistic_controller(config: Mapping[str, Any]) -> bool:
@@ -1313,6 +1481,42 @@ def _save_model_checkpoint_rank_zero(
             distributed_context,
         )
     rng_states_by_rank = list(rng_states_by_rank or [capture_rng_state()])
+    checkpoint_kind = _checkpoint_kind_for_save(
+        str(checkpoint_fields["checkpoint_status"]), optimizer
+    )
+    optimizer_contract = _optimizer_checkpoint_contract(config)
+    state_scope = str(optimizer_contract.get("state_scope", "shared"))
+    optimizer_state_collection = None
+    if checkpoint_kind == MODEL_ONLY_CHECKPOINT_KIND:
+        optimizer_state_dict = None
+    elif state_scope == "per_granularity":
+        if not isinstance(optimizer, PerGranularityOptimizerCollection):
+            raise ConfigError(
+                "Per-granularity resumable checkpoint requires the ordered collection"
+            )
+        if not isinstance(scheduler, GlobalSchedulerClock):
+            raise ConfigError(
+                "Per-granularity resumable checkpoint requires the global clock"
+            )
+        optimizer_state_collection = optimizer.validate_state_dict(
+            collected_optimizer_state_dict
+        )
+        clock_state = scheduler.validate_state_dict(scheduler.state_dict())
+        committed_step = int(
+            run_state.get("step", run_state.get("last_completed_step", 0))
+        )
+        if (
+            optimizer_state_collection["total_successful_updates"]
+            != committed_step
+            or clock_state["position"] != committed_step
+            or run_state.get("optimizer_active_owner_granularity") is not None
+        ):
+            raise ConfigError(
+                "Cannot save an unreconciled per-granularity optimizer checkpoint"
+            )
+        optimizer_state_dict = None
+    elif isinstance(optimizer, PerGranularityOptimizerCollection):
+        raise ConfigError("Shared checkpoint cannot serialize an optimizer collection")
 
     probabilistic_controller_state = run_state.get(
         "probabilistic_controller_state"
@@ -1369,6 +1573,9 @@ def _save_model_checkpoint_rank_zero(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
+            "checkpoint_kind": checkpoint_kind,
+            "checkpoint_schema_version": CHECKPOINT_SCHEMA_VERSION,
+            "optimizer_state_contract": optimizer_contract,
             "run_id": config["run"]["run_id"],
             "reproducibility": {
                 "root_seed": config["run"]["seed"],
@@ -1440,6 +1647,18 @@ def _save_model_checkpoint_rank_zero(
             "next_validation_tokens": run_state.get("next_validation_tokens"),
             "optimizer_window_microsteps": run_state.get(
                 "optimizer_window_microsteps"
+            ),
+            "optimizer_active_owner_granularity": run_state.get(
+                "optimizer_active_owner_granularity"
+            ),
+            "optimizer_update_counts": copy.deepcopy(
+                run_state.get("optimizer_update_counts")
+            ),
+            "optimizer_total_successful_updates": run_state.get(
+                "optimizer_total_successful_updates"
+            ),
+            "optimizer_last_active_granularity": run_state.get(
+                "optimizer_last_active_granularity"
             ),
             "metrics_accumulator_state": copy.deepcopy(
                 run_state.get("metrics_accumulator_state")
@@ -1544,7 +1763,13 @@ def _save_model_checkpoint_rank_zero(
             ),
             "model_state_dict": model_state_dict,
             "optimizer_state_dict": optimizer_state_dict,
-            "scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
+            "optimizer_state_collection": optimizer_state_collection,
+            "scheduler_state_dict": (
+                scheduler.state_dict()
+                if checkpoint_kind == RESUMABLE_CHECKPOINT_KIND
+                and scheduler is not None
+                else None
+            ),
             "scheduler_contract": copy.deepcopy(
                 config.get("training", {}).get("scheduler_contract")
             ),
@@ -1965,6 +2190,16 @@ def build_initial_continuation_state(config: dict[str, Any]) -> dict[str, Any]:
         run = {}
     if not isinstance(model, Mapping):
         model = {}
+    training = config.get("training", {})
+    optimizer_labels = [
+        str(label)
+        for label in training.get("optimizer_state_contract", {}).get(
+            "ordered_granularities", model.get("granularities", [])
+        )
+    ]
+    per_granularity = (
+        training.get("optimizer_state_scope", "shared") == "per_granularity"
+    )
     return {
         "status": "fresh",
         "latest_checkpoint_path": None,
@@ -1997,6 +2232,13 @@ def build_initial_continuation_state(config: dict[str, Any]) -> dict[str, Any]:
         ),
         "optimizer_window_microsteps": 0,
         "metrics_accumulator_state": None,
+        "optimizer_update_counts": (
+            {label: 0 for label in optimizer_labels} if per_granularity else None
+        ),
+        "optimizer_total_successful_updates": 0,
+        "optimizer_last_active_granularity": None,
+        "optimizer_active_owner_granularity": None,
+        "global_scheduler_position": 0,
         "step": 0,
         "epoch": 0,
         "batch_index": 0,
@@ -2089,6 +2331,11 @@ def update_run_continuation_state(
         "epoch",
         "batch_index",
         "global_sampling_state",
+        "optimizer_update_counts",
+        "optimizer_total_successful_updates",
+        "optimizer_last_active_granularity",
+        "optimizer_active_owner_granularity",
+        "global_scheduler_position",
     ]:
         if key in state and state[key] is not None:
             continuation[key] = copy.deepcopy(state[key])
@@ -2856,6 +3103,24 @@ def load_checkpoint_state(
             "content_tokens_seen": 0,
             "sampler_state": None,
             "metrics_accumulator_state": None,
+            "optimizer_update_counts": (
+                {
+                    str(label): 0
+                    for label in config.get("training", {})
+                    .get("optimizer_state_contract", {})
+                    .get("ordered_granularities", [])
+                }
+                if config is not None
+                and config.get("training", {}).get(
+                    "optimizer_state_scope", "shared"
+                )
+                == "per_granularity"
+                else None
+            ),
+            "optimizer_total_successful_updates": 0,
+            "optimizer_last_active_granularity": None,
+            "optimizer_active_owner_granularity": None,
+            "global_scheduler_position": 0,
             "step": 0,
             "epoch": 0,
             "batch_index": 0,
@@ -2940,6 +3205,12 @@ def load_checkpoint_state(
             map_location="cpu",
             weights_only=False,
         )
+    optimizer_state_scope = _validate_optimizer_resume_contract(
+        checkpoint,
+        config=config,
+        optimizer=optimizer,
+        scheduler=scheduler,
+    )
     reproducibility_payload = _validate_reproducibility_payload(
         checkpoint,
         config=config,
@@ -3066,18 +3337,50 @@ def load_checkpoint_state(
     model_state_dict = checkpoint.get("model_state_dict")
     if model_state_dict is None:
         raise ConfigError(f"Checkpoint missing model_state_dict: {checkpoint_path}")
+    if not collective_fsdp:
+        _validate_model_state_before_load(model, model_state_dict)
+
+    validated_pre_nested_warmup_state = copy.deepcopy(
+        checkpoint.get("pre_nested_warmup_state")
+    )
+    if config is not None:
+        from src.training.warmup import validate_pre_nested_warmup_resume_state
+
+        validated_pre_nested_warmup_state = validate_pre_nested_warmup_resume_state(
+            config,
+            validated_pre_nested_warmup_state,
+            last_completed_step=int(
+                checkpoint.get("step", checkpoint.get("last_completed_step", 0))
+            ),
+        )
+        _validate_loaded_adaptive_sampler_state(
+            checkpoint, config, checkpoint_path
+        )
 
     optimizer_state_dict = checkpoint.get("optimizer_state_dict")
     scheduler_state_dict = checkpoint.get("scheduler_state_dict")
-    load_model_and_optimizer_state(
-        model,
-        optimizer,
-        model_state_dict,
-        optimizer_state_dict,
-        distributed_context=distributed_context,
-    )
-    if scheduler is not None and scheduler_state_dict is not None:
+    if optimizer_state_scope == "per_granularity":
+        load_model_and_optimizer_state(
+            model,
+            None,
+            model_state_dict,
+            None,
+            distributed_context=distributed_context,
+        )
+        optimizer.load_state_dict(checkpoint["optimizer_state_collection"])
         scheduler.load_state_dict(scheduler_state_dict)
+        scheduler.synchronize(optimizer)
+        optimizer.validate_synchronized_learning_rates()
+    else:
+        load_model_and_optimizer_state(
+            model,
+            optimizer,
+            model_state_dict,
+            optimizer_state_dict,
+            distributed_context=distributed_context,
+        )
+        if scheduler is not None and scheduler_state_dict is not None:
+            scheduler.load_state_dict(scheduler_state_dict)
     if reproducibility_payload is not None:
         rng_states = reproducibility_payload.get("rng_states_by_rank")
         rank = int(getattr(distributed_context, "rank", 0))
@@ -3125,9 +3428,7 @@ def load_checkpoint_state(
         "warmup_completed": bool(checkpoint.get("warmup_completed", False)),
         "warmup_completion_step": checkpoint.get("warmup_completion_step"),
         "warmup_transition_reason": checkpoint.get("warmup_transition_reason"),
-        "pre_nested_warmup_state": copy.deepcopy(
-            checkpoint.get("pre_nested_warmup_state")
-        ),
+        "pre_nested_warmup_state": validated_pre_nested_warmup_state,
         "resolved_run_mode": checkpoint.get("resolved_run_mode"),
         "resolved_sampling_mode": checkpoint.get("resolved_sampling_mode"),
         "granularity_pattern_provenance": checkpoint.get(
@@ -3138,6 +3439,29 @@ def load_checkpoint_state(
         "panelgrad_state": panelgrad_state,
         "gradient_interference_state": gradient_interference_state,
         "global_sampling_state": global_sampling_state,
+        "optimizer_update_counts": (
+            copy.deepcopy(optimizer.successful_update_counts)
+            if isinstance(optimizer, PerGranularityOptimizerCollection)
+            else copy.deepcopy(checkpoint.get("optimizer_update_counts"))
+        ),
+        "optimizer_total_successful_updates": (
+            optimizer.total_successful_updates
+            if isinstance(optimizer, PerGranularityOptimizerCollection)
+            else int(checkpoint.get("optimizer_total_successful_updates", last_completed_step))
+        ),
+        "optimizer_last_active_granularity": (
+            optimizer.last_active_granularity
+            if isinstance(optimizer, PerGranularityOptimizerCollection)
+            else checkpoint.get("optimizer_last_active_granularity")
+        ),
+        "optimizer_active_owner_granularity": checkpoint.get(
+            "optimizer_active_owner_granularity"
+        ),
+        "global_scheduler_position": (
+            scheduler.position
+            if isinstance(scheduler, GlobalSchedulerClock)
+            else last_completed_step
+        ),
         **(
             {"portfolio_catchup_state": portfolio_catchup_state}
             if config is not None and uses_portfolio_catchup(config)
@@ -3191,15 +3515,6 @@ def load_checkpoint_state(
         state["output_dir"] = str(output_dir)
     if run_id is not None:
         state["run_id"] = str(run_id)
-    if config is not None:
-        from src.training.warmup import validate_pre_nested_warmup_resume_state
-
-        state["pre_nested_warmup_state"] = validate_pre_nested_warmup_resume_state(
-            config,
-            state.get("pre_nested_warmup_state"),
-            last_completed_step=last_completed_step,
-        )
-        _validate_loaded_adaptive_sampler_state(state, config, checkpoint_path)
     return state
 
 

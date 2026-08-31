@@ -22,6 +22,8 @@ from src.utils.reproducibility import (
     build_balanced_warmup_schedule,
     build_controller_reset_schedule,
     build_comparison_control_signature,
+    build_full_run_signature,
+    build_paired_control_signature,
     derive_seed,
     seed_for,
     seed_model_initialization,
@@ -203,6 +205,65 @@ def test_model_initialization_recipe_is_resume_signature_control():
     }
     assert changed_inputs["model_initialization"]["initializer_range"] == 0.03
     assert changed_signature != baseline_signature
+
+
+def test_optimizer_scope_changes_full_identity_but_not_paired_controls():
+    per_granularity = resolve_run_config(
+        "tests/fixtures/per_granularity_optimizer_smoke.yaml"
+    )
+    shared = resolve_run_config(
+        "tests/fixtures/per_granularity_optimizer_smoke.yaml",
+        overrides=["training.optimizer.state_scope=shared"],
+    )
+
+    per_paired, per_paired_inputs = build_paired_control_signature(
+        per_granularity
+    )
+    shared_paired, shared_paired_inputs = build_paired_control_signature(shared)
+    per_full, per_full_inputs = build_full_run_signature(per_granularity)
+    shared_full, shared_full_inputs = build_full_run_signature(shared)
+
+    assert per_paired == shared_paired
+    assert per_paired_inputs == shared_paired_inputs
+    assert "optimizer_state_scope" not in per_paired_inputs
+    assert per_full != shared_full
+    assert per_full_inputs["optimizer_state_scope"] == "per_granularity"
+    assert shared_full_inputs["optimizer_state_scope"] == "shared"
+    assert {
+        key: value
+        for key, value in per_full_inputs.items()
+        if key != "optimizer_state_scope"
+    } == per_paired_inputs
+
+    for required_control in (
+        "root_seed",
+        "optimizer",
+        "scheduler",
+        "token_budget",
+        "model_family",
+        "ordered_granularities",
+        "granularity_prefixes",
+        "granularity_sampling_mode",
+        "global_sampling_schedule",
+        "global_sampling_interval_steps",
+        "validation_interval_steps",
+        "dataset_name",
+        "optimizer_training_role_hash",
+    ):
+        assert required_control in per_paired_inputs
+
+
+def test_full_run_identity_treats_historical_missing_scope_as_shared():
+    shared = resolve_run_config(
+        "tests/fixtures/per_granularity_optimizer_smoke.yaml",
+        overrides=["training.optimizer.state_scope=shared"],
+    )
+    historical = copy.deepcopy(shared)
+    historical["training"].pop("optimizer_state_scope")
+    historical["training"].pop("optimizer_scheduler_clock")
+    historical["training"].pop("optimizer_state_contract")
+
+    assert build_full_run_signature(historical) == build_full_run_signature(shared)
 
 
 def test_config_migrates_legacy_validation_and_emits_only_canonical_fields():

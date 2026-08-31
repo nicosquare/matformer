@@ -1,0 +1,99 @@
+# Two-width CPU fixture for shared-versus-per-granularity optimizer-state tests.
+run:
+  run_id: per-granularity-optimizer-smoke-001
+  phase_id: per_width_optimizer_state
+  model_family: nested
+  model_size_label: debug
+  sampling_mode: nested-random
+  seed: 42
+  reproducibility:
+    mode: strict
+    seed_stream_version: 1
+    data_split_version: 1
+  output_root: outputs
+  continuation:
+    enabled: true
+    latest_checkpoint_save_interval_steps: 1
+    latest_checkpoint_save_on_validation: true
+    latest_checkpoint_save_on_completion: true
+
+model:
+  base_model_name: debug-llama
+  granularity_mode: explicit
+  granularity_sampling_mode: global
+  global_sampling_schedule: balanced_cycle
+  global_sampling_interval_steps: 1
+  variant: slicing
+  correction_mode: none
+  tokenizer_name: hf-internal-testing/llama-tokenizer
+  d_model: 32
+  num_layers: 2
+  num_attention_heads: 4
+  context_length: 32
+  vocab_size: 32000
+  granularities: [narrow, full]
+  granularity_prefixes:
+    narrow: 0.5
+    full: 1.0
+
+training:
+  token_budget: 256
+  max_steps: 4
+  batch_size_per_process: 2
+  gradient_accumulation_steps: 1
+  learning_rate: 0.001
+  warmup_steps: 0
+  pre_nested_warmup:
+    enabled: false
+    duration: 0
+    unit: steps
+  gradient_clip_norm: 1.0
+  # Override name and family-specific kwargs together to exercise SGD.
+  optimizer:
+    name: adamw
+    state_scope: per_granularity
+    scheduler_clock: global_step
+    kwargs:
+      betas: [0.9, 0.95]
+      eps: 1.0e-8
+      weight_decay: 0.1
+  scheduler:
+    name: cosine
+  eval_interval: 2
+  eval_batches: 1
+  mixed_precision: none
+  activation_checkpointing: false
+  granularity_sampling: random
+  preprocess_num_proc: 1
+  dataloader_num_workers: 0
+
+dataset:
+  dataset_name: roneneldan/TinyStories
+  dataset_split: train
+  dataset_phase: debug
+  sample_limit: 32
+  preprocessing_notes: two_width_cpu_optimizer_state_smoke
+
+outputs:
+  save_config: true
+  save_metrics_csv: true
+  save_run_summary_json: true
+  save_checkpoints: true
+  make_plots: false
+
+monitoring:
+  enabled: false
+  backend: wandb
+  project: per_width_optimizer_state
+  job_type: train
+  tags: [debug, cpu, per-granularity-optimizer]
+  notes: two-width balanced global optimizer-state smoke fixture
+  log_loss_by_granularity: true
+  log_validation_loss: true
+  log_stage_events: true
+
+evaluation:
+  validation: true
+  downstream_suite: []
+  consistency: false
+  speculative: false

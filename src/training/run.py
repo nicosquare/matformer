@@ -16,6 +16,7 @@ load_dotenv()
 
 import copy
 import json
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -31,6 +32,10 @@ import src.training.monitoring as training_monitoring
 import src.training.panelgrad as training_panelgrad
 import src.training.steps as training_steps
 import src.training.warmup as training_warmup
+from src.training.optimizer_state import (
+    GlobalSchedulerClock,
+    PerGranularityOptimizerCollection,
+)
 from src.evaluation.validation import evaluate_controller_objective
 from src.models.adaptive_sampler import (
     build_adaptive_sampler_artifact_fields,
@@ -52,6 +57,7 @@ from src.utils.metrics import (
     build_checkpoint_summary_fields,
     build_controller_summary,
     build_monitoring_summary_fields,
+    build_optimizer_state_summary_fields,
     build_run_summary,
     build_scaling_result_rows,
     controller_action_frequency_counts,
@@ -98,6 +104,49 @@ def ensure_single_process_runtime() -> None:
     """Compatibility no-op; single-node distributed execution is supported."""
 
     return None
+
+
+def _validate_restored_optimizer_ownership_runtime(
+    config: Mapping[str, Any],
+    run_state: Mapping[str, Any],
+    optimizer,
+    scheduler,
+) -> None:
+    """Recheck the staged checkpoint install before restoring external cursors."""
+
+    if (
+        config.get("training", {}).get("optimizer_state_scope", "shared")
+        != "per_granularity"
+    ):
+        return
+    if not isinstance(optimizer, PerGranularityOptimizerCollection) or not isinstance(
+        scheduler, GlobalSchedulerClock
+    ):
+        raise ConfigError("Per-granularity continuation runtime is incomplete")
+    step = int(run_state.get("last_completed_step", 0))
+    counts = run_state.get("optimizer_update_counts")
+    sampling_state = run_state.get("global_sampling_state")
+    exposures = (
+        sampling_state.get("exposure_counts")
+        if isinstance(sampling_state, Mapping)
+        else None
+    )
+    exposures_reconcile = (
+        exposures is None
+        or isinstance(exposures, Mapping)
+        and dict(exposures) == optimizer.successful_update_counts
+    )
+    if (
+        not isinstance(counts, Mapping)
+        or dict(counts) != optimizer.successful_update_counts
+        or not exposures_reconcile
+        or optimizer.total_successful_updates != step
+        or scheduler.position != step
+        or run_state.get("optimizer_active_owner_granularity") is not None
+    ):
+        raise ConfigError(
+            "Restored optimizer ownership, sampling exposure, scheduler, and step state do not reconcile"
+        )
 
 
 def _uses_packed_mmap_corpus(config: Mapping[str, Any]) -> bool:
@@ -829,6 +878,7 @@ def run_training(
     tokenized_dataset=None,
     device: torch.device | str | None = None,
 ) -> dict[str, Any]:
+    run_started_at = time.perf_counter()
     validate_run_config(config)
     deterministic_settings = configure_strict_determinism(config)
     seed_model_initialization(config)
@@ -872,6 +922,8 @@ def run_training(
         write_config_artifact(config, distributed_context=distributed_context)
 
     device = torch.device(distributed_context.device)
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
 
     try:
         with training_monitoring.heartbeat_stage(
@@ -1063,6 +1115,12 @@ def run_training(
                 distributed_context=distributed_context,
             )
             continuation_load_succeeded = True
+        _validate_restored_optimizer_ownership_runtime(
+            config,
+            run_state,
+            optimizer,
+            scheduler,
+        )
         if _uses_packed_mmap_corpus(config):
             training_data.restore_packed_sampler_state(
                 train_dataloader,
@@ -1983,6 +2041,14 @@ def run_training(
                 config,
                 gradient_interference_state,
             ),
+            **build_optimizer_state_summary_fields(
+                config,
+                run_state=run_state,
+                attempted_steps=metrics_journal.accumulator.attempted_optimizer_steps,
+                wall_time_seconds=time.perf_counter() - run_started_at,
+                peak_memory_bytes=training_steps.current_peak_memory_bytes(device),
+                checkpoint_path=run_state.get("latest_checkpoint_path"),
+            ),
         }
         if controller_summary is not None:
             extra_summary_fields.update(
@@ -2163,6 +2229,20 @@ def run_training(
                         gradient_interference_state,
                     ),
                     **_controller_warmup_run_summary_fields(controller_summary),
+                    **build_optimizer_state_summary_fields(
+                        config,
+                        run_state=run_state,
+                        attempted_steps=(
+                            metrics_journal.accumulator.attempted_optimizer_steps
+                            if metrics_journal is not None
+                            else int(run_state.get("last_completed_step", 0))
+                        ),
+                        wall_time_seconds=time.perf_counter() - run_started_at,
+                        peak_memory_bytes=training_steps.current_peak_memory_bytes(
+                            device
+                        ),
+                        checkpoint_path=run_state.get("latest_checkpoint_path"),
+                    ),
                 }
                 failure_summary = build_run_summary(
                     config,

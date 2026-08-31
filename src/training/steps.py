@@ -23,6 +23,11 @@ from transformers import get_scheduler
 
 import src.training.checkpointing as training_checkpointing
 import src.training.data as training_data
+from src.training.optimizer_state import (
+    GlobalSchedulerClock,
+    PerGranularityOptimizerCollection,
+    build_per_granularity_optimizer_runtime,
+)
 from src.evaluation.validation import (
     configure_model_granularity,
     evaluate_validation_per_granularity,
@@ -90,6 +95,9 @@ from src.utils.reproducibility import (
 
 def build_optimizer_and_scheduler(model, training: Mapping[str, Any]):
     """Build the training optimizer and scheduler from resolved config fields."""
+    if training.get("optimizer_state_scope", "shared") == "per_granularity":
+        return build_per_granularity_optimizer_runtime(model, training)
+
     optimizer_name = str(training.get("optimizer_name", "adamw"))
     optimizer_kwargs = resolve_optimizer_kwargs(
         optimizer_name,
@@ -560,6 +568,56 @@ def _training_action_heartbeat_fields(action: Mapping[str, Any]) -> dict[str, An
     return fields
 
 
+def _optimizer_action_id(action: Mapping[str, Any], pending_step: int) -> str:
+    selected = ",".join(str(value) for value in action.get("granularities", []))
+    schedule = str(action.get("global_sampling_schedule") or "global")
+    window = action.get("global_sampling_window_index", pending_step - 1)
+    cycle = action.get("global_sampling_cycle_index", "-")
+    position = action.get("global_sampling_cycle_position", "-")
+    return f"{schedule}:{window}:{cycle}:{position}:{selected}"
+
+
+def _optimizer_batch_provenance(
+    *,
+    epoch: int,
+    window: list[tuple[int, Any]],
+    sampler_state: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    provenance = {
+        "epoch": int(epoch),
+        "batch_indices": [int(batch_index) for batch_index, _ in window],
+    }
+    if isinstance(sampler_state, Mapping):
+        for field in (
+            "permutation_hash",
+            "epoch",
+            "global_batch_cursor",
+            "sample_cursor",
+        ):
+            if field in sampler_state:
+                provenance[field] = copy.deepcopy(sampler_state[field])
+    return provenance
+
+
+def _optimizer_exposure_counts(run_state: Mapping[str, Any]) -> dict[str, int]:
+    sampling_state = run_state.get("global_sampling_state")
+    if not isinstance(sampling_state, Mapping):
+        return {}
+    exposures = sampling_state.get("exposure_counts")
+    if not isinstance(exposures, Mapping):
+        return {}
+    return {str(label): int(value) for label, value in exposures.items()}
+
+
+def _optimizer_successful_update_counts(
+    run_state: Mapping[str, Any],
+) -> dict[str, int]:
+    counts = run_state.get("optimizer_update_counts")
+    if isinstance(counts, Mapping):
+        return {str(label): int(value) for label, value in counts.items()}
+    return _optimizer_exposure_counts(run_state)
+
+
 def _backward_context(model, *, synchronize: bool):
     if synchronize or not hasattr(model, "no_sync"):
         return nullcontext()
@@ -719,6 +777,38 @@ def train_for_steps(
         run_state.setdefault("next_validation_tokens", None)
     run_state.setdefault("latest_checkpoint_step", int(run_state.get("last_completed_step", 0)))
     run_state.setdefault("status", "fresh")
+    if isinstance(optimizer, PerGranularityOptimizerCollection):
+        if not isinstance(scheduler, GlobalSchedulerClock):
+            raise ConfigError(
+                "Per-granularity optimizer state requires a global scheduler clock"
+            )
+        expected_counts = run_state.get("optimizer_update_counts")
+        if not isinstance(expected_counts, Mapping):
+            expected_counts = {
+                label: 0 for label in optimizer.ordered_granularities
+            }
+        if dict(expected_counts) != optimizer.successful_update_counts:
+            raise ConfigError(
+                "Restored optimizer update counts do not match the collection"
+            )
+        if (
+            optimizer.total_successful_updates != step
+            or scheduler.position != step
+        ):
+            raise ConfigError(
+                "Restored optimizer, scheduler, and committed-step positions do not reconcile"
+            )
+        run_state["optimizer_update_counts"] = copy.deepcopy(
+            optimizer.successful_update_counts
+        )
+        run_state["optimizer_total_successful_updates"] = (
+            optimizer.total_successful_updates
+        )
+        run_state["optimizer_last_active_granularity"] = (
+            optimizer.last_active_granularity
+        )
+        run_state["global_scheduler_position"] = scheduler.position
+        run_state.setdefault("optimizer_active_owner_granularity", None)
     if continuation_latest_checkpoint_policy(config)["enabled"] and not run_state.get("latest_checkpoint_path"):
         run_state["latest_checkpoint_path"] = str(latest_checkpoint_path)
 
@@ -782,6 +872,11 @@ def train_for_steps(
                     break
                 made_progress = True
                 optimizer_committed = False
+                action = None
+                optimizer_owner = None
+                optimizer_action_id = None
+                optimizer_batch_provenance = None
+                failure_stage = "window_preparation"
                 try:
                     prepared_window = [
                         (batch_index, move_batch_to_device(batch, device))
@@ -801,6 +896,7 @@ def train_for_steps(
                         context=distributed_context,
                     )
                     pending_step = step + 1
+                    failure_stage = "action_selection"
                     action = _select_optimizer_window_action(
                         config,
                         granularities,
@@ -817,6 +913,19 @@ def train_for_steps(
                         stage_name=stage_name,
                         run_state=run_state,
                     )
+                    optimizer_action_id = _optimizer_action_id(action, pending_step)
+                    optimizer_batch_provenance = _optimizer_batch_provenance(
+                        epoch=current_epoch,
+                        window=window,
+                        sampler_state=window_sampler_snapshot,
+                    )
+                    step_optimizer = optimizer
+                    if isinstance(optimizer, PerGranularityOptimizerCollection):
+                        optimizer_owner = optimizer.owner_from_action(action)
+                        step_optimizer = optimizer.optimizer_for(optimizer_owner)
+                        run_state["optimizer_active_owner_granularity"] = (
+                            optimizer_owner
+                        )
                     optimizer.zero_grad(set_to_none=True)
                     local_loss_numerators: dict[str, float] = {}
                     runtime_artifacts: dict[
@@ -824,6 +933,7 @@ def train_for_steps(
                     ] = {}
                     total_losses = 1
                     local_window_content_tokens = 0
+                    failure_stage = "forward_backward"
                     for microstep_index, (
                         _,
                         batch,
@@ -888,13 +998,16 @@ def train_for_steps(
                             "training.token_budget"
                         )
                     gradient_clip_norm = training.get("gradient_clip_norm")
+                    failure_stage = "gradient_clipping"
                     if gradient_clip_norm is not None:
                         clip_grad_norm_(model.parameters(), float(gradient_clip_norm))
                     # LambdaLR position ``pending_step - 1`` is the rate applied by
                     # this update. Capture it before optimizer.step/scheduler.step
                     # so metrics never report the rate prepared for the next update.
+                    if isinstance(optimizer, PerGranularityOptimizerCollection):
+                        optimizer.validate_synchronized_learning_rates()
                     committed_learning_rates = [
-                        float(group["lr"]) for group in optimizer.param_groups
+                        float(group["lr"]) for group in step_optimizer.param_groups
                     ]
                     if not committed_learning_rates or any(
                         not math.isfinite(value) for value in committed_learning_rates
@@ -908,14 +1021,36 @@ def train_for_steps(
                             "Per-row learning_rate requires one shared optimizer rate"
                         )
                     committed_learning_rate = committed_learning_rates[0]
+                    failure_stage = "optimizer_step"
                     _maybe_apply_concat_lmc_optimizer_step(
                         config,
                         model,
-                        optimizer,
+                        step_optimizer,
                         total_losses=total_losses,
                     )
-                    scheduler.step()
+                    # A successful optimizer return is irreversible. Scheduler
+                    # and accounting failures after this point are fatal and do
+                    # not restore the pre-window transactional snapshots.
                     optimizer_committed = True
+                    failure_stage = "post_commit_accounting"
+                    scheduler.step()
+                    if isinstance(optimizer, PerGranularityOptimizerCollection):
+                        if not isinstance(scheduler, GlobalSchedulerClock):
+                            raise RuntimeError(
+                                "Per-granularity optimizer state requires a global scheduler clock"
+                            )
+                        scheduler.synchronize(optimizer)
+                        optimizer.record_successful_update(optimizer_owner)
+                        run_state["optimizer_update_counts"] = copy.deepcopy(
+                            optimizer.successful_update_counts
+                        )
+                        run_state["optimizer_total_successful_updates"] = (
+                            optimizer.total_successful_updates
+                        )
+                        run_state["optimizer_last_active_granularity"] = (
+                            optimizer.last_active_granularity
+                        )
+                        run_state["global_scheduler_position"] = scheduler.position
                     step = pending_step
 
                     previous_tokens_seen = tokens_seen
@@ -967,6 +1102,7 @@ def train_for_steps(
                         run_state,
                         action,
                     )
+                    run_state["optimizer_active_owner_granularity"] = None
                     if panelgrad_controller is not None:
                         panelgrad_controller.commit_pending_action(
                             completed_step=step
@@ -1043,6 +1179,27 @@ def train_for_steps(
                             "microstep": committed_microsteps,
                             "optimizer_window_microsteps": len(window),
                             "committed_tokens_this_step": committed_tokens,
+                            "optimizer_state_scope": str(
+                                training.get("optimizer_state_scope") or "shared"
+                            ),
+                            "selected_optimizer_granularity": str(
+                                optimizer_owner
+                                or action["granularities"][0]
+                            ),
+                            "optimizer_step_attempted": True,
+                            "optimizer_step_committed": True,
+                            "optimizer_failure_stage": None,
+                            "optimizer_action_id": optimizer_action_id,
+                            "optimizer_batch_provenance": (
+                                optimizer_batch_provenance
+                            ),
+                            "optimizer_successful_update_counts": (
+                                _optimizer_successful_update_counts(run_state)
+                            ),
+                            "optimizer_exposure_counts": (
+                                _optimizer_exposure_counts(run_state)
+                            ),
+                            "global_scheduler_position": step,
                             **scheduler_metric_fields(
                                 training,
                                 scheduler_position=step - 1,
@@ -1226,6 +1383,47 @@ def train_for_steps(
                         distributed_context=distributed_context,
                     )
                 except Exception:
+                    if action is not None and optimizer_action_id is not None:
+                        failed_label = str(
+                            optimizer_owner or action.get("granularities", ["unknown"])[0]
+                        )
+                        failure_fields = {
+                            "optimizer_state_scope": str(
+                                training.get("optimizer_state_scope") or "shared"
+                            ),
+                            "selected_optimizer_granularity": failed_label,
+                            "optimizer_step_attempted": True,
+                            "optimizer_step_committed": bool(optimizer_committed),
+                            "optimizer_failure_stage": failure_stage,
+                            "optimizer_action_id": optimizer_action_id,
+                            "optimizer_batch_provenance": optimizer_batch_provenance,
+                            "optimizer_successful_update_counts": (
+                                _optimizer_successful_update_counts(run_state)
+                            ),
+                            "optimizer_exposure_counts": (
+                                _optimizer_exposure_counts(run_state)
+                            ),
+                            "global_scheduler_position": int(
+                                run_state.get("last_completed_step", step)
+                            ),
+                        }
+                        failed_row = build_training_metric_row(
+                            config,
+                            step=step + 1,
+                            granularity=failed_label,
+                            loss=float("nan"),
+                            tokens_seen=tokens_seen,
+                            content_tokens_seen=content_tokens_seen,
+                            wall_clock_seconds=time.time() - start_time,
+                            peak_memory_bytes=current_peak_memory_bytes(device),
+                            adaptive_artifacts=failure_fields,
+                        )
+                        _record_metric_rows(
+                            metrics_rows,
+                            [failed_row],
+                            metrics_journal=metrics_journal,
+                            force=True,
+                        )
                     if not optimizer_committed:
                         restore_rng_state(window_rng_snapshot)
                         if controller_snapshot is not None:
@@ -1957,6 +2155,18 @@ def build_training_metric_row(
         "content_tokens_seen": content_tokens_seen,
         "optimizer_window_microsteps": None,
         "committed_tokens_this_step": None,
+        "optimizer_state_scope": str(
+            training.get("optimizer_state_scope") or "shared"
+        ),
+        "selected_optimizer_granularity": granularity,
+        "optimizer_step_attempted": True,
+        "optimizer_step_committed": True,
+        "optimizer_failure_stage": None,
+        "optimizer_action_id": None,
+        "optimizer_batch_provenance": None,
+        "optimizer_successful_update_counts": None,
+        "optimizer_exposure_counts": None,
+        "global_scheduler_position": max(int(step), 0),
         "wall_clock_seconds": wall_clock_seconds,
         "tokens_per_second": tokens_per_second,
         "peak_memory_bytes": peak_memory_bytes,
