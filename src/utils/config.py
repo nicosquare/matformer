@@ -142,6 +142,11 @@ PORTFOLIO_EXTENSION_ARMS = {
         "sampling_mode": "nested-all",
         "model_variant": "slicing",
     },
+    "nested_all_4b": {
+        "budget_tokens": PORTFOLIO_AGGREGATE_REFERENCE_BUDGET_TOKENS,
+        "sampling_mode": "nested-all",
+        "model_variant": "slicing",
+    },
     "concat_uniform_h1_4b": {
         "budget_tokens": PORTFOLIO_AGGREGATE_REFERENCE_BUDGET_TOKENS,
         "sampling_mode": "nested-random",

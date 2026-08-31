@@ -68,6 +68,13 @@ CANDIDATE_ARMS = {
         "model_variant": "slicing",
         "post_hoc_diagnostic": True,
     },
+    "nested_all_4b": {
+        "budget_tokens": AGGREGATE_REFERENCE_BUDGET_TOKENS,
+        "schema_version": 3,
+        "sampling_mode": "nested-all",
+        "model_variant": "slicing",
+        "post_hoc_diagnostic": True,
+    },
     "concat_uniform_h1_4b": {
         "budget_tokens": AGGREGATE_REFERENCE_BUDGET_TOKENS,
         "schema_version": 3,
@@ -530,13 +537,32 @@ def _freeze_references_active(
             }
         )
 
-    expected = {(seed, width) for seed in REQUIRED_SEEDS for width in GRANULARITIES}
-    if set(matrix) != expected:
-        missing = sorted(expected - set(matrix))
-        extra = sorted(set(matrix) - expected)
+    matrix_seeds = {seed for seed, _ in matrix}
+    unexpected_seeds = sorted(matrix_seeds - set(REQUIRED_SEEDS))
+    if unexpected_seeds:
         raise PortfolioAnalysisError(
-            f"Reference matrix must be exactly 12 runs; missing={missing}, extra={extra}"
+            "Standalone references contain out-of-contract seeds: "
+            f"{unexpected_seeds}; expected a subset of {list(REQUIRED_SEEDS)}"
         )
+    observed_seeds = tuple(seed for seed in REQUIRED_SEEDS if seed in matrix_seeds)
+    if not observed_seeds:
+        raise PortfolioAnalysisError("At least one standalone reference seed is required")
+    incomplete_panels = {}
+    expected_widths = set(GRANULARITIES)
+    for seed in observed_seeds:
+        actual_widths = {width for matrix_seed, width in matrix if matrix_seed == seed}
+        if actual_widths != expected_widths:
+            incomplete_panels[seed] = {
+                "missing": sorted(expected_widths - actual_widths),
+                "extra": sorted(actual_widths - expected_widths),
+            }
+    if incomplete_panels:
+        raise PortfolioAnalysisError(
+            "Every observed reference seed requires a complete four-width panel; "
+            f"invalid_panels={incomplete_panels}"
+        )
+    missing_seeds = tuple(seed for seed in REQUIRED_SEEDS if seed not in observed_seeds)
+    seed_coverage_complete = not missing_seeds
     failed = [row for row in diagnostics if not row["contract_satisfied"]]
     if failed:
         raise PortfolioAnalysisError(f"Invalid standalone references: {failed}")
@@ -547,7 +573,7 @@ def _freeze_references_active(
         )
 
     targets: dict[str, dict[str, Any]] = {}
-    for seed in REQUIRED_SEEDS:
+    for seed in observed_seeds:
         targets[str(seed)] = {}
         for width in GRANULARITIES:
             row = next(
@@ -571,14 +597,25 @@ def _freeze_references_active(
     manifest = {
         "schema_version": 1,
         "analysis": "tinystories_instruct_standalone_portfolio_targets",
-        "status": "references_frozen",
+        "status": (
+            "references_frozen"
+            if seed_coverage_complete
+            else "references_frozen_provisional"
+        ),
+        "provisional_analysis": not seed_coverage_complete,
+        "expected_seeds": list(REQUIRED_SEEDS),
+        "observed_seeds": list(observed_seeds),
+        "missing_seeds": list(missing_seeds),
+        "expected_seed_count": len(REQUIRED_SEEDS),
+        "observed_seed_count": len(observed_seeds),
+        "seed_coverage_complete": seed_coverage_complete,
         "comparison_group_id": COMPARISON_GROUP_ID,
         "granularity_profile": _profile_name_for_group(COMPARISON_GROUP_ID),
         "reference_budget_tokens": REFERENCE_BUDGET_TOKENS,
         "aggregate_reference_count": 4,
         "aggregate_reference_budget_tokens": AGGREGATE_REFERENCE_BUDGET_TOKENS,
         "granularities": list(GRANULARITIES),
-        "seeds": list(REQUIRED_SEEDS),
+        "seeds": list(observed_seeds),
         "perplexity_tolerance": PERPLEXITY_TOLERANCE,
         "loss_tolerance": LOSS_TOLERANCE,
         "target_definition": "best_ordinary_validation_checkpoint_within_B",
@@ -591,7 +628,11 @@ def _freeze_references_active(
     _write_csv(output / "standalone_portfolio_targets.csv", diagnostics)
     diagnostics_payload = {
         "schema_version": 1,
-        "status": "complete",
+        "status": "complete" if seed_coverage_complete else "provisional",
+        "expected_seeds": list(REQUIRED_SEEDS),
+        "observed_seeds": list(observed_seeds),
+        "missing_seeds": list(missing_seeds),
+        "seed_coverage_complete": seed_coverage_complete,
         "target_manifest_hash": manifest["manifest_hash"],
         "runs": diagnostics,
     }
@@ -601,7 +642,7 @@ def _freeze_references_active(
     pyplot = _pyplot()
     figure, axes = pyplot.subplots(2, 2, figsize=(10, 7), sharex=True)
     for axis, width in zip(axes.flat, GRANULARITIES, strict=True):
-        for seed in REQUIRED_SEEDS:
+        for seed in observed_seeds:
             run = matrix[(seed, width)]
             rows = _ordinary_rows(run, width)
             axis.plot(
@@ -1664,7 +1705,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     for name, help_text in (
-        ("freeze-references", "freeze the exact 12-run standalone matrix"),
+        (
+            "freeze-references",
+            "freeze complete four-width panels for one or more reference seeds",
+        ),
         (
             "portfolio-catchup",
             "verify one or more fresh elastic candidates (three for a general claim)",
