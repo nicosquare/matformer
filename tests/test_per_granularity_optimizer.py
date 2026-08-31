@@ -10,6 +10,7 @@ from src.training.optimizer_state import (
     PerGranularityOptimizerCollection,
     build_per_granularity_optimizer_runtime,
 )
+from src.utils.config import ConfigError
 
 
 class _TwoWidthParameters(torch.nn.Module):
@@ -64,6 +65,28 @@ def _assert_nested_state_equal(left, right) -> None:
             _assert_nested_state_equal(left_item, right_item)
     else:
         assert left == right
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        {"kind": "global", "granularities": []},
+        {"kind": "global", "granularities": ["narrow", "full"]},
+        {"kind": "per_block", "granularities": ["narrow"]},
+        {"kind": "global", "granularities": ["unknown"]},
+    ],
+)
+def test_owner_resolution_rejects_empty_multiple_non_global_and_unknown_actions(action):
+    model = _TwoWidthParameters()
+    collection = PerGranularityOptimizerCollection.from_model(
+        model, _training("adamw")
+    )
+
+    with pytest.raises(ConfigError):
+        collection.owner_from_action(action)
+
+    assert collection.total_successful_updates == 0
+    assert collection.successful_update_counts == {"narrow": 0, "full": 0}
 
 
 @pytest.mark.parametrize("optimizer_name", ["adamw", "sgd"])

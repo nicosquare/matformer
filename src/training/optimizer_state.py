@@ -16,6 +16,29 @@ from src.utils.config import ConfigError, resolve_optimizer_kwargs
 OPTIMIZER_COLLECTION_SCHEMA_VERSION = 1
 
 
+def _require_nonnegative_int(value: Any, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ConfigError(f"{field} must be a nonnegative integer")
+    return int(value)
+
+
+def _validate_finite_values(value: Any, field: str) -> None:
+    if torch.is_tensor(value):
+        if not bool(torch.isfinite(value).all()):
+            raise ConfigError(f"{field} contains non-finite tensor state")
+        return
+    if isinstance(value, Mapping):
+        for key, component in value.items():
+            _validate_finite_values(component, f"{field}.{key}")
+        return
+    if isinstance(value, (list, tuple)):
+        for index, component in enumerate(value):
+            _validate_finite_values(component, f"{field}[{index}]")
+        return
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ConfigError(f"{field} contains a non-finite scalar")
+
+
 def _ordered_model_parameters(model: torch.nn.Module) -> tuple[torch.nn.Parameter, ...]:
     # Match the historical optimizer construction exactly: every registered
     # parameter is present, while ``grad is None`` remains the inactivity gate.
@@ -200,7 +223,7 @@ class PerGranularityOptimizerCollection:
         return expected
 
     def state_dict(self) -> dict[str, Any]:
-        """Return the minimal Phase-3 runtime state used by ordinary checkpoints."""
+        """Return the complete ordered state required for exact continuation."""
 
         return {
             "schema_version": self.schema_version,
@@ -219,31 +242,193 @@ class PerGranularityOptimizerCollection:
             "current_learning_rates": list(self.current_learning_rates),
         }
 
-    def load_state_dict(self, state_dict: Mapping[str, Any]) -> None:
-        """Restore collection state; Phase 6 adds full staged resume validation."""
+    def validate_state_dict(self, state_dict: Mapping[str, Any]) -> dict[str, Any]:
+        """Validate and stage a collection payload without changing runtime state."""
 
+        if not isinstance(state_dict, Mapping):
+            raise ConfigError("Optimizer collection checkpoint must be a mapping")
+        if state_dict.get("schema_version") != self.schema_version:
+            raise ConfigError(
+                "Optimizer collection checkpoint schema version does not match"
+            )
         ordered_entries = state_dict.get("ordered_entries")
         if not isinstance(ordered_entries, list):
             raise ConfigError("Optimizer collection checkpoint entries are missing")
-        labels = [entry.get("granularity") for entry in ordered_entries]
+        if any(not isinstance(entry, Mapping) for entry in ordered_entries):
+            raise ConfigError("Optimizer collection checkpoint entry is malformed")
+        labels = [str(entry.get("granularity")) for entry in ordered_entries]
         if labels != list(self.ordered_granularities):
             raise ConfigError("Optimizer collection checkpoint order does not match")
-        for runtime_entry, saved_entry in zip(
-            self.entries, ordered_entries, strict=True
+
+        for entry_index, (runtime_entry, saved_entry) in enumerate(
+            zip(self.entries, ordered_entries, strict=True)
         ):
-            runtime_entry.optimizer.load_state_dict(dict(saved_entry["state_dict"]))
-        counts = state_dict.get("successful_update_counts", {})
-        self.successful_update_counts = {
-            label: int(counts[label]) for label in self.ordered_granularities
-        }
-        self.total_successful_updates = int(
-            state_dict.get(
-                "total_successful_updates",
-                sum(self.successful_update_counts.values()),
+            saved_optimizer = saved_entry.get("state_dict")
+            if not isinstance(saved_optimizer, Mapping):
+                raise ConfigError(
+                    f"Optimizer collection entry {entry_index} state is missing"
+                )
+            saved_groups = saved_optimizer.get("param_groups")
+            saved_parameter_state = saved_optimizer.get("state")
+            runtime_groups = runtime_entry.optimizer.state_dict()["param_groups"]
+            if not isinstance(saved_groups, list) or len(saved_groups) != len(
+                runtime_groups
+            ):
+                raise ConfigError(
+                    f"Optimizer collection entry {entry_index} parameter groups do not match"
+                )
+            if not isinstance(saved_parameter_state, Mapping):
+                raise ConfigError(
+                    f"Optimizer collection entry {entry_index} parameter state is malformed"
+                )
+
+            saved_ids: list[Any] = []
+            parameters: list[torch.nn.Parameter] = []
+            for group_index, (saved_group, runtime_group, live_group) in enumerate(
+                zip(
+                    saved_groups,
+                    runtime_groups,
+                    runtime_entry.optimizer.param_groups,
+                    strict=True,
+                )
+            ):
+                if not isinstance(saved_group, Mapping):
+                    raise ConfigError(
+                        f"Optimizer collection entry {entry_index} group {group_index} is malformed"
+                    )
+                saved_params = saved_group.get("params")
+                runtime_params = runtime_group.get("params")
+                if not isinstance(saved_params, list) or len(saved_params) != len(
+                    runtime_params
+                ):
+                    raise ConfigError(
+                        f"Optimizer collection entry {entry_index} parameter layout does not match"
+                    )
+                for key, runtime_value in runtime_group.items():
+                    if key in {"params", "lr"}:
+                        continue
+                    if saved_group.get(key) != runtime_value:
+                        raise ConfigError(
+                            f"Optimizer collection entry {entry_index} group contract does not match"
+                        )
+                saved_ids.extend(saved_params)
+                parameters.extend(live_group["params"])
+
+            if len(set(saved_ids)) != len(saved_ids) or any(
+                parameter_id not in saved_ids for parameter_id in saved_parameter_state
+            ):
+                raise ConfigError(
+                    f"Optimizer collection entry {entry_index} parameter IDs are malformed"
+                )
+            parameter_by_id = dict(zip(saved_ids, parameters, strict=True))
+            for parameter_id, parameter_state in saved_parameter_state.items():
+                if not isinstance(parameter_state, Mapping):
+                    raise ConfigError(
+                        f"Optimizer collection entry {entry_index} parameter state is malformed"
+                    )
+                parameter = parameter_by_id[parameter_id]
+                _validate_finite_values(
+                    parameter_state,
+                    f"optimizer_collection.ordered_entries[{entry_index}].state",
+                )
+                for value in parameter_state.values():
+                    if (
+                        torch.is_tensor(value)
+                        and value.ndim > 0
+                        and tuple(value.shape) != tuple(parameter.shape)
+                    ):
+                        raise ConfigError(
+                            f"Optimizer collection entry {entry_index} tensor shape does not match"
+                        )
+
+        counts = state_dict.get("successful_update_counts")
+        if not isinstance(counts, Mapping) or list(counts) != list(
+            self.ordered_granularities
+        ):
+            raise ConfigError("Optimizer collection update-count labels do not match")
+        normalized_counts = {
+            label: _require_nonnegative_int(
+                counts[label], f"successful_update_counts.{label}"
             )
+            for label in self.ordered_granularities
+        }
+        total = _require_nonnegative_int(
+            state_dict.get("total_successful_updates"),
+            "total_successful_updates",
         )
-        self.last_active_granularity = state_dict.get("last_active_granularity")
-        self.synchronize_learning_rates(state_dict["current_learning_rates"])
+        if total != sum(normalized_counts.values()):
+            raise ConfigError("Optimizer collection successful-update totals do not match")
+        last_owner = state_dict.get("last_active_granularity")
+        if last_owner is not None and str(last_owner) not in self.ordered_granularities:
+            raise ConfigError("Optimizer collection last active owner is unknown")
+        if total == 0 and last_owner is not None:
+            raise ConfigError("Optimizer collection cannot have an owner before a commit")
+        if total > 0 and last_owner is None:
+            raise ConfigError("Optimizer collection last active owner is missing")
+
+        raw_rates = state_dict.get("current_learning_rates")
+        if not isinstance(raw_rates, (list, tuple)):
+            raise ConfigError("Optimizer collection current learning rates are missing")
+        rates = tuple(float(rate) for rate in raw_rates)
+        expected_group_count = len(self.entries[0].optimizer.param_groups)
+        if len(rates) != expected_group_count or any(
+            not math.isfinite(rate) for rate in rates
+        ):
+            raise ConfigError("Optimizer collection current learning rates are invalid")
+        for entry_index, saved_entry in enumerate(ordered_entries):
+            entry_rates = tuple(
+                float(group["lr"])
+                for group in saved_entry["state_dict"]["param_groups"]
+            )
+            if entry_rates != rates:
+                raise ConfigError(
+                    f"Optimizer collection entry {entry_index} learning rates are not synchronized"
+                )
+
+        normalized = copy.deepcopy(dict(state_dict))
+        normalized["successful_update_counts"] = normalized_counts
+        normalized["total_successful_updates"] = total
+        normalized["last_active_granularity"] = (
+            str(last_owner) if last_owner is not None else None
+        )
+        normalized["current_learning_rates"] = list(rates)
+        return normalized
+
+    def load_state_dict(self, state_dict: Mapping[str, Any]) -> None:
+        """Restore a fully validated collection, rolling back on load failure."""
+
+        staged = self.validate_state_dict(state_dict)
+        ordered_entries = staged["ordered_entries"]
+        snapshots = [copy.deepcopy(entry.optimizer.state_dict()) for entry in self.entries]
+        metadata_snapshot = (
+            copy.deepcopy(self.successful_update_counts),
+            self.total_successful_updates,
+            self.last_active_granularity,
+        )
+        try:
+            for runtime_entry, saved_entry in zip(
+                self.entries, ordered_entries, strict=True
+            ):
+                runtime_entry.optimizer.load_state_dict(
+                    copy.deepcopy(dict(saved_entry["state_dict"]))
+                )
+            self.successful_update_counts = copy.deepcopy(
+                staged["successful_update_counts"]
+            )
+            self.total_successful_updates = staged["total_successful_updates"]
+            self.last_active_granularity = staged["last_active_granularity"]
+            self.synchronize_learning_rates(staged["current_learning_rates"])
+        except Exception:
+            for runtime_entry, snapshot in zip(
+                self.entries, snapshots, strict=True
+            ):
+                runtime_entry.optimizer.load_state_dict(snapshot)
+            (
+                self.successful_update_counts,
+                self.total_successful_updates,
+                self.last_active_granularity,
+            ) = metadata_snapshot
+            raise
 
 
 class GlobalSchedulerClock:
@@ -321,11 +506,71 @@ class GlobalSchedulerClock:
         }
 
     def load_state_dict(self, state_dict: Mapping[str, Any]) -> None:
-        self._carrier_optimizer.load_state_dict(
-            dict(state_dict["carrier_optimizer_state_dict"])
+        staged = self.validate_state_dict(state_dict)
+        snapshot = copy.deepcopy(self.state_dict())
+        try:
+            self._load_validated_state_dict(staged)
+        except Exception:
+            self._load_validated_state_dict(snapshot)
+            raise
+
+    def validate_state_dict(self, state_dict: Mapping[str, Any]) -> dict[str, Any]:
+        if not isinstance(state_dict, Mapping):
+            raise ConfigError("Global scheduler clock checkpoint must be a mapping")
+        scheduler_state = state_dict.get("scheduler_state_dict")
+        carrier_state = state_dict.get("carrier_optimizer_state_dict")
+        if not isinstance(scheduler_state, Mapping) or not isinstance(
+            carrier_state, Mapping
+        ):
+            raise ConfigError("Global scheduler clock checkpoint state is incomplete")
+        position = _require_nonnegative_int(
+            state_dict.get("position"), "global scheduler position"
         )
-        self._scheduler.load_state_dict(dict(state_dict["scheduler_state_dict"]))
-        self.position = int(state_dict.get("position", 0))
+        _validate_finite_values(scheduler_state, "global_scheduler.scheduler_state")
+        _validate_finite_values(carrier_state, "global_scheduler.carrier_state")
+        last_epoch = scheduler_state.get("last_epoch")
+        if (
+            isinstance(last_epoch, bool)
+            or not isinstance(last_epoch, int)
+            or last_epoch != position
+        ):
+            raise ConfigError("Global scheduler state position does not match")
+        groups = carrier_state.get("param_groups")
+        if not isinstance(groups, list) or len(groups) != len(
+            self._carrier_optimizer.param_groups
+        ):
+            raise ConfigError("Global scheduler carrier parameter groups do not match")
+        current_rates = tuple(float(group.get("lr")) for group in groups)
+        if not current_rates or any(not math.isfinite(rate) for rate in current_rates):
+            raise ConfigError("Global scheduler current learning rates are invalid")
+        saved_rates = state_dict.get("last_committed_learning_rates")
+        if saved_rates is None:
+            if position != 0:
+                raise ConfigError("Global scheduler last committed rates are missing")
+            normalized_last_rates = None
+        else:
+            if not isinstance(saved_rates, (list, tuple)):
+                raise ConfigError("Global scheduler last committed rates are malformed")
+            normalized_last_rates = tuple(float(rate) for rate in saved_rates)
+            if len(normalized_last_rates) != len(current_rates) or any(
+                not math.isfinite(rate) for rate in normalized_last_rates
+            ):
+                raise ConfigError("Global scheduler last committed rates are invalid")
+        normalized = copy.deepcopy(dict(state_dict))
+        normalized["position"] = position
+        normalized["last_committed_learning_rates"] = (
+            list(normalized_last_rates) if normalized_last_rates is not None else None
+        )
+        return normalized
+
+    def _load_validated_state_dict(self, state_dict: Mapping[str, Any]) -> None:
+        self._carrier_optimizer.load_state_dict(
+            copy.deepcopy(dict(state_dict["carrier_optimizer_state_dict"]))
+        )
+        self._scheduler.load_state_dict(
+            copy.deepcopy(dict(state_dict["scheduler_state_dict"]))
+        )
+        self.position = int(state_dict["position"])
         saved_rates = state_dict.get("last_committed_learning_rates")
         self.last_committed_learning_rates = (
             tuple(float(rate) for rate in saved_rates)

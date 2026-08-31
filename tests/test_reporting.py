@@ -4,6 +4,7 @@ import math
 from pathlib import Path
 
 import pytest
+import torch
 
 from src.evaluation.reporting import (
     display_sampling_label_for_curve,
@@ -62,7 +63,37 @@ def _write_optimizer_scope_reporting_runs(root: Path) -> list[Path]:
             run_dir = root / run_id
             checkpoint = run_dir / "checkpoints" / "latest.pt"
             checkpoint.parent.mkdir(parents=True)
-            checkpoint.write_bytes(f"checkpoint-{seed}-{scope}".encode())
+            torch.save(
+                {
+                    "checkpoint_kind": "resumable_training",
+                    "checkpoint_schema_version": 1,
+                    "optimizer_state_contract": {
+                        "state_scope": scope,
+                        "ordered_granularities": list(widths),
+                    },
+                    "step": 4,
+                    "optimizer_state_dict": {} if scope == "shared" else None,
+                    "optimizer_state_collection": (
+                        {
+                            "schema_version": 1,
+                            "ordered_entries": [
+                                {"granularity": width, "state_dict": {}}
+                                for width in widths
+                            ],
+                            "successful_update_counts": {
+                                width: 1 for width in widths
+                            },
+                            "total_successful_updates": 4,
+                            "last_active_granularity": widths[-1],
+                            "current_learning_rates": [0.008],
+                        }
+                        if scope == "per_granularity"
+                        else None
+                    ),
+                    "scheduler_state_dict": {"position": 4},
+                },
+                checkpoint,
+            )
             signature = stable_hash({"seed": seed, "controls": "frozen"})
             config = {
                 "controlled_experiment": {
@@ -142,6 +173,60 @@ def _write_optimizer_scope_reporting_runs(root: Path) -> list[Path]:
             write_metrics_csv(run_dir, metric_rows)
             run_dirs.append(run_dir)
     return run_dirs
+
+
+def test_optimizer_scope_loader_defaults_only_missing_historical_scope(tmp_path):
+    from src.evaluation.reporting_io import (
+        OptimizerStateReportingError,
+        load_optimizer_state_run,
+    )
+
+    run_dir = _write_optimizer_scope_reporting_runs(tmp_path / "runs")[0]
+    config_path = run_dir / "config.json"
+    summary_path = run_dir / "run_summary.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    config["training"].pop("optimizer_state_scope")
+    summary.pop("optimizer_state_scope")
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    assert load_optimizer_state_run(run_dir).state_scope == "shared"
+
+    summary["optimizer_state_scope"] = None
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    with pytest.raises(OptimizerStateReportingError, match="unknown optimizer state scope"):
+        load_optimizer_state_run(run_dir)
+
+
+@pytest.mark.parametrize("case", ["model_only", "incomplete_collection"])
+def test_optimizer_scope_loader_audits_the_terminal_checkpoint_payload(
+    tmp_path, case
+):
+    from src.evaluation.reporting_io import (
+        OptimizerStateReportingError,
+        load_optimizer_state_run,
+    )
+
+    run_dir = next(
+        path
+        for path in _write_optimizer_scope_reporting_runs(tmp_path / "runs")
+        if "per_granularity" in path.name
+    )
+    summary_path = run_dir / "run_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    checkpoint_path = Path(summary["terminal_checkpoint_path"])
+    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    if case == "model_only":
+        payload["checkpoint_kind"] = "model_only_evaluation"
+    else:
+        payload["optimizer_state_collection"]["ordered_entries"].pop()
+    torch.save(payload, checkpoint_path)
+    summary["terminal_checkpoint_bytes"] = checkpoint_path.stat().st_size
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    with pytest.raises(OptimizerStateReportingError, match="terminal"):
+        load_optimizer_state_run(run_dir)
 
 
 def test_optimizer_scope_freeze_and_report_emit_auditable_endpoint_resource_tables(
@@ -3022,7 +3107,7 @@ def _validation_trace_row(
     }
 
 
-def test_validation_gmc_fixture_keeps_three_contracts_at_49_checkpoints():
+def test_validation_gmc_fixture_keeps_three_contracts_at_49_checkpoints(tmp_path):
     import matplotlib.pyplot as plt
 
     from src.evaluation.reporting_impl import (
@@ -3042,7 +3127,7 @@ def test_validation_gmc_fixture_keeps_three_contracts_at_49_checkpoints():
             for checkpoint in range(1, 50)
         )
 
-    output = Path("/tmp/nicolas.avila/validation-gmc-contracts.png")
+    output = tmp_path / "validation-gmc-contracts.png"
     plot_loss_over_tokens_for_experiment(rows, "GMC", output, dpi=20)
     figure = plt.figure()
     plt.close(figure)

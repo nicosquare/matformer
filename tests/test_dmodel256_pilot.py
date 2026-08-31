@@ -895,7 +895,7 @@ def test_queue_dmodel256_pilot_skips_completed_runs_and_forwards_overrides(tmp_p
 
     subprocess.run(
         [
-            "/home/nicolas.avila/.conda/envs/elasticnn/bin/python",
+            sys.executable,
             "scripts/queue_dmodel256_pilot.py",
             *cli_args,
         ],
@@ -949,7 +949,7 @@ def test_slurm_queue_dmodel256_pilot_wrapper_invokes_queue_helper(tmp_path):
     recorder.write_text(
         "#!/usr/bin/env bash\n"
         "printf '%s\\n' \"$@\" > \"$ARGV_FILE\"\n"
-        "exec /home/nicolas.avila/.conda/envs/elasticnn/bin/python \"$@\"\n",
+        f'exec "{sys.executable}" "$@"\n',
         encoding="utf-8",
     )
     recorder.chmod(0o755)

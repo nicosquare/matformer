@@ -3,6 +3,14 @@
 These are the planned validation and experiment commands for implementation.
 The feature remains opt-in and per-granularity scope is single-process only.
 
+Run the commands from the repository root in the validated Python 3.12
+environment:
+
+```bash
+conda activate elasticnn
+python --version
+```
+
 ## 1. Inspect configuration and ownership validation
 
 ```bash
@@ -23,14 +31,14 @@ state scope differ.
 Run the rejection/default matrix:
 
 ```bash
-pytest -q tests/test_config.py tests/test_train_cli.py \
+python -m pytest -q tests/test_config.py tests/test_train_cli.py \
   -k "optimizer_state_scope or scheduler_clock"
 ```
 
 ## 2. Validate optimizer isolation
 
 ```bash
-pytest -q tests/test_per_granularity_optimizer.py
+python -m pytest -q tests/test_per_granularity_optimizer.py
 ```
 
 Coverage must include:
@@ -61,11 +69,13 @@ sed -n '1,10p' outputs/per-granularity-optimizer-smoke/metrics.csv
 
 Verify scope, selected owner, global scheduler position, per-width counts,
 exposures, wall time, peak memory, and resumable checkpoint size/hash.
+The raw-data smoke fixture needs either Hugging Face network access or an
+existing local cache for its tokenizer and TinyStories source.
 
 ## 4. Validate exact resume
 
 ```bash
-pytest -q tests/test_per_granularity_optimizer_resume.py
+python -m pytest -q tests/test_per_granularity_optimizer_resume.py
 ```
 
 Compare uninterrupted execution with resume inside a balanced cycle and at an
@@ -77,14 +87,15 @@ wrong-family, wrong-scheduler, and model-only states must fail before mutation.
 ## 5. Validate artifacts and compatibility
 
 ```bash
-pytest -q \
+python -m pytest -q \
   tests/test_global_sampling_windows.py \
   tests/test_accumulation.py \
   tests/test_training_smoke.py \
   tests/test_artifacts.py \
   tests/test_reproducibility.py \
   tests/test_reporting.py \
-  tests/test_distributed.py
+  tests/test_distributed.py \
+  tests/test_distributed_sampling.py
 ```
 
 Shared scope, historical scope omission, current sampling/controller methods,
@@ -128,7 +139,12 @@ Submit using the runbook. After all six runs complete:
 ```bash
 python scripts/analyze_tinystories_per_width_optimizer.py freeze \
   --phase pilot \
-  --input-root "$PILOT_ROOT" \
+  --run-dir "$PILOT_ROOT/optimizer-state-shared-s42" \
+  --run-dir "$PILOT_ROOT/optimizer-state-per-granularity-s42" \
+  --run-dir "$PILOT_ROOT/optimizer-state-shared-s43" \
+  --run-dir "$PILOT_ROOT/optimizer-state-per-granularity-s43" \
+  --run-dir "$PILOT_ROOT/optimizer-state-shared-s44" \
+  --run-dir "$PILOT_ROOT/optimizer-state-per-granularity-s44" \
   --output-dir "$PILOT_ROOT/analysis"
 
 python scripts/analyze_tinystories_per_width_optimizer.py report \
@@ -150,7 +166,12 @@ confirmation protocol, start fresh six-run confirmation jobs, and then freeze:
 ```bash
 python scripts/analyze_tinystories_per_width_optimizer.py freeze \
   --phase confirmation \
-  --input-root "$CONFIRM_ROOT" \
+  --run-dir "$CONFIRM_ROOT/optimizer-state-shared-s42" \
+  --run-dir "$CONFIRM_ROOT/optimizer-state-per-granularity-s42" \
+  --run-dir "$CONFIRM_ROOT/optimizer-state-shared-s43" \
+  --run-dir "$CONFIRM_ROOT/optimizer-state-per-granularity-s43" \
+  --run-dir "$CONFIRM_ROOT/optimizer-state-shared-s44" \
+  --run-dir "$CONFIRM_ROOT/optimizer-state-per-granularity-s44" \
   --output-dir "$CONFIRM_ROOT/analysis"
 ```
 
@@ -158,3 +179,12 @@ Only after that manifest is frozen, evaluate the six explicit terminal
 checkpoints with `scripts/evaluate_final_holdout.py`, then run `report`. A
 confirmatory label requires all seeds and proof that the holdout was not opened
 during the pilot.
+
+## 10. Run the full compatibility suite
+
+After every focused command passes, run the repository-wide compatibility
+gate with the same environment:
+
+```bash
+python -m pytest -q
+```

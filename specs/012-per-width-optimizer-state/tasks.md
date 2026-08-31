@@ -101,17 +101,17 @@
 
 ### Verification for User Story 3
 
-- [ ] T031 [P] [US3] Add a configuration eligibility matrix covering every accepted global policy and every rejected topology, action cardinality, width cardinality, scope, scheduler clock, and warmup combination in `tests/test_config.py`
-- [ ] T032 [P] [US3] Add CLI tests that require attributable preflight errors before training setup and successful resolved-identity output for each eligible policy in `tests/test_train_cli.py`
-- [ ] T033 [P] [US3] Add tests rejecting per-granularity scope whenever distributed world size exceeds one while preserving existing distributed shared-mode behavior in `tests/test_distributed_sampling.py`
+- [X] T031 [P] [US3] Add a configuration eligibility matrix covering every accepted global policy and every rejected topology, action cardinality, width cardinality, scope, scheduler clock, and warmup combination in `tests/test_config.py`
+- [X] T032 [P] [US3] Add CLI tests that require attributable preflight errors before training setup and successful resolved-identity output for each eligible policy in `tests/test_train_cli.py`
+- [X] T033 [P] [US3] Add tests rejecting per-granularity scope whenever distributed world size exceeds one while preserving existing distributed shared-mode behavior in `tests/test_distributed_sampling.py`
 
 ### Implementation for User Story 3
 
-- [ ] T034 [US3] Implement complete topology, unique-width, action-cardinality, scope, scheduler-clock, warmup, and single-process eligibility validation in `src/utils/config.py`
-- [ ] T035 [US3] Run all eligibility checks during CLI preflight before model, optimizer, data-loader, tracker, or output mutation and emit attributable failures in `train.py`
-- [ ] T036 [US3] Add runtime assertions that a per-granularity commit resolves one known global-width label and never silently remaps an empty, multiple, or unknown action in `src/training/optimizer_state.py`
-- [ ] T037 [US3] Enforce single-width warmup ownership at runtime as a defense against configurations that bypass normal preflight in `src/training/warmup.py`
-- [ ] T038 [US3] Preserve historical missing-scope artifact interpretation as shared while rejecting explicit unknown scopes in reporting loaders in `src/evaluation/reporting_io.py`
+- [X] T034 [US3] Implement complete topology, unique-width, action-cardinality, scope, scheduler-clock, warmup, and single-process eligibility validation in `src/utils/config.py`
+- [X] T035 [US3] Run all eligibility checks during CLI preflight before model, optimizer, data-loader, tracker, or output mutation and emit attributable failures in `train.py`
+- [X] T036 [US3] Add runtime assertions that a per-granularity commit resolves one known global-width label and never silently remaps an empty, multiple, or unknown action in `src/training/optimizer_state.py`
+- [X] T037 [US3] Enforce single-width warmup ownership at runtime as a defense against configurations that bypass normal preflight in `src/training/warmup.py`
+- [X] T038 [US3] Preserve historical missing-scope artifact interpretation as shared while rejecting explicit unknown scopes in reporting loaders in `src/evaluation/reporting_io.py`
 
 **Checkpoint**: Invalid ownership modes fail before mutation, valid global policies remain usable, and the historical shared mode stays compatible.
 
@@ -125,19 +125,19 @@
 
 ### Verification for User Story 4
 
-- [ ] T039 [P] [US4] Add exact-resume tests for inside-window and action-boundary interruption plus mutation-free rejection of every required optimizer, scope, scheduler, width-order, topology, version, shape, and finiteness mismatch in `tests/test_per_granularity_optimizer_resume.py`
-- [ ] T040 [P] [US4] Add checkpoint artifact tests distinguishing resumable-training from model-only evaluation payloads and requiring complete ordered optimizer states, clock state, counts, active owner, purpose, scope, and version in `tests/test_artifacts.py`
-- [ ] T041 [P] [US4] Add a normal CPU CLI resume smoke test that compares later action records, learning rates, reconciled counts, metrics, and final parameters with an uninterrupted run in `tests/test_train_cli.py`
+- [X] T039 [P] [US4] Add exact-resume tests for inside-window and action-boundary interruption plus mutation-free rejection of every required optimizer, scope, scheduler, width-order, topology, version, shape, and finiteness mismatch in `tests/test_per_granularity_optimizer_resume.py`
+- [X] T040 [P] [US4] Add checkpoint artifact tests distinguishing resumable-training from model-only evaluation payloads and requiring complete ordered optimizer states, clock state, counts, active owner, purpose, scope, and version in `tests/test_artifacts.py`
+- [X] T041 [P] [US4] Add a normal CPU CLI resume smoke test that compares later action records, learning rates, reconciled counts, metrics, and final parameters with an uninterrupted run in `tests/test_train_cli.py`
 
 ### Implementation for User Story 4
 
-- [ ] T042 [US4] Implement complete ordered optimizer-collection serialization, finiteness/shape validation, active-owner state, global-clock state, and mutation-free staged restore in `src/training/optimizer_state.py`
-- [ ] T043 [US4] Add versioned checkpoint-purpose metadata and distinct resumable-training versus model-only schemas, preserving historical shared resumable payloads only where unambiguous, in `src/training/checkpointing.py`
-- [ ] T044 [US4] Validate the full resume contract before loading model or optimizer state, restore sampling/RNG/collection/clock/accounting state in dependency order, and reject cross-scope conversion in `src/training/run.py`
-- [ ] T045 [US4] Persist and restore accumulation-window owner identity and keep pre-commit failures out of optimizer, scheduler, exposure, and committed-step accounting in `src/training/steps.py`
-- [ ] T046 [US4] Reconcile restored and newly appended attempted steps, committed steps, scheduler position, optimizer updates, and width exposures without duplicate metric rows in `src/utils/metrics.py`
-- [ ] T047 [US4] Complete normal-entrypoint CPU acceptance coverage for resumable terminal checkpoints, model-only rejection, post-commit fatal behavior, and exact continuation in `tests/test_training_smoke.py`
-- [ ] T048 [US4] Add resume and checkpoint-purpose audit fields to structured reporting so incomplete or non-resumable runs cannot enter a paired manifest in `src/evaluation/reporting_io.py`
+- [X] T042 [US4] Implement complete ordered optimizer-collection serialization, finiteness/shape validation, active-owner state, global-clock state, and mutation-free staged restore in `src/training/optimizer_state.py`
+- [X] T043 [US4] Add versioned checkpoint-purpose metadata and distinct resumable-training versus model-only schemas, preserving historical shared resumable payloads only where unambiguous, in `src/training/checkpointing.py`
+- [X] T044 [US4] Validate the full resume contract before loading model or optimizer state, restore sampling/RNG/collection/clock/accounting state in dependency order, and reject cross-scope conversion in `src/training/run.py`
+- [X] T045 [US4] Persist and restore accumulation-window owner identity and keep pre-commit failures out of optimizer, scheduler, exposure, and committed-step accounting in `src/training/steps.py`
+- [X] T046 [US4] Reconcile restored and newly appended attempted steps, committed steps, scheduler position, optimizer updates, and width exposures without duplicate metric rows in `src/utils/metrics.py`
+- [X] T047 [US4] Complete normal-entrypoint CPU acceptance coverage for resumable terminal checkpoints, model-only rejection, post-commit fatal behavior, and exact continuation in `tests/test_training_smoke.py`
+- [X] T048 [US4] Add resume and checkpoint-purpose audit fields to structured reporting so incomplete or non-resumable runs cannot enter a paired manifest in `src/evaluation/reporting_io.py`
 
 **Checkpoint**: All four stories are functional; per-width ownership can be stopped, resumed, and independently audited without reconstructing state from terminal output.
 
@@ -147,9 +147,9 @@
 
 **Purpose**: Validate the complete feature against its executable quickstart and compatibility envelope.
 
-- [ ] T049 [P] Run the focused config, optimizer-isolation, accumulation, scheduler, artifact, resume, reporting, distributed, and CPU smoke commands and correct any stale command or expected artifact descriptions in `specs/012-per-width-optimizer-state/quickstart.md`
-- [ ] T050 Run the full `pytest -q` compatibility suite, resolve feature-caused regressions without weakening assertions, and record the verified compatibility command in `specs/012-per-width-optimizer-state/quickstart.md`
-- [ ] T051 Audit the final configuration keys, submitted commands, pilot/confirmation budgets, sealed-holdout workflow, artifact paths, and evidence labels against implemented behavior in `docs/tinystories-per-width-optimizer-experiment.md`
+- [X] T049 [P] Run the focused config, optimizer-isolation, accumulation, scheduler, artifact, resume, reporting, distributed, and CPU smoke commands and correct any stale command or expected artifact descriptions in `specs/012-per-width-optimizer-state/quickstart.md`
+- [X] T050 Run the full `pytest -q` compatibility suite, resolve feature-caused regressions without weakening assertions, and record the verified compatibility command in `specs/012-per-width-optimizer-state/quickstart.md`
+- [X] T051 Audit the final configuration keys, submitted commands, pilot/confirmation budgets, sealed-holdout workflow, artifact paths, and evidence labels against implemented behavior in `docs/tinystories-per-width-optimizer-experiment.md`
 
 ---
 

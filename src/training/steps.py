@@ -777,6 +777,38 @@ def train_for_steps(
         run_state.setdefault("next_validation_tokens", None)
     run_state.setdefault("latest_checkpoint_step", int(run_state.get("last_completed_step", 0)))
     run_state.setdefault("status", "fresh")
+    if isinstance(optimizer, PerGranularityOptimizerCollection):
+        if not isinstance(scheduler, GlobalSchedulerClock):
+            raise ConfigError(
+                "Per-granularity optimizer state requires a global scheduler clock"
+            )
+        expected_counts = run_state.get("optimizer_update_counts")
+        if not isinstance(expected_counts, Mapping):
+            expected_counts = {
+                label: 0 for label in optimizer.ordered_granularities
+            }
+        if dict(expected_counts) != optimizer.successful_update_counts:
+            raise ConfigError(
+                "Restored optimizer update counts do not match the collection"
+            )
+        if (
+            optimizer.total_successful_updates != step
+            or scheduler.position != step
+        ):
+            raise ConfigError(
+                "Restored optimizer, scheduler, and committed-step positions do not reconcile"
+            )
+        run_state["optimizer_update_counts"] = copy.deepcopy(
+            optimizer.successful_update_counts
+        )
+        run_state["optimizer_total_successful_updates"] = (
+            optimizer.total_successful_updates
+        )
+        run_state["optimizer_last_active_granularity"] = (
+            optimizer.last_active_granularity
+        )
+        run_state["global_scheduler_position"] = scheduler.position
+        run_state.setdefault("optimizer_active_owner_granularity", None)
     if continuation_latest_checkpoint_policy(config)["enabled"] and not run_state.get("latest_checkpoint_path"):
         run_state["latest_checkpoint_path"] = str(latest_checkpoint_path)
 
@@ -891,6 +923,9 @@ def train_for_steps(
                     if isinstance(optimizer, PerGranularityOptimizerCollection):
                         optimizer_owner = optimizer.owner_from_action(action)
                         step_optimizer = optimizer.optimizer_for(optimizer_owner)
+                        run_state["optimizer_active_owner_granularity"] = (
+                            optimizer_owner
+                        )
                     optimizer.zero_grad(set_to_none=True)
                     local_loss_numerators: dict[str, float] = {}
                     runtime_artifacts: dict[
@@ -1015,6 +1050,7 @@ def train_for_steps(
                         run_state["optimizer_last_active_granularity"] = (
                             optimizer.last_active_granularity
                         )
+                        run_state["global_scheduler_position"] = scheduler.position
                     step = pending_step
 
                     previous_tokens_seen = tokens_seen
@@ -1066,6 +1102,7 @@ def train_for_steps(
                         run_state,
                         action,
                     )
+                    run_state["optimizer_active_owner_granularity"] = None
                     if panelgrad_controller is not None:
                         panelgrad_controller.commit_pending_action(
                             completed_step=step

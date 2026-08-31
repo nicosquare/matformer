@@ -981,6 +981,11 @@ def build_optimizer_state_summary_fields(
     ]
     scope = str(training.get("optimizer_state_scope") or "shared")
     committed = int(state.get("last_completed_step", state.get("step", 0)))
+    scheduler_position = (
+        int(state.get("global_scheduler_position", committed))
+        if scope == "per_granularity"
+        else committed
+    )
     sampling_state = state.get("global_sampling_state")
     exposures = (
         {
@@ -1003,7 +1008,13 @@ def build_optimizer_state_summary_fields(
     failed = max(attempted - committed, 0)
     reconciled = (
         attempted >= committed
+        and scheduler_position == committed
         and sum(updates.values()) == committed
+        and (
+            scope != "per_granularity"
+            or int(state.get("optimizer_total_successful_updates", committed))
+            == committed
+        )
         and updates == exposures
         and (
             not isinstance(sampling_state, Mapping)
@@ -1040,7 +1051,7 @@ def build_optimizer_state_summary_fields(
         "optimizer_successful_update_counts": updates,
         "optimizer_exposure_counts": exposures,
         "optimizer_accounting_reconciled": reconciled,
-        "global_scheduler_position": committed,
+        "global_scheduler_position": scheduler_position,
         "training_wall_time_seconds": (
             None if wall_time_seconds is None else float(wall_time_seconds)
         ),

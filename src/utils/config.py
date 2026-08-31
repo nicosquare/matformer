@@ -280,6 +280,8 @@ def resolve_run_config(
     run_id: str | None = None,
     overrides: Mapping[str, Any] | Iterable[str] | None = None,
     output_dir: str | Path | None = None,
+    *,
+    create_output_dirs: bool = True,
 ) -> dict[str, Any]:
     overrides = _snapshot_overrides(overrides)
     explicit_override_keys = _override_keys(overrides)
@@ -319,7 +321,7 @@ def resolve_run_config(
         family_size_slug = _resolve_family_size_slug(resolved)
     resolved["run"]["family_size_slug"] = family_size_slug
     _resolve_naming_defaults(resolved)
-    _resolve_output_paths(resolved)
+    _resolve_output_paths(resolved, create_directories=create_output_dirs)
     _resolve_sampling_mode_defaults(
         resolved,
         requested_granularity_sampling_alias=requested_granularity_sampling_alias,
@@ -900,6 +902,10 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         )
     if len(set(granularities)) != len(granularities):
         raise ConfigError("model.granularities must contain unique labels")
+
+    optimizer_state_eligibility = _validate_optimizer_state_eligibility(config)
+    if isinstance(training, dict):
+        training["optimizer_state_eligibility"] = optimizer_state_eligibility
 
     granularity_mode = model.get("granularity_mode")
     if granularity_mode not in {"canonical", "explicit"}:
@@ -3563,7 +3569,11 @@ def _apply_standalone_fixed_width(model: dict[str, Any], granularity: str) -> No
     model["granularity_prefixes"] = {granularity: 1.0}
 
 
-def _resolve_output_paths(config: dict[str, Any]) -> None:
+def _resolve_output_paths(
+    config: dict[str, Any],
+    *,
+    create_directories: bool = True,
+) -> None:
     run = config.setdefault("run", {})
     if "run_id" not in run:
         return
@@ -3584,9 +3594,10 @@ def _resolve_output_paths(config: dict[str, Any]) -> None:
     run["output_dir"] = str(output_dir)
     run["explicit_output_dir"] = explicit_output_dir
 
-    _ensure_writable_directory(output_root, "output root")
-    if explicit_output_dir:
-        _ensure_writable_directory(output_dir.parent, "output directory parent")
+    if create_directories:
+        _ensure_writable_directory(output_root, "output root")
+        if explicit_output_dir:
+            _ensure_writable_directory(output_dir.parent, "output directory parent")
 
 
 def _resolve_training_length(
@@ -4270,6 +4281,130 @@ def _resolve_optimizer_state_contract(config: dict[str, Any]) -> None:
         "resolved_learning_rate": training["resolved_learning_rate"],
         "scheduler_contract": copy.deepcopy(training["scheduler"]),
         "single_process_required": state_scope == "per_granularity",
+    }
+
+
+def _validate_optimizer_state_eligibility(
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate the one-owner contract before any training runtime is built."""
+
+    run = config.get("run", {})
+    model = config.get("model", {})
+    training = config.get("training", {})
+    if not all(isinstance(section, Mapping) for section in (run, model, training)):
+        raise ConfigError("Optimizer-state eligibility requires resolved run sections")
+
+    state_scope = training.get("optimizer_state_scope")
+    if state_scope not in VALID_OPTIMIZER_STATE_SCOPES:
+        raise ConfigError(
+            "training.optimizer_state_scope must be one of "
+            f"{sorted(VALID_OPTIMIZER_STATE_SCOPES)}"
+        )
+    scheduler_clock = training.get("optimizer_scheduler_clock")
+    if scheduler_clock not in VALID_OPTIMIZER_SCHEDULER_CLOCKS:
+        raise ConfigError(
+            "training.optimizer_scheduler_clock must be one of "
+            f"{sorted(VALID_OPTIMIZER_SCHEDULER_CLOCKS)}"
+        )
+
+    granularities = model.get("granularities")
+    if not isinstance(granularities, list):
+        raise ConfigError("model.granularities must be an ordered list")
+    ordered_labels = [str(label) for label in granularities]
+    effective_world_size = _positive_int(
+        training.get("effective_world_size"),
+        "training.effective_world_size",
+    )
+    if state_scope == "shared":
+        return {
+            "eligible": True,
+            "required_action_kind": None,
+            "required_action_cardinality": None,
+            "unique_width_count": len(set(ordered_labels)),
+            "effective_world_size": effective_world_size,
+        }
+
+    contract = training.get("optimizer_state_contract")
+    if not isinstance(contract, Mapping):
+        raise ConfigError("training.optimizer_state_contract must be resolved")
+    if contract.get("state_scope") != state_scope:
+        raise ConfigError("Optimizer-state contract scope does not match training scope")
+    if contract.get("scheduler_clock") != scheduler_clock:
+        raise ConfigError("Optimizer-state contract scheduler clock does not match training")
+    if contract.get("ordered_granularities") != ordered_labels:
+        raise ConfigError(
+            "Optimizer-state contract ordered granularities do not match the model"
+        )
+
+    if run.get("model_family") != "nested":
+        raise ConfigError(
+            "training.optimizer.state_scope=per_granularity requires "
+            "run.model_family=nested"
+        )
+    if run.get("sampling_mode") != "nested-random":
+        raise ConfigError(
+            "training.optimizer.state_scope=per_granularity requires "
+            "run.sampling_mode=nested-random"
+        )
+    sampling_mode = model.get("granularity_sampling_mode")
+    if sampling_mode not in {"global", "fixed_global", "adaptive_global"}:
+        raise ConfigError(
+            "training.optimizer.state_scope=per_granularity requires one "
+            "global-width action; rejected model.granularity_sampling_mode="
+            f"{sampling_mode}"
+        )
+    if len(ordered_labels) < 2 or len(set(ordered_labels)) < 2:
+        raise ConfigError(
+            "training.optimizer.state_scope=per_granularity requires at least "
+            "two unique global widths"
+        )
+
+    distributed = training.get("distributed", {})
+    if not isinstance(distributed, Mapping):
+        raise ConfigError("training.distributed must be a mapping")
+    expected_world_size = _positive_int(
+        distributed.get("expected_world_size", effective_world_size),
+        "training.distributed.expected_world_size",
+    )
+    if effective_world_size != 1 or expected_world_size != 1:
+        raise ConfigError(
+            "training.optimizer.state_scope=per_granularity requires one process; "
+            f"effective_world_size={effective_world_size}, "
+            f"expected_world_size={expected_world_size}"
+        )
+
+    warmup = training.get("pre_nested_warmup", {})
+    if not isinstance(warmup, Mapping):
+        raise ConfigError("training.pre_nested_warmup must be a mapping")
+    if bool(warmup.get("enabled", False)):
+        policy = warmup.get("policy")
+        if policy == "full_only":
+            planned_owners: list[Any] = [ordered_labels[-1]]
+        elif policy == "balanced_global":
+            schedule = warmup.get("schedule")
+            if not isinstance(schedule, list) or not schedule:
+                raise ConfigError(
+                    "Per-granularity balanced warmup requires a non-empty owner schedule"
+                )
+            planned_owners = schedule
+        else:
+            raise ConfigError(
+                "Per-granularity warmup requires full_only or balanced_global ownership"
+            )
+        for owner in planned_owners:
+            if not isinstance(owner, str) or owner not in ordered_labels:
+                raise ConfigError(
+                    "Per-granularity warmup must resolve exactly one global width "
+                    "per optimizer step"
+                )
+
+    return {
+        "eligible": True,
+        "required_action_kind": "global",
+        "required_action_cardinality": 1,
+        "unique_width_count": len(ordered_labels),
+        "effective_world_size": effective_world_size,
     }
 
 

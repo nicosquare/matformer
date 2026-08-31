@@ -2321,6 +2321,158 @@ def test_per_granularity_optimizer_state_contract_preserves_width_order():
     }
 
 
+@pytest.mark.parametrize(
+    "fixture_path, overrides, expected_sampling_mode",
+    [
+        (
+            "tests/fixtures/per_granularity_optimizer_smoke.yaml",
+            {},
+            "global",
+        ),
+        (
+            "tests/fixtures/per_granularity_optimizer_smoke.yaml",
+            {"model.global_sampling_schedule": "random_with_replacement"},
+            "global",
+        ),
+        (
+            "tests/fixtures/experiment_config_resolution.yaml",
+            {
+                "run.sampling_mode": "nested-random",
+                "model.granularity_sampling_mode": "fixed_global",
+                "model.global_sampling_distribution": {
+                    "s": 0.1,
+                    "m": 0.2,
+                    "l": 0.3,
+                    "xl": 0.4,
+                },
+                "training.optimizer.state_scope": "per_granularity",
+            },
+            "fixed_global",
+        ),
+        (
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            {"training.optimizer.state_scope": "per_granularity"},
+            "adaptive_global",
+        ),
+    ],
+)
+def test_per_granularity_optimizer_accepts_complete_global_owner_policies(
+    fixture_path,
+    overrides,
+    expected_sampling_mode,
+):
+    resolved = resolve_run_config(fixture_path, overrides=overrides)
+
+    assert resolved["model"]["resolved_sampling_mode"] == expected_sampling_mode
+    assert resolved["training"]["optimizer_state_eligibility"] == {
+        "eligible": True,
+        "required_action_kind": "global",
+        "required_action_cardinality": 1,
+        "unique_width_count": len(resolved["model"]["granularities"]),
+        "effective_world_size": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    "fixture_path, overrides, message",
+    [
+        (
+            "tests/fixtures/experiment_config_resolution.yaml",
+            {"training.optimizer.state_scope": "per_granularity"},
+            "requires run.sampling_mode=nested-random",
+        ),
+        (
+            "tests/fixtures/probabilistic_adaptive_global_smoke.yaml",
+            {
+                "model.granularity_sampling_mode": "per_block",
+                "training.optimizer.state_scope": "per_granularity",
+            },
+            "requires one global-width action",
+        ),
+        (
+            "tests/fixtures/probabilistic_adaptive_per_block_smoke.yaml",
+            {"training.optimizer.state_scope": "per_granularity"},
+            "requires one global-width action",
+        ),
+    ],
+)
+def test_per_granularity_optimizer_rejects_ineligible_owner_topologies(
+    fixture_path,
+    overrides,
+    message,
+):
+    with pytest.raises(ConfigError, match=message):
+        resolve_run_config(fixture_path, overrides=overrides)
+
+
+def test_per_granularity_optimizer_rejects_standalone_and_one_width(tmp_path):
+    with pytest.raises(ConfigError, match="requires run.model_family=nested"):
+        resolve_run_config(
+            "configs/debug_matrix.yaml",
+            run_id="debug-standalone-s-001",
+            overrides={"training.optimizer.state_scope": "per_granularity"},
+        )
+
+    raw = yaml.safe_load(
+        Path("tests/fixtures/per_granularity_optimizer_smoke.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    raw["model"]["granularities"] = ["full"]
+    raw["model"]["granularity_prefixes"] = {"full": 1.0}
+    raw["model"]["global_sampling_schedule"] = "random_with_replacement"
+    config_path = tmp_path / "one-width.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="at least two unique global widths"):
+        resolve_run_config(config_path)
+
+
+@pytest.mark.parametrize(
+    "override, message",
+    [
+        (
+            "training.optimizer.state_scope=unknown",
+            "training.optimizer.state_scope must be one of",
+        ),
+        (
+            "training.optimizer.scheduler_clock=width_step",
+            "training.optimizer.scheduler_clock must be one of",
+        ),
+    ],
+)
+def test_optimizer_ownership_rejects_unknown_scope_or_non_global_clock(
+    override,
+    message,
+):
+    with pytest.raises(ConfigError, match=message):
+        resolve_run_config(
+            "tests/fixtures/per_granularity_optimizer_smoke.yaml",
+            overrides=[override],
+        )
+
+
+def test_per_granularity_optimizer_rejects_ambiguous_warmup_owner():
+    resolved = resolve_run_config(
+        "tests/fixtures/panelgrad_smoke.yaml",
+        overrides={
+            "training.optimizer.state_scope": "per_granularity",
+            "training.pre_nested_warmup.enabled": True,
+            "training.pre_nested_warmup.duration": 6,
+            "training.pre_nested_warmup.unit": "steps",
+            "training.pre_nested_warmup.policy": "balanced_global",
+            "training.pre_nested_warmup.action_interval_steps": 1,
+        },
+    )
+    resolved["training"]["pre_nested_warmup"]["schedule"][0] = [
+        "micro",
+        "full",
+    ]
+
+    with pytest.raises(ConfigError, match="warmup.*exactly one global width"):
+        validate_run_config(resolved)
+
+
 def _patch_optimizer_scope_recipe_artifacts(monkeypatch):
     import src.training.fineweb_tokenizer as fineweb_tokenizer
     import src.training.packed_corpus as packed_corpus

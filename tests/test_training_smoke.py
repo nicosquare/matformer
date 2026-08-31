@@ -1,4 +1,5 @@
 import csv
+import ast
 import json
 import sys
 import types
@@ -513,6 +514,197 @@ def test_per_granularity_normal_loop_does_not_count_a_failed_commit(
     assert captured["scheduler"].position == 1
     assert model.weight.grad is None
     assert model.wide_only.grad is None
+
+
+@pytest.mark.parametrize("failure_forward", [2, 3])
+def test_per_granularity_terminal_checkpoint_resumes_exactly_after_precommit_failure(
+    tmp_path,
+    failure_forward,
+):
+    class FailOnSelectedWindow(TwoWidthOptimizerSmokeModel):
+        def __init__(self):
+            super().__init__()
+            self.training_forwards = 0
+
+        def forward(self, *args, **kwargs):
+            if self.training:
+                self.training_forwards += 1
+                if self.training_forwards == failure_forward:
+                    raise RuntimeError("simulated resumable pre-commit interruption")
+            return super().forward(*args, **kwargs)
+
+    dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3] for _ in range(8)],
+            "attention_mask": [[1, 1, 1] for _ in range(8)],
+        }
+    )
+
+    def make_config(output_dir):
+        return resolve_run_config(
+            "tests/fixtures/per_granularity_optimizer_smoke.yaml",
+            output_dir=output_dir,
+            overrides={
+                "training.max_steps": 4,
+                "training.token_budget": 128,
+                "training.batch_size_per_process": 1,
+                "training.scheduler.name": "constant",
+                "training.warmup_steps": 0,
+                "training.eval_interval": 0,
+                "evaluation.validation": False,
+                "evaluation.validation.interval_steps": 0,
+                "evaluation.validation.run_at_completion": False,
+                "run.continuation.latest_checkpoint_save_interval_steps": 1,
+            },
+        )
+
+    uninterrupted_config = make_config(
+        tmp_path / "uninterrupted" / "per-granularity-optimizer-smoke-001"
+    )
+    uninterrupted_model = TwoWidthOptimizerSmokeModel()
+    uninterrupted = run_training(
+        uninterrupted_config,
+        model=uninterrupted_model,
+        tokenized_dataset=dataset,
+        device="cpu",
+    )
+
+    resumed_config = make_config(
+        tmp_path / "resumed" / "per-granularity-optimizer-smoke-001"
+    )
+    with pytest.raises(RuntimeError, match="resumable pre-commit interruption"):
+        run_training(
+            resumed_config,
+            model=FailOnSelectedWindow(),
+            tokenized_dataset=dataset,
+            device="cpu",
+        )
+    resumed_model = TwoWidthOptimizerSmokeModel()
+    resumed = run_training(
+        resumed_config,
+        model=resumed_model,
+        tokenized_dataset=dataset,
+        device="cpu",
+    )
+
+    torch.testing.assert_close(
+        resumed_model.weight, uninterrupted_model.weight, rtol=0.0, atol=0.0
+    )
+    torch.testing.assert_close(
+        resumed_model.wide_only,
+        uninterrupted_model.wide_only,
+        rtol=0.0,
+        atol=0.0,
+    )
+    def ownership_record(row):
+        def counts(value):
+            return ast.literal_eval(value) if isinstance(value, str) else value
+
+        return (
+            int(row["step"]),
+            row["optimizer_action_id"],
+            row["selected_optimizer_granularity"],
+            float(row["learning_rate"]),
+            int(row["global_scheduler_position"]),
+            counts(row["optimizer_successful_update_counts"]),
+            counts(row["optimizer_exposure_counts"]),
+        )
+    uninterrupted_rows = [
+        row for row in uninterrupted["metrics_rows"] if row["split"] == "train"
+    ]
+    resumed_rows = [row for row in resumed["metrics_rows"] if row["split"] == "train"]
+    assert [ownership_record(row) for row in resumed_rows] == [
+        ownership_record(row) for row in uninterrupted_rows
+    ]
+    assert len({int(row["step"]) for row in resumed_rows}) == 4
+
+    uninterrupted_checkpoint = torch.load(
+        Path(uninterrupted_config["run"]["output_dir"]) / "checkpoints/latest.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    resumed_checkpoint = torch.load(
+        Path(resumed_config["run"]["output_dir"]) / "checkpoints/latest.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert resumed_checkpoint["checkpoint_kind"] == "resumable_training"
+    assert resumed_checkpoint["optimizer_state_collection"][
+        "successful_update_counts"
+    ] == {"narrow": 2, "full": 2}
+    assert resumed_checkpoint["scheduler_state_dict"]["position"] == 4
+    assert resumed_checkpoint["global_sampling_state"]["total_successful_updates"] == 4
+    assert resumed_checkpoint["optimizer_active_owner_granularity"] is None
+    for key in ("model_state_dict", "optimizer_state_collection", "scheduler_state_dict"):
+        left = uninterrupted_checkpoint[key]
+        right = resumed_checkpoint[key]
+        if key == "model_state_dict":
+            for parameter_name in left:
+                assert torch.equal(left[parameter_name], right[parameter_name])
+        else:
+            assert str(left) == str(right)
+
+
+def test_per_granularity_post_commit_failure_preserves_previous_durable_checkpoint(
+    tmp_path, monkeypatch
+):
+    from src.training.optimizer_state import GlobalSchedulerClock
+
+    output_dir = (
+        tmp_path / "post-commit" / "per-granularity-optimizer-smoke-001"
+    )
+    config = resolve_run_config(
+        "tests/fixtures/per_granularity_optimizer_smoke.yaml",
+        output_dir=output_dir,
+        overrides={
+            "training.max_steps": 4,
+            "training.token_budget": 128,
+            "training.batch_size_per_process": 1,
+            "training.scheduler.name": "constant",
+            "training.eval_interval": 0,
+            "evaluation.validation": False,
+            "evaluation.validation.interval_steps": 0,
+            "evaluation.validation.run_at_completion": False,
+            "run.continuation.latest_checkpoint_save_interval_steps": 1,
+        },
+    )
+    dataset = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3] for _ in range(6)],
+            "attention_mask": [[1, 1, 1] for _ in range(6)],
+        }
+    )
+    original_synchronize = GlobalSchedulerClock.synchronize
+    calls = {"value": 0}
+
+    def fail_second_commit(self, collection):
+        calls["value"] += 1
+        if calls["value"] == 3:
+            raise RuntimeError("simulated post-commit scheduler failure")
+        return original_synchronize(self, collection)
+
+    monkeypatch.setattr(GlobalSchedulerClock, "synchronize", fail_second_commit)
+    with pytest.raises(RuntimeError, match="post-commit scheduler failure"):
+        run_training(
+            config,
+            model=TwoWidthOptimizerSmokeModel(),
+            tokenized_dataset=dataset,
+            device="cpu",
+        )
+
+    checkpoint_path = output_dir / "checkpoints/latest.pt"
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    assert checkpoint["step"] == 1
+    assert checkpoint["optimizer_state_collection"][
+        "total_successful_updates"
+    ] == 1
+    assert checkpoint["scheduler_state_dict"]["position"] == 1
+    with (output_dir / "metrics.csv").open(
+        "r", encoding="utf-8", newline=""
+    ) as source:
+        rows = list(csv.DictReader(source))
+    failed = next(row for row in rows if row["optimizer_step_committed"] == "True" and row["optimizer_failure_stage"])
+    assert failed["optimizer_failure_stage"] == "post_commit_accounting"
 
 
 class TinyNestedRuntimePatternModel(torch.nn.Module):

@@ -5,8 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 
-import src.training.run as training_run
-from src.utils.config import resolve_run_config
+from src.utils.config import ConfigError, resolve_run_config
 from src.utils.reproducibility import (
     build_full_run_signature,
     build_paired_control_signature,
@@ -61,12 +60,16 @@ def main(argv: list[str] | None = None) -> None:
     if args.output_root:
         overrides.append(f"run.output_root={args.output_root}")
     if args.preflight:
-        resolved = resolve_run_config(
-            args.config,
-            run_id=args.run_id,
-            overrides=overrides,
-            output_dir=args.output_dir,
-        )
+        try:
+            resolved = resolve_run_config(
+                args.config,
+                run_id=args.run_id,
+                overrides=overrides,
+                output_dir=args.output_dir,
+                create_output_dirs=False,
+            )
+        except ConfigError as error:
+            raise SystemExit(f"Preflight configuration error: {error}") from error
         paired_control_signature, control_inputs = build_paired_control_signature(
             resolved
         )
@@ -91,6 +94,9 @@ def main(argv: list[str] | None = None) -> None:
                     ),
                     "optimizer_state_contract": training[
                         "optimizer_state_contract"
+                    ],
+                    "optimizer_state_eligibility": training[
+                        "optimizer_state_eligibility"
                     ],
                     "full_run_signature": full_run_signature,
                     "paired_control_signature": paired_control_signature,
@@ -217,6 +223,10 @@ def main(argv: list[str] | None = None) -> None:
             )
         )
         return
+    # Keep configuration-only preflight independent of model, optimizer,
+    # data-loader, tracker, and output-runtime imports.
+    import src.training.run as training_run
+
     training_run.run_from_config_path(
         args.config,
         run_id=args.run_id,

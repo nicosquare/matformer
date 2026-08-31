@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
+import torch
+
 from .reporting_styles import PARAMETER_COUNT_FIELDS
 
 __all__ = [
@@ -95,6 +97,10 @@ class OptimizerStateRunArtifacts:
     paired_control_signature: str
     checkpoint_path: Path
     checkpoint_sha256: str
+    checkpoint_kind: str
+    checkpoint_schema_version: int
+    resume_count: int
+    continuation_status: str
 
 
 def load_optimizer_state_run(run_dir: str | Path) -> OptimizerStateRunArtifacts:
@@ -126,11 +132,13 @@ def load_optimizer_state_run(run_dir: str | Path) -> OptimizerStateRunArtifacts:
         raise OptimizerStateReportingError(f"Run {root} is not completed")
     training = config.get("training", {})
     model = config.get("model", {})
-    scope = str(
-        summary.get("optimizer_state_scope")
-        or training.get("optimizer_state_scope")
-        or "shared"
-    )
+    if "optimizer_state_scope" in summary:
+        raw_scope = summary["optimizer_state_scope"]
+    elif isinstance(training, Mapping) and "optimizer_state_scope" in training:
+        raw_scope = training["optimizer_state_scope"]
+    else:
+        raw_scope = "shared"
+    scope = str(raw_scope) if isinstance(raw_scope, str) else ""
     if scope not in {"shared", "per_granularity"}:
         raise OptimizerStateReportingError(
             f"Run {root} has unknown optimizer state scope {scope!r}"
@@ -218,6 +226,85 @@ def load_optimizer_state_run(run_dir: str | Path) -> OptimizerStateRunArtifacts:
         raise OptimizerStateReportingError(
             f"Run {root} metric ownership does not match exposures"
         )
+    try:
+        checkpoint_payload = torch.load(
+            checkpoint, map_location="cpu", weights_only=False
+        )
+    except Exception as error:
+        raise OptimizerStateReportingError(
+            f"Run {root} terminal checkpoint cannot be audited"
+        ) from error
+    if not isinstance(checkpoint_payload, Mapping):
+        raise OptimizerStateReportingError(
+            f"Run {root} terminal checkpoint payload is malformed"
+        )
+    checkpoint_kind = checkpoint_payload.get("checkpoint_kind")
+    checkpoint_version = checkpoint_payload.get("checkpoint_schema_version")
+    if checkpoint_kind != "resumable_training" or checkpoint_version != 1:
+        raise OptimizerStateReportingError(
+            f"Run {root} terminal checkpoint is not a supported resumable_training payload"
+        )
+    checkpoint_contract = checkpoint_payload.get("optimizer_state_contract")
+    if (
+        not isinstance(checkpoint_contract, Mapping)
+        or checkpoint_contract.get("state_scope") != scope
+        or tuple(
+            str(label)
+            for label in checkpoint_contract.get("ordered_granularities", [])
+        )
+        != ordered
+    ):
+        raise OptimizerStateReportingError(
+            f"Run {root} terminal checkpoint optimizer contract does not match artifacts"
+        )
+    if int(checkpoint_payload.get("step", -1)) != committed:
+        raise OptimizerStateReportingError(
+            f"Run {root} terminal checkpoint step does not match the summary"
+        )
+    if scope == "per_granularity":
+        collection = checkpoint_payload.get("optimizer_state_collection")
+        scheduler_state = checkpoint_payload.get("scheduler_state_dict")
+        collection_entries = (
+            collection.get("ordered_entries")
+            if isinstance(collection, Mapping)
+            else None
+        )
+        collection_counts = (
+            collection.get("successful_update_counts")
+            if isinstance(collection, Mapping)
+            else None
+        )
+        if (
+            not isinstance(collection, Mapping)
+            or collection.get("schema_version") != 1
+            or not isinstance(collection_entries, list)
+            or [
+                str(entry.get("granularity"))
+                for entry in collection_entries
+                if isinstance(entry, Mapping)
+            ]
+            != list(ordered)
+            or not isinstance(collection_counts, Mapping)
+            or {
+                str(key): int(value)
+                for key, value in collection_counts.items()
+            }
+            != {str(key): int(value) for key, value in updates.items()}
+            or int(collection.get("total_successful_updates", -1)) != committed
+            or not isinstance(scheduler_state, Mapping)
+            or int(scheduler_state.get("position", -1)) != committed
+            or checkpoint_payload.get("optimizer_state_dict") is not None
+        ):
+            raise OptimizerStateReportingError(
+                f"Run {root} terminal per-granularity checkpoint is incomplete or unreconciled"
+            )
+    elif (
+        checkpoint_payload.get("optimizer_state_dict") is None
+        or checkpoint_payload.get("optimizer_state_collection") is not None
+    ):
+        raise OptimizerStateReportingError(
+            f"Run {root} terminal shared checkpoint is incomplete"
+        )
     recorded_bytes = summary.get("terminal_checkpoint_bytes")
     if recorded_bytes is not None and int(recorded_bytes) != checkpoint.stat().st_size:
         raise OptimizerStateReportingError(
@@ -229,6 +316,9 @@ def load_optimizer_state_run(run_dir: str | Path) -> OptimizerStateRunArtifacts:
         raise OptimizerStateReportingError(
             f"Run {root} terminal checkpoint hash changed"
         )
+    continuation = summary.get("continuation_state", {})
+    if not isinstance(continuation, Mapping):
+        continuation = {}
     return OptimizerStateRunArtifacts(
         run_dir=root,
         config=config,
@@ -241,6 +331,14 @@ def load_optimizer_state_run(run_dir: str | Path) -> OptimizerStateRunArtifacts:
         paired_control_signature=str(signature),
         checkpoint_path=checkpoint.resolve(),
         checkpoint_sha256=checkpoint_sha256,
+        checkpoint_kind=str(checkpoint_kind),
+        checkpoint_schema_version=int(checkpoint_version),
+        resume_count=int(
+            continuation.get("resume_count", summary.get("resume_count", 0))
+        ),
+        continuation_status=str(
+            continuation.get("status", summary.get("status", "completed"))
+        ),
     )
 
 
