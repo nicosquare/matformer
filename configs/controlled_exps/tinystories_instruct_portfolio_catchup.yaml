@@ -1,11 +1,15 @@
-# Fixed-budget TinyStories-Instruct four-width portfolio catch-up recipe.
-# Supply tokenizer/corpus paths and override the role-specific run identity.
+# TinyStories-Instruct four-width portfolio bundle recipe.
+# The runbook selects role, variant, and independent reference/candidate B multipliers.
 controlled_experiment:
   comparison_group_id: tinystories_instruct_portfolio_catchup_v1
   comparison_role: standalone_reference
   portfolio_catchup:
     enabled: false
-    schema_version: 2
+    schema_version: 4
+    budget_unit_tokens: 713785344
+    reference_budget_multiplier: 1
+    candidate_budget_multiplier: 3
+    claim_tier: diagnostic
     reference_budget_tokens: 713785344
     elastic_budget_cap_tokens: 2141356032
     aggregate_reference_count: 4
@@ -57,7 +61,7 @@ model:
     g1000: 1.00
 
 training:
-  # One optimizer-step-aligned epoch B; candidates override this to 3B.
+  # The runbook overrides this to the selected role's R×B or X×B horizon.
   token_budget: 713785344
   max_steps_cap: null
   batch_size_per_process: 64

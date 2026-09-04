@@ -20,7 +20,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.training.portfolio_catchup import manifest_hash
+from src.training.portfolio_catchup import (
+    candidate_policy_contract,
+    candidate_policy_contract_hash,
+    manifest_hash,
+)
 from src.utils.reproducibility import stable_hash
 
 
@@ -84,6 +88,38 @@ CANDIDATE_ARMS = {
         "post_hoc_diagnostic": True,
     },
 }
+
+
+def _bundle_contract(run: Mapping[str, Any]) -> bool:
+    _, contract = _controlled_contract(run)
+    return int(contract.get("schema_version", 0)) == 4
+
+
+def _candidate_arm_spec(run: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Normalize legacy and schema-4 candidate identities for analysis."""
+
+    arm_id = _candidate_arm_id(run)
+    _, contract = _controlled_contract(run)
+    if _bundle_contract(run):
+        if not isinstance(arm_id, str) or not arm_id:
+            return None
+        return {
+            "id": arm_id,
+            "schema_version": 4,
+            "budget_tokens": _integer(
+                contract.get("elastic_budget_cap_tokens"),
+                "elastic budget contract",
+            ),
+            "sampling_mode": run["config"].get("run", {}).get("sampling_mode"),
+            "model_variant": run["config"].get("model", {}).get("variant"),
+            "post_hoc_diagnostic": True,
+            "policy_contract": candidate_policy_contract(run["config"]),
+            "policy_contract_hash": candidate_policy_contract_hash(run["config"]),
+            "allowed_reference_provenance_differences": set(),
+        }
+    if arm_id not in CANDIDATE_ARMS:
+        return None
+    return {"id": arm_id, **CANDIDATE_ARMS[str(arm_id)]}
 
 
 class PortfolioAnalysisError(ValueError):
@@ -393,22 +429,47 @@ def _base_rejections(
         and contract.get("lr_selection_manifest_path") in (None, "")
         and contract.get("lr_selection_manifest_hash") in (None, "")
     )
-    expected_schema = (
+    bundle_run = _bundle_contract(run)
+    expected_schema = 4 if bundle_run else (
         CANDIDATE_ARMS[candidate_arm_id]["schema_version"]
         if role == "elastic_candidate" and candidate_arm_id in CANDIDATE_ARMS
         else 2
     )
     if schema_version != expected_schema and not legacy_reference:
         rejections.append("portfolio contract schema mismatch")
-    if contract.get("reference_budget_tokens") != REFERENCE_BUDGET_TOKENS:
+    reference_budget = _integer(
+        contract.get("reference_budget_tokens"), "reference budget contract"
+    )
+    if not bundle_run and reference_budget != REFERENCE_BUDGET_TOKENS:
         rejections.append("reference budget contract mismatch")
     expected_elastic_budget = (
-        CANDIDATE_ARMS[candidate_arm_id]["budget_tokens"]
-        if role == "elastic_candidate" and candidate_arm_id in CANDIDATE_ARMS
-        else ELASTIC_BUDGET_CAP_TOKENS
+        _integer(contract.get("elastic_budget_cap_tokens"), "elastic budget contract")
+        if bundle_run
+        else (
+            CANDIDATE_ARMS[candidate_arm_id]["budget_tokens"]
+            if role == "elastic_candidate" and candidate_arm_id in CANDIDATE_ARMS
+            else ELASTIC_BUDGET_CAP_TOKENS
+        )
     )
     if contract.get("elastic_budget_cap_tokens") != expected_elastic_budget:
         rejections.append("elastic budget contract mismatch")
+    if bundle_run:
+        if contract.get("aggregate_reference_count") != 4:
+            rejections.append("aggregate reference count mismatch")
+        if contract.get("claim_tier") != "diagnostic":
+            rejections.append("schema-4 candidate is not diagnostic")
+        if contract.get("budget_unit_tokens") != REFERENCE_BUDGET_TOKENS:
+            rejections.append("portfolio B unit mismatch")
+        expected_reference = (
+            _integer(contract.get("reference_budget_multiplier"), "reference multiplier")
+            * REFERENCE_BUDGET_TOKENS
+        )
+        expected_candidate = (
+            _integer(contract.get("candidate_budget_multiplier"), "candidate multiplier")
+            * REFERENCE_BUDGET_TOKENS
+        )
+        if reference_budget != expected_reference or expected_elastic_budget != expected_candidate:
+            rejections.append("portfolio multiplier budget contract mismatch")
     if role == "elastic_candidate" and _candidate_arm_id(run) != candidate_arm_id:
         rejections.append("comparison arm ID mismatch")
     if contract.get("aggregate_reference_count") != 4:
@@ -478,6 +539,23 @@ def _freeze_references_active(
     run_dirs: Iterable[str | Path], output_dir: str | Path
 ) -> dict[str, Any]:
     runs = [_load_run(path) for path in run_dirs]
+    reference_budgets = {
+        _integer(
+            _controlled_contract(run)[1].get("reference_budget_tokens"),
+            "reference budget contract",
+        )
+        for run in runs
+    }
+    if len(reference_budgets) != 1:
+        raise PortfolioAnalysisError("Standalone references use multiple budget lanes")
+    reference_budget = reference_budgets.pop()
+    reference_multipliers = {
+        _controlled_contract(run)[1].get("reference_budget_multiplier", 1)
+        for run in runs
+    }
+    if len(reference_multipliers) != 1:
+        raise PortfolioAnalysisError("Standalone references use multiple R multipliers")
+    reference_multiplier = reference_multipliers.pop()
     matrix: dict[tuple[int, str], dict[str, Any]] = {}
     diagnostics: list[dict[str, Any]] = []
     for run in runs:
@@ -486,7 +564,7 @@ def _freeze_references_active(
         widths = list(config.get("model", {}).get("granularities", []))
         width = widths[0] if len(widths) == 1 else None
         rejections = _base_rejections(
-            run, role="standalone_reference", budget=REFERENCE_BUDGET_TOKENS
+            run, role="standalone_reference", budget=reference_budget
         )
         if (
             config.get("run", {}).get("model_family") != "standalone"
@@ -499,7 +577,7 @@ def _freeze_references_active(
         if not rows:
             rejections.append("standalone reference has no ordinary validation")
         best = min(rows, key=lambda row: (row["loss"], row["step"])) if rows else None
-        if best is not None and best["tokens_seen"] > REFERENCE_BUDGET_TOKENS:
+        if best is not None and best["tokens_seen"] > reference_budget:
             rejections.append("best checkpoint was selected beyond the B-token horizon")
         checkpoint = _resolve_checkpoint(
             run["run_dir"], run["summary"].get("best_checkpoint_path")
@@ -595,7 +673,7 @@ def _freeze_references_active(
                 )
             }
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2 if reference_budget != REFERENCE_BUDGET_TOKENS else 1,
         "analysis": "tinystories_instruct_standalone_portfolio_targets",
         "status": (
             "references_frozen"
@@ -611,14 +689,15 @@ def _freeze_references_active(
         "seed_coverage_complete": seed_coverage_complete,
         "comparison_group_id": COMPARISON_GROUP_ID,
         "granularity_profile": _profile_name_for_group(COMPARISON_GROUP_ID),
-        "reference_budget_tokens": REFERENCE_BUDGET_TOKENS,
+        "reference_budget_tokens": reference_budget,
+        "reference_budget_multiplier": reference_multiplier,
         "aggregate_reference_count": 4,
-        "aggregate_reference_budget_tokens": AGGREGATE_REFERENCE_BUDGET_TOKENS,
+        "aggregate_reference_budget_tokens": reference_budget * 4,
         "granularities": list(GRANULARITIES),
         "seeds": list(observed_seeds),
         "perplexity_tolerance": PERPLEXITY_TOLERANCE,
         "loss_tolerance": LOSS_TOLERANCE,
-        "target_definition": "best_ordinary_validation_checkpoint_within_B",
+        "target_definition": "best_ordinary_validation_checkpoint_within_reference_budget",
         "shared_provenance": diagnostics[0]["provenance"],
         "targets": targets,
     }
@@ -678,7 +757,9 @@ def _validate_elastic_run(
 ) -> list[str]:
     config = run["config"]
     model = config.get("model", {})
-    arm = CANDIDATE_ARMS[candidate_arm_id]
+    arm = _candidate_arm_spec(run)
+    if arm is None:
+        return ["elastic candidate has an unsupported comparison arm"]
     rejections = _base_rejections(
         run,
         role=role,
@@ -694,7 +775,14 @@ def _validate_elastic_run(
         rejections.append("elastic run does not expose the four-width portfolio")
     if model.get("variant") != arm["model_variant"]:
         rejections.append("elastic model variant does not match the comparison arm")
-    if arm["sampling_mode"] == "nested-random":
+    if arm["schema_version"] >= 4:
+        if model.get("variant") != "slicing":
+            rejections.append("schema-4 candidate is not slicing")
+        if arm["sampling_mode"] == "nested-random" and model.get(
+            "granularity_sampling_mode"
+        ) not in {"global", "fixed_global", "adaptive_global"}:
+            rejections.append("schema-4 candidate does not use a single global policy")
+    elif arm["sampling_mode"] == "nested-random":
         if model.get("granularity_sampling_mode") != "global":
             rejections.append("elastic run is not uniform-global")
         if model.get("global_sampling_schedule") != "random_with_replacement":
@@ -712,7 +800,9 @@ def _candidate_provenance_rejections(
 ) -> list[str]:
     """Compare provenance while honoring an arm's explicit diagnostic delta."""
 
-    arm = CANDIDATE_ARMS[candidate_arm_id]
+    arm = _candidate_arm_spec(run)
+    if arm is None:
+        return ["candidate arm is unsupported"]
     candidate_provenance = _run_provenance(run)
     allowed = set(arm.get("allowed_reference_provenance_differences", set()))
     mismatches = {
@@ -832,7 +922,9 @@ def _validate_confirmation_checkpoint(
         raise PortfolioAnalysisError(
             "Confirmation checkpoint manifest provenance mismatch"
         )
-    if CANDIDATE_ARMS[candidate_arm_id]["schema_version"] >= 3 and (
+    if candidate_arm_id in CANDIDATE_ARMS and CANDIDATE_ARMS[candidate_arm_id][
+        "schema_version"
+    ] >= 3 and (
         state.get("comparison_arm_id") != candidate_arm_id
         or state.get("elastic_budget_cap_tokens") != budget_tokens
     ):
@@ -899,6 +991,15 @@ def _validate_terminal_checkpoint(
         raise PortfolioAnalysisError(
             "Terminal checkpoint comparison-arm provenance mismatch"
         )
+    if _bundle_contract(run) and (
+        state.get("comparison_arm_id") != candidate_arm_id
+        or state.get("elastic_budget_cap_tokens") != budget_tokens
+        or state.get("candidate_policy_contract_hash")
+        != candidate_policy_contract_hash(run["config"])
+    ):
+        raise PortfolioAnalysisError(
+            "Terminal checkpoint schema-4 policy provenance mismatch"
+        )
     summary_state = summary.get("portfolio_catchup_state")
     if not isinstance(summary_state, Mapping) or any(
         state.get(field) != summary_state.get(field)
@@ -946,9 +1047,16 @@ def _portfolio_catchup_active(
     candidate_arm: str | None = None,
 ) -> dict[str, Any]:
     targets = _load_hashed_manifest(target_manifest_path, "standalone targets")
+    reference_budget_tokens = _integer(
+        targets.get("reference_budget_tokens"), "target reference budget"
+    )
+    aggregate_reference_budget_tokens = _integer(
+        targets.get("aggregate_reference_budget_tokens"),
+        "target aggregate reference budget",
+    )
     runs = [_load_run(path) for path in run_dirs]
     observed_arms = {_candidate_arm_id(run) for run in runs}
-    if None in observed_arms or any(arm not in CANDIDATE_ARMS for arm in observed_arms):
+    if None in observed_arms or any(_candidate_arm_spec(run) is None for run in runs):
         raise PortfolioAnalysisError(
             f"Elastic candidates have an unsupported comparison arm: {observed_arms}"
         )
@@ -960,16 +1068,21 @@ def _portfolio_catchup_active(
         candidate_arm_id = str(next(iter(observed_arms)))
     else:
         candidate_arm_id = str(candidate_arm)
-        if candidate_arm_id not in CANDIDATE_ARMS:
-            raise PortfolioAnalysisError(
-                f"Unknown candidate arm {candidate_arm_id!r}; "
-                f"expected one of {sorted(CANDIDATE_ARMS)}"
-            )
         if observed_arms != {candidate_arm_id}:
             raise PortfolioAnalysisError(
                 "Requested candidate arm differs from the saved run contracts"
             )
-    arm = CANDIDATE_ARMS[candidate_arm_id]
+    arm = _candidate_arm_spec(runs[0])
+    if arm is None:
+        raise PortfolioAnalysisError("Elastic candidates have no arm contract")
+    policy_hashes = {
+        spec["policy_contract_hash"]
+        for run in runs
+        for spec in [_candidate_arm_spec(run)]
+        if spec is not None and spec["schema_version"] >= 4
+    }
+    if len(policy_hashes) > 1:
+        raise PortfolioAnalysisError("Elastic candidates have mismatched policy contracts")
     candidate_budget_tokens = int(arm["budget_tokens"])
     post_hoc_diagnostic = bool(arm["post_hoc_diagnostic"])
     by_seed: dict[int, Mapping[str, Any]] = {}
@@ -1054,6 +1167,13 @@ def _portfolio_catchup_active(
             raise PortfolioAnalysisError(
                 "Candidate online catch-up state has the wrong comparison arm"
             )
+        if int(arm["schema_version"]) >= 4 and (
+            state.get("candidate_policy_contract_hash")
+            != candidate_policy_contract_hash(config)
+        ):
+            raise PortfolioAnalysisError(
+                "Candidate online catch-up state has the wrong policy contract"
+            )
         state_confirmation = state.get("confirmation_step")
         if (
             state_confirmation != offline["confirmation_step"]
@@ -1105,19 +1225,19 @@ def _portfolio_catchup_active(
             **offline,
             "confirmation_checkpoint_path": str(checkpoint) if checkpoint else None,
             "confirmation_checkpoint_sha256": checkpoint_sha,
-            "t_star_over_B": confirmation_tokens / REFERENCE_BUDGET_TOKENS
+            "t_star_over_B": confirmation_tokens / reference_budget_tokens
             if caught_up
             else None,
-            "t_star_over_4B": confirmation_tokens / AGGREGATE_REFERENCE_BUDGET_TOKENS
+            "t_star_over_4B": confirmation_tokens / aggregate_reference_budget_tokens
             if caught_up
             else None,
             "required_savings_fraction": 1.0
-            - confirmation_tokens / AGGREGATE_REFERENCE_BUDGET_TOKENS
+            - confirmation_tokens / aggregate_reference_budget_tokens
             if caught_up
             else None,
             "realized_full_run_tokens": candidate_budget_tokens,
             "realized_full_run_spend_over_4B": candidate_budget_tokens
-            / AGGREGATE_REFERENCE_BUDGET_TOKENS,
+            / aggregate_reference_budget_tokens,
             "final_per_width_deficits": observations[-1]["widths"],
             "validation_observations": observations,
         }
@@ -1213,11 +1333,11 @@ def _portfolio_catchup_active(
             ),
             "observed_seed_required_tokens": required_tokens,
             "observed_seed_t_star_over_B": required_tokens
-            / REFERENCE_BUDGET_TOKENS,
+            / reference_budget_tokens,
             "observed_seed_t_star_over_4B": required_tokens
-            / AGGREGATE_REFERENCE_BUDGET_TOKENS,
+            / aggregate_reference_budget_tokens,
             "observed_seed_required_savings_fraction": 1.0
-            - required_tokens / AGGREGATE_REFERENCE_BUDGET_TOKENS,
+            - required_tokens / aggregate_reference_budget_tokens,
             "mean_confirmation_tokens": statistics.fmean(confirmed_tokens),
             "median_confirmation_tokens": statistics.median(confirmed_tokens),
         }
@@ -1226,11 +1346,11 @@ def _portfolio_catchup_active(
         required_tokens = max(confirmed_tokens)
         budget_summary = {
             "cross_seed_required_tokens": required_tokens,
-            "cross_seed_t_star_over_B": required_tokens / REFERENCE_BUDGET_TOKENS,
+            "cross_seed_t_star_over_B": required_tokens / reference_budget_tokens,
             "cross_seed_t_star_over_4B": required_tokens
-            / AGGREGATE_REFERENCE_BUDGET_TOKENS,
+            / aggregate_reference_budget_tokens,
             "cross_seed_required_savings_fraction": 1.0
-            - required_tokens / AGGREGATE_REFERENCE_BUDGET_TOKENS,
+            - required_tokens / aggregate_reference_budget_tokens,
             "mean_confirmation_tokens": statistics.fmean(confirmed_tokens),
             "median_confirmation_tokens": statistics.median(confirmed_tokens),
         }
@@ -1266,14 +1386,20 @@ def _portfolio_catchup_active(
         "seed_coverage_complete": seed_coverage_complete,
         "post_hoc_diagnostic": post_hoc_diagnostic,
         "comparison_arm_id": candidate_arm_id,
+        "candidate_policy_contract": arm.get("policy_contract"),
+        "candidate_policy_contract_hash": arm.get("policy_contract_hash"),
+        "candidate_budget_multiplier": arm.get("policy_contract", {}).get(
+            "candidate_budget_multiplier"
+        ),
         "comparison_group_id": COMPARISON_GROUP_ID,
         "granularity_profile": _profile_name_for_group(COMPARISON_GROUP_ID),
         "granularities": list(GRANULARITIES),
-        "reference_budget_tokens": REFERENCE_BUDGET_TOKENS,
-        "aggregate_reference_budget_tokens": AGGREGATE_REFERENCE_BUDGET_TOKENS,
+        "reference_budget_tokens": reference_budget_tokens,
+        "reference_budget_multiplier": targets.get("reference_budget_multiplier", 1),
+        "aggregate_reference_budget_tokens": aggregate_reference_budget_tokens,
         "elastic_budget_cap_tokens": candidate_budget_tokens,
         "realized_full_run_spend_over_4B": candidate_budget_tokens
-        / AGGREGATE_REFERENCE_BUDGET_TOKENS,
+        / aggregate_reference_budget_tokens,
         "subnetwork_gradient_evaluations_per_optimizer_step": (
             len(GRANULARITIES)
             if arm["sampling_mode"] == "nested-all"
@@ -1356,6 +1482,9 @@ def _portfolio_catchup_active(
             )
         ),
         "comparison_arm_id": candidate_arm_id,
+        "candidate_policy_contract": arm.get("policy_contract"),
+        "candidate_policy_contract_hash": arm.get("policy_contract_hash"),
+        "candidate_budget_multiplier": contract.get("candidate_budget_multiplier"),
         "candidate_budget_tokens": candidate_budget_tokens,
         "comparison_group_id": COMPARISON_GROUP_ID,
         "granularity_profile": _profile_name_for_group(COMPARISON_GROUP_ID),
@@ -1443,6 +1572,94 @@ def portfolio_catchup(
             output_dir,
             candidate_arm=candidate_arm,
         )
+
+
+def portfolio_catchup_bundle(
+    run_dirs: Iterable[str | Path],
+    target_manifest_path: str | Path,
+    output_dir: str | Path,
+    candidate_arm: str | None = None,
+) -> dict[str, Any]:
+    """Analyze every completed candidate arm discovered in one bundle lane.
+
+    A candidate arm is an immutable property of its resolved config, not an
+    analysis-time input.  ``candidate_arm`` remains available only as a narrow
+    compatibility filter for callers that deliberately select one saved arm.
+    """
+
+    loaded_runs = [_load_run(path) for path in run_dirs]
+    completed_candidates = [
+        run
+        for run in loaded_runs
+        if _controlled_contract(run)[0] == "elastic_candidate"
+        and run["summary"].get("status") == "completed"
+    ]
+    if candidate_arm is not None:
+        completed_candidates = [
+            run
+            for run in completed_candidates
+            if _candidate_arm_id(run) == str(candidate_arm)
+        ]
+    if not completed_candidates:
+        qualifier = (
+            f" for comparison arm {candidate_arm!r}" if candidate_arm is not None else ""
+        )
+        raise PortfolioAnalysisError(
+            "No completed elastic candidate runs were discovered" + qualifier
+        )
+
+    invalid_runs = [
+        str(run["run_dir"])
+        for run in completed_candidates
+        if _candidate_arm_id(run) is None or _candidate_arm_spec(run) is None
+    ]
+    if invalid_runs:
+        raise PortfolioAnalysisError(
+            "Completed elastic candidates lack a supported saved comparison-arm "
+            "contract; they cannot be assigned to a portfolio variant after the "
+            f"fact: {invalid_runs}"
+        )
+
+    by_arm: dict[str, list[Mapping[str, Any]]] = {}
+    for run in completed_candidates:
+        arm_id = _candidate_arm_id(run)
+        assert arm_id is not None  # Checked above; keeps the grouping typed.
+        by_arm.setdefault(arm_id, []).append(run)
+
+    output = Path(output_dir).expanduser().resolve()
+    arm_reports: list[dict[str, Any]] = []
+    for arm_id, runs_for_arm in sorted(by_arm.items()):
+        arm_output = output / arm_id
+        report = portfolio_catchup(
+            [run["run_dir"] for run in runs_for_arm],
+            target_manifest_path,
+            arm_output,
+            candidate_arm=arm_id,
+        )
+        arm_reports.append(
+            {
+                "comparison_arm_id": arm_id,
+                "status": report["status"],
+                "observed_seeds": report["observed_seeds"],
+                "analysis_dir": str(arm_output),
+                "report_path": str(arm_output / "portfolio_catchup_report.json"),
+                "final_holdout_selection_manifest": str(
+                    arm_output / "final_holdout_selection_manifest.json"
+                ),
+            }
+        )
+    bundle_report = {
+        "schema_version": 1,
+        "analysis": "tinystories_instruct_portfolio_bundle_candidates",
+        "status": "completed_candidate_arms_analyzed",
+        "target_manifest_path": str(Path(target_manifest_path).expanduser().resolve()),
+        "completed_candidate_run_count": len(completed_candidates),
+        "discovered_run_count": len(loaded_runs),
+        "candidate_arms": arm_reports,
+    }
+    bundle_report["report_hash"] = stable_hash(bundle_report)
+    _write_json(output / "portfolio_candidate_bundle_report.json", bundle_report)
+    return bundle_report
 
 
 def _final_holdout_active(
@@ -1729,7 +1946,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             command.add_argument("--target-manifest", required=True)
             command.add_argument(
                 "--candidate-arm",
-                choices=sorted(CANDIDATE_ARMS),
                 help=(
                     "expected elastic arm; otherwise inferred from the saved "
                     "run contracts"
@@ -1757,7 +1973,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 granularity_profile=args.granularity_profile,
             )
         else:
-            result = portfolio_catchup(
+            result = portfolio_catchup_bundle(
                 run_dirs,
                 args.target_manifest,
                 args.output_dir,

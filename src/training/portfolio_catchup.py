@@ -11,7 +11,30 @@ from typing import Any, Mapping, Sequence
 from src.utils.reproducibility import stable_hash
 
 
-PORTFOLIO_SCHEMA_VERSIONS = {2, 3}
+PORTFOLIO_SCHEMA_VERSIONS = {2, 3, 4}
+
+_ADAPTIVE_CONTROLLER_NON_POLICY_FIELDS = {
+    # Resolved artifact provenance is attached after the initial continuation
+    # state is built.  It is validated elsewhere and must not change the
+    # sampling-policy identity during a run.
+    "controller_manifest_hash",
+    "controller_metrics_path",
+    "controller_summary_path",
+    "data_roles_manifest_hash",
+    "feature_schema",
+    "final_holdout_manifest_hash",
+    "optimizer_training_manifest_hash",
+    "ordinary_validation_manifest_hash",
+    "preset_registry_path",
+}
+_PANELGRAD_NON_POLICY_FIELDS = {
+    # These are resolved from the instantiated model or seed after the initial
+    # portfolio state is built.  The underlying geometry and RNG stream remain
+    # part of the immutable policy contract.
+    "controlled_support_counts",
+    "controlled_support_hash",
+    "sampling_seed",
+}
 
 
 class PortfolioCatchupError(ValueError):
@@ -36,6 +59,74 @@ def manifest_hash(payload: Mapping[str, Any]) -> str:
     body = copy.deepcopy(dict(payload))
     body.pop("manifest_hash", None)
     return stable_hash(body)
+
+
+def _immutable_sampling_policy_mapping(
+    value: Any,
+    *,
+    excluded_fields: set[str],
+    exclude_reset_seed: bool = False,
+) -> Any:
+    """Remove runtime and seed-local provenance from a resolved policy mapping."""
+
+    if not isinstance(value, Mapping):
+        return copy.deepcopy(value)
+    result = copy.deepcopy(dict(value))
+    for field in excluded_fields:
+        result.pop(field, None)
+    for role_field in ("controller_panel_contract", "final_holdout_contract"):
+        role = result.get(role_field)
+        if isinstance(role, Mapping):
+            role_contract = copy.deepcopy(dict(role))
+            role_contract.pop("manifest_hash", None)
+            result[role_field] = role_contract
+    if exclude_reset_seed and isinstance(result.get("reset"), Mapping):
+        reset = copy.deepcopy(dict(result["reset"]))
+        reset.pop("schedule_seed", None)
+        result["reset"] = reset
+    return result
+
+
+def candidate_policy_contract(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the seed-invariant policy identity for a portfolio candidate."""
+
+    controlled = config.get("controlled_experiment", {})
+    contract = controlled.get("portfolio_catchup", {})
+    run = config.get("run", {})
+    model = config.get("model", {})
+    training = config.get("training", {})
+    return {
+        "comparison_arm_id": controlled.get("comparison_arm_id"),
+        "sampling_mode": run.get("sampling_mode"),
+        "model_variant": model.get("variant"),
+        "correction_mode": model.get("correction_mode"),
+        "granularity_sampling_mode": model.get("granularity_sampling_mode"),
+        "global_sampling_schedule": model.get("global_sampling_schedule"),
+        "global_sampling_interval_steps": model.get(
+            "global_sampling_interval_steps"
+        ),
+        "global_sampling_distribution": copy.deepcopy(
+            model.get("global_sampling_distribution")
+        ),
+        "adaptive_sampler_strategy": model.get("adaptive_sampler_strategy"),
+        "adaptive_controller": _immutable_sampling_policy_mapping(
+            model.get("adaptive_controller"),
+            excluded_fields=_ADAPTIVE_CONTROLLER_NON_POLICY_FIELDS,
+            exclude_reset_seed=True,
+        ),
+        "panelgrad": _immutable_sampling_policy_mapping(
+            model.get("panelgrad"),
+            excluded_fields=_PANELGRAD_NON_POLICY_FIELDS,
+        ),
+        "optimizer_state_scope": training.get("optimizer", {}).get("state_scope"),
+        "candidate_budget_multiplier": contract.get("candidate_budget_multiplier"),
+        "reference_budget_multiplier": contract.get("reference_budget_multiplier"),
+        "elastic_budget_cap_tokens": contract.get("elastic_budget_cap_tokens"),
+    }
+
+
+def candidate_policy_contract_hash(config: Mapping[str, Any]) -> str:
+    return stable_hash(candidate_policy_contract(config))
 
 
 def load_immutable_manifest(
@@ -138,6 +229,8 @@ def build_portfolio_catchup_state(config: Mapping[str, Any]) -> dict[str, Any] |
         state["elastic_budget_cap_tokens"] = int(
             contract["elastic_budget_cap_tokens"]
         )
+    if schema_version >= 4:
+        state["candidate_policy_contract_hash"] = candidate_policy_contract_hash(config)
     state["contract_hash"] = _state_contract_hash(state)
     return state
 
@@ -347,7 +440,11 @@ def _state_contract_hash(state: Mapping[str, Any]) -> str:
             "required_consecutive_evaluations",
         )
     }
-    for key in ("comparison_arm_id", "elastic_budget_cap_tokens"):
+    for key in (
+        "comparison_arm_id",
+        "elastic_budget_cap_tokens",
+        "candidate_policy_contract_hash",
+    ):
         if key in state:
             fields[key] = state[key]
     return stable_hash(fields)

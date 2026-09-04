@@ -156,6 +156,7 @@ PORTFOLIO_EXTENSION_ARMS = {
         "model_variant": "concat",
     },
 }
+PORTFOLIO_BUNDLE_SCHEMA_VERSION = 4
 DEFAULT_FFN_MULTIPLIER = 4
 CONFIG_ROOT = Path(__file__).resolve().parent.parent.parent
 PRESET_REGISTRY_ROOT = CONFIG_ROOT / "configs" / "presets"
@@ -3659,10 +3660,11 @@ def _resolve_portfolio_controlled_experiment(config: dict[str, Any]) -> None:
     schema_version = raw_contract.get("schema_version", 2)
     legacy_reference = role == "standalone_reference" and schema_version == 1
     extension_candidate = role == "elastic_candidate" and schema_version == 3
-    if schema_version != 2 and not legacy_reference and not extension_candidate:
+    bundle_run = schema_version == PORTFOLIO_BUNDLE_SCHEMA_VERSION
+    if schema_version != 2 and not legacy_reference and not extension_candidate and not bundle_run:
         raise ConfigError(
             "Portfolio catch-up schema must be 2, legacy reference schema 1, "
-            "or extension candidate schema 3"
+            "extension candidate schema 3, or bundle schema 4"
         )
     comparison_arm_id = controlled.get("comparison_arm_id")
     if extension_candidate:
@@ -3670,6 +3672,11 @@ def _resolve_portfolio_controlled_experiment(config: dict[str, Any]) -> None:
             raise ConfigError(
                 "controlled_experiment.comparison_arm_id must be one of "
                 f"{sorted(PORTFOLIO_EXTENSION_ARMS)} for schema-3 candidates"
+            )
+    elif bundle_run and role == "elastic_candidate":
+        if not isinstance(comparison_arm_id, str) or not comparison_arm_id.strip():
+            raise ConfigError(
+                "schema-4 portfolio candidates require a non-empty comparison_arm_id"
             )
     elif comparison_arm_id not in (None, ""):
         raise ConfigError(
@@ -3716,7 +3723,30 @@ def _resolve_portfolio_controlled_experiment(config: dict[str, Any]) -> None:
         "save_confirmation_checkpoint": True,
         "stop_on_confirmation": False,
     }
+    if bundle_run:
+        defaults.update(
+            {
+                "budget_unit_tokens": PORTFOLIO_REFERENCE_BUDGET_TOKENS,
+                "reference_budget_multiplier": 1,
+                "candidate_budget_multiplier": 3,
+                "claim_tier": "diagnostic",
+            }
+        )
     contract = {**defaults, **raw_contract}
+    if bundle_run:
+        for name in ("reference_budget_multiplier", "candidate_budget_multiplier"):
+            value = contract.get(name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ConfigError(f"Portfolio {name} must be a positive integer")
+        contract["budget_unit_tokens"] = PORTFOLIO_REFERENCE_BUDGET_TOKENS
+        contract["reference_budget_tokens"] = (
+            contract["reference_budget_multiplier"]
+            * PORTFOLIO_REFERENCE_BUDGET_TOKENS
+        )
+        contract["elastic_budget_cap_tokens"] = (
+            contract["candidate_budget_multiplier"]
+            * PORTFOLIO_REFERENCE_BUDGET_TOKENS
+        )
     contract["target_manifest_path"] = _normalize_optional_string(
         contract.get("target_manifest_path")
     )
@@ -3739,6 +3769,13 @@ def _resolve_portfolio_controlled_experiment(config: dict[str, Any]) -> None:
         ):
             raise ConfigError(
                 "Portfolio target manifest uses a different granularity profile"
+            )
+        if bundle_run and (
+            target_manifest.get("reference_budget_tokens")
+            != contract["reference_budget_tokens"]
+        ):
+            raise ConfigError(
+                "Portfolio target manifest uses a different reference-budget lane"
             )
 
 
@@ -3789,10 +3826,11 @@ def _validate_portfolio_controlled_experiment(config: Mapping[str, Any]) -> None
     schema_version = contract.get("schema_version")
     legacy_reference = role == "standalone_reference" and schema_version == 1
     extension_candidate = role == "elastic_candidate" and schema_version == 3
-    if schema_version != 2 and not legacy_reference and not extension_candidate:
+    bundle_run = schema_version == PORTFOLIO_BUNDLE_SCHEMA_VERSION
+    if schema_version != 2 and not legacy_reference and not extension_candidate and not bundle_run:
         raise ConfigError(
             "Portfolio catch-up schema must be 2, legacy reference schema 1, "
-            "or extension candidate schema 3"
+            "extension candidate schema 3, or bundle schema 4"
         )
     comparison_arm_id = controlled.get("comparison_arm_id")
     if extension_candidate:
@@ -3801,6 +3839,9 @@ def _validate_portfolio_controlled_experiment(config: Mapping[str, Any]) -> None
                 "controlled_experiment.comparison_arm_id must identify a "
                 "supported schema-3 extension arm"
             )
+    elif bundle_run and role == "elastic_candidate":
+        if not isinstance(comparison_arm_id, str) or not comparison_arm_id.strip():
+            raise ConfigError("schema-4 portfolio candidates require comparison_arm_id")
     elif comparison_arm_id not in (None, ""):
         raise ConfigError(
             "controlled_experiment.comparison_arm_id is reserved for "
@@ -3831,6 +3872,39 @@ def _validate_portfolio_controlled_experiment(config: Mapping[str, Any]) -> None
         if extension_candidate
         else PORTFOLIO_ELASTIC_BUDGET_CAP_TOKENS
     )
+    if bundle_run:
+        for name in ("reference_budget_multiplier", "candidate_budget_multiplier"):
+            value = contract.get(name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ConfigError(f"Portfolio {name} must be a positive integer")
+        if contract.get("budget_unit_tokens") != PORTFOLIO_REFERENCE_BUDGET_TOKENS:
+            raise ConfigError("Portfolio budget_unit_tokens must equal the aligned B")
+        reference_budget = (
+            contract["reference_budget_multiplier"] * PORTFOLIO_REFERENCE_BUDGET_TOKENS
+        )
+        expected_elastic_budget = (
+            contract["candidate_budget_multiplier"] * PORTFOLIO_REFERENCE_BUDGET_TOKENS
+        )
+        bundle_exact = {
+            "reference_budget_tokens": reference_budget,
+            "elastic_budget_cap_tokens": expected_elastic_budget,
+            "aggregate_reference_count": PORTFOLIO_AGGREGATE_REFERENCE_COUNT,
+            "granularities": list(portfolio_granularities),
+            "perplexity_tolerance": 0.005,
+            "required_consecutive_evaluations": 5,
+            "save_confirmation_checkpoint": True,
+            "stop_on_confirmation": False,
+            "claim_tier": "diagnostic",
+        }
+        mismatches = {
+            field: (contract.get(field), expected)
+            for field, expected in bundle_exact.items()
+            if contract.get(field) != expected
+        }
+        if mismatches:
+            raise ConfigError(f"Portfolio bundle contract mismatch: {mismatches}")
+    else:
+        reference_budget = PORTFOLIO_REFERENCE_BUDGET_TOKENS
     exact_fields = {
         "reference_budget_tokens": PORTFOLIO_REFERENCE_BUDGET_TOKENS,
         "elastic_budget_cap_tokens": expected_elastic_budget,
@@ -3846,7 +3920,7 @@ def _validate_portfolio_controlled_experiment(config: Mapping[str, Any]) -> None
         for field, expected in exact_fields.items()
         if contract.get(field) != expected
     }
-    if mismatches:
+    if not bundle_run and mismatches:
         raise ConfigError(f"Portfolio catch-up fixed contract mismatch: {mismatches}")
 
     training = config.get("training", {})
@@ -3855,7 +3929,7 @@ def _validate_portfolio_controlled_experiment(config: Mapping[str, Any]) -> None
     expected_budget = (
         expected_elastic_budget
         if role == "elastic_candidate"
-        else PORTFOLIO_REFERENCE_BUDGET_TOKENS
+        else reference_budget
     )
     if training.get("token_budget") != expected_budget:
         raise ConfigError(
@@ -3889,9 +3963,14 @@ def _validate_portfolio_controlled_experiment(config: Mapping[str, Any]) -> None
             if extension_arm is not None
             else "nested-random"
         )
+        allowed_sampling_modes = (
+            {"nested-random", "nested-all"}
+            if bundle_run
+            else {expected_sampling_mode}
+        )
         if run.get("model_family") != "nested" or run.get(
             "sampling_mode"
-        ) != expected_sampling_mode:
+        ) not in allowed_sampling_modes:
             raise ConfigError(
                 "Elastic portfolio topology does not match its comparison arm"
             )
@@ -3905,7 +3984,16 @@ def _validate_portfolio_controlled_experiment(config: Mapping[str, Any]) -> None
             raise ConfigError(
                 "Elastic portfolio model variant does not match its comparison arm"
             )
-        if expected_sampling_mode == "nested-random":
+        if bundle_run:
+            if model.get("variant") != "slicing":
+                raise ConfigError("Schema-4 portfolio bundle arms require slicing")
+            if run.get("sampling_mode") == "nested-random" and model.get(
+                "granularity_sampling_mode"
+            ) not in {"global", "fixed_global", "adaptive_global"}:
+                raise ConfigError(
+                    "Schema-4 nested-random portfolio arms require a single global policy"
+                )
+        elif expected_sampling_mode == "nested-random":
             if model.get("granularity_sampling_mode") != "global":
                 raise ConfigError(
                     "Uniform-H1 portfolio arms require uniform global sampling"

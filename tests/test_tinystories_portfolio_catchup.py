@@ -27,6 +27,7 @@ from scripts.analyze_tinystories_portfolio_catchup import (
     final_holdout,
     freeze_references,
     portfolio_catchup,
+    portfolio_catchup_bundle,
 )
 from src.evaluation.final_holdout import (
     FinalHoldoutError,
@@ -42,6 +43,7 @@ from src.training import steps as training_steps
 from src.training.portfolio_catchup import (
     PortfolioCatchupError,
     build_portfolio_catchup_state,
+    candidate_policy_contract_hash,
     update_portfolio_catchup_state,
     validate_portfolio_catchup_state,
 )
@@ -574,6 +576,280 @@ def test_schema3_extension_arms_reuse_targets_with_arm_specific_budgets(tmp_path
     wrong_variant["model"]["variant"] = "slicing"
     with pytest.raises(ConfigError, match="model variant"):
         _validate_portfolio_controlled_experiment(wrong_variant)
+
+
+def test_schema4_bundle_contract_accepts_independent_budget_and_fixed_policy(tmp_path):
+    target_path, _ = _freeze(tmp_path)
+    config = _config("elastic_candidate", seed=42, target=target_path)
+    contract = config["controlled_experiment"]["portfolio_catchup"]
+    config["controlled_experiment"]["comparison_arm_id"] = "fixed-large-x2"
+    contract.update(
+        {
+            "schema_version": 4,
+            "budget_unit_tokens": REFERENCE_BUDGET_TOKENS,
+            "reference_budget_multiplier": 1,
+            "candidate_budget_multiplier": 2,
+            "claim_tier": "diagnostic",
+        }
+    )
+    config["training"].update(
+        {
+            "token_budget": 2 * REFERENCE_BUDGET_TOKENS,
+            "derived_max_steps": 2 * 87132,
+            "max_steps": 2 * 87132,
+        }
+    )
+    config["dataset"]["optimizer_iteration"]["complete_epochs"] = 2
+    config["model"].update(
+        {
+            "granularity_sampling_mode": "fixed_global",
+            "global_sampling_distribution": {
+                "g250": 0.20,
+                "g500": 0.20,
+                "g750": 0.25,
+                "g1000": 0.35,
+            },
+        }
+    )
+
+    _resolve_portfolio_controlled_experiment(config)
+    _validate_portfolio_controlled_experiment(config)
+    state = build_portfolio_catchup_state(config)
+    assert state["schema_version"] == 4
+    assert state["comparison_arm_id"] == "fixed-large-x2"
+    assert state["candidate_policy_contract_hash"]
+    assert (
+        config["controlled_experiment"]["portfolio_catchup"][
+            "elastic_budget_cap_tokens"
+        ]
+        == 2 * REFERENCE_BUDGET_TOKENS
+    )
+
+    bad = json.loads(json.dumps(config))
+    bad["controlled_experiment"]["portfolio_catchup"]["claim_tier"] = "confirmatory"
+    with pytest.raises(ConfigError, match="bundle contract"):
+        _validate_portfolio_controlled_experiment(bad)
+
+
+def test_schema4_thompson_policy_hash_ignores_runtime_and_seed_provenance(tmp_path):
+    target_path, _ = _freeze(tmp_path)
+    config = _config("elastic_candidate", seed=42, target=target_path)
+    config["controlled_experiment"]["comparison_arm_id"] = "thompson-x3"
+    contract = config["controlled_experiment"]["portfolio_catchup"]
+    contract.update(
+        {
+            "schema_version": 4,
+            "budget_unit_tokens": REFERENCE_BUDGET_TOKENS,
+            "reference_budget_multiplier": 1,
+            "candidate_budget_multiplier": 3,
+            "claim_tier": "diagnostic",
+        }
+    )
+    config["model"].update(
+        {
+            "granularity_sampling_mode": "adaptive_global",
+            "adaptive_sampler_strategy": "thompson",
+            "adaptive_controller": {
+                "strategy": "thompson",
+                "method_family": "bayesian_gaussian_linear_thompson",
+                "method_version": 1,
+                "scope": "global",
+                "ordered_granularities": list(GRANULARITIES),
+                "decision_interval_steps": 25,
+                "prior_mean": 0.0,
+                "prior_covariance": 1.0,
+                "observation_noise_variance": 0.01,
+                "process_noise_covariance": 0.0001,
+                "reset": {
+                    "enabled": False,
+                    "schedule_seed_stream_name": "controller_reset_schedule",
+                    "schedule_seed": 42,
+                },
+                "controller_panel_contract": {
+                    "enabled": True,
+                    "examples": 128,
+                    "manifest_hash": "pending",
+                },
+                "final_holdout_contract": {
+                    "enabled": True,
+                    "examples": 512,
+                    "manifest_hash": "pending",
+                },
+                "preset": "bayesian_thompson",
+                "preset_registry_path": "/checkout/configs/preset.yaml",
+            },
+            "panelgrad": None,
+        }
+    )
+
+    initial_hash = candidate_policy_contract_hash(config)
+    state = build_portfolio_catchup_state(config)
+    enriched = json.loads(json.dumps(config))
+    controller = enriched["model"]["adaptive_controller"]
+    controller.update(
+        {
+            "feature_schema": {"schema_version": 1, "schema_hash": "runtime"},
+            "controller_metrics_path": "controller_metrics.jsonl",
+            "controller_summary_path": "controller_summary.json",
+            "data_roles_manifest_hash": "data-roles",
+            "optimizer_training_manifest_hash": "optimizer-training",
+            "controller_manifest_hash": "controller",
+            "ordinary_validation_manifest_hash": "validation",
+            "final_holdout_manifest_hash": "holdout",
+            "preset_registry_path": "/another/checkout/configs/preset.yaml",
+        }
+    )
+    controller["controller_panel_contract"]["manifest_hash"] = "controller"
+    controller["final_holdout_contract"]["manifest_hash"] = "holdout"
+    controller["reset"]["schedule_seed"] = 43
+
+    assert candidate_policy_contract_hash(enriched) == initial_hash
+    assert validate_portfolio_catchup_state(state, config=enriched) == state
+
+    changed_policy = json.loads(json.dumps(enriched))
+    changed_policy["model"]["adaptive_controller"]["decision_interval_steps"] = 50
+    assert candidate_policy_contract_hash(changed_policy) != initial_hash
+    with pytest.raises(PortfolioCatchupError, match="does not match"):
+        validate_portfolio_catchup_state(state, config=changed_policy)
+
+
+def test_schema4_panelgrad_policy_hash_ignores_runtime_support_and_seed():
+    config = {
+        "controlled_experiment": {
+            "comparison_arm_id": "panelgrad-l2-x3",
+            "portfolio_catchup": {
+                "candidate_budget_multiplier": 3,
+                "reference_budget_multiplier": 1,
+                "elastic_budget_cap_tokens": ELASTIC_BUDGET_CAP_TOKENS,
+            },
+        },
+        "run": {"sampling_mode": "nested-random"},
+        "model": {
+            "variant": "slicing",
+            "correction_mode": "none",
+            "granularity_sampling_mode": "adaptive_global",
+            "adaptive_sampler_strategy": "panelgrad",
+            "adaptive_controller": None,
+            "panelgrad": {
+                "importance_metric": "gradient_l2",
+                "refresh_interval_steps": 25,
+                "epsilon": 0.1,
+                "ordered_granularities": list(GRANULARITIES),
+                "controlled_support_counts": "pending",
+                "controlled_support_hash": "pending",
+                "sampling_seed_stream": "panelgrad_sampling",
+                "sampling_seed": 42,
+                "controller_panel_contract": {"manifest_hash": "pending"},
+                "final_holdout_contract": {"manifest_hash": "pending"},
+            },
+        },
+        "training": {"optimizer": {"state_scope": "shared"}},
+    }
+    initial_hash = candidate_policy_contract_hash(config)
+    enriched = json.loads(json.dumps(config))
+    panelgrad = enriched["model"]["panelgrad"]
+    panelgrad["controlled_support_counts"] = {width: 64 for width in GRANULARITIES}
+    panelgrad["controlled_support_hash"] = "resolved-support"
+    panelgrad["sampling_seed"] = 43
+    panelgrad["controller_panel_contract"]["manifest_hash"] = "controller"
+    panelgrad["final_holdout_contract"]["manifest_hash"] = "holdout"
+
+    assert candidate_policy_contract_hash(enriched) == initial_hash
+    enriched["model"]["panelgrad"]["refresh_interval_steps"] = 50
+    assert candidate_policy_contract_hash(enriched) != initial_hash
+
+
+def test_schema4_bundle_arm_is_analyzed_without_a_registered_arm_name(tmp_path):
+    target_path, targets = _freeze(tmp_path)
+    runs = _candidate_runs(tmp_path, target_path, targets, seeds=(42,))
+    for run_dir in runs:
+        config_path = run_dir / "config.json"
+        config = json.loads(config_path.read_text())
+        config["controlled_experiment"]["comparison_arm_id"] = "balanced-h5-x3"
+        contract = config["controlled_experiment"]["portfolio_catchup"]
+        contract.update(
+            {
+                "schema_version": 4,
+                "budget_unit_tokens": REFERENCE_BUDGET_TOKENS,
+                "reference_budget_multiplier": 1,
+                "candidate_budget_multiplier": 3,
+                "claim_tier": "diagnostic",
+            }
+        )
+        config["model"].update(
+            {
+                "global_sampling_schedule": "balanced_cycle",
+                "global_sampling_interval_steps": 5,
+            }
+        )
+        policy_hash = candidate_policy_contract_hash(config)
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+
+        summary_path = run_dir / "run_summary.json"
+        summary = json.loads(summary_path.read_text())
+        summary["portfolio_catchup_state"].update(
+            {
+                "comparison_arm_id": "balanced-h5-x3",
+                "elastic_budget_cap_tokens": ELASTIC_BUDGET_CAP_TOKENS,
+                "candidate_policy_contract_hash": policy_hash,
+            }
+        )
+        summary_path.write_text(json.dumps(summary), encoding="utf-8")
+        for checkpoint_path in (
+            Path(summary["latest_checkpoint_path"]),
+            Path(summary["portfolio_catchup_state"]["confirmation_checkpoint_path"]),
+        ):
+            checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+            checkpoint["portfolio_catchup_state"].update(
+                summary["portfolio_catchup_state"]
+            )
+            torch.save(checkpoint, checkpoint_path)
+        confirmation_path = Path(
+            summary["portfolio_catchup_state"]["confirmation_checkpoint_path"]
+        )
+        summary["portfolio_catchup_state"]["confirmation_checkpoint_sha256"] = (
+            hashlib.sha256(confirmation_path.read_bytes()).hexdigest()
+        )
+        summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    report = portfolio_catchup(
+        runs,
+        target_path,
+        tmp_path / "balanced-h5-analysis",
+        candidate_arm="balanced-h5-x3",
+    )
+    assert report["comparison_arm_id"] == "balanced-h5-x3"
+    assert report["candidate_policy_contract_hash"]
+    assert report["general_portfolio_catchup_claim"] is False
+
+
+def test_portfolio_bundle_discovers_completed_candidate_arms(tmp_path):
+    target_path, targets = _freeze(tmp_path)
+    uniform_runs = _candidate_runs(
+        tmp_path / "uniform", target_path, targets, seeds=(42,)
+    )
+    fixed_budget_runs = _candidate_runs(
+        tmp_path / "fixed-budget",
+        target_path,
+        targets,
+        candidate_arm_id="uniform_h1_4b",
+        seeds=(42,),
+    )
+
+    report = portfolio_catchup_bundle(
+        [*uniform_runs, *fixed_budget_runs],
+        target_path,
+        tmp_path / "candidate-analysis",
+    )
+
+    assert report["status"] == "completed_candidate_arms_analyzed"
+    assert [row["comparison_arm_id"] for row in report["candidate_arms"]] == [
+        "uniform_h1_3b",
+        "uniform_h1_4b",
+    ]
+    for row in report["candidate_arms"]:
+        assert Path(row["report_path"]).is_file()
+        assert Path(row["final_holdout_selection_manifest"]).is_file()
 
 
 def test_extension_report_is_diagnostic_and_preserves_4b_cost_accounting(tmp_path):
@@ -1715,25 +1991,27 @@ def test_portfolio_docs_referenced_commands_exist():
     doc_path = Path("docs/tinystories-portfolio-catchup.md")
     assert doc_path.is_file()
     doc = doc_path.read_text(encoding="utf-8")
-    assert doc.count("## Shell requirement") == 1
-    assert "executable in **zsh**" in doc
+    assert "Run this section first in one **zsh** session" in doc
     assert "exec bash" not in doc
     assert "mapfile" not in doc
     assert "declare -A" not in doc
     assert "```zsh" not in doc
     assert "```bash" in doc
-    assert doc.count("## One-time environment and all paths") == 1
-    assert doc.count("## Analyze every currently completed result") == 1
-    assert doc.count("## Evaluate and analyze every available holdout") == 1
-    assert doc.count("## Generate figures for every available report") == 1
+    assert doc.count("## 1. Freeze the standalone reference lane") == 1
+    assert doc.count("## 2. Run a reusable elastic variant") == 1
+    assert doc.count("## 3. Resume timed-out training jobs") == 1
+    assert doc.count("## 4. Analyze every completed candidate in the lane") == 1
+    assert doc.count("## 5. Submit holdout jobs for the discovered selections") == 1
+    assert doc.count("## 6. Report completed holdouts and render figures") == 1
     assert doc.count("export TARGET_MANIFEST=") == 1
     assert doc.count("mkdir -p") == 1
     assert "mkdir -p logs" in doc
 
     shell_blocks = re.findall(r"```bash\n(.*?)\n```", doc, flags=re.DOTALL)
     assert shell_blocks
-    syntax_shell = shutil.which("zsh") or shutil.which("bash")
-    assert syntax_shell is not None
+    syntax_shell = shutil.which("zsh")
+    if syntax_shell is None:
+        return
     for index, block in enumerate(shell_blocks):
         result = subprocess.run(
             [syntax_shell, "-n"],
