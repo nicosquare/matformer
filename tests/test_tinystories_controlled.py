@@ -270,6 +270,172 @@ def test_tinystories_slurm_finalizes_multiple_runs_sequentially(tmp_path):
         ]
 
 
+def test_tinystories_slurm_finalizes_multiple_manifests_sequentially(tmp_path):
+    recorder = tmp_path / "python-recorder.sh"
+    argv_path = tmp_path / "argv.txt"
+    first_manifest = tmp_path / "arm-a" / "selection.json"
+    second_manifest = tmp_path / "arm-b" / "selection.json"
+    recorder.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '__CALL__\\n' >> \"$ARGV_FILE\"\n"
+        "printf '%s\\n' \"$@\" >> \"$ARGV_FILE\"\n",
+        encoding="utf-8",
+    )
+    recorder.chmod(0o755)
+    env = os.environ.copy()
+    env["ARGV_FILE"] = str(argv_path)
+
+    result = subprocess.run(
+        [
+            "bash",
+            "scripts/slurm_tinystories_controlled.sh",
+            "--python-bin",
+            str(recorder),
+            "--final-holdout-manifest",
+            str(first_manifest),
+            "--final-holdout-manifest",
+            str(second_manifest),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    calls = argv_path.read_text(encoding="utf-8").split("__CALL__\n")[1:]
+    assert len(calls) == 2
+    for call, manifest in zip(
+        calls, (first_manifest, second_manifest), strict=True
+    ):
+        assert call.splitlines() == [
+            "scripts/evaluate_final_holdout.py",
+            "--selection-manifest",
+            str(manifest),
+            "--device",
+            "cuda",
+            "--skip-existing",
+        ]
+    assert "Holdout manifest count: 2\n" in result.stdout
+    assert "Portfolio holdout bundle completed: 2 manifest(s) succeeded\n" in (
+        result.stdout
+    )
+
+
+def test_tinystories_slurm_continues_bundle_after_manifest_failure(tmp_path):
+    recorder = tmp_path / "python-recorder.sh"
+    argv_path = tmp_path / "argv.txt"
+    failed_manifest = tmp_path / "failed-arm" / "selection.json"
+    successful_manifest = tmp_path / "successful-arm" / "selection.json"
+    recorder.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '__CALL__\\n' >> \"$ARGV_FILE\"\n"
+        "printf '%s\\n' \"$@\" >> \"$ARGV_FILE\"\n"
+        "[[ \"$*\" == *failed-arm* ]] && exit 7\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    recorder.chmod(0o755)
+    env = os.environ.copy()
+    env["ARGV_FILE"] = str(argv_path)
+
+    result = subprocess.run(
+        [
+            "bash",
+            "scripts/slurm_tinystories_controlled.sh",
+            "--python-bin",
+            str(recorder),
+            "--final-holdout-manifest",
+            str(failed_manifest),
+            "--final-holdout-manifest",
+            str(successful_manifest),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    calls = argv_path.read_text(encoding="utf-8").split("__CALL__\n")[1:]
+    assert result.returncode == 1
+    assert len(calls) == 2
+    assert str(failed_manifest) in calls[0]
+    assert str(successful_manifest) in calls[1]
+    assert f"Portfolio holdout manifest completed: {successful_manifest}\n" in (
+        result.stdout
+    )
+    assert f"Portfolio holdout manifest failed (exit 7): {failed_manifest}\n" in (
+        result.stderr
+    )
+    assert "Portfolio holdout bundle completed with 1 failure(s):\n" in (
+        result.stderr
+    )
+
+
+def test_tinystories_slurm_logs_experiment_and_gpu_allocation(tmp_path):
+    recorder = tmp_path / "python-recorder.sh"
+    recorder.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    recorder.chmod(0o755)
+    fake_nvidia_smi = tmp_path / "nvidia-smi"
+    fake_nvidia_smi.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '0, GPU-test, NVIDIA Test GPU, 81920 MiB\\n'\n",
+        encoding="utf-8",
+    )
+    fake_nvidia_smi.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{tmp_path}:{env['PATH']}",
+            "SLURM_JOB_ID": "199999",
+            "SLURM_JOB_NAME": "portfolio-thompson-x4-s42",
+            "SLURM_JOB_PARTITION": "gpu",
+            "SLURM_JOB_QOS": "gpu-qos",
+            "SLURM_JOB_NODELIST": "gpu-node-01",
+            "SLURM_JOB_GPUS": "3",
+            "SLURM_GPUS_ON_NODE": "1",
+            "SLURM_GPUS_PER_NODE": "1",
+            "SLURM_CPUS_PER_TASK": "4",
+            "SLURM_MEM_PER_NODE": "16384",
+            "CUDA_VISIBLE_DEVICES": "0",
+        }
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            "scripts/slurm_tinystories_controlled.sh",
+            "--python-bin",
+            str(recorder),
+            "--config",
+            "configs/controlled_exps/tinystories_instruct_portfolio_catchup.yaml",
+            "--override",
+            "run.run_id=tiny-instruct-portfolio-thompson-x4-s42",
+            "--override",
+            "controlled_experiment.comparison_arm_id=thompson-x4",
+            "--override",
+            "controlled_experiment.comparison_role=elastic_candidate",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.startswith("=== TinyStories controlled job ===\n")
+    assert "Experiment id: thompson-x4\n" in result.stdout
+    assert "Run id: tiny-instruct-portfolio-thompson-x4-s42\n" in result.stdout
+    assert "Comparison role: elastic_candidate\n" in result.stdout
+    assert "Slurm job id: 199999\n" in result.stdout
+    assert "Slurm job name: portfolio-thompson-x4-s42\n" in result.stdout
+    assert "Node list: gpu-node-01\n" in result.stdout
+    assert "CUDA_VISIBLE_DEVICES: 0\n" in result.stdout
+    assert "SLURM_JOB_GPUS: 3\n" in result.stdout
+    assert "Detected GPU: 0, GPU-test, NVIDIA Test GPU, 81920 MiB\n" in result.stdout
+
+
 @pytest.mark.parametrize(
     ("profile", "dataset_name", "tokenizer_name", "corpus_name", "phase", "base"),
     [
