@@ -1,5 +1,6 @@
 import csv
 import errno
+import json
 from pathlib import Path
 
 import pytest
@@ -425,6 +426,69 @@ def test_metrics_journal_completion_summary_stays_bounded_and_checkpointable(tmp
     assert run_state["metrics_accumulator_state"]["training_row_count"] == 100
     assert run_state["metrics_accumulator_state"]["validation_row_count"] == 1
     assert sum(1 for _ in journal.iter_rows()) == 101
+
+
+def test_metrics_accumulator_optimizer_accounting_stays_bounded():
+    accumulator = metrics.StreamingMetricsAccumulator()
+    for step in range(1, 10_001):
+        action_id = f"global:{step // 512}:g500"
+        rows = []
+        for granularity in ("g250", "g500"):
+            row = _metric_row(step, granularity=granularity)
+            row.update(
+                {
+                    "optimizer_action_id": action_id,
+                    "optimizer_step_attempted": True,
+                    "optimizer_step_committed": True,
+                }
+            )
+            rows.append(row)
+        accumulator.update(rows)
+
+    state = accumulator.state_dict()
+    assert state["schema_version"] == 2
+    assert state["attempted_optimizer_steps"] == 10_000
+    assert state["committed_optimizer_steps"] == 10_000
+    assert state["failed_optimizer_attempts"] == 0
+    assert state["optimizer_last_attempt_key"].endswith("|optimizer_step=10000")
+    assert "optimizer_attempt_ids" not in state
+    assert len(json.dumps(state)) < 2_000
+
+    restored = metrics.StreamingMetricsAccumulator(state)
+    restored.update(rows)
+    assert restored.attempted_optimizer_steps == 10_000
+    next_row = _metric_row(10_001, granularity="g500")
+    next_row.update(
+        {
+            "optimizer_action_id": "global:19:g500",
+            "optimizer_step_attempted": True,
+            "optimizer_step_committed": True,
+        }
+    )
+    restored.update([next_row])
+    assert restored.attempted_optimizer_steps == 10_001
+    assert restored.committed_optimizer_steps == 10_001
+
+
+def test_metrics_accumulator_compacts_and_repairs_schema1_window_counts():
+    accumulator = metrics.StreamingMetricsAccumulator(
+        {
+            "schema_version": 1,
+            "last_training_step": 1_024,
+            "training_row_count": 1_024,
+            "optimizer_attempt_ids": ["global:0:g500", "global:1:g750"],
+            "attempted_optimizer_steps": 2,
+            "committed_optimizer_steps": 2,
+            "failed_optimizer_attempts": 0,
+        }
+    )
+
+    state = accumulator.state_dict()
+    assert state["schema_version"] == 2
+    assert state["attempted_optimizer_steps"] == 1_024
+    assert state["committed_optimizer_steps"] == 1_024
+    assert state["optimizer_last_attempt_key"] is None
+    assert "optimizer_attempt_ids" not in state
 
 
 def test_scaling_rows_never_treat_per_block_pattern_as_uniform_granularity(tmp_path):

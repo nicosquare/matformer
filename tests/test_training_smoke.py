@@ -1157,6 +1157,11 @@ def test_uniform_global_window_records_committed_metrics_heartbeats_and_summary(
     assert [row["global_sampling_interval_steps"] for row in rows] == ["2"] * 3
     assert [row["global_sampling_window_index"] for row in rows] == ["0", "0", "1"]
     assert [row["global_sampling_window_progress"] for row in rows] == ["1", "2", "1"]
+    assert len({row["optimizer_action_id"] for row in rows}) == 3
+    assert [
+        row["optimizer_action_id"].rsplit("|optimizer_step=", 1)[-1]
+        for row in rows
+    ] == ["1", "2", "3"]
 
     heartbeats = [
         event
@@ -1179,6 +1184,13 @@ def test_uniform_global_window_records_committed_metrics_heartbeats_and_summary(
     assert summary["continuation_state"]["global_sampling_state"] == summary[
         "global_sampling_state"
     ]
+    assert summary["attempted_optimizer_steps"] == 3
+    assert summary["committed_optimizer_steps"] == 3
+    accumulator_state = summary["metrics_accumulator_state"]
+    assert accumulator_state["schema_version"] == 2
+    assert accumulator_state["attempted_optimizer_steps"] == 3
+    assert accumulator_state["committed_optimizer_steps"] == 3
+    assert "optimizer_attempt_ids" not in accumulator_state
 
 
 def test_balanced_global_cycle_records_auditable_equal_exposure_artifacts(

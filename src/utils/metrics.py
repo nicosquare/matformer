@@ -482,9 +482,6 @@ class StreamingMetricsAccumulator:
             str(key): int(value)
             for key, value in dict(state.get("selection_counts", {})).items()
         }
-        self.optimizer_attempt_ids = {
-            str(value) for value in state.get("optimizer_attempt_ids", [])
-        }
         self.attempted_optimizer_steps = int(
             state.get("attempted_optimizer_steps", 0)
         )
@@ -494,6 +491,28 @@ class StreamingMetricsAccumulator:
         self.failed_optimizer_attempts = int(
             state.get("failed_optimizer_attempts", 0)
         )
+        last_attempt_key = state.get("optimizer_last_attempt_key")
+        self.optimizer_last_attempt_key = (
+            None if last_attempt_key in (None, "") else str(last_attempt_key)
+        )
+        # Schema 1 retained every action ID. Besides making the supposedly
+        # bounded accumulator grow without limit, held-action windows reused
+        # one ID for many optimizer steps and therefore undercounted commits.
+        # A durable checkpoint contains only successful rows through
+        # ``last_training_step``, so that step is the exact lower bound when
+        # migrating a failure-free historical accumulator.
+        if (
+            int(state.get("schema_version", 1)) < 2
+            and self.failed_optimizer_attempts == 0
+        ):
+            self.committed_optimizer_steps = max(
+                self.committed_optimizer_steps,
+                self.last_training_step,
+            )
+            self.attempted_optimizer_steps = max(
+                self.attempted_optimizer_steps,
+                self.committed_optimizer_steps,
+            )
         self.checkpoint_selection = copy_json_mapping(
             state.get("checkpoint_selection")
         )
@@ -503,11 +522,9 @@ class StreamingMetricsAccumulator:
             row = dict(raw_row)
             split = str(row.get("split") or "")
             if split == "train":
-                attempt_id = row.get("optimizer_action_id")
-                if attempt_id not in (None, ""):
-                    attempt_key = str(attempt_id)
-                    if attempt_key not in self.optimizer_attempt_ids:
-                        self.optimizer_attempt_ids.add(attempt_key)
+                attempt_key = _optimizer_attempt_key(row)
+                if attempt_key is not None:
+                    if attempt_key != self.optimizer_last_attempt_key:
                         attempted = _bool_value(row.get("optimizer_step_attempted"))
                         committed = _bool_value(row.get("optimizer_step_committed"))
                         if attempted:
@@ -516,6 +533,7 @@ class StreamingMetricsAccumulator:
                             self.committed_optimizer_steps += 1
                         elif attempted:
                             self.failed_optimizer_attempts += 1
+                        self.optimizer_last_attempt_key = attempt_key
                 self.training_row_count += 1
                 step = _int_value(row.get("step"))
                 if step >= self.last_training_step:
@@ -558,7 +576,7 @@ class StreamingMetricsAccumulator:
 
     def state_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "trailing_count": self.trailing_count,
             "last_training_step": self.last_training_step,
             "tokens_seen": self.tokens_seen,
@@ -571,7 +589,7 @@ class StreamingMetricsAccumulator:
                 self.trailing_validation_by_granularity
             ),
             "selection_counts": self.selection_counts,
-            "optimizer_attempt_ids": sorted(self.optimizer_attempt_ids),
+            "optimizer_last_attempt_key": self.optimizer_last_attempt_key,
             "attempted_optimizer_steps": self.attempted_optimizer_steps,
             "committed_optimizer_steps": self.committed_optimizer_steps,
             "failed_optimizer_attempts": self.failed_optimizer_attempts,
@@ -589,6 +607,18 @@ class StreamingMetricsAccumulator:
             key = (row.get("step"), row.get("granularity"), row.get("split"))
             unique[key] = row
         return sorted(unique.values(), key=lambda row: _int_value(row.get("step")))
+
+
+def _optimizer_attempt_key(row: Mapping[str, Any]) -> str | None:
+    """Return a step-scoped key while accepting historical window-scoped IDs."""
+
+    attempt_id = row.get("optimizer_action_id")
+    if attempt_id in (None, ""):
+        return None
+    key = str(attempt_id)
+    if "|optimizer_step=" not in key:
+        key = f"{key}|optimizer_step={_int_value(row.get('step'))}"
+    return key
 
 
 def copy_json_mapping(value: Any) -> dict[str, Any] | None:

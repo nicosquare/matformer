@@ -574,7 +574,10 @@ def _optimizer_action_id(action: Mapping[str, Any], pending_step: int) -> str:
     window = action.get("global_sampling_window_index", pending_step - 1)
     cycle = action.get("global_sampling_cycle_index", "-")
     position = action.get("global_sampling_cycle_position", "-")
-    return f"{schedule}:{window}:{cycle}:{position}:{selected}"
+    return (
+        f"{schedule}:{window}:{cycle}:{position}:{selected}"
+        f"|optimizer_step={pending_step}"
+    )
 
 
 def _optimizer_batch_provenance(
