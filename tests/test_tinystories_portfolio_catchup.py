@@ -924,6 +924,80 @@ def test_portfolio_figure_identity_comes_from_candidate_contract():
     assert identity["protocol_subtitle"].endswith("n=3 seeds")
 
 
+@pytest.mark.parametrize(
+    ("model_updates", "expected_short", "expected_protocol_fragment"),
+    [
+        (
+            {
+                "granularity_sampling_mode": "global",
+                "global_sampling_schedule": "random_with_replacement",
+                "global_sampling_interval_steps": 7,
+            },
+            "Elastic: Uniform H=7 (4B)",
+            "Nested-random, uniform H=7",
+        ),
+        (
+            {
+                "granularity_sampling_mode": "global",
+                "global_sampling_schedule": "balanced_cycle",
+                "global_sampling_interval_steps": 5,
+            },
+            "Elastic: Balanced H=5 (4B)",
+            "Nested-random, balanced H=5",
+        ),
+        (
+            {
+                "granularity_sampling_mode": "fixed_global",
+                "global_sampling_distribution": {
+                    "g250": 0.15,
+                    "g500": 0.20,
+                    "g750": 0.25,
+                    "g1000": 0.40,
+                },
+            },
+            "Elastic: Fixed 15/20/25/40% (4B)",
+            "fixed global 15/20/25/40% (g250/g500/g750/g1000)",
+        ),
+        (
+            {
+                "granularity_sampling_mode": "adaptive_global",
+                "adaptive_sampler_strategy": "thompson",
+                "adaptive_controller": {"decision_interval_steps": 25},
+            },
+            "Elastic: Thompson D=25 (4B)",
+            "Thompson global, decision interval=25",
+        ),
+        (
+            {
+                "granularity_sampling_mode": "adaptive_global",
+                "adaptive_sampler_strategy": "panelgrad",
+                "panelgrad": {
+                    "importance_metric": "gradient_l2",
+                    "refresh_interval_steps": 25,
+                },
+            },
+            "Elastic: PanelGrad Gradient L2 R=25 (4B)",
+            "PanelGrad Gradient L2, refresh=25",
+        ),
+    ],
+)
+def test_portfolio_figure_identity_labels_sampling_method(
+    model_updates, expected_short, expected_protocol_fragment
+):
+    report = {
+        "reference_budget_tokens": REFERENCE_BUDGET_TOKENS,
+        "elastic_budget_cap_tokens": AGGREGATE_REFERENCE_BUDGET_TOKENS,
+        "candidate_model_variant": "slicing",
+    }
+    config = _config("elastic_candidate", seed=42)
+    config["model"].update(model_updates)
+
+    identity = _portfolio_figure_identity(report, config, seed_count=1)
+
+    assert identity["elastic_short_label"] == expected_short
+    assert expected_protocol_fragment in identity["protocol_subtitle"]
+
+
 def test_nested_all_4b_reports_full_optimizer_and_subnetwork_exposure(tmp_path):
     target_path, targets = _freeze(tmp_path)
     runs = _candidate_runs(

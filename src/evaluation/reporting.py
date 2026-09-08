@@ -3024,14 +3024,83 @@ def _portfolio_figure_identity(
         sampling_label = "Nested-all"
         short_sampling_label = sampling_label
     elif sampling_mode == "nested-random":
-        if (
-            model.get("granularity_sampling_mode") == "global"
-            and model.get("global_sampling_schedule")
-            == "random_with_replacement"
-            and int(model.get("global_sampling_interval_steps", -1)) == 1
-        ):
-            sampling_label = "Nested-random, uniform H=1"
-            short_sampling_label = "Uniform H=1"
+        global_mode = str(model.get("granularity_sampling_mode", ""))
+        interval_steps = int(model.get("global_sampling_interval_steps", 1))
+        if global_mode == "global":
+            schedule = str(
+                model.get("global_sampling_schedule") or "random_with_replacement"
+            )
+            if schedule == "balanced_cycle":
+                sampling_label = f"Nested-random, balanced H={interval_steps}"
+                short_sampling_label = f"Balanced H={interval_steps}"
+            elif schedule == "random_with_replacement":
+                sampling_label = f"Nested-random, uniform H={interval_steps}"
+                short_sampling_label = f"Uniform H={interval_steps}"
+            else:
+                sampling_label = f"Nested-random, global {schedule}"
+                short_sampling_label = f"Global {schedule}"
+        elif global_mode == "fixed_global":
+            distribution = model.get("global_sampling_distribution", {})
+            granularities = [str(value) for value in model.get("granularities", [])]
+            if not isinstance(distribution, Mapping) or set(distribution) != set(
+                granularities
+            ):
+                raise ValueError("Portfolio fixed-global distribution is malformed")
+            weights = [float(distribution[width]) * 100.0 for width in granularities]
+            weight_label = "/".join(f"{weight:g}" for weight in weights) + "%"
+            sampling_label = (
+                f"Nested-random, fixed global {weight_label} "
+                f"({'/'.join(granularities)})"
+            )
+            short_sampling_label = f"Fixed {weight_label}"
+        elif global_mode == "adaptive_global":
+            strategy = str(model.get("adaptive_sampler_strategy", "adaptive"))
+            if strategy == "thompson":
+                controller = model.get("adaptive_controller", {})
+                decision_interval = (
+                    controller.get("decision_interval_steps")
+                    if isinstance(controller, Mapping)
+                    else None
+                )
+                interval_suffix = (
+                    f", decision interval={int(decision_interval)}"
+                    if decision_interval not in (None, "")
+                    else ""
+                )
+                sampling_label = f"Nested-random, Thompson global{interval_suffix}"
+                short_sampling_label = (
+                    f"Thompson D={int(decision_interval)}"
+                    if decision_interval not in (None, "")
+                    else "Thompson"
+                )
+            elif strategy == "panelgrad":
+                panelgrad = model.get("panelgrad", {})
+                metric = (
+                    str(panelgrad.get("importance_metric", "gradient_l2"))
+                    if isinstance(panelgrad, Mapping)
+                    else "gradient_l2"
+                )
+                refresh = (
+                    panelgrad.get("refresh_interval_steps")
+                    if isinstance(panelgrad, Mapping)
+                    else None
+                )
+                metric_label = metric.replace("_", " ").title()
+                refresh_suffix = (
+                    f", refresh={int(refresh)}" if refresh not in (None, "") else ""
+                )
+                sampling_label = (
+                    f"Nested-random, PanelGrad {metric_label}{refresh_suffix}"
+                )
+                short_sampling_label = (
+                    f"PanelGrad {metric_label} R={int(refresh)}"
+                    if refresh not in (None, "")
+                    else f"PanelGrad {metric_label}"
+                )
+            else:
+                strategy_label = strategy.replace("_", " ").title()
+                sampling_label = f"Nested-random, adaptive {strategy_label}"
+                short_sampling_label = strategy_label
         else:
             sampling_label = "Nested-random"
             short_sampling_label = sampling_label

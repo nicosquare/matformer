@@ -136,17 +136,24 @@ references or target manifest with candidates from another lane.
 ## 2. Run a reusable elastic variant
 
 Keep the setup shell open after reference freeze. Copy one variant selection
-and, if desired, a candidate budget multiplier:
+and, if desired, a candidate budget multiplier. Uniform and balanced runs take
+any positive hold interval `H`. Fixed runs take four probabilities in the same
+smallest-to-largest order as `$PORTFOLIO_WIDTHS`.
 
-| Variant | Sampling policy | Copy-paste selection |
-| --- | --- | --- |
-| Uniform H=1 | Uniform IID global width each update | `export VARIANT=uniform_h1` |
-| Balanced H=1 | Equal selected-width counts, one update at a time | `export VARIANT=balanced_h1` |
-| Balanced H=5 | Equal selected-width counts, five-update blocks | `export VARIANT=balanced_h5` |
-| Fixed large | Global `0.20/0.20/0.25/0.35`, smallest to largest | `export VARIANT=fixed_large` |
-| Thompson | Global Thompson, 25-update decisions, no reset | `export VARIANT=thompson` |
-| PanelGrad L2 | Global L2 PanelGrad, 25-step refresh | `export VARIANT=panelgrad_l2` |
-| Nested-all | All four widths per optimizer update | `export VARIANT=nested_all` |
+| Variant | Sampling policy | Copy-paste selection | Derived name example |
+| --- | --- | --- | --- |
+| Uniform H | Random global width held for `H` updates | `export VARIANT=uniform H=1` | `uniform_h1` |
+| Balanced H | Equal selected-width counts in `H`-update blocks | `export VARIANT=balanced H=5` | `balanced_h5` |
+| Fixed distribution | Configured global categorical distribution | `export VARIANT=fixed FIXED_DISTRIBUTION="0.20 0.20 0.25 0.35"` | `fixed_w20-20-25-35` |
+| Thompson | Global Thompson, 25-update decisions, no reset | `export VARIANT=thompson` | `thompson` |
+| PanelGrad L2 | Global L2 PanelGrad, 25-step refresh | `export VARIANT=panelgrad_l2` | `panelgrad_l2` |
+| Nested-all | All four widths per optimizer update | `export VARIANT=nested_all` | `nested_all` |
+
+For example, `export VARIANT=uniform H=7` derives `uniform_h7`; changing the
+fixed weights to `"0.15 0.20 0.25 0.40"` derives
+`fixed_w15-20-25-40`. Decimal percentages use `p` in the name, so a weight of
+`0.125` contributes `12p5`. Equivalent spellings such as `0.2` and `0.20`
+produce the same arm name.
 
 ```bash
 # Optional candidate horizon; default is X=3.
@@ -157,30 +164,115 @@ Define the selected arm and its reusable overrides. No policy-specific
 override is copied into an individual seed command.
 
 ```bash
-export VARIANT="${VARIANT:-uniform_h1}"
+export VARIANT="${VARIANT:-uniform}"
 export CANDIDATE_B_MULTIPLIER="${CANDIDATE_B_MULTIPLIER:-3}"
 [[ "$CANDIDATE_B_MULTIPLIER" == <-> && "$CANDIDATE_B_MULTIPLIER" -gt 0 ]]
 export CANDIDATE_TOKENS=$(( CANDIDATE_B_MULTIPLIER * B ))
 export CANDIDATE_STEPS=$(( CANDIDATE_TOKENS / 8192 ))
-export ARM_ID="${VARIANT}-x${CANDIDATE_B_MULTIPLIER}"
-export ARM_ROOT="$LANE_ROOT/candidates/$ARM_ID"
 export TARGET_HASH="$(jq -er '.manifest_hash' "$TARGET_MANIFEST")"
 
 case "$VARIANT" in
-  uniform_h1)
-    VARIANT_OVERRIDES=(--override run.sampling_mode=nested-random --override model.granularity_sampling_mode=global --override model.global_sampling_schedule=random_with_replacement --override model.global_sampling_interval_steps=1) ;;
-  balanced_h1|balanced_h5)
-    H="${VARIANT#balanced_h}"
-    VARIANT_OVERRIDES=(--override run.sampling_mode=nested-random --override model.granularity_sampling_mode=global --override model.global_sampling_schedule=balanced_cycle --override "model.global_sampling_interval_steps=$H") ;;
+  uniform|uniform_h<->)
+    if [[ "$VARIANT" == uniform_h* ]]; then
+      H="${VARIANT#uniform_h}"
+    else
+      H="${H:-1}"
+    fi
+    [[ "$H" == <-> && "$H" -gt 0 ]] || {
+      print -u2 'Uniform H must be a positive integer'
+      return 2
+    }
+    ARM_VARIANT_ID="uniform_h${H}"
+    VARIANT_OVERRIDES=(
+      --override run.sampling_mode=nested-random
+      --override model.granularity_sampling_mode=global
+      --override model.global_sampling_schedule=random_with_replacement
+      --override "model.global_sampling_interval_steps=$H"
+    )
+    ;;
+  balanced|balanced_h<->)
+    if [[ "$VARIANT" == balanced_h* ]]; then
+      H="${VARIANT#balanced_h}"
+    else
+      H="${H:-1}"
+    fi
+    [[ "$H" == <-> && "$H" -gt 0 ]] || {
+      print -u2 'Balanced H must be a positive integer'
+      return 2
+    }
+    ARM_VARIANT_ID="balanced_h${H}"
+    VARIANT_OVERRIDES=(
+      --override run.sampling_mode=nested-random
+      --override model.granularity_sampling_mode=global
+      --override model.global_sampling_schedule=balanced_cycle
+      --override "model.global_sampling_interval_steps=$H"
+    )
+    ;;
+  fixed)
+    [[ -n "${FIXED_DISTRIBUTION:-}" ]] || {
+      print -u2 'Set FIXED_DISTRIBUTION to four smallest-to-largest probabilities'
+      return 2
+    }
+    FIXED_WEIGHTS=(${=FIXED_DISTRIBUTION})
+    FIXED_TAG="$(
+      "$PYTHON_BIN" -c '
+from decimal import Decimal, InvalidOperation
+import sys
+
+expected = int(sys.argv[1])
+try:
+    weights = [Decimal(value) for value in sys.argv[2:]]
+except InvalidOperation:
+    raise SystemExit("Fixed probabilities must be decimal numbers")
+if len(weights) != expected:
+    raise SystemExit(f"Expected {expected} fixed probabilities; got {len(weights)}")
+if any(not value.is_finite() or value < 0 for value in weights):
+    raise SystemExit("Fixed probabilities must be finite and nonnegative")
+if abs(sum(weights) - Decimal("1")) > Decimal("1e-9"):
+    raise SystemExit(f"Fixed probabilities must sum to 1; got {sum(weights)}")
+if len(set(weights)) == 1:
+    raise SystemExit("A fixed distribution must be non-uniform; use VARIANT=uniform")
+
+def percentage_tag(value):
+    text = format(value * 100, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text.replace(".", "p")
+
+print("-".join(percentage_tag(value) for value in weights))
+' "${#PORTFOLIO_WIDTHS[@]}" "${FIXED_WEIGHTS[@]}"
+    )" || return 2
+    ARM_VARIANT_ID="fixed_w${FIXED_TAG}"
+    VARIANT_OVERRIDES=(
+      --override run.sampling_mode=nested-random
+      --override model.granularity_sampling_mode=fixed_global
+      --override "model.global_sampling_distribution={${PORTFOLIO_WIDTHS[1]}: ${FIXED_WEIGHTS[1]}, ${PORTFOLIO_WIDTHS[2]}: ${FIXED_WEIGHTS[2]}, ${PORTFOLIO_WIDTHS[3]}: ${FIXED_WEIGHTS[3]}, ${PORTFOLIO_WIDTHS[4]}: ${FIXED_WEIGHTS[4]}}"
+    )
+    ;;
   fixed_large)
-    VARIANT_OVERRIDES=(--override run.sampling_mode=nested-random --override model.granularity_sampling_mode=fixed_global --override "model.global_sampling_distribution={$PORTFOLIO_WIDTHS[1]: 0.20, $PORTFOLIO_WIDTHS[2]: 0.20, $PORTFOLIO_WIDTHS[3]: 0.25, $PORTFOLIO_WIDTHS[4]: 0.35}") ;;
+    ARM_VARIANT_ID=fixed_large
+    VARIANT_OVERRIDES=(
+      --override run.sampling_mode=nested-random
+      --override model.granularity_sampling_mode=fixed_global
+      --override "model.global_sampling_distribution={${PORTFOLIO_WIDTHS[1]}: 0.20, ${PORTFOLIO_WIDTHS[2]}: 0.20, ${PORTFOLIO_WIDTHS[3]}: 0.25, ${PORTFOLIO_WIDTHS[4]}: 0.35}"
+    )
+    ;;
   thompson)
+    ARM_VARIANT_ID=thompson
     VARIANT_OVERRIDES=(--override run.sampling_mode=nested-random --override model.granularity_sampling_mode=adaptive_global --override model.adaptive_sampler_strategy=thompson --override 'model.adaptive_controller={preset: bayesian_thompson, decision_interval_steps: 25, prior_mean: 0.0, prior_covariance: 1.0, observation_noise_variance: 0.01, process_noise_covariance: 0.0001, reset: {enabled: false}}') ;;
   panelgrad_l2)
+    ARM_VARIANT_ID=panelgrad_l2
     VARIANT_OVERRIDES=(--override run.sampling_mode=nested-random --override model.granularity_sampling_mode=adaptive_global --override model.adaptive_sampler_strategy=panelgrad --override "model.panelgrad={importance_metric: gradient_l2, refresh_interval_steps: 25, eta: 1.0e-12, temperature: 1.0, epsilon_schedule: {type: linear, start: 0.5, end: 0.1, duration_steps: $CANDIDATE_STEPS}}") ;;
-  nested_all) VARIANT_OVERRIDES=(--override run.sampling_mode=nested-all) ;;
+  nested_all)
+    ARM_VARIANT_ID=nested_all
+    VARIANT_OVERRIDES=(--override run.sampling_mode=nested-all)
+    ;;
   *) print -u2 "Unknown VARIANT=$VARIANT"; return 2 ;;
 esac
+
+export ARM_ID="${ARM_VARIANT_ID}-x${CANDIDATE_B_MULTIPLIER}"
+export ARM_ROOT="$LANE_ROOT/candidates/$ARM_ID"
+print -r -- "Resolved candidate arm: $ARM_ID"
 
 CANDIDATE_OVERRIDES=(
   --override run.model_family=nested
@@ -233,15 +325,21 @@ directory, and never submit a resume while its previous job is still running.
 
 After opening a new shell, restore the same optional geometry, reference
 multiplier, and node exclusions, then rerun the setup block from section 1. For
-an elastic candidate, also select the original `$VARIANT` and
-`$CANDIDATE_B_MULTIPLIER` and rerun the **Define the selected arm and its
-reusable overrides** block from section 2. These values must match the original
-run exactly. For example, job `199775` uses:
+an elastic candidate, also select the original `$VARIANT`, its `H` or fixed
+distribution when applicable, and `$CANDIDATE_B_MULTIPLIER`. Then rerun the
+**Define the selected arm and its reusable overrides** block from section 2.
+These values must match the original run exactly. For example, job `199775`
+uses:
 
 ```bash
-export VARIANT=uniform_h1
+export VARIANT=uniform H=1
 export CANDIDATE_B_MULTIPLIER=16
 ```
+
+The legacy selections `VARIANT=uniform_h1`, `VARIANT=balanced_h1`,
+`VARIANT=balanced_h5`, and `VARIANT=fixed_large` remain accepted so existing
+run directories keep their original IDs. New fixed distributions use the
+weight-derived name.
 
 ### Resume selected candidate seeds
 
@@ -382,13 +480,24 @@ manifests, the job exits nonzero if any failed. `--skip-existing` reuses valid
 results, so resubmitting after a failure or time limit evaluates only missing or
 stale checkpoints. Do not submit a second bundle holdout while one is active.
 
+The block first refreshes candidate discovery from the completed run tree. This
+is intentional: holdout evaluation consumes immutable checkpoint-selection
+manifests and does not infer checkpoint choices directly from run folders.
+
 The sequential job also prevents different arms from concurrently writing the
 same standalone-reference holdout result. Wait for it to finish before
 continuing to section 6.
 
 ```bash
+"$PYTHON_BIN" scripts/analyze_tinystories_portfolio_catchup.py portfolio-catchup \
+  --runs-root "$LANE_ROOT/candidates" --target-manifest "$TARGET_MANIFEST" \
+  --output-dir "$LANE_ROOT/analysis/candidates"
+
 HOLDOUT_SELECTIONS=("$LANE_ROOT"/analysis/candidates/*/final_holdout_selection_manifest.json(N))
 (( ${#HOLDOUT_SELECTIONS[@]} > 0 )) || { print -u2 'No completed candidate selections found'; return 1; }
+
+print -r -- "Submitting ${#HOLDOUT_SELECTIONS[@]} holdout manifest(s):"
+printf '  %s\n' "${HOLDOUT_SELECTIONS[@]}"
 
 HOLDOUT_MANIFEST_ARGS=()
 for HOLDOUT_SELECTION in "${HOLDOUT_SELECTIONS[@]}"; do
@@ -407,6 +516,12 @@ HOLDOUT_BUNDLE_SUBMIT=(
 )
 "${HOLDOUT_BUNDLE_SUBMIT[@]}"
 ```
+
+The manifest list is still a submission-time snapshot: `sbatch` cannot discover
+a candidate that finishes after the refresh and expansion of
+`HOLDOUT_SELECTIONS`. When more candidates finish, rerun this section. Existing
+valid holdout results are skipped, so the new bundle job evaluates only missing
+or stale selections.
 
 ## 6. Report completed holdouts and render figures
 
@@ -431,5 +546,5 @@ done
 
 A selected seed subset yields a provisional report. Restore
 `PORTFOLIO_SEEDS="42 43 44"` for the complete three-seed comparison. To add
-another candidate, select a different `$VARIANT` and/or `X`, rerun this section,
-and leave the frozen reference lane unchanged.
+another candidate, select a different `$VARIANT`, `H`, fixed distribution,
+and/or `X`, rerun this section, and leave the frozen reference lane unchanged.
