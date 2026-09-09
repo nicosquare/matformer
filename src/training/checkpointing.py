@@ -1035,6 +1035,12 @@ def maybe_write_latest_checkpoint(
     force: bool = False,
 ) -> None:
     assert_checkpoint_safe(run_state)
+    # A durable campaign terminal is immutable, including on failure/reentry.
+    if (config.get('optimizer_ownership_contract')
+            and int(step) == config['training']['max_steps']
+            and int(run_state.get('latest_checkpoint_step', 0)) == int(step)
+            and Path(run_state.get('latest_checkpoint_path') or Path(config['run']['output_dir']) / 'checkpoints/latest.pt').is_file()):
+        return
     pending_retry = bool(run_state.get("pending_latest_checkpoint", False))
     if not force and not pending_retry and not should_save_latest_checkpoint(config, step, reason):
         return
@@ -1780,6 +1786,8 @@ def _save_model_checkpoint_rank_zero(
         }
 
     if config.get('optimizer_ownership_contract'):
+        from src.training.optimizer_state import measure_optimizer_storage
+        payload['optimizer_storage'] = measure_optimizer_storage(optimizer, step=run_state['last_completed_step'])
         payload.update(_ownership_identity(config, model))
         for key in OWNERSHIP_STATE_FIELDS:
             payload[key] = copy.deepcopy(run_state.get(key))

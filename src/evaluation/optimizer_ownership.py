@@ -1071,3 +1071,244 @@ def validate_materialized_config(config):
                 if k not in {"topology_hash", "schema_version"}
             }
         _require_equal(values, expected, f"optimizer_ownership_contract.{field}")
+
+
+def inspect_run_observations(run_dir, summary):
+    """Stream saved commits and clipping records, validating their accounting."""
+    import hashlib
+    import json
+    import math
+    from pathlib import Path
+    import numpy as np
+    from src.utils.config import ConfigError
+
+    root = Path(run_dir)
+    audit = summary['optimizer_ownership']
+    if (summary.get('optimizer_ownership_schema_version') != 1 or audit.get('schema_version') != 1
+            or stable_hash(audit['contract']) != audit['contract_hash']
+            or summary.get('run_id') != audit['run_id']):
+        raise ConfigError('Run summary schema/contract identity mismatch')
+    scope = audit['state_scope']
+    counts = dict.fromkeys(audit['width_selection_counts'], 0)
+    action_digest = hashlib.sha256()
+    epoch_digests = {}
+    clipping_summary = {}
+    clip_path = root / audit['clipping_path'] if audit.get('clipping_path') else None
+    clip_stream = clip_path.open() if clip_path else None
+    last = None
+    try:
+        with (root / audit['trace_path']).open() as stream:
+            for ordinal, line in enumerate(stream, 1):
+                row = json.loads(line)
+                for key in ('run_id', 'campaign_id', 'arm_id', 'contract_hash'):
+                    if row.get(key) != audit.get(key):
+                        raise ConfigError(f'Trace provenance mismatch: {key}')
+                if row.get('schema_version') != 1 or row['step'] != ordinal or row['action_ordinal'] != ordinal or row['scheduler_position'] != ordinal:
+                    raise ConfigError('Trace committed step/action/clock mismatch')
+                width = row['width']
+                if width not in counts:
+                    raise ConfigError('Trace selected width mismatch')
+                counts[width] += 1
+                quarters = {f'O-{q}': sum(counts.get(w, 0) for w in WIDTH_LABELS[i:]) for i, q in enumerate('ABCD')} if len(counts) == 4 else {}
+                calls = {**quarters, 'O-common': ordinal} if scope == 'per_ffn_block' else counts if scope == 'per_granularity' else {'shared': ordinal}
+                active = list(OWNER_IDS[:WIDTH_LABELS.index(width) + 1]) + ['O-common'] if scope == 'per_ffn_block' else [width] if scope == 'per_granularity' else ['shared']
+                if row['width_selection_counts'] != counts or row['quarter_activation_counts'] != quarters or row['owner_call_counts'] != calls or row['active_owners'] != active:
+                    raise ConfigError('Trace exposure/owner accounting mismatch')
+                if row['packed_tokens'] != audit['packed_tokens_per_update'] or row['tokens_seen'] != ordinal * audit['packed_tokens_per_update']:
+                    raise ConfigError('Trace packed tokens mismatch')
+                encoded_action = (width + '\n').encode('ascii')
+                if hashlib.sha256(encoded_action).hexdigest() != row['action_sha256']:
+                    raise ConfigError('Trace action digest mismatch')
+                action_digest.update(encoded_action)
+                sample_ids = row.get('sample_ids')
+                if sample_ids is not None:
+                    encoded = np.asarray(sample_ids, dtype='<u8').tobytes()
+                    if hashlib.sha256(encoded).hexdigest() != row['batch_sha256']:
+                        raise ConfigError('Trace batch digest mismatch')
+                    provenance = row['batch_provenance']
+                    epoch = provenance['epoch_index']
+                    epoch_digests.setdefault(epoch, hashlib.sha256()).update(encoded)
+                    sampler = audit.get('sampler_state')
+                    if sampler:
+                        batch_size = sampler['distributed_batch_geometry']['global_batch_size']
+                        cursor = ordinal * batch_size
+                        expected_epoch, within = divmod(cursor, sampler['epoch_sample_count'])
+                        if (len(sample_ids) != batch_size or provenance['total_cursor'] != cursor - batch_size
+                                or row['epoch'] != expected_epoch or row['batch_index'] != within // batch_size
+                                or provenance['fixed_epoch_set_hash'] != sampler['fixed_epoch_set_hash']
+                                or provenance['permutation_hash'] != sampler['permutation_hash']):
+                            raise ConfigError('Trace epoch/cursor/order mismatch')
+                elif audit.get('sampler_state'):
+                    raise ConfigError('Packed trace sample identities are missing')
+                if clip_stream is not None:
+                    clip_line = clip_stream.readline()
+                    if not clip_line:
+                        raise ConfigError('Missing committed clipping observation')
+                    clip = json.loads(clip_line)
+                    if (clip.get('schema_version') != 1 or clip['step'] != ordinal or clip['width'] != width
+                            or any(clip.get(k) != row[k] for k in ('run_id', 'contract_hash', 'campaign_id', 'arm_id', 'attempt_id'))):
+                        raise ConfigError('Clipping provenance/trace mismatch')
+                    _accumulate_clipping(clipping_summary, clip, audit['clipping_contract'])
+                last = row
+        if clip_stream is not None and clip_stream.read().strip():
+            raise ConfigError('Extra non-committed clipping observations')
+    finally:
+        if clip_stream is not None:
+            clip_stream.close()
+    if last is None or last['step'] != audit['steps']:
+        raise ConfigError('Trace/summary committed step mismatch')
+    for key in ('tokens_seen', 'epoch', 'batch_index', 'scheduler_position', 'width_selection_counts', 'quarter_activation_counts', 'owner_call_counts'):
+        if last[key] != audit[key]:
+            raise ConfigError(f'Trace/summary mismatch: {key}')
+    if not audit['accounting_reconciled']:
+        raise ConfigError('Summary accounting is not reconciled')
+    for groups in clipping_summary.values():
+        for row in groups.values():
+            n = row['active_observations']
+            row['frequency'] = row['clipped_observations'] / n if n else None
+            pre, post = row.pop('sum_pre_norm'), row.pop('sum_post_norm')
+            row['mean_pre_norm'] = pre / n if n else None
+            row['mean_post_norm'] = post / n if n else None
+    return {'clipping_by_width': clipping_summary, 'action_sha256': action_digest.hexdigest(),
+            'epoch_order_sha256': {str(k): v.hexdigest() for k, v in epoch_digests.items()},
+            'committed_updates': last['step']}
+
+
+def _accumulate_clipping(summary, clip, contract):
+    import math
+    from src.utils.config import ConfigError
+
+    width = clip['width']
+    if clip['mode'] != contract['mode'] or set(clip['groups']) != set(OWNER_IDS):
+        raise ConfigError('Clipping mode/group topology mismatch')
+    groups = summary.setdefault(width, {})
+    active_owners = (*OWNER_IDS[:WIDTH_LABELS.index(width) + 1], 'O-common')
+    for name in OWNER_IDS:
+        item = clip['groups'][name]
+        active = name in active_owners
+        if item['active'] is not active:
+            raise ConfigError('Clipping active flag mismatch')
+        aggregate = groups.setdefault(name, {'active_observations': 0, 'clipped_observations': 0, 'sum_pre_norm': 0., 'sum_post_norm': 0.})
+        if not active:
+            if any(item[key] is not None for key in ('pre_norm', 'post_norm', 'coefficient', 'max_norm')):
+                raise ConfigError('Inactive clipping values must be null')
+            continue
+        pre, post, coefficient = (item[k] for k in ('pre_norm', 'post_norm', 'coefficient'))
+        if any(not math.isfinite(v) or v < 0 for v in (pre, post, coefficient)) or coefficient > 1:
+            raise ConfigError('Invalid clipping norm/coefficient')
+        cap = contract['owner_max_norms'][name] if clip['mode'] == 'per_owner' else contract['max_norm']
+        expected = min(1., cap / ((pre if clip['mode'] == 'per_owner' else clip['combined_pre_norm']) + 1e-6))
+        if (not math.isclose(coefficient, expected, rel_tol=2e-5, abs_tol=1e-7)
+                or not math.isclose(post, pre * coefficient, rel_tol=2e-5, abs_tol=1e-7)):
+            raise ConfigError('Clipping applied coefficient/norm mismatch')
+        if clip['mode'] == 'per_owner':
+            if item['max_norm'] != cap or clip['global_coefficient'] is not None or clip['global_max_norm'] is not None:
+                raise ConfigError('Per-owner clipping cap/global rescale mismatch')
+        elif item['max_norm'] is not None or coefficient != clip['global_coefficient'] or clip['global_max_norm'] != cap:
+            raise ConfigError('Global clipping coefficient/cap mismatch')
+        aggregate['active_observations'] += 1
+        aggregate['clipped_observations'] += coefficient < 1
+        aggregate['sum_pre_norm'] += pre
+        aggregate['sum_post_norm'] += post
+    for field in ('pre_norm', 'post_norm'):
+        expected = math.sqrt(sum(item[field] ** 2 for item in clip['groups'].values() if item['active']))
+        if not math.isclose(expected, clip['combined_' + field], rel_tol=2e-5, abs_tol=1e-7):
+            raise ConfigError('Combined clipping norm mismatch')
+
+
+def report_run_artifacts(run_dir, output_dir):
+    """Render one run from saved ordinary metrics and audited trace sidecars."""
+    import csv
+    import json
+    import math
+    from pathlib import Path
+    from matplotlib.figure import Figure
+    from src.utils.config import ConfigError
+    from src.training.run import ResourceAttemptLedger
+
+    root, destination = Path(run_dir), Path(output_dir)
+    summary = json.loads((root / 'run_summary.json').read_text())
+    audit = summary['optimizer_ownership']
+    observations = inspect_run_observations(root, summary)
+    trajectories = {}
+    with (root / 'metrics.csv').open() as stream:
+        for row in csv.DictReader(stream):
+            if row['split'] not in ('train', 'validation'):
+                continue
+            if row.get('optimizer_step_committed', '').lower() == 'false':
+                continue
+            step, loss, perplexity = int(row['step']), float(row['loss']), float(row['perplexity'])
+            if step > audit['steps'] or not math.isfinite(loss) or not math.isfinite(perplexity):
+                raise ConfigError('Non-durable or nonfinite metric trajectory')
+            series = trajectories.setdefault(row['split'] + ':' + row['granularity'], {'step': [], 'loss': [], 'perplexity': []})
+            series['step'].append(step); series['loss'].append(loss); series['perplexity'].append(perplexity)
+    resources = dict(audit['resources'])
+    if (root / 'resource_attempts.json').exists():
+        ledger = ResourceAttemptLedger(root, run_id=audit['run_id'])
+        resources.update(ledger.summary())
+        seconds = resources['elapsed_seconds']
+        resources['useful_committed_tokens_per_second'] = audit['tokens_seen'] / seconds if seconds else None
+        resources['attempted_tokens_per_second'] = resources['attempted_steps'] * audit['packed_tokens_per_update'] / seconds if seconds else None
+    label = 'complete measurements' if resources['measurement_complete'] else 'incomplete measurements'
+    report = {'schema_version': 1, 'run_id': audit['run_id'], 'arm_id': audit['arm_id'],
+              'contract_hash': audit['contract_hash'], 'trajectories': trajectories,
+              'resources': resources, 'resource_label': label, **observations,
+              'expected_exposure': audit['expected_exposure'], 'figures': []}
+    destination.mkdir(parents=True, exist_ok=True)
+    for metric in ('loss', 'perplexity'):
+        figure = Figure(figsize=(8, 5)); ax = figure.subplots()
+        for name, series in trajectories.items():
+            ax.plot(series['step'], series[metric], label=name,
+                    marker='o' if name.startswith('validation:') else None, markersize=3)
+        ax.set(xlabel='Committed optimizer updates', ylabel=metric.capitalize(), title=f"{audit['arm_id']} — ordinary validation and training")
+        if trajectories: ax.legend()
+        figure.tight_layout()
+        for suffix in ('png', 'pdf'):
+            path = destination / f'{audit["arm_id"]}_{metric}_trajectory.{suffix}'
+            figure.savefig(path); report['figures'].append(str(path.resolve()))
+    figure = Figure(figsize=(12, 8)); axes = figure.subplots(2, 3).flat
+    owners = audit['storage']['owners']
+    owner_bytes = [sum(r['bytes'] for r in audit['storage']['components'] if r['owner_id'] == owner['owner_id']) for owner in owners]
+    axes[0].bar([r['owner_id'] for r in owners], owner_bytes)
+    axes[0].set(title='Allocated persistent optimizer tensors', ylabel='Bytes')
+    axes[0].tick_params(axis='x', labelrotation=25)
+    widths = [w for w in WIDTH_LABELS if w in audit['width_selection_counts']]
+    axes[1].bar(widths, [audit['width_selection_counts'][w] for w in widths], label='Realized selections')
+    expectations = audit['expected_exposure']['width_selections']
+    if expectations: axes[1].scatter(widths, [expectations[w] for w in widths], marker='_', color='black', label='Uniform expectation')
+    axes[1].set(title='Width exposure', ylabel='Committed selections'); axes[1].legend()
+    peaks = [(k, resources.get(k)) for k in ('peak_allocated_bytes', 'peak_reserved_bytes') if resources.get(k) is not None]
+    if peaks: axes[2].bar([k.replace('peak_', '').replace('_bytes', '') for k, _ in peaks], [v for _, v in peaks])
+    else:
+        axes[2].text(.5, .5, 'GPU peaks unavailable', ha='center', transform=axes[2].transAxes)
+        axes[2].set_axis_off()
+    axes[2].set(title='CUDA allocator peaks', ylabel='Bytes')
+    quarters = audit['quarter_activation_counts']
+    if quarters:
+        axes[3].bar(list(quarters), list(quarters.values()), label='Realized activations')
+        expected = audit['expected_exposure']['quarter_activations']
+        axes[3].scatter(list(quarters), [expected[q] for q in quarters], marker='_', color='black', label='Uniform expectation')
+        axes[3].legend()
+    else:
+        axes[3].text(.5, .5, 'Dense standalone', ha='center', transform=axes[3].transAxes)
+        axes[3].set_axis_off()
+    axes[3].set(title='Quarter activation', ylabel='Committed activations')
+    if resources['elapsed_seconds'] is not None:
+        axes[4].bar(['All attempts'], [resources['elapsed_seconds']])
+    else:
+        axes[4].text(.5, .5, 'Time unavailable', ha='center', transform=axes[4].transAxes)
+        axes[4].set_axis_off()
+    axes[4].set(title='Cumulative runtime', ylabel='Seconds (queue downtime excluded)')
+    rates = [resources.get(k) for k in ('useful_committed_tokens_per_second', 'attempted_tokens_per_second')]
+    if all(value is not None for value in rates):
+        axes[5].bar(['Useful committed', 'Attempted'], rates)
+    else:
+        axes[5].text(.5, .5, 'Throughput unavailable', ha='center', transform=axes[5].transAxes)
+        axes[5].set_axis_off()
+    axes[5].set(title='Throughput including replay costs', ylabel='Packed tokens / second')
+    figure.suptitle(f"{audit['arm_id']} resources — {label}"); figure.tight_layout()
+    for suffix in ('png', 'pdf'):
+        path = destination / f'{audit["arm_id"]}_resources.{suffix}'
+        figure.savefig(path); report['figures'].append(str(path.resolve()))
+    write_json_artifact(destination / 'run_diagnostics.json', report)
+    return report

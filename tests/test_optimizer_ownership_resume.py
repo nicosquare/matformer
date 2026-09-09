@@ -19,6 +19,8 @@ ARMS = ('ST-g250', 'ST-g500', 'ST-g750', 'ST-g1000', 'S1', 'S2', 'C1', 'C2', 'C3
 def fixture(tmp_path, arm='C3'):
     scope = 'per_ffn_block' if arm == 'C3' else 'per_granularity' if arm in ('S2', 'C2') else 'shared'
     config, model, opt, clock, batches, state = runtime_fixture(tmp_path, scope=scope)
+    from src.utils.reproducibility import configure_strict_determinism
+    configure_strict_determinism(config)
     if arm.startswith('S'):
         config['model']['variant'] = 'slicing'
         model = build_model(config)
@@ -316,7 +318,7 @@ def test_runtime_resource_ledger_checkpoint_and_completed_reentry(tmp_path, monk
     def dataloaders(config, *args, **kwargs):
         config['_validation_manifest'] = {'fixture': True}
         config['validation_manifest_hash'] = 'fixture-validation'
-        return bundle[4], []
+        return bundle[4], bundle[4]
     monkeypatch.setattr(run.training_data, 'build_dataloaders', dataloaders)
     run.run_training(config, model=model, tokenizer=object(), tokenized_dataset=[{}], device='cpu')
     ledger = run.ResourceAttemptLedger(config['run']['output_dir'], run_id=config['run']['run_id'])
@@ -388,7 +390,7 @@ def test_trainer_failure_records_cost_and_preserves_last_durable_checkpoint(tmp_
     def dataloaders(config, *args, **kwargs):
         config['_validation_manifest'] = {'fixture': True}
         config['validation_manifest_hash'] = 'fixture-validation'
-        return bundle[4], []
+        return bundle[4], bundle[4]
     monkeypatch.setattr(run.training_data, 'build_dataloaders', dataloaders)
     builder = run.training_steps.build_optimizer_and_scheduler
     hashes = []
@@ -421,3 +423,131 @@ def test_trainer_failure_records_cost_and_preserves_last_durable_checkpoint(tmp_
     path = ledger.path.parent / 'checkpoints/latest.pt'
     assert hashlib.sha256(path.read_bytes()).hexdigest() == hashes[0]
     assert torch.load(path, weights_only=False)['step'] == 1
+
+
+@pytest.mark.parametrize('arm', ARMS)
+def test_terminal_validation_counts_hash_and_idempotent_completion(tmp_path, arm, monkeypatch):
+    from src.training.run import complete_ownership_terminal
+    from src.utils.model_size import model_parameter_counts
+    bundle = packed_fixture(tmp_path, arm)
+    train(bundle)
+    config, model, opt, clock, batches, state = bundle
+    config['validation_manifest_hash'] = 'ordinary-fixture'
+    config['run']['continuation']['enabled'] = True
+    evaluation = [{'input_ids': torch.arange(1, 9).reshape(1, 8), 'labels': torch.tensor([[1, 2, -100, -100, 5, 6, 7, 8]])},
+                  {'input_ids': torch.arange(2, 10).reshape(1, 8), 'labels': torch.arange(2, 10).reshape(1, 8)}]
+    from src.evaluation.validation import evaluate_validation_loss
+    labels = [arm[3:]] if arm.startswith('ST-') else WIDTHS
+    local = None if arm.startswith('ST-') else labels[0]
+    losses = [evaluate_validation_loss(model, [batch], 'cpu', granularity=local)['loss'] for batch in evaluation]
+    expected_loss = (losses[0] * 5 + losses[1] * 7) / 12
+    result = complete_ownership_terminal(config, model, opt, clock, state, evaluation, torch.device('cpu'))
+    assert result['schema_version'] == 1 and result['evaluation_role'] == 'ordinary_validation'
+    assert result['evaluation_target_tokens'] == 12 and result['evaluation_examples'] == 2
+    assert [row['width'] for row in result['endpoints']] == list(labels)
+    assert result['endpoints'][0]['loss'] == pytest.approx(expected_loss)
+    assert result['endpoints'][0]['non_embedding_parameters'] == model_parameter_counts(model, granularity=local)['non_embedding_parameters']
+    assert result['content_hash'] == stable_hash({k: v for k, v in result.items() if k != 'content_hash'})
+    path = __import__('pathlib').Path(result['checkpoint_path'])
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    assert result['checkpoint_sha256'] == digest
+    before = [copy.deepcopy(x.state_dict()) for x in bundle[1:4]]
+    def forbidden(*args, **kwargs): raise AssertionError('completion must reuse valid sidecar')
+    import src.evaluation.validation as validation
+    monkeypatch.setattr(validation, 'evaluate_validation_per_granularity', forbidden)
+    assert complete_ownership_terminal(config, model, opt, clock, state, evaluation, torch.device('cpu')) == result
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
+    for item, expected in zip(bundle[1:4], before): assert_state_equal(item.state_dict(), expected)
+
+
+@pytest.mark.parametrize('failure', ['checkpoint', 'evaluation', 'sidecar'])
+def test_terminal_failure_and_recovery_preserve_checkpoint_and_take_no_steps(tmp_path, monkeypatch, failure):
+    import src.training.run as run
+    import src.evaluation.validation as validation
+    bundle = packed_fixture(tmp_path)
+    train(bundle)
+    config, model, opt, clock, batches, state = bundle
+    config['validation_manifest_hash'] = 'ordinary-fixture'
+    config['run']['continuation']['enabled'] = True
+    evaluation = [{'input_ids': torch.arange(1, 9).reshape(1, 8), 'labels': torch.arange(1, 9).reshape(1, 8)}]
+    def fail(*args, **kwargs): raise RuntimeError('injected terminal failure')
+    with monkeypatch.context() as patch:
+        if failure == 'checkpoint': patch.setattr(cp, 'save_model_checkpoint', fail)
+        elif failure == 'evaluation': patch.setattr(validation, 'evaluate_validation_per_granularity', fail)
+        else: patch.setattr(run, 'write_json_artifact', fail)
+        with pytest.raises((RuntimeError, OSError), match='injected terminal failure'):
+            run.complete_ownership_terminal(config, model, opt, clock, state, evaluation, torch.device('cpu'))
+    root = __import__('pathlib').Path(config['run']['output_dir'])
+    assert not (root / 'terminal_validation_results.json').exists()
+    checkpoint = root / 'checkpoints/latest.pt'
+    before_hash = hashlib.sha256(checkpoint.read_bytes()).hexdigest() if checkpoint.exists() else None
+    for entry in opt.entries: monkeypatch.setattr(entry.optimizer, 'step', fail)
+    result = run.complete_ownership_terminal(config, model, opt, clock, state, evaluation, torch.device('cpu'))
+    if before_hash: assert result['checkpoint_sha256'] == before_hash
+    # A valid content hash alone must not bless a stale or changed evaluation.
+    sidecar = root / 'terminal_validation_results.json'
+    bad = json.loads(sidecar.read_text()); bad['evaluation_role'] = 'final_holdout'
+    bad['content_hash'] = stable_hash({k: v for k, v in bad.items() if k != 'content_hash'})
+    sidecar.write_text(json.dumps(bad))
+    with pytest.raises(ConfigError):
+        run.complete_ownership_terminal(config, model, opt, clock, state, evaluation, torch.device('cpu'))
+
+
+def test_runtime_terminal_sidecar_recovery_costs_and_zero_training_reentry(tmp_path, monkeypatch):
+    import src.training.run as run
+    import src.evaluation.optimizer_ownership as campaign
+    from pathlib import Path
+    monkeypatch.setattr(campaign, 'validate_materialized_config', lambda config: None)
+    bundle = fixture(tmp_path)
+    config = bundle[0]
+    config['run']['continuation']['enabled'] = True
+    config['outputs']['metrics_flush_interval_steps'] = 1
+    evaluation = [{'input_ids': torch.arange(1, 9).reshape(1, 8), 'labels': torch.arange(1, 9).reshape(1, 8)}]
+    def loaders(config, *args, **kwargs):
+        config['_validation_manifest'] = {'fixture': True}
+        config['validation_manifest_hash'] = 'fixture-validation'
+        return fixture(tmp_path)[4], evaluation
+    monkeypatch.setattr(run.training_data, 'build_dataloaders', loaders)
+    original = run.write_json_artifact
+    def fail_sidecar(path, *args, **kwargs):
+        if Path(path).name == 'terminal_validation_results.json': raise RuntimeError('sidecar publication failed')
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(run, 'write_json_artifact', fail_sidecar)
+    with pytest.raises(RuntimeError, match='sidecar publication failed'):
+        run.run_training(config, model=bundle[1], tokenizer=object(), tokenized_dataset=[{}], device='cpu')
+    root = Path(config['run']['output_dir'])
+    checkpoint = root / 'checkpoints/latest.pt'
+    digest = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+    assert not (root / 'terminal_validation_results.json').exists()
+    before = run.ResourceAttemptLedger(root, run_id=config['run']['run_id']).summary()
+    monkeypatch.setattr(run, 'write_json_artifact', original)
+    def forbidden(*args, **kwargs): raise AssertionError('completion-only must bypass training')
+    monkeypatch.setattr(run.training_steps, 'train_for_steps', forbidden)
+    for _ in range(2):
+        run.run_training(config, model=fixture(tmp_path)[1], tokenizer=object(), tokenized_dataset=[{}], device='cpu')
+        assert hashlib.sha256(checkpoint.read_bytes()).hexdigest() == digest
+    after = run.ResourceAttemptLedger(root, run_id=config['run']['run_id']).summary()
+    assert after['attempt_count'] == 3 and after['attempted_steps'] == before['attempted_steps'] == 8
+    assert after['elapsed_seconds'] > before['elapsed_seconds'] and after['measurement_complete']
+    assert json.loads((root / 'terminal_validation_results.json').read_text())['checkpoint_sha256'] == digest
+
+
+def test_terminal_rejects_replaced_checkpoint_model_before_evaluating(tmp_path, monkeypatch):
+    import src.training.run as run
+    import src.evaluation.validation as validation
+    bundle = packed_fixture(tmp_path)
+    train(bundle)
+    config, model, opt, clock, batches, state = bundle
+    config['run']['continuation']['enabled'] = True
+    config['validation_manifest_hash'] = 'ordinary-fixture'
+    path = tmp_path / 'terminal.pt'
+    save(bundle, path)
+    state['latest_checkpoint_path'] = str(path)
+    state['latest_checkpoint_step'] = state['last_completed_step']
+    payload = torch.load(path, weights_only=False)
+    next(iter(payload['model_state_dict'].values())).add_(1)
+    torch.save(payload, path)
+    def forbidden(*args, **kwargs): raise AssertionError('invalid checkpoint must not evaluate')
+    monkeypatch.setattr(validation, 'evaluate_ownership_terminal', forbidden)
+    with pytest.raises(ConfigError, match='evaluated model'):
+        run.complete_ownership_terminal(config, model, opt, clock, state, [], torch.device('cpu'))

@@ -8,9 +8,12 @@ Phase 2 supplies campaign-only scientific hashing, physical FFN metadata and a
 validated static five-owner concat partition (T003–T005).
 Phase 3 implements nine-arm preflight, fixed-control and identity validation,
 C3 config eligibility, CPU model/partition inspection, and full expected traces
-(T006–T015). C3 optimizer stepping/clipping, exact campaign resume, terminal
-sidecars, and freeze/report commands remain later phases. No full-budget campaign
-results exist and phase-3 preflight does not establish runtime ownership support.
+(T006–T015). Phases 4–5 implement C3 stepping/clipping and durable exact resume
+(T016–T036). Phase 6 adds committed trace/clipping artifacts, measured storage and
+resource summaries, immutable terminal ordinary-validation sidecars and per-run
+plots (T037–T045). Freeze, the complete campaign comparison CLI and final GPU
+verification remain in phases 7–8. No full-budget campaign results exist; the
+runtime evidence below comes from short diagnostic and controlled-fixture tests.
 
 The schema-1 `build_optimizer_ownership_signature` helper in
 `src/utils/reproducibility.py` accepts explicit resolved contract sections and
@@ -518,3 +521,106 @@ These are short CPU diagnostics with synthetic budgets, not full campaign
 results. No full campaign or sealed-holdout evaluation was launched. Persistent
 clipping reports, terminal-validation sidecars, endpoint reporting and GPU bf16
 verification remain in their later task phases.
+
+## Phase 6 verification — audit artifacts and terminal recovery
+
+Phase 6 implements T037–T045. Campaign training durably appends one schema-1
+`optimizer_ownership_trace.jsonl` record per committed update, including the
+run/contract/attempt identity, selected action and digest, packed sample IDs and
+batch digest, reproducible cursor/order identity, tokens, exposures, owner calls
+and scheduler position. C1/C3 also append `optimizer_ownership_clipping.jsonl`
+with the applied coefficients and separate active/null group observations.
+The existing restore path segregates rows beyond the durable checkpoint.
+CSV fields reference these artifacts without repeating the parameter partition.
+
+`measure_optimizer_storage` reads existing state dictionaries without allocating
+missing histories. Checkpoints and final summaries contain measured elements and
+bytes by owner/component/dtype, with counters separate from moments. Four real
+forward/backward passes on the pinned d64/l4/vocab2048 model, one at each width,
+verified these allocated moment totals (F=196608, R=328256):
+
+| Arms | Moment elements | Measured float32 moment bytes |
+| --- | ---: | ---: |
+| S1/C1/C3 | 1,049,728 | 4,198,912 |
+| S2 | 4,198,912 | 16,795,648 |
+| C2 | 3,609,088 | 14,436,352 |
+
+These are persistent moment allocations, excluding counters, model weights and
+other training memory. The 37.5% C2 saving is confined to FFN moments relative to
+S2. Summary resource fields retain cumulative attempt duration, attempted work,
+useful committed and attempted throughput, and separate allocated/reserved CUDA
+peaks. Unsupported CPU accelerator metrics remain null. Temporary concat storage
+is explicitly an active parameter-layout byte estimate excluding backward
+workspaces, not a device peak. Realized width selections and quarter activations
+are separate from labeled uniform-replacement expectations.
+
+Terminal completion publishes or reuses the same durable resumable checkpoint,
+checks its model against the live evaluated model, and writes immutable
+`terminal_validation_results.json`. The canonical content hash excludes itself.
+The sidecar records campaign/arm/run and full contract identity, checkpoint
+SHA256/size, actual and assigned updates/tokens/epochs, representation/ownership/
+clipping/initialization, ordinary-validation manifest and protocol, target-weighted
+causal loss, exp(loss), evaluated examples/targets and exact active non-embedding
+counts. Dense endpoints retain their source width; elastic terminals contain all
+four widths. No best/trailing/holdout substitution is performed.
+
+Injected checkpoint, evaluation and sidecar-publication failures leave no valid
+sidecar. Recovery bypasses training, validates/reuses or reevaluates ordinary
+validation, and retains the terminal checkpoint SHA256. Repeated completion
+reuses a valid sidecar without evaluation or optimizer calls. A replaced
+checkpoint model and changed sidecar identity are rejected. Recovery attempt
+costs remain in `resource_attempts.json`. The weighted-loss test uses batches
+with five and seven valid shifted targets and verifies `(5*loss1+7*loss2)/12`,
+12 targets and two examples across every arm.
+
+`report_run_artifacts(run_dir, output_dir)` in
+`src/evaluation/optimizer_ownership.py` reads saved metrics, summary and trace
+sidecars, reconciles actions/counts/tokens/cursors and C1/C3 group observations,
+and writes `run_diagnostics.json` plus loss, perplexity and resource figures in
+both PNG and PDF. Clipping frequencies use only active width/group observations;
+unobserved/inactive denominators yield null frequencies. Resource figures retain
+incomplete-measurement labels and distinguish storage, exposure, peaks, runtime
+and throughput. The phase-7 CLI will invoke this saved-artifact reader.
+
+Validation command (pinned CPU environment):
+
+```bash
+OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest \
+  tests/test_optimizer_ownership_reporting.py tests/test_optimizer_ownership_resume.py \
+  tests/test_optimizer_ownership.py tests/test_per_granularity_optimizer.py \
+  tests/test_per_granularity_optimizer_resume.py tests/test_data_validation.py \
+  tests/test_artifacts.py tests/test_reporting.py tests/test_training_smoke.py \
+  -q --disable-warnings --tb=short
+```
+
+Result: **510 passed, 1 existing expected failure** in 68.15 seconds. Log:
+`/tmp/optimizer-ownership-phase6-verification.log`. Python compilation and
+`git diff --check` also pass. An isolated evidence run exposed a test dependency
+on determinism settings established by earlier trainer tests; the shared
+campaign fixture now establishes strict determinism explicitly.
+
+The isolated phase-6 evidence command is:
+
+```bash
+OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest \
+  tests/test_optimizer_ownership_reporting.py tests/test_optimizer_ownership_resume.py \
+  -k 'terminal or storage_reads or committed_saved or clipping_active or post_exposure' \
+  --basetemp=/scratch/ivo.navarrete/tmp/optimizer-ownership-phase6-verified-20260909 \
+  -q --disable-warnings --tb=short
+```
+
+Result: **39 passed, 163 deselected** in 13.24 seconds, independently of the
+broader suite. Log: `/tmp/optimizer-ownership-phase6-artifacts-verified.log`.
+Saved evidence root: `/scratch/ivo.navarrete/tmp/optimizer-ownership-phase6-verified-20260909`:
+
+- `test_committed_saved_trace_an0` through `...an8`: nine-arm committed trace fixtures.
+- `test_terminal_validation_count0` through `...count8`: nine-arm terminal checkpoint/sidecar fixtures.
+- `test_clipping_active_denominat0/plots` and `...denominat1/plots`: C1/C3 controlled loss/perplexity series, active clipping denominators and PNG/PDF fixtures (the tests subsequently corrupt their source trace to verify rejection).
+- `test_runtime_terminal_sidecar_0/per-granularity-optimizer-smoke-001`: intact trainer output after one failed terminal-publication attempt and two completion-only invocations; three finalized attempts, eight total attempted updates, unchanged checkpoint hash, valid sidecar and scalar journal.
+- `runtime_plots`: six PNG/PDF figures and `run_diagnostics.json` generated afterward from that intact saved trainer output, with no model evaluation. The resource figure was visually inspected.
+
+Use a fresh `--basetemp` for another run; pytest clears an existing base directory.
+The diagnostic models use synthetic eight-update budgets, small deterministic
+batches and two-update epoch fixtures. They do not establish full-budget
+scientific outcomes or CUDA bf16 behavior. No full campaign or sealed-holdout
+model evaluation was launched.

@@ -183,6 +183,9 @@ METRICS_COLUMNS = [
     "metrics_path",
     "scaling_results_path",
     "extraction_metadata_path",
+    "optimizer_ownership_schema_version", "optimizer_ownership_contract_hash",
+    "campaign_id", "arm_id", "optimizer_quarter_activation_counts",
+    "optimizer_ownership_trace_path", "optimizer_ownership_clipping_path",
 ]
 
 # Schema-1 portfolio references wrote this always-empty field before the LR
@@ -1031,6 +1034,8 @@ def build_optimizer_state_summary_fields(
         if isinstance(resources, Mapping):
             wall_time_seconds = resources['elapsed_seconds']
             peak_memory_bytes = resources['peak_allocated_bytes']
+            attempted = resources['attempted_steps']
+            failed = max(attempted - committed, 0)
         quarters = {f'O-{q}': sum(exposures.get(w, 0) for w in ordered[i:]) for i, q in enumerate('ABCD')} if len(ordered) == 4 else {}
         expected_calls = ({**quarters, 'O-common': committed} if scope == 'per_ffn_block'
                           else exposures if scope == 'per_granularity' else {'shared': committed})
@@ -3333,6 +3338,11 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "content_tokens_seen": normalized_row.get("tokens_seen"),
         "optimizer_window_microsteps": None,
         "committed_tokens_this_step": None,
+        "optimizer_ownership_schema_version": None,
+        "optimizer_ownership_contract_hash": None,
+        "campaign_id": None, "arm_id": None,
+        "optimizer_quarter_activation_counts": None,
+        "optimizer_ownership_trace_path": None, "optimizer_ownership_clipping_path": None,
         "optimizer_state_scope": None,
         "selected_optimizer_granularity": None,
         "optimizer_step_attempted": None,
@@ -3394,6 +3404,7 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         normalized_row.setdefault(key, value)
 
     for key in (
+        "optimizer_quarter_activation_counts",
         "granularity_pattern_summary",
         "correction_context",
         "sampler_state",
@@ -3604,3 +3615,69 @@ def _should_write_shared_artifact(distributed_context: Any | None) -> bool:
     from src.training.distributed import should_write_shared_artifact
 
     return should_write_shared_artifact(distributed_context)
+
+
+def optimizer_ownership_metric_fields(config, state):
+    """Small campaign fields shared by scalar rows and trace records."""
+    contract = config.get('optimizer_ownership_contract')
+    if not contract:
+        return {}
+    return {
+        'optimizer_ownership_schema_version': 1,
+        'optimizer_ownership_contract_hash': config['optimizer_ownership_contract_hash'],
+        'campaign_id': contract['campaign_id'], 'arm_id': contract['arm_id'],
+        'optimizer_quarter_activation_counts': dict(state.get('optimizer_quarter_activation_counts', {})),
+        'optimizer_ownership_trace_path': 'optimizer_ownership_trace.jsonl',
+        'optimizer_ownership_clipping_path': 'optimizer_ownership_clipping.jsonl' if contract['arm_id'] in ('C1', 'C3') else None,
+    }
+
+
+def append_optimizer_ownership_observation(config, state, *, train_dataloader):
+    """Durably append only reconciled commits; resume segregates later rows."""
+    from src.training.checkpointing import assert_checkpoint_safe
+    import numpy as np
+
+    assert_checkpoint_safe(state)
+    contract = config['optimizer_ownership_contract']
+    step = state['last_completed_step']
+    width = state['optimizer_last_active_granularity']
+    scope = config['training']['optimizer_state_scope']
+    active = ([f'O-{q}' for q in 'ABCD'[:config['model']['granularities'].index(width) + 1]] + ['O-common']
+              if scope == 'per_ffn_block' else [width] if scope == 'per_granularity' else ['shared'])
+    provenance = state['last_optimizer_batch_provenance']
+    sampler = getattr(train_dataloader, 'batch_sampler', None)
+    sample_ids = None
+    if hasattr(sampler, '_logical_indices'):
+        start = int(provenance['total_cursor'])
+        sample_ids = sampler._logical_indices(start, start + sampler.global_batch_size)
+    row = {
+        'schema_version': 1, 'run_id': config['run']['run_id'],
+        'campaign_id': contract['campaign_id'], 'arm_id': contract['arm_id'],
+        'contract_hash': config['optimizer_ownership_contract_hash'],
+        'attempt_id': state.get('resource_attempt_id'),
+        'step': step, 'action_ordinal': step, 'width': width,
+        'action_sha256': hashlib.sha256((width + '\n').encode('ascii')).hexdigest(),
+        'batch_provenance': provenance, 'sample_ids': sample_ids,
+        'batch_sha256': hashlib.sha256(np.asarray(sample_ids, dtype='<u8').tobytes()).hexdigest() if sample_ids is not None else None,
+        'epoch': state['epoch'], 'batch_index': state['batch_index'],
+        'packed_tokens': config['training']['expected_tokens_per_step'],
+        'tokens_seen': state['tokens_seen'], 'scheduler_position': state['global_scheduler_position'],
+        'active_owners': active,
+        'width_selection_counts': state['optimizer_width_selection_counts'],
+        'quarter_activation_counts': state['optimizer_quarter_activation_counts'],
+        'owner_call_counts': state['optimizer_update_counts'],
+    }
+    root = Path(config['run']['output_dir'])
+    root.mkdir(parents=True, exist_ok=True)
+    records = [('optimizer_ownership_trace.jsonl', row)]
+    if contract['arm_id'] in ('C1', 'C3'):
+        records.append(('optimizer_ownership_clipping.jsonl', {
+            **{key: row[key] for key in ('schema_version', 'run_id', 'campaign_id', 'arm_id', 'contract_hash', 'attempt_id')},
+            **state['last_clipping_observation'],
+        }))
+    for name, record in records:
+        with (root / name).open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps(record, sort_keys=True, allow_nan=False) + '\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+    _fsync_directory(root)

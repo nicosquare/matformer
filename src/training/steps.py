@@ -1325,6 +1325,9 @@ def train_for_steps(
                     latest_loss = sum(global_losses.values()) / len(global_losses)
                     latest_committed_loss = latest_loss
                     latest_committed_loss_step = step
+                    ownership_observer = getattr(optimizer, '_ownership_observer', None)
+                    if ownership_observer is not None:
+                        ownership_observer()
                     if resource_observer is not None:
                         resource_observer(run_state=run_state, boundary='committed')
                     if successful_step_callback is not None:
@@ -1415,6 +1418,8 @@ def train_for_steps(
                         adaptive_artifacts["controller_sampled_probability"] = float(
                             action["sampled_probability"]
                         )
+                    if campaign:
+                        peak_memory_bytes = peak_memory_bytes if device.type == 'cuda' else None
                     step_metric_rows = []
                     for label, loss_value in global_losses.items():
                         pattern, correction = runtime_artifacts[label]
@@ -1629,7 +1634,7 @@ def train_for_steps(
                             tokens_seen=tokens_seen,
                             content_tokens_seen=content_tokens_seen,
                             wall_clock_seconds=time.time() - start_time,
-                            peak_memory_bytes=current_peak_memory_bytes(device),
+                            peak_memory_bytes=current_peak_memory_bytes(device) if device.type == 'cuda' or not campaign else None,
                             adaptive_artifacts=failure_fields,
                         )
                         _record_metric_rows(
@@ -1711,6 +1716,9 @@ def _runtime_sampler_artifact_fields(
     probabilistic_controller=None,
 ) -> dict[str, Any]:
     fields = build_adaptive_sampler_artifact_fields(config, run_state)
+    if config.get('optimizer_ownership_contract'):
+        from src.utils.metrics import optimizer_ownership_metric_fields
+        fields.update(optimizer_ownership_metric_fields(config, run_state))
     fields.update(
         training_data.optimizer_iteration_artifact_fields(
             config,
@@ -2045,6 +2053,9 @@ def append_final_validation_if_needed(
     optimizer=None,
     scheduler=None,
 ) -> None:
+    # Campaign terminal evaluation is bound to the durable checkpoint by run.py.
+    if config.get('optimizer_ownership_contract'):
+        return
     validation_config = config.get("evaluation", {}).get("validation", {})
     if not validation_config.get("run_at_completion", False):
         return

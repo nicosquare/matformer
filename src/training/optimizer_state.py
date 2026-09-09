@@ -1024,3 +1024,42 @@ def validate_campaign_optimizer(model, optimizer, saved, *, widths, width_counts
     for live, state, desc, counts in entries:
         validate_adamw_history(live, state, desc, counts, learning_rates=learning_rates)
     return descriptors
+
+
+def measure_optimizer_storage(optimizer, *, step):
+    """Measure allocated tensors without accessing missing defaultdict entries.
+
+    This belongs at report/checkpoint boundaries. Compute precision does not
+    determine AdamW state dtype, and scalar counters are separate from moments.
+    """
+    if isinstance(optimizer, BlockOptimizerCollection):
+        owners = [(entry.owner_id, entry.optimizer) for entry in optimizer.entries]
+    elif isinstance(optimizer, PerGranularityOptimizerCollection):
+        owners = [(entry.granularity, entry.optimizer) for entry in optimizer.entries]
+    else:
+        owners = [('shared', optimizer)]
+    components, owner_rows = [], []
+    for owner_id, item in owners:
+        grouped = {}
+        owner_rows.append({'owner_id': owner_id, 'allocated_histories': sum(bool(v) for v in item.state.values()),
+                           'registered_parameters': sum(len(g['params']) for g in item.param_groups)})
+        for history in item.state.values():
+            for component, value in history.items():
+                if not torch.is_tensor(value):
+                    continue
+                key = (component, str(value.dtype))
+                row = grouped.setdefault(key, {'owner_id': owner_id, 'component': component,
+                    'dtype': str(value.dtype), 'kind': 'counter' if component == 'step' else 'moment',
+                    'elements': 0, 'bytes': 0})
+                row['elements'] += value.numel()
+                row['bytes'] += value.numel() * value.element_size()
+        components.extend(grouped.values())
+    return {
+        'schema_version': 1, 'step': int(step), 'method': 'allocated tensor numel * element_size',
+        'owners': owner_rows, 'components': components,
+        'moment_elements': sum(r['elements'] for r in components if r['kind'] == 'moment'),
+        'moment_bytes': sum(r['bytes'] for r in components if r['kind'] == 'moment'),
+        'counter_elements': sum(r['elements'] for r in components if r['kind'] == 'counter'),
+        'counter_bytes': sum(r['bytes'] for r in components if r['kind'] == 'counter'),
+        'total_bytes': sum(r['bytes'] for r in components),
+    }
