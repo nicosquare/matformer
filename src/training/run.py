@@ -33,6 +33,7 @@ import src.training.panelgrad as training_panelgrad
 import src.training.steps as training_steps
 import src.training.warmup as training_warmup
 from src.training.optimizer_state import (
+    BlockOptimizerCollection,
     GlobalSchedulerClock,
     PerGranularityOptimizerCollection,
 )
@@ -114,15 +115,15 @@ def _validate_restored_optimizer_ownership_runtime(
 ) -> None:
     """Recheck the staged checkpoint install before restoring external cursors."""
 
-    if (
-        config.get("training", {}).get("optimizer_state_scope", "shared")
-        != "per_granularity"
-    ):
+    scope = config.get("training", {}).get("optimizer_state_scope", "shared")
+    if scope not in {"per_granularity", "per_ffn_block"}:
         return
-    if not isinstance(optimizer, PerGranularityOptimizerCollection) or not isinstance(
-        scheduler, GlobalSchedulerClock
-    ):
-        raise ConfigError("Per-granularity continuation runtime is incomplete")
+    collection_type = (
+        BlockOptimizerCollection if scope == "per_ffn_block"
+        else PerGranularityOptimizerCollection
+    )
+    if not isinstance(optimizer, collection_type) or not isinstance(scheduler, GlobalSchedulerClock):
+        raise ConfigError("Optimizer ownership continuation runtime is incomplete")
     step = int(run_state.get("last_completed_step", 0))
     counts = run_state.get("optimizer_update_counts")
     sampling_state = run_state.get("global_sampling_state")
@@ -131,10 +132,21 @@ def _validate_restored_optimizer_ownership_runtime(
         if isinstance(sampling_state, Mapping)
         else None
     )
+    if isinstance(optimizer, BlockOptimizerCollection):
+        optimizer.validate_accounting(step=step, width_counts=exposures)
+        if (
+            run_state.get("update_in_flight") or run_state.get("optimizer_poisoned")
+            or scheduler.current_learning_rates != optimizer.current_learning_rates
+            or run_state.get("optimizer_width_selection_counts") != optimizer.width_selection_counts
+        ):
+            raise ConfigError("Restored block optimizer boundary is unsafe or unreconciled")
     exposures_reconcile = (
         exposures is None
         or isinstance(exposures, Mapping)
-        and dict(exposures) == optimizer.successful_update_counts
+        and dict(exposures) == (
+            optimizer.width_selection_counts if isinstance(optimizer, BlockOptimizerCollection)
+            else optimizer.successful_update_counts
+        )
     )
     if (
         not isinstance(counts, Mapping)

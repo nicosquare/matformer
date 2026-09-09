@@ -2,6 +2,8 @@
 
 import copy
 import json
+import math
+import random
 
 import pytest
 import torch
@@ -10,7 +12,10 @@ from transformers.models.llama.modeling_llama import LlamaMLP
 
 from src.models.ffn import CatLlamaMLP, ModifiedLlamaMLP
 from src.models.wiring import ModifiedLlamaForCausalLM
+from src.training import steps
 from src.training.optimizer_state import (
+    BlockOptimizerCollection,
+    PerGranularityOptimizerCollection,
     build_concat_parameter_partition,
     build_parameter_descriptors,
 )
@@ -204,3 +209,368 @@ def test_descriptor_identity_includes_dtype_ties_and_trainability():
     changed = copy.deepcopy(model)
     changed.lm_head.weight.requires_grad_(False)
     assert stable_hash(build_parameter_descriptors(changed, ordered_widths=WIDTHS)) != original
+
+
+OWNERS = ("O-A", "O-B", "O-C", "O-D", "O-common")
+
+
+class RealFFNModel(torch.nn.Module):
+    def __init__(self, variant='concat'):
+        super().__init__()
+        config = LlamaConfig(hidden_size=8, intermediate_size=16, num_attention_heads=2, num_key_value_heads=2, mlp_bias=True)
+        config.granularities = list(WIDTHS)
+        config.granularity_prefixes = {w: (i + 1) / 4 for i, w in enumerate(WIDTHS)}
+        cls = CatLlamaMLP if variant == 'concat' else ModifiedLlamaMLP
+        self.ffns = torch.nn.ModuleList([
+            cls(config, gradient_membership_correction_enabled=False) for _ in range(2)
+        ])
+        self.embedding = torch.nn.Parameter(torch.ones(8))
+        self.tied_head = self.embedding
+
+    def forward(self, x, width):
+        x = x * self.embedding
+        for ffn in self.ffns:
+            ffn.configure_subnetwork(width)
+            x = x + ffn(x)
+        return x.square().mean()
+
+
+def training(scope='shared', scheduler='constant'):
+    return {
+        'optimizer_name': 'adamw',
+        'optimizer_kwargs': {'betas': [0.9, 0.95], 'eps': 1e-8, 'weight_decay': 0.1},
+        'optimizer_state_scope': scope,
+        'optimizer_state_contract': {'ordered_granularities': list(WIDTHS)},
+        'resolved_learning_rate': 0.01,
+        'scheduler_name': scheduler, 'scheduler_kwargs': {},
+        'resolved_warmup_steps': 0, 'max_steps': 8,
+        'gradient_clip_norm': 1.0,
+        'gradient_clipping': (
+            {'mode': 'per_owner', 'owner_max_norms': dict.fromkeys(OWNERS, 1.0)}
+            if scope == 'per_ffn_block' else {'mode': 'global', 'max_norm': 1.0}
+        ),
+    }
+
+
+def backward(model, optimizer, width, x=None):
+    optimizer.zero_grad(set_to_none=True)
+    model(torch.ones(2, 3, 8) if x is None else x, width).backward()
+
+
+def commit(optimizer, scheduler, width):
+    if isinstance(optimizer, BlockOptimizerCollection):
+        active = optimizer.active_owner_ids(width)
+        for owner in active:
+            optimizer.optimizer_for(owner).step()
+        scheduler.step()
+        scheduler.synchronize(optimizer)
+        optimizer.record_successful_update(width, returned_owners=active)
+    elif isinstance(optimizer, PerGranularityOptimizerCollection):
+        optimizer.optimizer_for(width).step()
+        scheduler.step()
+        scheduler.synchronize(optimizer)
+        optimizer.record_successful_update(width)
+    else:
+        optimizer.step()
+        scheduler.step()
+
+
+def assert_state_equal(a, b):
+    if torch.is_tensor(a):
+        assert torch.equal(a, b)
+    elif isinstance(a, dict):
+        assert a.keys() == b.keys()
+        for key in a:
+            assert_state_equal(a[key], b[key])
+    elif isinstance(a, (list, tuple)):
+        assert len(a) == len(b)
+        for left, right in zip(a, b, strict=True):
+            assert_state_equal(left, right)
+    else:
+        assert a == b
+
+
+def test_s1_full_shaped_zero_tail_retains_momentum_decay_and_step():
+    torch.manual_seed(42)
+    model = RealFFNModel('slicing')
+    optimizer, clock = steps.build_optimizer_and_scheduler(model, training())
+    p = model.ffns[0].gate_proj.weight
+    backward(model, optimizer, 'g1000')
+    commit(optimizer, clock, 'g1000')
+    before = p.detach().clone()
+    moment = optimizer.state[p]['exp_avg'].clone()
+    backward(model, optimizer, 'g250')
+    assert p.grad.shape == p.shape
+    assert torch.count_nonzero(p.grad[4:]) == 0
+    commit(optimizer, clock, 'g250')
+    assert not torch.equal(p[4:], before[4:])
+    assert not torch.equal(p[4:], before[4:] * (1 - 0.01 * 0.1))
+    torch.testing.assert_close(optimizer.state[p]['exp_avg'][4:], moment[4:] * 0.9)
+    assert optimizer.state[p]['step'].item() == 2
+
+
+def test_s2_selected_history_isolation_full_allocation_and_never_used_zero_tails():
+    model = RealFFNModel('slicing')
+    optimizer, clock = steps.build_optimizer_and_scheduler(model, training('per_granularity'))
+    backward(model, optimizer, 'g1000')
+    commit(optimizer, clock, 'g1000')
+    wide = copy.deepcopy(optimizer.optimizer_for('g1000').state_dict())
+    backward(model, optimizer, 'g250')
+    commit(optimizer, clock, 'g250')
+    assert_state_equal(wide, optimizer.optimizer_for('g1000').state_dict())
+    for ffn in model.ffns:
+        for p, tail in ((ffn.gate_proj.weight, (slice(4, None),)),
+                        (ffn.up_proj.weight, (slice(4, None),)),
+                        (ffn.down_proj.weight, (slice(None), slice(4, None)))):
+            state = optimizer.optimizer_for('g250').state[p]
+            for key in ('exp_avg', 'exp_avg_sq'):
+                assert state[key].shape == p.shape
+                assert torch.count_nonzero(state[key][tail]) == 0
+            assert state['step'].item() == 1
+    assert not optimizer.optimizer_for('g500').state
+
+
+@pytest.mark.parametrize('scope', ['shared', 'per_granularity', 'per_ffn_block'])
+def test_concat_absent_quarters_are_bitwise_frozen_but_present_zero_updates(scope):
+    model = RealFFNModel()
+    optimizer, clock = steps.build_optimizer_and_scheduler(model, training(scope))
+    partition = build_concat_parameter_partition(model, ordered_widths=WIDTHS)
+    backward(model, optimizer, 'g1000')
+    commit(optimizer, clock, 'g1000')
+    owner_optimizer = (optimizer.optimizer_for('O-D') if scope == 'per_ffn_block' else
+                       optimizer.optimizer_for('g1000') if scope == 'per_granularity' else optimizer)
+    before = [(p.detach().clone(), copy.deepcopy(owner_optimizer.state[p])) for p in partition[3].parameters]
+    backward(model, optimizer, 'g250')
+    assert all(p.grad is None for owner in partition[1:4] for p in owner.parameters)
+    commit(optimizer, clock, 'g250')
+    for p, (weight, state) in zip(partition[3].parameters, before, strict=True):
+        assert torch.equal(p, weight)
+        assert_state_equal(owner_optimizer.state[p], state)
+    backward(model, optimizer, 'g1000')
+    for p in model.parameters():
+        assert p.grad is not None
+        p.grad.zero_()
+    p = partition[3].parameters[0]
+    before = p.detach().clone()
+    commit(optimizer, clock, 'g1000')
+    assert not torch.equal(p, before)
+    assert owner_optimizer.state[p]['step'].item() == 2
+
+
+def test_c2_lazy_quarter_history_multiplicities():
+    model = RealFFNModel()
+    optimizer, clock = steps.build_optimizer_and_scheduler(model, training('per_granularity'))
+    assert all(not entry.optimizer.state for entry in optimizer.entries)
+    for width in WIDTHS:
+        backward(model, optimizer, width)
+        commit(optimizer, clock, width)
+    for owner, expected in zip(build_concat_parameter_partition(model, ordered_widths=WIDTHS), (4, 3, 2, 1, 4), strict=True):
+        for p in owner.parameters:
+            assert sum(p in entry.optimizer.state for entry in optimizer.entries) == expected
+            for entry in optimizer.entries:
+                if p in entry.optimizer.state:
+                    assert entry.optimizer.state[p]['step'].item() == 1
+
+
+def test_c3_tied_bias_partition_and_ordered_successful_accounting():
+    model = RealFFNModel()
+    optimizer, clock = steps.build_optimizer_and_scheduler(model, training('per_ffn_block'))
+    assert isinstance(optimizer, BlockOptimizerCollection)
+    assert optimizer.ordered_owner_ids == OWNERS
+    parameters = [p for owner in optimizer.owners for p in owner.parameters]
+    assert len(parameters) == len({id(p) for p in parameters}) == len(list(model.parameters()))
+    common = optimizer.owners[-1]
+    assert any(d['tied_aliases'] == ['tied_head'] for d in common.descriptors)
+    assert all(any(p is ffn.down_bias for p in common.parameters) for ffn in model.ffns)
+    for width in WIDTHS:
+        backward(model, optimizer, width)
+        commit(optimizer, clock, width)
+    assert optimizer.successful_update_counts == dict(zip(OWNERS, (4, 3, 2, 1, 4)))
+    assert optimizer.width_selection_counts == dict.fromkeys(WIDTHS, 1)
+    assert optimizer.total_successful_updates == clock.position == 4
+    assert optimizer.state_dict()['ordered_owners'][0]['descriptors'] == list(optimizer.owners[0].descriptors)
+
+
+@pytest.mark.parametrize('width,n', zip(WIDTHS, (2, 3, 4, 5)))
+def test_independent_clipping_bounds_and_inactive_nulls(width, n):
+    model = RealFFNModel()
+    optimizer, _ = steps.build_optimizer_and_scheduler(model, training('per_ffn_block'))
+    backward(model, optimizer, width)
+    for p in model.parameters():
+        if p.grad is not None:
+            p.grad.fill_(10)
+    rng = (random.getstate(), torch.get_rng_state().clone())
+    observation = steps.clip_optimizer_gradients(model, training('per_ffn_block'), width, owners=optimizer.owners)
+    assert random.getstate() == rng[0]
+    assert torch.equal(torch.get_rng_state(), rng[1])
+    assert observation['combined_post_norm'] == pytest.approx(math.sqrt(n), abs=2e-6)
+    assert observation['global_coefficient'] is None
+    for owner in optimizer.owners:
+        item = observation['groups'][owner.owner_id]
+        if width in owner.active_widths:
+            assert item['post_norm'] == pytest.approx(1.0, abs=2e-6)
+            assert 0 < item['coefficient'] < 1
+        else:
+            assert item == {'active': False, 'pre_norm': None, 'post_norm': None, 'coefficient': None, 'max_norm': None}
+
+
+def test_owner_clipping_is_independent_and_active_zero_coefficient_is_one():
+    model = RealFFNModel()
+    owners = build_concat_parameter_partition(model, ordered_widths=WIDTHS)
+    results = []
+    for common_scale in (0, 100):
+        model.zero_grad(set_to_none=True)
+        for owner in (owners[0], owners[-1]):
+            for p in owner.parameters:
+                p.grad = torch.full_like(p, 5 if owner.owner_id == 'O-A' else common_scale)
+        observation = steps.clip_optimizer_gradients(model, training('per_ffn_block'), 'g250', owners=owners)
+        results.append(observation)
+        if common_scale == 0:
+            assert observation['groups']['O-common']['coefficient'] == 1
+            assert observation['groups']['O-common']['active']
+    assert results[0]['groups']['O-A'] == results[1]['groups']['O-A']
+
+
+def test_c1_matches_diagnostic_global_c3_parameters_and_every_history_tensor():
+    torch.manual_seed(42)
+    shared = RealFFNModel()
+    block = copy.deepcopy(shared)
+    c1, s1 = steps.build_optimizer_and_scheduler(shared, training(scheduler='cosine'))
+    c3, s3 = steps.build_optimizer_and_scheduler(block, training('per_ffn_block', 'cosine'), _diagnostic_global_clip=True)
+    owners = build_concat_parameter_partition(shared, ordered_widths=WIDTHS)
+    for width in ('g1000', 'g250', 'g750', 'g500') * 2:
+        x = torch.randn(2, 3, 8) * 10
+        backward(shared, c1, width, x)
+        backward(block, c3, width, x)
+        obs = steps.clip_optimizer_gradients(shared, training(), width, owners=owners)
+        steps.clip_optimizer_gradients(block, training('per_ffn_block'), width, owners=c3.owners, diagnostic_global_clip=c3.diagnostic_global_clip)
+        for group in obs['groups'].values():
+            if group['active']:
+                assert group['coefficient'] == obs['global_coefficient']
+        commit(c1, s1, width)
+        commit(c3, s3, width)
+        for left, right in zip(shared.parameters(), block.parameters(), strict=True):
+            torch.testing.assert_close(left, right, rtol=1e-6, atol=1e-7)
+            owner = next(o for o in c3.owners if any(p is right for p in o.parameters))
+            state = c3.optimizer_for(owner.owner_id).state.get(right, {})
+            for key, value in c1.state.get(left, {}).items():
+                torch.testing.assert_close(value, state[key], rtol=1e-6, atol=1e-7)
+
+
+def runtime_fixture(tmp_path, *, scope='per_ffn_block', max_steps=8, widths=WIDTHS):
+    from src.training.checkpointing import build_initial_continuation_state
+    from src.training.modeling import build_model
+    from src.utils.config import resolve_run_config
+
+    config = resolve_run_config(
+        'tests/fixtures/per_granularity_optimizer_smoke.yaml',
+        output_dir=tmp_path / 'per-granularity-optimizer-smoke-001',
+        overrides={
+            'model.variant': 'concat',
+            'model.granularities': list(widths),
+            'model.granularity_prefixes': {w: (i + 1) / len(widths) for i, w in enumerate(widths)},
+            'model.global_sampling_schedule': 'random_with_replacement',
+            'model.d_model': 16, 'model.num_layers': 2, 'model.vocab_size': 32,
+            'model.context_length': 8,
+            'training.max_steps': max_steps, 'training.token_budget': max_steps * 8,
+            'training.batch_size_per_process': 1,
+            'training.optimizer.state_scope': scope,
+            'training.gradient_clipping': training(scope)['gradient_clipping'],
+            'training.warmup_steps': 2,
+            'run.continuation.enabled': False,
+            'outputs.save_checkpoints': False,
+            'evaluation.validation.enabled': False,
+            'evaluation.validation.run_at_completion': False,
+            'evaluation.validation.interval_steps': 0,
+            'training.eval_interval': 0,
+        },
+    )
+    torch.manual_seed(42)
+    model = build_model(config)
+    optimizer, scheduler = steps.build_optimizer_and_scheduler(model, config['training'])
+    batches = [{'input_ids': torch.arange(1, 9).reshape(1, 8),
+                'labels': torch.arange(1, 9).reshape(1, 8)} for _ in range(2)]
+    return config, model, optimizer, scheduler, batches, build_initial_continuation_state(config)
+
+
+def test_real_trainer_orders_owner_calls_then_clock_and_publishes_complete_updates(tmp_path, monkeypatch):
+    from src.training.run import _validate_restored_optimizer_ownership_runtime
+
+    config, model, optimizer, clock, batches, state = runtime_fixture(tmp_path)
+    events, observations, forwards = [], [], []
+    model.register_forward_hook(lambda *args: forwards.append(1))
+    for entry in optimizer.entries:
+        original = entry.optimizer.step
+        def tracked_step(*args, _owner=entry.owner_id, _step=original, **kwargs):
+            assert state['update_in_flight'] is True
+            assert optimizer.total_successful_updates == clock.position
+            assert state['optimizer_update_counts'] == optimizer.successful_update_counts
+            events.append(_owner)
+            return _step(*args, **kwargs)
+        monkeypatch.setattr(entry.optimizer, 'step', tracked_step)
+    original_clock_step = clock.step
+    def clock_step():
+        assert state['update_in_flight'] is True
+        events.append('clock')
+        original_clock_step()
+    monkeypatch.setattr(clock, 'step', clock_step)
+
+    def committed(*, step, tokens_seen):
+        width = optimizer.last_active_granularity
+        assert events == [*optimizer.active_owner_ids(width), 'clock']
+        events.clear()
+        assert state['update_in_flight'] is False
+        assert optimizer.total_successful_updates == clock.position == step
+        assert tokens_seen == state['content_tokens_seen'] == step * 8
+        assert state['microstep'] == step
+        assert state['batch_index'] == (step - 1) % 2 + 1
+        assert state['epoch'] == (step - 1) // 2
+        assert state['global_sampling_state']['exposure_counts'] == optimizer.width_selection_counts
+        assert state['last_clipping_observation']['step'] == step
+        _validate_restored_optimizer_ownership_runtime(config, state, optimizer, clock)
+        observations.append(copy.deepcopy(state['last_clipping_observation']))
+
+    steps.train_for_steps(config, model, batches, [], optimizer, clock, torch.device('cpu'),
+                          run_state=state, successful_step_callback=committed)
+    assert len(forwards) == len(observations) == 8
+    assert sum(optimizer.width_selection_counts.values()) == 8
+    assert all(entry.optimizer.param_groups[0]['lr'] == 0 for entry in optimizer.entries)
+    state['optimizer_width_selection_counts']['g250'] += 1
+    with pytest.raises(ValueError, match='unreconciled'):
+        _validate_restored_optimizer_ownership_runtime(config, state, optimizer, clock)
+
+
+@pytest.mark.parametrize('failure', ['loss', 'gradient', 'rate'])
+def test_nonfinite_or_unsynchronized_update_is_rejected_before_any_owner_step(tmp_path, monkeypatch, failure):
+    config, model, optimizer, clock, batches, state = runtime_fixture(tmp_path)
+    before = copy.deepcopy(model.state_dict())
+    for entry in optimizer.entries:
+        monkeypatch.setattr(entry.optimizer, 'step', lambda: pytest.fail('Owner step reached'))
+    if failure == 'loss':
+        def bad_loss(module, args, output):
+            output.loss = output.loss * float('nan')
+        model.register_forward_hook(bad_loss)
+    elif failure == 'gradient':
+        next(model.parameters()).register_hook(lambda grad: grad * float('inf'))
+    else:
+        # Corrupt an inactive owner's rate after the initial boundary check.
+        def bad_rate(module, args, output):
+            optimizer.optimizer_for('O-D').param_groups[0]['lr'] = 0.7
+        model.register_forward_hook(bad_rate)
+    with pytest.raises(RuntimeError):
+        steps.train_for_steps(config, model, batches, [], optimizer, clock, torch.device('cpu'), run_state=state)
+    assert clock.position == optimizer.total_successful_updates == 0
+    assert not state.get('update_in_flight')
+    assert_state_equal(before, model.state_dict())
+
+
+def test_explicit_global_clipping_preserves_other_concat_layouts(tmp_path):
+    config, model, optimizer, clock, batches, state = runtime_fixture(
+        tmp_path, scope="shared", max_steps=2, widths=("narrow", "full"),
+    )
+    steps.train_for_steps(
+        config, model, batches, [], optimizer, clock, torch.device("cpu"), run_state=state,
+    )
+    assert state["last_completed_step"] == 2
+    assert state["last_clipping_observation"]["mode"] == "global"
+    assert state["last_clipping_observation"]["combined_post_norm"] <= 1.000001

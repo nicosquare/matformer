@@ -596,6 +596,149 @@ class PerGranularityOptimizerCollection:
             raise
 
 
+@dataclass(frozen=True)
+class BlockOptimizerEntry:
+    owner_id: str
+    optimizer: torch.optim.Optimizer
+
+
+class BlockOptimizerCollection:
+    """Five disjoint AdamW owners; counts describe complete logical updates."""
+
+    schema_version = 1
+
+    def __init__(self, owners, training, *, diagnostic_global_clip=False):
+        self.owners = tuple(owners)
+        self.ordered_granularities = tuple(self.owners[-1].active_widths)
+        self.diagnostic_global_clip = bool(diagnostic_global_clip)
+        self.entries = tuple(
+            BlockOptimizerEntry(owner.owner_id, _build_optimizer(owner.parameters, training))
+            for owner in self.owners
+        )
+        self._optimizers = {entry.owner_id: entry.optimizer for entry in self.entries}
+        self.successful_update_counts = dict.fromkeys(self.ordered_owner_ids, 0)
+        self.width_selection_counts = dict.fromkeys(self.ordered_granularities, 0)
+        self.total_successful_updates = 0
+        self.last_active_granularity = None
+
+    @classmethod
+    def from_model(cls, model, training, *, diagnostic_global_clip=False):
+        if training.get('optimizer_name', 'adamw') != 'adamw':
+            raise ConfigError('Block optimizer ownership requires AdamW')
+        clipping = training.get('gradient_clipping', {})
+        if clipping.get('mode') != 'per_owner':
+            raise ConfigError('Block optimizer ownership requires per_owner clipping')
+        owners = build_concat_parameter_partition(
+            model, ordered_widths=training['optimizer_state_contract']['ordered_granularities']
+        )
+        caps = clipping.get('owner_max_norms', {})
+        if set(caps) != {owner.owner_id for owner in owners} or any(
+            not math.isfinite(float(cap)) or float(cap) <= 0 for cap in caps.values()
+        ):
+            raise ConfigError('Block clipping requires a finite positive cap for every owner')
+        return cls(owners, training, diagnostic_global_clip=diagnostic_global_clip)
+
+    @property
+    def ordered_owner_ids(self):
+        return tuple(owner.owner_id for owner in self.owners)
+
+    def active_owner_ids(self, width):
+        if width not in self.ordered_granularities:
+            raise ConfigError(f'Unknown block optimizer width: {width}')
+        return tuple(owner.owner_id for owner in self.owners if width in owner.active_widths)
+
+    def owner_from_action(self, action):
+        selected = action.get('granularities')
+        if action.get('kind') != 'global' or not isinstance(selected, list) or len(selected) != 1:
+            raise ConfigError('Block optimizer updates require exactly one global width')
+        self.active_owner_ids(selected[0])
+        return selected[0]
+
+    def optimizer_for(self, owner_id):
+        if owner_id not in self._optimizers:
+            raise ConfigError(f'Unknown block optimizer owner: {owner_id}')
+        return self._optimizers[owner_id]
+
+    def zero_grad(self, *, set_to_none=True):
+        for entry in self.entries:
+            entry.optimizer.zero_grad(set_to_none=set_to_none)
+
+    @property
+    def current_learning_rates(self):
+        return tuple(float(group['lr']) for group in self.entries[0].optimizer.param_groups)
+
+    def validate_synchronized_learning_rates(self):
+        rates = self.current_learning_rates
+        if not rates or any(not math.isfinite(rate) for rate in rates):
+            raise RuntimeError('Block optimizer learning rates must be finite')
+        for entry in self.entries:
+            if tuple(float(group['lr']) for group in entry.optimizer.param_groups) != rates:
+                raise RuntimeError('All block optimizers must share the global learning rate')
+        return rates
+
+    def synchronize_learning_rates(self, learning_rates):
+        rates = tuple(float(rate) for rate in learning_rates)
+        if not rates or any(not math.isfinite(rate) for rate in rates):
+            raise RuntimeError('Global scheduler learning rates must be finite')
+        for entry in self.entries:
+            for group, rate in zip(entry.optimizer.param_groups, rates, strict=True):
+                group['lr'] = rate
+        self.validate_synchronized_learning_rates()
+
+    def record_successful_update(self, width, *, returned_owners):
+        active = self.active_owner_ids(width)
+        if tuple(returned_owners) != active:
+            raise RuntimeError('Cannot commit an incomplete or unordered block update')
+        for owner in active:
+            self.successful_update_counts[owner] += 1
+        self.width_selection_counts[width] += 1
+        self.total_successful_updates += 1
+        self.last_active_granularity = width
+
+    def validate_accounting(self, *, step, width_counts=None):
+        if sum(self.width_selection_counts.values()) != step or self.total_successful_updates != step:
+            raise ConfigError('Block width selections and committed step do not reconcile')
+        if width_counts is not None and dict(width_counts) != self.width_selection_counts:
+            raise ConfigError('Block width selections and sampling exposures do not reconcile')
+        expected = {
+            owner.owner_id: sum(self.width_selection_counts[w] for w in owner.active_widths)
+            for owner in self.owners
+        }
+        if self.successful_update_counts != expected:
+            raise ConfigError('Block owner calls and quarter activations do not reconcile')
+        self.validate_synchronized_learning_rates()
+
+    def state_dict(self):
+        return {
+            'block_optimizer_collection_schema_version': self.schema_version,
+            'state_scope': 'per_ffn_block',
+            'diagnostic_global_clip': self.diagnostic_global_clip,
+            'ordered_owners': [
+                {
+                    'owner_id': owner.owner_id,
+                    'descriptors': copy.deepcopy(list(owner.descriptors)),
+                    'active_widths': list(owner.active_widths),
+                    'state_dict': self.optimizer_for(owner.owner_id).state_dict(),
+                }
+                for owner in self.owners
+            ],
+            'width_selection_counts': dict(self.width_selection_counts),
+            'successful_update_counts': dict(self.successful_update_counts),
+            'total_successful_updates': self.total_successful_updates,
+            'last_active_granularity': self.last_active_granularity,
+            'current_learning_rates': list(self.current_learning_rates),
+        }
+
+
+def build_block_optimizer_runtime(model, training, *, diagnostic_global_clip=False):
+    collection = BlockOptimizerCollection.from_model(
+        model, training, diagnostic_global_clip=diagnostic_global_clip
+    )
+    clock = GlobalSchedulerClock.from_training(training)
+    clock.synchronize(collection)
+    return collection, clock
+
+
 class GlobalSchedulerClock:
     """One scheduler position whose rates are fanned out to every width."""
 
@@ -647,7 +790,7 @@ class GlobalSchedulerClock:
     def current_learning_rates(self) -> tuple[float, ...]:
         return tuple(float(group["lr"]) for group in self._carrier_optimizer.param_groups)
 
-    def synchronize(self, collection: PerGranularityOptimizerCollection) -> None:
+    def synchronize(self, collection: PerGranularityOptimizerCollection | BlockOptimizerCollection) -> None:
         collection.synchronize_learning_rates(self.current_learning_rates)
 
     def step(self) -> None:

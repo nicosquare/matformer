@@ -24,7 +24,10 @@ from transformers import get_scheduler
 import src.training.checkpointing as training_checkpointing
 import src.training.data as training_data
 from src.training.optimizer_state import (
+    BlockOptimizerCollection,
     GlobalSchedulerClock,
+    build_block_optimizer_runtime,
+    build_concat_parameter_partition,
     PerGranularityOptimizerCollection,
     build_per_granularity_optimizer_runtime,
 )
@@ -93,8 +96,14 @@ from src.utils.reproducibility import (
 )
 
 
-def build_optimizer_and_scheduler(model, training: Mapping[str, Any]):
+def build_optimizer_and_scheduler(model, training: Mapping[str, Any], *, _diagnostic_global_clip=False):
     """Build the training optimizer and scheduler from resolved config fields."""
+    if training.get("optimizer_state_scope") == "per_ffn_block":
+        return build_block_optimizer_runtime(
+            model, training, diagnostic_global_clip=_diagnostic_global_clip
+        )
+    if _diagnostic_global_clip:
+        raise ConfigError("Diagnostic global clipping requires block ownership")
     if training.get("optimizer_state_scope", "shared") == "per_granularity":
         return build_per_granularity_optimizer_runtime(model, training)
 
@@ -147,6 +156,71 @@ def build_optimizer_and_scheduler(model, training: Mapping[str, Any]):
         scheduler_specific_kwargs=scheduler_kwargs,
     )
     return optimizer, scheduler
+
+
+def _gradient_l2_norm(parameters):
+    gradients = [p.grad.detach() for p in parameters if p.grad is not None]
+    if not gradients:
+        return 0.0
+    norm = torch.linalg.vector_norm(torch.stack([
+        torch.linalg.vector_norm(gradient, 2) for gradient in gradients
+    ]), 2)
+    value = float(norm.item())
+    if not math.isfinite(value):
+        raise RuntimeError('Optimizer gradients and L2 norms must be finite')
+    return value
+
+
+def clip_optimizer_gradients(
+    model, training, width, *, owners=None, diagnostic_global_clip=False,
+):
+    """Apply exactly one intended rescale and return detached observations.
+
+    A global clip uses model registration order, also in the matched-state C3
+    diagnostic. Quarter observations do not change that vector or rescale it.
+    """
+    clipping = training['gradient_clipping']
+    mode = 'global' if diagnostic_global_clip else clipping['mode']
+    parameters = tuple(p for p in model.parameters() if p.requires_grad)
+    if owners is None:
+        groups = [('global', parameters, True)]
+    else:
+        groups = [(owner.owner_id, owner.parameters, width in owner.active_widths) for owner in owners]
+    if mode == 'per_owner' and owners is None:
+        raise ConfigError('Per-owner clipping requires the concat partition')
+    observations = {}
+    for name, members, active in groups:
+        if not active and any(p.grad is not None for p in members):
+            raise RuntimeError(f'Inactive owner {name} has a present gradient')
+        observations[name] = {
+            'active': active,
+            'pre_norm': _gradient_l2_norm(members) if active else None,
+            'post_norm': None, 'coefficient': None, 'max_norm': None,
+        }
+    global_coefficient = None
+    if mode == 'global':
+        cap = float(training['gradient_clip_norm'] if diagnostic_global_clip else clipping['max_norm'])
+        norm = clip_grad_norm_(parameters, cap, norm_type=2, error_if_nonfinite=True)
+        global_coefficient = float(torch.clamp(cap / (norm + 1e-6), max=1.0).item())
+    for name, members, active in groups:
+        if not active:
+            continue
+        item = observations[name]
+        if mode == 'per_owner':
+            cap = float(clipping['owner_max_norms'][name])
+            norm = clip_grad_norm_(members, cap, norm_type=2, error_if_nonfinite=True)
+            item['coefficient'] = float(torch.clamp(cap / (norm + 1e-6), max=1.0).item())
+            item['max_norm'] = cap
+        else:
+            item['coefficient'] = global_coefficient
+        item['post_norm'] = _gradient_l2_norm(members)
+    return {
+        'mode': mode, 'width': width, 'groups': observations,
+        'global_coefficient': global_coefficient,
+        'global_max_norm': cap if mode == 'global' else None,
+        'combined_pre_norm': math.sqrt(sum(item['pre_norm'] ** 2 for item in observations.values() if item['active'])),
+        'combined_post_norm': math.sqrt(sum(item['post_norm'] ** 2 for item in observations.values() if item['active'])),
+    }
 
 
 def _is_concat_lmc_module(module: torch.nn.Module) -> bool:
@@ -777,7 +851,7 @@ def train_for_steps(
         run_state.setdefault("next_validation_tokens", None)
     run_state.setdefault("latest_checkpoint_step", int(run_state.get("last_completed_step", 0)))
     run_state.setdefault("status", "fresh")
-    if isinstance(optimizer, PerGranularityOptimizerCollection):
+    if isinstance(optimizer, (PerGranularityOptimizerCollection, BlockOptimizerCollection)):
         if not isinstance(scheduler, GlobalSchedulerClock):
             raise ConfigError(
                 "Per-granularity optimizer state requires a global scheduler clock"
@@ -785,7 +859,7 @@ def train_for_steps(
         expected_counts = run_state.get("optimizer_update_counts")
         if not isinstance(expected_counts, Mapping):
             expected_counts = {
-                label: 0 for label in optimizer.ordered_granularities
+                label: 0 for label in optimizer.successful_update_counts
             }
         if dict(expected_counts) != optimizer.successful_update_counts:
             raise ConfigError(
@@ -831,6 +905,30 @@ def train_for_steps(
     else:
         run_state.pop("adaptive_sampler_state", None)
 
+    clipping_owners = None
+    if isinstance(optimizer, BlockOptimizerCollection):
+        clipping_owners = optimizer.owners
+    elif (
+        training.get("gradient_clipping")
+        and config["model"].get("variant") == "concat"
+        and tuple(
+            config["model"].get("granularity_prefixes", {}).get(width)
+            for width in granularities
+        ) == (0.25, 0.5, 0.75, 1.0)
+    ):
+        # Quarter observations apply to the campaign topology. Other supported
+        # concat layouts still use their ordinary single global clipping vector.
+        clipping_owners = build_concat_parameter_partition(model, ordered_widths=granularities)
+    if isinstance(optimizer, BlockOptimizerCollection):
+        if run_state.get("update_in_flight") or run_state.get("optimizer_poisoned"):
+            raise ConfigError("Cannot train with an unsafe block optimizer state")
+        optimizer.validate_accounting(
+            step=step, width_counts=_optimizer_exposure_counts(run_state) or None,
+        )
+        run_state.setdefault("optimizer_width_selection_counts", dict(optimizer.width_selection_counts))
+        run_state.setdefault("update_in_flight", False)
+        if scheduler.current_learning_rates != optimizer.current_learning_rates:
+            raise ConfigError("Block optimizer and global clock rates do not reconcile")
     model.train()
     with heartbeat_stage(heartbeat_writer, stage_name):
         while step < max_steps and tokens_seen < token_budget:
@@ -872,6 +970,10 @@ def train_for_steps(
                     break
                 made_progress = True
                 optimizer_committed = False
+                mutation_started = False
+                returned_owners = []
+                active_owners = ()
+                clipping_observation = None
                 action = None
                 optimizer_owner = None
                 optimizer_action_id = None
@@ -920,13 +1022,17 @@ def train_for_steps(
                         sampler_state=window_sampler_snapshot,
                     )
                     step_optimizer = optimizer
-                    if isinstance(optimizer, PerGranularityOptimizerCollection):
+                    if isinstance(optimizer, (PerGranularityOptimizerCollection, BlockOptimizerCollection)):
                         optimizer_owner = optimizer.owner_from_action(action)
-                        step_optimizer = optimizer.optimizer_for(optimizer_owner)
+                        if isinstance(optimizer, BlockOptimizerCollection):
+                            active_owners = optimizer.active_owner_ids(optimizer_owner)
+                            step_optimizer = optimizer.optimizer_for(active_owners[0])
+                        else:
+                            step_optimizer = optimizer.optimizer_for(optimizer_owner)
                         run_state["optimizer_active_owner_granularity"] = (
                             optimizer_owner
                         )
-                    optimizer.zero_grad(set_to_none=True)
+                    model.zero_grad(set_to_none=True)
                     local_loss_numerators: dict[str, float] = {}
                     runtime_artifacts: dict[
                         str, tuple[dict[str, Any], dict[str, Any]]
@@ -999,12 +1105,20 @@ def train_for_steps(
                         )
                     gradient_clip_norm = training.get("gradient_clip_norm")
                     failure_stage = "gradient_clipping"
-                    if gradient_clip_norm is not None:
+                    if training.get("gradient_clipping"):
+                        if any(not math.isfinite(value) for value in local_loss_numerators.values()):
+                            raise RuntimeError("Optimizer update loss must be finite")
+                        clipping_observation = clip_optimizer_gradients(
+                            model, training, action["granularities"][0],
+                            owners=clipping_owners,
+                            diagnostic_global_clip=getattr(optimizer, "diagnostic_global_clip", False),
+                        )
+                    elif gradient_clip_norm is not None:
                         clip_grad_norm_(model.parameters(), float(gradient_clip_norm))
                     # LambdaLR position ``pending_step - 1`` is the rate applied by
                     # this update. Capture it before optimizer.step/scheduler.step
                     # so metrics never report the rate prepared for the next update.
-                    if isinstance(optimizer, PerGranularityOptimizerCollection):
+                    if isinstance(optimizer, (PerGranularityOptimizerCollection, BlockOptimizerCollection)):
                         optimizer.validate_synchronized_learning_rates()
                     committed_learning_rates = [
                         float(group["lr"]) for group in step_optimizer.param_groups
@@ -1022,25 +1136,37 @@ def train_for_steps(
                         )
                     committed_learning_rate = committed_learning_rates[0]
                     failure_stage = "optimizer_step"
-                    _maybe_apply_concat_lmc_optimizer_step(
-                        config,
-                        model,
-                        step_optimizer,
-                        total_losses=total_losses,
-                    )
+                    if isinstance(optimizer, BlockOptimizerCollection):
+                        if scheduler.current_learning_rates != optimizer.current_learning_rates:
+                            raise RuntimeError("Block optimizer and global clock rates differ")
+                        run_state["update_in_flight"] = True
+                        run_state["pending_optimizer_step"] = pending_step
+                        mutation_started = True
+                        for owner_id in active_owners:
+                            failure_stage = f"optimizer_step:{owner_id}"
+                            optimizer.optimizer_for(owner_id).step()
+                            returned_owners.append(owner_id)
+                    else:
+                        _maybe_apply_concat_lmc_optimizer_step(
+                            config,
+                            model,
+                            step_optimizer,
+                            total_losses=total_losses,
+                        )
                     # A successful optimizer return is irreversible. Scheduler
                     # and accounting failures after this point are fatal and do
                     # not restore the pre-window transactional snapshots.
-                    optimizer_committed = True
+                    optimizer_committed = not isinstance(optimizer, BlockOptimizerCollection)
                     failure_stage = "post_commit_accounting"
                     scheduler.step()
-                    if isinstance(optimizer, PerGranularityOptimizerCollection):
+                    if isinstance(optimizer, (PerGranularityOptimizerCollection, BlockOptimizerCollection)):
                         if not isinstance(scheduler, GlobalSchedulerClock):
                             raise RuntimeError(
                                 "Per-granularity optimizer state requires a global scheduler clock"
                             )
                         scheduler.synchronize(optimizer)
-                        optimizer.record_successful_update(optimizer_owner)
+                        if not isinstance(optimizer, BlockOptimizerCollection):
+                            optimizer.record_successful_update(optimizer_owner)
                         run_state["optimizer_update_counts"] = copy.deepcopy(
                             optimizer.successful_update_counts
                         )
@@ -1110,6 +1236,35 @@ def train_for_steps(
                         run_state["panelgrad_state"] = (
                             panelgrad_controller.state_dict()
                         )
+
+                    if isinstance(optimizer, BlockOptimizerCollection):
+                        optimizer.record_successful_update(
+                            optimizer_owner, returned_owners=returned_owners
+                        )
+                        optimizer.validate_accounting(
+                            step=step,
+                            width_counts=_optimizer_exposure_counts(run_state) or None,
+                        )
+                        if scheduler.position != step:
+                            raise RuntimeError("Block scheduler and committed update do not reconcile")
+                        run_state.update({
+                            "optimizer_update_counts": dict(optimizer.successful_update_counts),
+                            "optimizer_width_selection_counts": dict(optimizer.width_selection_counts),
+                            "optimizer_quarter_activation_counts": {
+                                owner.owner_id: optimizer.successful_update_counts[owner.owner_id]
+                                for owner in optimizer.owners[:-1]
+                            },
+                            "optimizer_total_successful_updates": optimizer.total_successful_updates,
+                            "optimizer_last_active_granularity": optimizer.last_active_granularity,
+                            "global_scheduler_position": scheduler.position,
+                            "update_in_flight": False,
+                            "pending_optimizer_step": None,
+                        })
+                        optimizer_committed = True
+                    if clipping_observation is not None:
+                        run_state["last_clipping_observation"] = {
+                            "step": step, **clipping_observation,
+                        }
 
                     global_losses = {
                         label: sum_float(
@@ -1383,6 +1538,14 @@ def train_for_steps(
                         distributed_context=distributed_context,
                     )
                 except Exception:
+                    if mutation_started and not optimizer_committed:
+                        run_state["optimizer_poisoned"] = True
+                        run_state["optimizer_failure"] = {
+                            "pending_step": pending_step,
+                            "stage": failure_stage,
+                            "active_owners": list(active_owners),
+                            "returned_owners": list(returned_owners),
+                        }
                     if action is not None and optimizer_action_id is not None:
                         failed_label = str(
                             optimizer_owner or action.get("granularities", ["unknown"])[0]
@@ -1424,7 +1587,7 @@ def train_for_steps(
                             metrics_journal=metrics_journal,
                             force=True,
                         )
-                    if not optimizer_committed:
+                    if not optimizer_committed and not mutation_started:
                         restore_rng_state(window_rng_snapshot)
                         if controller_snapshot is not None:
                             probabilistic_controller.restore_transaction_snapshot(

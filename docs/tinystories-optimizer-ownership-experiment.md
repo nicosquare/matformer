@@ -350,6 +350,90 @@ run IDs, changed clipping and injected partial failures without success output.
 
 **Boundary:** no campaign training or sealed-holdout model evaluation ran. The
 published records explicitly set `training_started=false`,
-`holdout_evaluated=false`, and `runtime_ownership_verified=false`. Phase 4 must
-implement and verify C3 optimizer stepping and clipping; later phases add exact
-campaign resume, terminal sidecars and freeze/report commands.
+`holdout_evaluated=false`, and `runtime_ownership_verified=false`. The Phase 3 records alone do not verify optimizer stepping or clipping; see the
+Phase 4 evidence below. Later phases add exact campaign resume, terminal
+sidecars and freeze/report commands.
+
+## Phase 4 — ownership and clipping diagnostics (2026-09-09)
+
+T016–T025 are complete. `BlockOptimizerCollection` constructs five disjoint lazy
+AdamW owners from the existing concat partition, including segment biases, common
+down biases and identity-deduplicated tied parameters. Its serialized state records
+ordered descriptors, support, histories, width selections and successful owner
+counts under an explicit block-collection version. The global clock synchronizes
+all five owners at construction and after each complete update.
+
+The existing trainer clears all model gradients to None, applies the resolved
+clipping contract and steps active quarters in A/B/C/D order followed by common.
+It marks mutation in flight before the first owner call, stages returned owners
+locally, advances the clock once and reconciles committed exposure/token/cursor
+accounting before publishing `last_clipping_observation` and clearing the flag.
+Nonfinite loss/gradients/norms and unsynchronized owner rates fail before stepping.
+Clipping observations contain detached pre/post norms, coefficients, inactive
+null fields and combined disjoint norms. Per-owner clipping has no later global
+rescale; the global arms retain a single global coefficient. Other supported
+concat layouts retain ordinary global clipping without a four-quarter partition.
+
+Verification used the pinned Python 3.12 `elasticnn` environment on CPU, with
+small real `ModifiedLlamaMLP`/`CatLlamaMLP` modules and a two-layer Llama trainer:
+
+```bash
+OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest \
+  tests/test_optimizer_ownership.py tests/test_per_granularity_optimizer.py -q
+```
+
+Result: **50 passed**. The original static ownership/topology checks remain in
+place. New semantic checks establish:
+
+- S1 wider-then-narrower backward produces full-shaped gradients with zero tails;
+  tail momentum decays by beta1 while ordinary AdamW momentum/decay still changes
+  tail weights and increments the full physical parameter counter.
+- S2 retains isolated selected-width histories with full-sized moments and zero
+  never-exposed tail moments. Nonselected histories remain bitwise unchanged.
+- C1/C2/C3 inactive concat quarters retain absent gradients and bitwise unchanged
+  weights/history/counters. Active present-zero gradients still perform ordinary
+  AdamW updates. C2 allocates quarter histories in multiplicities 4/3/2/1 and four
+  common histories after each width has been selected once.
+- C3's quarter/common calls after one selection of every width are 4/3/2/1/4,
+  while the global scheduler advances four times. Tied parameters appear once;
+  bias ownership spans both real FFN layers.
+- Independent cap-1 clipping reaches combined norms sqrt(2), sqrt(3), sqrt(4)
+  and sqrt(5), checked to absolute tolerance **2e-6**. Changing common gradients
+  does not change the A-owner coefficient. Active-zero coefficients equal 1;
+  inactive observations have null norms/coefficient/cap. Observations consume no
+  Python or PyTorch RNG draws.
+- The internal `_diagnostic_global_clip=True` construction matches C1 parameters
+  and every allocated AdamW history component after eight alternating-width
+  updates, with **rtol=1e-6, atol=1e-7**. Both start from copied concat tensors and
+  use identical data, actions and cosine rates. Campaign preflight continues to
+  reject globally clipped C3; this override is not a YAML setting.
+- An eight-update real-Llama loop spans four synthetic two-batch epochs, with
+  exactly eight forwards. Every owner call observes the in-flight flag, every
+  callback sees a reconciled commit, token counts equal 8 times committed steps,
+  and batch/epoch cursors, width exposures and owner counts agree. Initial warmup
+  rates and the full-horizon cosine schedule match shared optimizer scheduling;
+  inactive owner rates stay synchronized and all rates reach zero at the horizon.
+
+Compatibility checks:
+
+```bash
+OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest \
+  tests/test_training_smoke.py tests/test_config.py tests/test_train_cli.py \
+  tests/test_optimizer_ownership_campaign.py \
+  tests/test_per_granularity_optimizer_resume.py \
+  tests/test_global_sampling_windows.py -q
+```
+
+Result: **386 passed, 1 expected failure**. Output was saved to
+`/tmp/optimizer-ownership-phase4-compatibility.log`. Only existing SWIG import
+deprecation warnings were emitted. `git diff --check` passed. The existing
+`.gitignore` already covers the Python environment, artifacts and editor files;
+no additional tool-specific ignore files were needed.
+
+**Scope boundary:** these are short CPU diagnostic results, not campaign quality
+or performance outcomes. Full campaign training and sealed-holdout evaluation
+were not launched. Phase 5 still owns campaign checkpoint loading, whole-bundle
+restore validation, all-save-path unsafe-state gating, failure durability and
+resource-attempt accounting. This phase does not establish interrupted C3 resume
+support. Persistent clipping reports and terminal outputs remain in later phases;
+GPU bf16 validation remains T057.

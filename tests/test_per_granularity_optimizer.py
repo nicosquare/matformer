@@ -167,3 +167,32 @@ def test_present_zero_gradient_keeps_ordinary_optimizer_semantics(optimizer_name
 
     assert not torch.equal(model.wide_only, before)
     assert model.wide_only in collection.optimizer_for("narrow").state
+
+
+def test_c3_global_clock_matches_shared_full_horizon_and_inactive_rates():
+    from test_optimizer_ownership import RealFFNModel, training, WIDTHS, backward, commit
+    from src.training.steps import build_optimizer_and_scheduler
+
+    model = RealFFNModel()
+    config = training('per_ffn_block', 'cosine')
+    config['resolved_warmup_steps'] = 2
+    block, clock = build_optimizer_and_scheduler(model, config)
+    reference = copy.deepcopy(model)
+    shared, scheduler = build_optimizer_and_scheduler(reference, {**config, 'optimizer_state_scope': 'shared'})
+    rates = []
+    for index in range(8):
+        width = WIDTHS[index % 4]
+        expected = shared.param_groups[0]['lr']
+        rates.append(expected)
+        assert block.validate_synchronized_learning_rates() == (expected,)
+        assert all(entry.optimizer.param_groups[0]['lr'] == expected for entry in block.entries)
+        backward(model, block, width)
+        backward(reference, shared, width)
+        commit(block, clock, width)
+        commit(shared, scheduler, width)
+        assert clock.position == index + 1
+        assert clock.last_committed_learning_rates == (expected,)
+    assert rates[0] == 0
+    assert rates[2] == config['resolved_learning_rate']
+    assert rates[4] < rates[3]  # No reset at the synthetic epoch boundary.
+    assert block.current_learning_rates == (0.0,)
