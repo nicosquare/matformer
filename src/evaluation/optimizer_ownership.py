@@ -31,6 +31,10 @@ PARAMETER_COUNT_FIELD = "non_embedding_parameters"
 PARAMETER_COUNT_CONVENTION = "active parameters excluding input embeddings and LM head"
 EVALUATION_ROLE = "ordinary_validation"
 VALIDATION_AGGREGATION = "target_token_weighted_causal_shift_float64"
+# The pinned ordinary-validation manifest packs 128 source documents into 285
+# context-128 sequences. Evaluation counts sequences, not source documents.
+VALIDATION_SEQUENCES = 285
+VALIDATION_TARGET_TOKENS = VALIDATION_SEQUENCES * 127
 QUARTER_IDS = ("A", "B", "C", "D")
 OWNER_IDS = ("O-A", "O-B", "O-C", "O-D", "O-common")
 
@@ -1216,7 +1220,7 @@ def _accumulate_clipping(summary, clip, contract):
             raise ConfigError('Combined clipping norm mismatch')
 
 
-def report_run_artifacts(run_dir, output_dir):
+def report_run_artifacts(run_dir, output_dir, *, partial=False):
     """Render one run from saved ordinary metrics and audited trace sidecars."""
     import csv
     import json
@@ -1250,6 +1254,7 @@ def report_run_artifacts(run_dir, output_dir):
         resources['useful_committed_tokens_per_second'] = audit['tokens_seen'] / seconds if seconds else None
         resources['attempted_tokens_per_second'] = resources['attempted_steps'] * audit['packed_tokens_per_update'] / seconds if seconds else None
     label = 'complete measurements' if resources['measurement_complete'] else 'incomplete measurements'
+    prefix = 'PARTIAL campaign diagnostic — ' if partial else ''
     report = {'schema_version': 1, 'run_id': audit['run_id'], 'arm_id': audit['arm_id'],
               'contract_hash': audit['contract_hash'], 'trajectories': trajectories,
               'resources': resources, 'resource_label': label, **observations,
@@ -1260,7 +1265,7 @@ def report_run_artifacts(run_dir, output_dir):
         for name, series in trajectories.items():
             ax.plot(series['step'], series[metric], label=name,
                     marker='o' if name.startswith('validation:') else None, markersize=3)
-        ax.set(xlabel='Committed optimizer updates', ylabel=metric.capitalize(), title=f"{audit['arm_id']} — ordinary validation and training")
+        ax.set(xlabel='Committed optimizer updates', ylabel=metric.capitalize(), title=f"{prefix}{audit['arm_id']} — ordinary validation and training")
         if trajectories: ax.legend()
         figure.tight_layout()
         for suffix in ('png', 'pdf'):
@@ -1306,9 +1311,479 @@ def report_run_artifacts(run_dir, output_dir):
         axes[5].text(.5, .5, 'Throughput unavailable', ha='center', transform=axes[5].transAxes)
         axes[5].set_axis_off()
     axes[5].set(title='Throughput including replay costs', ylabel='Packed tokens / second')
-    figure.suptitle(f"{audit['arm_id']} resources — {label}"); figure.tight_layout()
+    figure.suptitle(f"{prefix}{audit['arm_id']} resources — {label}"); figure.tight_layout()
     for suffix in ('png', 'pdf'):
         path = destination / f'{audit["arm_id"]}_resources.{suffix}'
         figure.savefig(path); report['figures'].append(str(path.resolve()))
     write_json_artifact(destination / 'run_diagnostics.json', report)
     return report
+
+
+def _read_json(path):
+    import json
+    from pathlib import Path
+    from src.utils.config import ConfigError
+
+    try:
+        value = json.loads(Path(path).read_text())
+    except (ValueError, OSError) as error:
+        raise ConfigError(f'{path}: {error}') from error
+    if not isinstance(value, dict):
+        raise ConfigError(f'{path}: expected an object')
+    return value
+
+
+def _check_content_hash(record, field, label):
+    _require_equal(record.get(field), stable_hash({k: v for k, v in record.items() if k != field}), f'{label}.{field}')
+
+
+def _source_record(path):
+    from pathlib import Path
+    from src.training.packed_corpus import sha256_file
+
+    path = Path(path).resolve()
+    return {'path': str(path), 'sha256': sha256_file(path)}
+
+
+def _check_sources(sources):
+    from pathlib import Path
+    from src.training.packed_corpus import sha256_file
+    from src.utils.config import ConfigError
+
+    for source in sources:
+        path = Path(source['path'])
+        if not path.is_file() or sha256_file(path) != source['sha256']:
+            raise ConfigError(f'Frozen source hash mismatch: {path}')
+
+
+def _read_preflight_manifest(path):
+    """Validate saved controls without opening the corpus or constructing a model."""
+    import copy
+    from src.utils.config import ConfigError
+
+    manifest = _read_json(path)
+    _check_content_hash(manifest, 'manifest_hash', 'preflight')
+    for key, expected in {
+        'schema_version': CAMPAIGN_SCHEMA_VERSION, 'seed': SEED,
+        'common': PINNED_COMMON, 'allowed_difference_matrix': [
+            {**a, 'endpoint_widths': list(a['endpoint_widths'])} for a in ARMS],
+        'expected_data': PINNED_DATA, 'count_convention': PARAMETER_COUNT_CONVENTION,
+        'evaluation_role': EVALUATION_ROLE,
+    }.items():
+        _require_equal(manifest.get(key), expected, f'preflight.{key}')
+    _require_equal([r['arm_id'] for r in manifest['runs']], list(ARM_IDS), 'preflight.arms')
+    run_ids = set()
+    def check_resolved_controls(expected, actual, field):
+        # Resolution may add defaults, but every explicit scientific input must
+        # survive unchanged except the documented dense-width/scope normalization.
+        for key, value in expected.items():
+            if key not in actual:
+                raise ConfigError(f'{field}.{key}: missing resolved control')
+            if isinstance(value, dict):
+                check_resolved_controls(value, actual[key], field + '.' + key)
+            else:
+                _require_equal(actual[key], value, field + '.' + key)
+    first_epoch = manifest['expected_traces'][ARM_IDS[0]]['epochs'][0]
+    for arm, run in zip(ARMS, manifest['runs'], strict=True):
+        label = arm['arm_id']
+        for key, value in arm.items():
+            # JSON converts tuple width lists to lists.
+            _require_equal(run.get(key), list(value) if isinstance(value, tuple) else value, f'{label}.{key}')
+        _require_equal(run['campaign_id'], manifest['campaign_id'], f'{label}.campaign_id')
+        _require_equal(run['run_id'], f"{manifest['campaign_id']}-{label}-s{SEED}", f'{label}.run_id')
+        if run['run_id'] in run_ids:
+            raise ConfigError('Duplicate campaign run identity')
+        run_ids.add(run['run_id'])
+        config = run['resolved_config']
+        validate_materialized_config(config)
+        contract = config['optimizer_ownership_contract']
+        _require_equal(run['optimizer_ownership_contract'], contract, f'{label}.contract')
+        _require_equal(run['contract_hash'], stable_hash(contract), f'{label}.contract_hash')
+        _require_equal(manifest['run_contract_hashes'][label], run['contract_hash'], f'{label}.preflight contract_hash')
+        _require_equal(run['initialization'], contract['initialization'], f'{label}.initialization')
+        _require_equal(run['clipping'], contract['clipping'], f'{label}.clipping')
+        raw = copy.deepcopy(run['executable_config'])
+        _require_equal(raw.pop('optimizer_ownership_contract'), contract, f'{label}.executable contract')
+        _require_equal(raw.pop('optimizer_ownership_contract_hash'), run['contract_hash'], f'{label}.executable hash')
+        for key in ('run_id', 'campaign_id', 'arm_id'):
+            _require_equal(raw['run'].pop(key), run[key], f'{label}.{key}')
+        _require_equal(raw['run'].pop('output_dir'), run['output_path'], f'{label}.output_path')
+        raw['model']['tokenizer_dir'] = PINNED_COMMON['model']['tokenizer_dir']
+        raw['dataset']['prepared_corpus_dir'] = PINNED_COMMON['dataset']['prepared_corpus_dir']
+        _require_equal(raw, _merge(PINNED_COMMON, _arm_overrides(arm)), f'{label}.scientific controls')
+        scientific = copy.deepcopy(run['executable_config'])
+        scientific['training']['optimizer'].pop('state_scope')
+        scientific['training']['optimizer'].pop('scheduler_clock')
+        if arm['source_width']:
+            scientific['model']['granularities'] = [arm['source_width']]
+            scientific['model']['granularity_prefixes'] = {arm['source_width']: 1.0}
+        check_resolved_controls({k: scientific[k] for k in ('run', 'model', 'training', 'dataset', 'evaluation')}, config, f'{label}.resolved')
+        traces = manifest['expected_traces'][label]
+        _require_equal(len(traces['epochs']), arm['assigned_epochs'], f'{label}.expected epochs')
+        _require_equal(traces['epochs'][0], first_epoch, f'{label}.first epoch')
+        if not arm['source_width']:
+            _require_equal(traces, manifest['expected_traces']['S1'], f'{label}.elastic traces')
+    return manifest
+
+
+def _terminal_endpoints(sidecar, run, *, allow_partial):
+    import math
+    from src.utils.config import ConfigError
+
+    label = run['arm_id']
+    contract = run['optimizer_ownership_contract']
+    _check_content_hash(sidecar, 'content_hash', f'{label}.terminal')
+    protocol = contract['evaluation']['validation']
+    identity = {
+        'schema_version': TERMINAL_VALIDATION_SCHEMA_VERSION,
+        **{k: run[k] for k in ('campaign_id', 'arm_id', 'run_id', 'contract_hash', 'representation', 'state_scope', 'clipping', 'initialization')},
+        'contract': contract, 'global_step': run['assigned_updates'],
+        'evaluation_role': EVALUATION_ROLE,
+        'validation_manifest_hash': PINNED_DATA['ordinary_validation_manifest_hash'],
+        'evaluation_protocol': protocol, 'evaluation_protocol_hash': stable_hash(protocol),
+        'validation_loss_aggregation': VALIDATION_AGGREGATION,
+        'count_convention': PARAMETER_COUNT_CONVENTION,
+        'evaluation_examples': VALIDATION_SEQUENCES,
+        # Packed validation has fixed context, no padding, all causal targets valid.
+        'evaluation_target_tokens': VALIDATION_TARGET_TOKENS,
+    }
+    for unit in ('updates', 'tokens', 'epochs'):
+        identity['assigned_' + unit] = identity['actual_' + unit] = run['assigned_' + unit]
+    for key, value in identity.items():
+        _require_equal(sidecar.get(key), value, f'{label}.terminal.{key}')
+    rows = sidecar.get('endpoints')
+    if not isinstance(rows, list):
+        raise ConfigError(f'{label}.endpoints must be a list')
+    seen = set()
+    for row in rows:
+        width = row.get('width')
+        if width not in run['endpoint_widths'] or width in seen:
+            raise ConfigError(f'{label}.duplicate or unexpected endpoint: {width}')
+        seen.add(width)
+        for key in ('evaluation_role', 'validation_manifest_hash', 'evaluation_protocol_hash', 'validation_loss_aggregation',
+                    'count_convention', 'evaluation_examples', 'evaluation_target_tokens'):
+            _require_equal(row.get(key), identity[key], f'{label}.{width}.{key}')
+        count = next(w['non_embedding_parameters'] for w in WIDTHS if w['label'] == width)
+        _require_equal(row.get('non_embedding_parameters'), count, f'{label}.{width}.non_embedding_parameters')
+        loss, perplexity = row['loss'], row['perplexity']
+        if (isinstance(loss, bool) or isinstance(perplexity, bool) or not math.isfinite(loss)
+                or not math.isfinite(perplexity) or perplexity <= 0 or loss > 709
+                or not math.isclose(perplexity, math.exp(loss), rel_tol=1e-12)):
+            raise ConfigError(f'{label}.{width}.nonfinite or inconsistent loss/perplexity')
+    if not allow_partial and seen != set(run['endpoint_widths']):
+        raise ConfigError(f'{label}.missing endpoints: {sorted(set(run["endpoint_widths"]) - seen)}')
+    return sorted(rows, key=lambda r: WIDTH_LABELS.index(r['width']))
+
+
+def _inspect_terminal_run(root, run, expected_traces, *, allow_partial):
+    """Read only saved terminal evidence; never choose a checkpoint from metrics."""
+    from pathlib import Path
+    import torch
+    from src.utils.config import ConfigError
+
+    root = Path(root).resolve()
+    label = run['arm_id']
+    summary_path = root / 'run_summary.json'
+    sidecar_path = root / 'terminal_validation_results.json'
+    summary, sidecar = _read_json(summary_path), _read_json(sidecar_path)
+    endpoints = _terminal_endpoints(sidecar, run, allow_partial=allow_partial)
+    _require_equal(summary.get('status'), 'completed', f'{label}.summary.status')
+    _require_equal(summary.get('run_id'), run['run_id'], f'{label}.summary.run_id')
+    audit = summary['optimizer_ownership']
+    _require_equal(summary.get('optimizer_ownership_schema_version'), 1, f'{label}.summary schema')
+    for key, value in {
+        'schema_version': 1, 'contract': run['optimizer_ownership_contract'],
+        **{k: run[k] for k in ('run_id', 'campaign_id', 'arm_id', 'contract_hash', 'state_scope')},
+        'clipping_contract': run['resolved_config']['training']['gradient_clipping'],
+        'steps': run['assigned_updates'], 'tokens_seen': run['assigned_tokens'],
+        'epoch': run['assigned_epochs'], 'batch_index': 0,
+        'packed_tokens_per_update': TOKENS_PER_UPDATE,
+        'scheduler_position': run['assigned_updates'], 'accounting_reconciled': True,
+        'trace_path': 'optimizer_ownership_trace.jsonl',
+        'clipping_path': 'optimizer_ownership_clipping.jsonl' if label in ('C1', 'C3') else None,
+    }.items():
+        _require_equal(audit.get(key), value, f'{label}.summary.{key}')
+    checkpoint = Path(sidecar['checkpoint_path'])
+    if not checkpoint.is_absolute():
+        raise ConfigError(f'{label}.checkpoint_path must be absolute')
+    sources = [_source_record(p) for p in (summary_path, sidecar_path, checkpoint, root / audit['trace_path'], root / 'metrics.csv')]
+    if audit['clipping_path']:
+        sources.append(_source_record(root / audit['clipping_path']))
+    # Bind ledger absence too: a later recovery attempt invalidates the freeze.
+    optional_sources = {str(root / 'resource_attempts.json'): (root / 'resource_attempts.json').exists()}
+    if optional_sources[str(root / 'resource_attempts.json')]:
+        sources.append(_source_record(root / 'resource_attempts.json'))
+    _require_equal(sources[2]['sha256'], sidecar['checkpoint_sha256'], f'{label}.checkpoint_sha256')
+    _require_equal(checkpoint.stat().st_size, sidecar['checkpoint_bytes'], f'{label}.checkpoint_bytes')
+    for key in ('path', 'sha256', 'bytes'):
+        _require_equal(audit['checkpoint'].get('terminal_checkpoint_' + key), sidecar['checkpoint_' + key], f'{label}.checkpoint_{key}')
+    _require_equal(audit['checkpoint'].get('terminal_checkpoint_purpose'), 'resumable_training', f'{label}.checkpoint purpose')
+    import pickle
+    try:
+        saved = torch.load(checkpoint, map_location='cpu', weights_only=False)
+    except (OSError, RuntimeError, EOFError, pickle.UnpicklingError) as error:
+        raise ConfigError(f'{label}.checkpoint cannot be read: {error}') from error
+    for key, value in {
+        'checkpoint_kind': 'resumable_training', 'checkpoint_schema_version': 1,
+        'optimizer_ownership_checkpoint_schema_version': 1, 'run_id': run['run_id'],
+        'optimizer_ownership_contract': run['optimizer_ownership_contract'],
+        'optimizer_ownership_contract_hash': run['contract_hash'],
+        'step': audit['steps'], 'tokens_seen': audit['tokens_seen'], 'epoch': audit['epoch'], 'batch_index': 0,
+        'global_scheduler_position': audit['scheduler_position'],
+        'optimizer_width_selection_counts': audit['width_selection_counts'],
+        'optimizer_quarter_activation_counts': audit['quarter_activation_counts'],
+        'optimizer_update_counts': audit['owner_call_counts'],
+    }.items():
+        _require_equal(saved.get(key), value, f'{label}.checkpoint.{key}')
+    optimizer_key = 'optimizer_state_dict' if run['state_scope'] == 'shared' else 'optimizer_state_collection'
+    for key in ('model_state_dict', optimizer_key, 'scheduler_state_dict'):
+        if not isinstance(saved.get(key), dict) or not saved[key]:
+            raise ConfigError(f'{label}.checkpoint missing {key}')
+    if optimizer_key == 'optimizer_state_collection':
+        _require_equal(saved['optimizer_state_collection'].get('total_successful_updates'), audit['steps'], f'{label}.checkpoint collection updates')
+        _require_equal(saved['scheduler_state_dict'].get('position'), audit['steps'], f'{label}.checkpoint clock position')
+    del saved
+    observations = inspect_run_observations(root, summary)
+    _require_equal(observations['committed_updates'], run['assigned_updates'], f'{label}.trace updates')
+    _require_equal(observations['epoch_order_sha256'], {str(e['epoch_index']): e['sha256'] for e in expected_traces['epochs']}, f'{label}.epoch trace digest')
+    if not run['source_width']:
+        _require_equal(observations['action_sha256'], expected_traces['actions']['sha256'], f'{label}.action trace digest')
+    _check_sources(sources)
+    return {'arm_id': label, 'run_id': run['run_id'], 'run_dir': str(root), 'sources': sources,
+            'optional_sources': optional_sources, 'checkpoint_sha256': sidecar['checkpoint_sha256'],
+            'terminal_content_hash': sidecar['content_hash'], 'endpoints': endpoints, 'observations': observations}
+
+
+def _missing_endpoints(runs):
+    present = {(r['arm_id'], e['width']) for r in runs for e in r['endpoints']}
+    return [{'arm_id': a['arm_id'], 'width': w} for a in ARMS for w in a['endpoint_widths'] if (a['arm_id'], w) not in present]
+
+
+def _publish_directory(output_dir, write):
+    """Expose a success directory only after every export and final source check."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+    from src.utils.config import ConfigError
+
+    output = Path(output_dir).expanduser().resolve()
+    if output.exists() or output.is_symlink():
+        raise ConfigError(f'occupied output: {output}')
+    output.parent.mkdir(parents=True, exist_ok=True)
+    stage = Path(tempfile.mkdtemp(prefix=f'.{output.name}-', dir=output.parent))
+    try:
+        result = write(stage, output)
+        if output.exists():
+            raise ConfigError(f'occupied output: {output}')
+        stage.rename(output)
+        return result
+    finally:
+        if stage.exists():
+            shutil.rmtree(stage)
+
+
+def freeze_campaign(*, campaign_manifest, output_dir, run_root=None, run_dirs=None, allow_partial=False):
+    """Freeze the exact preflight-bound terminal sources, including diagnostics."""
+    from pathlib import Path
+    from src.utils.config import ConfigError
+
+    if (run_root is None) == (run_dirs is None):
+        raise ConfigError('Specify exactly one of run-root or run-dir')
+    try:
+        preflight_source = _source_record(campaign_manifest)
+        manifest = _read_preflight_manifest(campaign_manifest)
+        by_id = {r['run_id']: r for r in manifest['runs']}
+        if run_root is not None:
+            # Directory names locate candidates only; saved run identity is authoritative.
+            paths = [Path(run_root) / Path(r['output_path']).name for r in manifest['runs']]
+            if allow_partial:
+                paths = [p for p in paths if p.exists()]
+        else:
+            paths = [Path(p) for p in run_dirs]
+        runs, seen = [], set()
+        for path in paths:
+            summary = _read_json(path / 'run_summary.json')
+            run_id = summary.get('run_id')
+            if run_id not in by_id or run_id in seen:
+                raise ConfigError(f'Duplicate or non-preflight run identity: {run_id}')
+            seen.add(run_id)
+            run = by_id[run_id]
+            runs.append(_inspect_terminal_run(path, run, manifest['expected_traces'][run['arm_id']], allow_partial=allow_partial))
+        runs.sort(key=lambda r: ARM_IDS.index(r['arm_id']))
+        missing = _missing_endpoints(runs)
+        if missing and not allow_partial:
+            raise ConfigError(f'missing campaign endpoints: {missing}')
+        if not any(r['endpoints'] for r in runs):
+            raise ConfigError('missing all campaign endpoints')
+        frozen = {'schema_version': FROZEN_MANIFEST_SCHEMA_VERSION, 'campaign_id': manifest['campaign_id'],
+                  'status': 'partial' if missing else 'complete', 'missing_endpoints': missing,
+                  'missing_arms': [a for a in ARM_IDS if a not in {r['arm_id'] for r in runs}],
+                  'preflight_source': preflight_source, 'preflight_manifest_hash': manifest['manifest_hash'],
+                  'runs': runs, 'evaluation_role': EVALUATION_ROLE, 'holdout_evaluated': False}
+        frozen['content_hash'] = stable_hash(frozen)
+        def publish(stage, output):
+            _check_sources([preflight_source] + [s for r in runs for s in r['sources']])
+            write_json_artifact(stage / 'frozen_manifest.json', frozen)
+            return frozen
+        return _publish_directory(output_dir, publish)
+    except (KeyError, TypeError, IndexError, OverflowError) as error:
+        raise ConfigError(f'Malformed campaign terminal evidence: {error}') from error
+
+
+def endpoint_csv_value(value):
+    """One lossless scalar/JSON-cell convention shared by both table exports."""
+    import json
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False) if not isinstance(value, str) else value
+
+
+def _endpoint_table(frozen, preflight):
+    rows = []
+    definitions = {r['arm_id']: r for r in preflight['runs']}
+    for saved in frozen['runs']:
+        run = definitions[saved['arm_id']]
+        summary = _read_json(saved['run_dir'] + '/run_summary.json')['optimizer_ownership']
+        sidecar = _read_json(saved['run_dir'] + '/terminal_validation_results.json')
+        for endpoint in saved['endpoints']:
+            width = next(w for w in WIDTHS if w['label'] == endpoint['width'])
+            row = {'status': frozen['status'], 'campaign_id': frozen['campaign_id'], 'arm_id': run['arm_id'],
+                   'run_id': run['run_id'], 'seed': SEED, 'representation': run['representation'],
+                   'state_scope': run['state_scope'], 'clipping': run['clipping'],
+                   'width_fraction': width['source_fraction'], 'ffn_dimension': width['active_ffn_dimension'], **endpoint,
+                   'contract_hash': run['contract_hash'], 'initialization': run['initialization'],
+                   'checkpoint_path': sidecar['checkpoint_path'], 'checkpoint_sha256': sidecar['checkpoint_sha256'],
+                   'terminal_content_hash': sidecar['content_hash'],
+                   'width_selection_counts': summary['width_selection_counts'],
+                   'quarter_activation_counts': summary['quarter_activation_counts'], 'owner_call_counts': summary['owner_call_counts'],
+                   'optimizer_storage': summary['storage'], 'resources': summary['resources'],
+                   'temporary_concat_storage': summary['temporary_concat_storage']}
+            for unit in ('updates', 'tokens', 'epochs'):
+                for kind in ('actual', 'assigned'):
+                    row[kind + '_' + unit] = sidecar[kind + '_' + unit]
+            rows.append(row)
+    return rows
+
+
+def endpoint_figure(rows, *, metric, partial):
+    """Retain separate series even when all measured points coincide."""
+    from matplotlib.figure import Figure
+
+    figure = Figure(figsize=(11, 7))
+    ax = figure.subplots()
+    colors = dict(zip(('S1', 'S2', 'C1', 'C2', 'C3'), ('#0072B2', '#E69F00', '#009E73', '#CC79A7', '#D55E00')))
+    for arm in (*ELASTIC_ARMS, *STANDALONE_ARMS):
+        values = sorted((r for r in rows if r['arm_id'] == arm['arm_id']), key=lambda r: r['non_embedding_parameters'])
+        if not values:
+            continue
+        elastic = not arm['source_width']
+        ax.plot([r['non_embedding_parameters'] for r in values], [r[metric] for r in values],
+                label=arm['arm_id'], color=colors.get(arm['arm_id'], '#333333'),
+                linestyle='-' if elastic else 'None', marker='o' if elastic else 'X',
+                markersize=5 if elastic else 9, fillstyle='none' if elastic else 'full')
+    ax.set(xlabel='Active non-embedding parameters (input embeddings and LM head excluded)',
+           ylabel='Perplexity' if metric == 'perplexity' else 'Language-model loss')
+    ax.set_xticks([w['non_embedding_parameters'] for w in WIDTHS])
+    ax.ticklabel_format(axis='x', style='plain'); ax.grid(alpha=.2)
+    ax.legend(ncol=3)
+    title = ('PARTIAL diagnostic — ' if partial else '') + 'TinyStories-Instruct · seed 42 · ordinary validation\nExact terminal checkpoint endpoints'
+    figure.suptitle(title)
+    figure.text(.5, .025, 'Standalone: 1 epoch / 713,785,344 tokens per run; elastic: 4 epochs / 2,855,141,376 tokens per run.\n'
+                'One elastic run matches the four-standalone panel tokens; compute, time and realized width coverage are not matched.', ha='center', fontsize=9)
+    figure.tight_layout(rect=(0, .09, 1, .9))
+    return figure
+
+
+def _comparison_interpretations(rows):
+    explanations = (
+        ('S1/S2', 'S1', 'S2', 'Within slicing: shared versus per-width AdamW histories.'),
+        ('C1/C2', 'C1', 'C2', 'Within concat: shared versus per-width AdamW histories.'),
+        ('S1/C1', 'S1', 'C1', 'Representation changes inactive-tail momentum/decay and parameter counters.'),
+        ('S2/C2', 'S2', 'C2', 'Representation changes inactive-tail behavior, counters and lazy history allocation.'),
+        ('C1/C3', 'C1', 'C3', 'Global cap 1 versus independent owner caps 1; combined gradient bounds sqrt(2) through sqrt(5). Bounds do not describe AdamW update norms; block histories are shared across activating widths.'),
+    )
+    by_key = {(r['arm_id'], r['width']): r for r in rows}
+    def comparison(left, right, width):
+        a, b = by_key.get((left, width)), by_key.get((right, width))
+        if a is None or b is None:
+            return {'left': left, 'right': right, 'width': width, 'status': 'missing endpoints'}
+        return {'left': left, 'right': right, 'width': width,
+                'loss_right_minus_left': b['loss'] - a['loss'], 'perplexity_right_minus_left': b['perplexity'] - a['perplexity'],
+                'left_resources': a['resources'], 'right_resources': b['resources'],
+                'left_optimizer_storage': a['optimizer_storage'], 'right_optimizer_storage': b['optimizer_storage']}
+    result = [{'comparison': name, 'interpretation': explanation,
+               'measurements': [comparison(left, right, w) for w in WIDTH_LABELS]} for name, left, right, explanation in explanations]
+    result.append({'comparison': 'elastic/standalone', 'interpretation': 'Each elastic width versus its matching fresh dense standalone at the same active count; per-run token budgets differ.',
+                   'measurements': [comparison(a['arm_id'], 'ST-' + w, w) for a in ELASTIC_ARMS for w in WIDTH_LABELS]})
+    return result
+
+
+def report_campaign(*, manifest, output_dir, allow_partial=False):
+    """Revalidate the freeze and publish tables/figures from saved artifacts only."""
+    import csv
+    from pathlib import Path
+    from src.utils.config import ConfigError
+
+    try:
+        frozen_source = _source_record(manifest)
+        frozen = _read_json(manifest)
+        _check_content_hash(frozen, 'content_hash', 'frozen')
+        _require_equal(frozen.get('schema_version'), FROZEN_MANIFEST_SCHEMA_VERSION, 'frozen schema')
+        if frozen['status'] == 'partial' and not allow_partial:
+            raise ConfigError('Partial manifest requires --allow-partial again for report')
+        sources = [frozen_source, frozen['preflight_source']] + [s for r in frozen['runs'] for s in r['sources']]
+        _check_sources(sources)
+        preflight = _read_preflight_manifest(frozen['preflight_source']['path'])
+        _require_equal(frozen['preflight_manifest_hash'], preflight['manifest_hash'], 'frozen preflight hash')
+        _require_equal(frozen['campaign_id'], preflight['campaign_id'], 'frozen campaign_id')
+        by_arm = {r['arm_id']: r for r in preflight['runs']}
+        seen = set()
+        for saved in frozen['runs']:
+            arm = saved['arm_id']
+            if arm not in by_arm or arm in seen:
+                raise ConfigError('Duplicate or unexpected frozen arm')
+            seen.add(arm)
+            for path, present in saved['optional_sources'].items():
+                _require_equal(Path(path).exists(), present, f'Frozen source presence: {path}')
+            actual = _inspect_terminal_run(saved['run_dir'], by_arm[arm], preflight['expected_traces'][arm], allow_partial=allow_partial)
+            _require_equal(actual, saved, f'{arm}.frozen terminal sources')
+        missing = _missing_endpoints(frozen['runs'])
+        _require_equal(frozen['missing_endpoints'], missing, 'frozen missing endpoints')
+        _require_equal(frozen['status'], 'partial' if missing else 'complete', 'frozen status')
+        if missing and not allow_partial:
+            raise ConfigError(f'missing endpoints: {missing}')
+        rows = _endpoint_table(frozen, preflight)
+        if not rows:
+            raise ConfigError('missing all endpoints')
+        def publish(stage, output):
+            report = {'schema_version': COMPARISON_REPORT_SCHEMA_VERSION, 'campaign_id': frozen['campaign_id'],
+                      'status': frozen['status'], 'missing_endpoints': missing, 'missing_arms': frozen['missing_arms'],
+                      'endpoints': rows, 'figures': [], 'individual_reports': [],
+                      'comparisons': _comparison_interpretations(rows), 'holdout_evaluated': False,
+                      'interpretation_scope': 'Descriptive seed-42 observations only; no multi-seed robustness or uncertainty claims. Initialization matches the normal constructor seed, not exact cross-model tensors. One elastic run matches aggregate tokens of four standalones, not per-run compute, time or realized width coverage. Resource claims retain measurement-completeness flags.'}
+            for saved in frozen['runs']:
+                relative = Path('individual') / saved['arm_id']
+                diagnostic = report_run_artifacts(saved['run_dir'], stage / relative, partial=bool(missing))
+                # The reader uses the latest ledger; propagate the same costs to tables.
+                for row in rows:
+                    if row['arm_id'] == saved['arm_id']:
+                        row['resources'] = diagnostic['resources']
+                diagnostic['status'] = frozen['status']
+                diagnostic['missing_endpoints'] = missing
+                diagnostic['figures'] = [str(output / relative / Path(p).name) for p in diagnostic['figures']]
+                write_json_artifact(stage / relative / 'run_diagnostics.json', diagnostic)
+                report['individual_reports'].append(str(output / relative / 'run_diagnostics.json'))
+            report['comparisons'] = _comparison_interpretations(rows)
+            write_json_artifact(stage / 'optimizer_ownership_endpoints.json', {'schema_version': 1, 'status': frozen['status'], 'missing_endpoints': missing, 'endpoints': rows})
+            with (stage / 'optimizer_ownership_endpoints.csv').open('w', newline='') as stream:
+                writer = csv.DictWriter(stream, fieldnames=list(rows[0])); writer.writeheader()
+                writer.writerows({k: endpoint_csv_value(v) for k, v in r.items()} for r in rows)
+            for metric in ('perplexity', 'loss'):
+                figure = endpoint_figure(rows, metric=metric, partial=bool(missing))
+                for suffix in ('png', 'pdf'):
+                    name = f'optimizer_ownership_{metric}_vs_non_embedding_parameters.{suffix}'
+                    figure.savefig(stage / name); report['figures'].append(str(output / name))
+            _check_sources(sources)
+            write_json_artifact(stage / 'comparison_report.json', report)
+            return report
+        return _publish_directory(output_dir, publish)
+    except (KeyError, TypeError, IndexError, OverflowError) as error:
+        raise ConfigError(f'Malformed frozen comparison evidence: {error}') from error

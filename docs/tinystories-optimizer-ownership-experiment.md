@@ -624,3 +624,116 @@ The diagnostic models use synthetic eight-update budgets, small deterministic
 batches and two-update epoch fixtures. They do not establish full-budget
 scientific outcomes or CUDA bf16 behavior. No full campaign or sealed-holdout
 model evaluation was launched.
+
+## Phase 7 — Frozen terminal comparison (T046–T054)
+
+The campaign CLI now implements `freeze` and `report`. Freeze validates the saved
+preflight matrix and explicit scientific controls, nine unique run identities,
+completed summaries, resumable terminal checkpoint metadata and SHA256, bound
+ordinary-validation sidecars, and runtime action/epoch digests. Reports recheck
+all frozen source hashes and terminal evidence before publishing. Neither command
+constructs or evaluates a model, launches training, or reads holdout results.
+The historical per-width analyzer is unchanged.
+
+After separately requested full training has supplied the nine terminals:
+
+```bash
+python scripts/analyze_tinystories_optimizer_ownership.py freeze \
+  --campaign-manifest /scratch/ivo.navarrete/tmp/optimizer-ownership-campaign/campaign_manifest.json \
+  --run-root /scratch/ivo.navarrete/tmp/optimizer-ownership-runs \
+  --output-dir /scratch/ivo.navarrete/tmp/optimizer-ownership-frozen
+python scripts/analyze_tinystories_optimizer_ownership.py report \
+  --manifest /scratch/ivo.navarrete/tmp/optimizer-ownership-frozen/frozen_manifest.json \
+  --output-dir /scratch/ivo.navarrete/tmp/optimizer-ownership-report
+```
+
+`--run-dir` may be repeated instead of `--run-root`; saved identities determine
+the arms. Both commands require unused output directories and publish their
+staged outputs only after validation/export succeeds. A changed checkpoint,
+summary, endpoint sidecar, trace, clipping file, metrics file or resource ledger
+invalidates the freeze. A ledger appearing after freezing is also rejected.
+Freeze again into a fresh directory after an intentional source change.
+
+Explicit diagnostic subsets require `--allow-partial` independently on both
+commands. Missing arms/widths are enumerated; supplied malformed evidence still
+fails. Partial status appears in each CSV row, JSON exports, comparison and
+individual reports, and the combined and individual figure titles. No missing
+point is invented. A complete report contains exactly 24 endpoints, matching CSV
+and JSON rows, six descriptive comparisons, nine individual diagnostic reports
+with loss/perplexity/resource plots, and the two prescribed combined figure stems
+in both PNG and PDF. Combined figures retain five separate four-point curves and
+four disconnected standalone markers even for coincident measurements.
+
+The pinned ordinary-validation corpus manifest contains **285 packed sequences**
+(36,480 packed tokens) from **128 source documents**. Its context-128 batches
+therefore supply **36,195 valid causal targets**. A read-only inspection of
+`/nfs-stor/ivo.navarrete/matformer-corpora/tinystories-instruct-packed-full-v1/corpus_manifest.json`
+confirmed these counts for role hash
+`0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856`.
+Endpoint checks distinguish evaluated sequences from source documents and retain
+`target_token_weighted_causal_shift_float64` with perplexity equal to exp(loss).
+
+Interpretation is restricted to descriptive seed-42 observations:
+
+- S1/S2 and C1/C2 compare history ownership within each representation.
+- S1/C1 and S2/C2 also change inactive-tail momentum/decay, counters or lazy
+  allocations when changing representation.
+- C1/C3 compares global clipping at 1 with independent owner clipping at 1.
+  Combined gradient bounds range from sqrt(2) to sqrt(5); they are not AdamW
+  parameter-update bounds. C3 histories are shared across activating widths.
+- Each elastic width is compared with its fresh matching standalone at the same
+  active non-embedding count. Initialization is matched by the normal constructor
+  seed, not cross-model tensor identity. One elastic run matches the aggregate
+  training tokens of all four standalones; per-run compute, time and realized
+  width exposure are not matched. Resource completeness flags remain visible.
+
+Phase-7 acceptance uses synthetic terminal metadata at the pinned full horizons
+and controlled bulk-trace digests, plus separate real eight-update model runs for
+all nine arms. The latter exercise the terminal reader, real checkpoint loading,
+streamed trace/accounting validation and ordinary evaluation without stubbing
+those readers. Fixed scale/count expectations alone are reduced for that test.
+Per-width/block collection checkpoints and shared checkpoints are both covered.
+The initial missing-command acceptance checks failed as expected; subsequent
+checks include rehashed control changes, wrong targets/counts/budgets/roles,
+duplicate/missing/nonfinite endpoints, nonterminal/model-only checkpoint
+substitution, changed action/epoch digests, frozen source replacement, and
+publication/plot failure cleanup. A poisoned holdout JSON fixture remains unread.
+
+These artifacts establish reporting correctness, not full-budget campaign
+outcomes. Full campaign execution, phase-8 compatibility/GPU verification and
+future uniform holdout evaluation remain separate work.
+
+Validation command (pinned environment):
+
+```bash
+OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest \
+  tests/test_optimizer_ownership_reporting.py tests/test_optimizer_ownership_campaign.py \
+  -q --disable-warnings --tb=short \
+  --basetemp=/scratch/ivo.navarrete/tmp/optimizer-ownership-phase7-final-20260909
+```
+
+Result: **99 passed**, two dependency deprecation warnings, in 53.20 seconds.
+Log: `/tmp/optimizer-ownership-phase7-final.log`. Python compilation and
+`git diff --check` pass. Use a new `--basetemp` when retaining this evidence;
+pytest clears a reused base directory.
+
+Saved evidence under
+`/scratch/ivo.navarrete/tmp/optimizer-ownership-phase7-final-20260909`:
+
+- `test_complete_freeze_tables_an0/frozen/frozen_manifest.json` and `.../report/`:
+  complete synthetic 24-row CSV/JSON exports, nine individual reports, all four
+  combined PNG/PDF files. Plot-data checks assert nine labeled series, five
+  connected four-point curves, four unconnected markers, exact integer counts,
+  and no error-bar containers. The combined loss PNG was visually inspected;
+  all fixture values intentionally coincide while their labels remain separate.
+- `test_partial_requires_two_opt_0/report/`: three valid C3 endpoints, 21 explicit
+  omissions, partial tables/reports and labeled figures.
+- `test_freeze_report_cli_saved_a0/report/`: eight endpoints from repeated C1/C3
+  `--run-dir` inputs with independent freeze/report partial opt-ins.
+- `test_terminal_reader_consumes_0` through `..._8`: real nine-arm diagnostic
+  checkpoints, traces and terminal sidecars accepted by the terminal reader.
+
+The complete fixtures intentionally use synthetic checkpoint tensors and bulk
+trace digests. Their apparent full horizons and coincident losses are test
+inputs, not measured campaign learning or resource outcomes. The separate real
+runtime cases verify schema integration at eight updates, not full horizons.

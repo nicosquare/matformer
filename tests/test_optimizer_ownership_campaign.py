@@ -480,3 +480,40 @@ def test_changed_resolved_alignment_rejected(tmp_path, audited_inputs, key, valu
     run["resolved_config"]["dataset"]["optimizer_iteration"][key] = value
     with pytest.raises(ConfigError, match=key):
         campaign.validate_run_budget(run["resolved_config"], campaign.ARMS[-1])
+
+
+@pytest.mark.parametrize('command', ['freeze', 'report'])
+def test_comparison_cli_options_and_named_failure(tmp_path, capsys, command):
+    from scripts.analyze_tinystories_optimizer_ownership import main
+    with pytest.raises(SystemExit) as missing: main([command])
+    assert missing.value.code == 2
+    args = ['--campaign-manifest', str(tmp_path / 'missing.json'), '--run-root', str(tmp_path)] if command == 'freeze' else ['--manifest', str(tmp_path / 'missing.json')]
+    with pytest.raises(SystemExit) as invalid: main([command, *args, '--output-dir', str(tmp_path / 'out')])
+    assert invalid.value.code == 1
+    assert command in capsys.readouterr().err and not (tmp_path / 'out').exists()
+    if command == 'freeze':
+        with pytest.raises(SystemExit) as conflict: main([command, *args, '--run-dir', str(tmp_path), '--output-dir', str(tmp_path / 'out')])
+        assert conflict.value.code == 2
+
+
+def test_freeze_report_cli_saved_artifacts_and_independent_partial_opt_in(tmp_path, audited_inputs, monkeypatch, capsys):
+    from test_optimizer_ownership_reporting import terminal_campaign
+    from scripts.analyze_tinystories_optimizer_ownership import main
+    from src.evaluation import validation
+    import src.training.steps as steps
+    def forbidden(*args, **kwargs): pytest.fail('freeze/report invoked training or evaluation')
+    manifest, root = terminal_campaign.__wrapped__(tmp_path, audited_inputs, monkeypatch)
+    monkeypatch.setattr(steps, 'train_for_steps', forbidden)
+    monkeypatch.setattr(validation, 'evaluate_ownership_terminal', forbidden)
+    freeze_args = ['freeze', '--campaign-manifest', str(manifest), '--run-dir', str(root / 'C3'), '--run-dir', str(root / 'C1'), '--output-dir', str(tmp_path / 'frozen')]
+    with pytest.raises(SystemExit) as incomplete: main(freeze_args)
+    assert incomplete.value.code == 1 and 'missing' in capsys.readouterr().err
+    main([*freeze_args, '--allow-partial'])
+    frozen = json.loads(capsys.readouterr().out)
+    assert frozen['status'] == 'partial' and len(frozen['runs']) == 2
+    report_args = ['report', '--manifest', str(tmp_path / 'frozen/frozen_manifest.json'), '--output-dir', str(tmp_path / 'report')]
+    with pytest.raises(SystemExit) as incomplete: main(report_args)
+    assert incomplete.value.code == 1 and 'allow-partial' in capsys.readouterr().err
+    main([*report_args, '--allow-partial'])
+    report = json.loads(capsys.readouterr().out)
+    assert report['status'] == 'partial' and len(report['endpoints']) == 8
