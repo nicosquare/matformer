@@ -457,10 +457,17 @@ def test_c1_matches_diagnostic_global_c3_parameters_and_every_history_tensor():
                 torch.testing.assert_close(value, state[key], rtol=1e-6, atol=1e-7)
 
 
-def runtime_fixture(tmp_path, *, scope='per_ffn_block', max_steps=8, widths=WIDTHS):
+def runtime_fixture(tmp_path, *, scope='per_ffn_block', max_steps=8, widths=WIDTHS, device='cpu'):
     from src.training.checkpointing import build_initial_continuation_state
     from src.training.modeling import build_model
     from src.utils.config import resolve_run_config
+
+    if device == 'cuda':
+        if not torch.cuda.is_available():
+            pytest.skip('CUDA unavailable; bf16 diagnostic requires one GPU')
+        if not torch.cuda.is_bf16_supported():
+            pytest.skip('CUDA device does not support bf16')
+        torch.cuda.reset_peak_memory_stats()
 
     config = resolve_run_config(
         'tests/fixtures/per_granularity_optimizer_smoke.yaml',
@@ -474,6 +481,7 @@ def runtime_fixture(tmp_path, *, scope='per_ffn_block', max_steps=8, widths=WIDT
             'model.context_length': 8,
             'training.max_steps': max_steps, 'training.token_budget': max_steps * 8,
             'training.batch_size_per_process': 1,
+            'training.mixed_precision': 'bf16' if device == 'cuda' else 'none',
             'training.optimizer.state_scope': scope,
             'training.gradient_clipping': training(scope)['gradient_clipping'],
             'training.warmup_steps': 2,
@@ -486,19 +494,28 @@ def runtime_fixture(tmp_path, *, scope='per_ffn_block', max_steps=8, widths=WIDT
         },
     )
     torch.manual_seed(42)
-    model = build_model(config)
+    from src.training.distributed import resolve_runtime_settings
+    resolve_runtime_settings(config['training'], device, single_process=True)
+    model = build_model(config).to(device)
     optimizer, scheduler = steps.build_optimizer_and_scheduler(model, config['training'])
     batches = [{'input_ids': torch.arange(1, 9).reshape(1, 8),
                 'labels': torch.arange(1, 9).reshape(1, 8)} for _ in range(2)]
     return config, model, optimizer, scheduler, batches, build_initial_continuation_state(config)
 
 
-def test_real_trainer_orders_owner_calls_then_clock_and_publishes_complete_updates(tmp_path, monkeypatch):
-    from src.training.run import _validate_restored_optimizer_ownership_runtime
+@pytest.mark.parametrize('device', ['cpu', 'cuda'])
+def test_real_trainer_orders_owner_calls_then_clock_and_publishes_complete_updates(tmp_path, monkeypatch, device):
+    from src.training.run import _validate_restored_optimizer_ownership_runtime, _resource_attempt_observer
+    import time
 
-    config, model, optimizer, clock, batches, state = runtime_fixture(tmp_path)
+    started_at = time.perf_counter()
+    config, model, optimizer, clock, batches, state = runtime_fixture(tmp_path, device=device)
+    observer = _resource_attempt_observer(config, torch.device(device), started_at=started_at, source_checkpoint=None)
+    optimizer._resource_observer = observer
     events, observations, forwards = [], [], []
     model.register_forward_hook(lambda *args: forwards.append(1))
+    compute_dtypes = []
+    model.lm_head.register_forward_hook(lambda module, args, output: compute_dtypes.append(output.dtype))
     for entry in optimizer.entries:
         original = entry.optimizer.step
         def tracked_step(*args, _owner=entry.owner_id, _step=original, **kwargs):
@@ -527,14 +544,38 @@ def test_real_trainer_orders_owner_calls_then_clock_and_publishes_complete_updat
         assert state['epoch'] == (step - 1) // 2
         assert state['global_sampling_state']['exposure_counts'] == optimizer.width_selection_counts
         assert state['last_clipping_observation']['step'] == step
+        observation = state['last_clipping_observation']
+        assert math.isfinite(observation['combined_pre_norm'])
+        assert math.isfinite(observation['combined_post_norm'])
+        assert observation['combined_post_norm'] <= math.sqrt(len(optimizer.active_owner_ids(width))) + 2e-6
+        for group in observation['groups'].values():
+            if group['active']:
+                assert math.isfinite(group['pre_norm'])
+                assert 0 <= group['post_norm'] <= 1.0 + 2e-6
+                assert 0 < group['coefficient'] <= 1
         _validate_restored_optimizer_ownership_runtime(config, state, optimizer, clock)
         observations.append(copy.deepcopy(state['last_clipping_observation']))
 
-    steps.train_for_steps(config, model, batches, [], optimizer, clock, torch.device('cpu'),
+    steps.train_for_steps(config, model, batches, [], optimizer, clock, torch.device(device),
                           run_state=state, successful_step_callback=committed)
     assert len(forwards) == len(observations) == 8
     assert sum(optimizer.width_selection_counts.values()) == 8
     assert all(entry.optimizer.param_groups[0]['lr'] == 0 for entry in optimizer.entries)
+    observer(run_state=state, boundary='completed')
+    peaks = state['resource_summary']
+    assert peaks['attempted_steps'] == 8
+    assert peaks['measurement_complete'] is True
+    assert all(torch.isfinite(p).all() for p in model.parameters())
+    for entry in optimizer.entries:
+        for history in entry.optimizer.state.values():
+            assert all(torch.isfinite(value).all() for value in history.values() if torch.is_tensor(value))
+    if device == 'cuda':
+        assert compute_dtypes == [torch.bfloat16] * 8
+        assert 0 < peaks['peak_allocated_bytes'] <= peaks['peak_reserved_bytes']
+        (tmp_path / 'cuda_bf16_diagnostic.json').write_text(json.dumps({
+            'device': torch.cuda.get_device_name(), 'torch': torch.__version__,
+            'compute_dtype': str(compute_dtypes[0]), 'updates': 8, 'resources': peaks,
+        }, indent=2))
     state['optimizer_width_selection_counts']['g250'] += 1
     with pytest.raises(ValueError, match='unreconciled'):
         _validate_restored_optimizer_ownership_runtime(config, state, optimizer, clock)

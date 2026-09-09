@@ -16,9 +16,9 @@ from test_optimizer_ownership import runtime_fixture, assert_state_equal, WIDTHS
 ARMS = ('ST-g250', 'ST-g500', 'ST-g750', 'ST-g1000', 'S1', 'S2', 'C1', 'C2', 'C3')
 
 
-def fixture(tmp_path, arm='C3'):
+def fixture(tmp_path, arm='C3', *, device='cpu'):
     scope = 'per_ffn_block' if arm == 'C3' else 'per_granularity' if arm in ('S2', 'C2') else 'shared'
-    config, model, opt, clock, batches, state = runtime_fixture(tmp_path, scope=scope)
+    config, model, opt, clock, batches, state = runtime_fixture(tmp_path, scope=scope, device=device)
     from src.utils.reproducibility import configure_strict_determinism
     configure_strict_determinism(config)
     if arm.startswith('S'):
@@ -34,6 +34,7 @@ def fixture(tmp_path, arm='C3'):
         config['model']['granularity_sampling_mode'] = None
         config['training']['optimizer_state_contract']['ordered_granularities'] = ['g1000']
         state = cp.build_initial_continuation_state(config)
+    model = model.to(device)
     opt, clock = steps.build_optimizer_and_scheduler(model, config['training'])
     # Synthetic diagnostic identity; production materialization validates the full protocol.
     config['optimizer_ownership_contract'] = {'schema_version': 1, 'arm_id': arm, 'campaign_id': 'resume-test'}
@@ -54,7 +55,7 @@ def train(bundle, stop=None, trace=None):
         if kw['step'] == stop:
             raise StopIteration('diagnostic boundary')
     try:
-        steps.train_for_steps(config, model, batches, [], opt, clock, torch.device('cpu'), run_state=state, successful_step_callback=committed)
+        steps.train_for_steps(config, model, batches, [], opt, clock, next(model.parameters()).device, run_state=state, successful_step_callback=committed)
     except StopIteration:
         pass
 
@@ -177,9 +178,9 @@ def test_attempt_ledger_preserves_replay_and_incomplete_costs(tmp_path):
     with pytest.raises(ConfigError): restored.validate_watermark({'first': 3})
 
 
-def packed_fixture(tmp_path, arm='C3'):
+def packed_fixture(tmp_path, arm='C3', *, device='cpu'):
     from src.training.packed_corpus import RepeatingNoPaddingDistributedBatchSampler, REPEATED_EPOCH_ORDER_VERSION
-    bundle = list(fixture(tmp_path, arm))
+    bundle = list(fixture(tmp_path, arm, device=device))
     config = bundle[0]
     config['dataset'].update(mode='packed_mmap', data_seed=42, optimizer_iteration={
         'mode': 'repeat_epochs', 'epoch_order': 'deterministic_per_epoch',
@@ -196,18 +197,19 @@ def packed_fixture(tmp_path, arm='C3'):
 
 @pytest.mark.parametrize('arm', ARMS)
 @pytest.mark.parametrize('boundary', [1, 2, 3])
-def test_repeating_packed_sampler_exact_batches_actions_rng_and_state(tmp_path, arm, boundary):
-    full = packed_fixture(tmp_path, arm)
+@pytest.mark.parametrize('device', ['cpu', 'cuda'])
+def test_repeating_packed_sampler_exact_batches_actions_rng_and_state(tmp_path, arm, boundary, device):
+    full = packed_fixture(tmp_path, arm, device=device)
     full_trace, full_batches = [], []
     full[1].register_forward_pre_hook(lambda module, args, kwargs: full_batches.append(kwargs['input_ids'].clone()), with_kwargs=True)
     train(full, trace=full_trace)
     final_rng = capture_rng_state()
-    source = packed_fixture(tmp_path, arm)
+    source = packed_fixture(tmp_path, arm, device=device)
     prefix_trace = []
     train(source, stop=boundary, trace=prefix_trace)
     path = tmp_path / 'packed.pt'
     save(source, path)
-    restored = packed_fixture(tmp_path, arm)
+    restored = packed_fixture(tmp_path, arm, device=device)
     before_rng = capture_rng_state()
     load(restored, path)
     suffix_trace, suffix_batches = [], []

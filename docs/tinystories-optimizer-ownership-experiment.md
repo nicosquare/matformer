@@ -11,9 +11,15 @@ C3 config eligibility, CPU model/partition inspection, and full expected traces
 (T006–T015). Phases 4–5 implement C3 stepping/clipping and durable exact resume
 (T016–T036). Phase 6 adds committed trace/clipping artifacts, measured storage and
 resource summaries, immutable terminal ordinary-validation sidecars and per-run
-plots (T037–T045). Freeze, the complete campaign comparison CLI and final GPU
-verification remain in phases 7–8. No full-budget campaign results exist; the
-runtime evidence below comes from short diagnostic and controlled-fixture tests.
+plots (T037–T045). Phase 7 implements strict freeze, 24-endpoint export and
+complete/partial comparison reports (T046–T054). Phase 8 finalizes commands and
+compatibility evidence, with native-CUDA bf16 tests that explicitly skip when no
+GPU is available (T055–T058). See the final
+[verification record](../specs/013-tinystories-optimizer-ownership/verification.md)
+for results and the outstanding GPU environment limitation. No full-budget
+campaign results exist; evidence comes from short diagnostics and controlled
+fixtures. Full campaign launch and future uniform holdout evaluation each
+require a separate researcher request.
 
 The schema-1 `build_optimizer_ownership_signature` helper in
 `src/utils/reproducibility.py` accepts explicit resolved contract sections and
@@ -120,15 +126,16 @@ weighted loss and perplexity equal to its exponential.
 
 ## Artifact locations and record conventions
 
-The following paths are planned outputs, not artifacts produced by Phase 1.
-The future campaign input is
-`configs/controlled_exps/tinystories_instruct_optimizer_ownership.yaml`, and the
-future thin CLI is `scripts/analyze_tinystories_optimizer_ownership.py`.
+The implemented campaign input is
+`configs/controlled_exps/tinystories_instruct_optimizer_ownership.yaml`, and its
+thin CLI is `scripts/analyze_tinystories_optimizer_ownership.py`. The example
+paths below describe a future authorized campaign; actual diagnostic artifact
+paths appear in the dated evidence sections.
 The [CLI contract](../specs/013-tinystories-optimizer-ownership/contracts/cli-entrypoints.md)
 and [quickstart](../specs/013-tinystories-optimizer-ownership/quickstart.md)
 define later commands and required arguments.
 
-| Location | Planned artifacts |
+| Location | Artifacts |
 | --- | --- |
 | `/scratch/ivo.navarrete/tmp/optimizer-ownership-campaign/` | `preflight.json`, `campaign_manifest.json`, nine `configs/<arm>.yaml` |
 | `/scratch/ivo.navarrete/tmp/optimizer-ownership-runs/<arm>/` | Existing resolved config, metrics CSV, summary and resumable checkpoints; `optimizer_ownership_trace.jsonl`, `optimizer_ownership_clipping.jsonl`, `resource_attempts.json`, `terminal_validation_results.json` |
@@ -137,9 +144,9 @@ define later commands and required arguments.
 
 Records use plain JSON-compatible dictionaries, explicit schema versions,
 ordered arm/width definitions, string paths, and full campaign/run identities.
-Reuse `src.utils.reproducibility.stable_hash` for canonical JSON hashes and
-`src.utils.metrics.write_json_artifact` for atomic JSON publication. Future
-scientific contract serialization must preserve historical signature inputs.
+The implementation uses `src.utils.reproducibility.stable_hash` for canonical
+JSON hashes and `src.utils.metrics.write_json_artifact` for atomic JSON
+publication. Campaign serialization preserves historical signature inputs.
 Terminal sidecar content hashes exclude their own hash field.
 
 The 24 endpoint keys are `(campaign_id, arm_id, run_id, width)`: four widths for
@@ -163,10 +170,11 @@ combined caps, and each elastic width against its matching standalone.
 
 ## Requirement-to-verification outline
 
-The table maps the full feature's required evidence. Phase 2 static identity and
-topology checks are recorded below; optimizer intervention, campaign, resume and
-reporting evidence remains pending. Tests use small real models or controlled
-fixtures and write their outcomes into this record.
+The table maps the full feature's required evidence to the implemented checks.
+The dated sections below and the final
+[requirement reconciliation](../specs/013-tinystories-optimizer-ownership/verification.md#requirement-reconciliation)
+distinguish real input audits, model diagnostics and synthetic endpoint fixtures
+from future full-budget observations. GPU results require a compatible device.
 
 | Requirements | Tasks | Required evidence |
 | --- | --- | --- |
@@ -700,8 +708,9 @@ substitution, changed action/epoch digests, frozen source replacement, and
 publication/plot failure cleanup. A poisoned holdout JSON fixture remains unread.
 
 These artifacts establish reporting correctness, not full-budget campaign
-outcomes. Full campaign execution, phase-8 compatibility/GPU verification and
-future uniform holdout evaluation remain separate work.
+outcomes. Final compatibility results and GPU availability are recorded in
+Phase 8 below. Full campaign execution and future uniform holdout evaluation
+remain separately requested work.
 
 Validation command (pinned environment):
 
@@ -737,3 +746,58 @@ The complete fixtures intentionally use synthetic checkpoint tensors and bulk
 trace digests. Their apparent full horizons and coincident losses are test
 inputs, not measured campaign learning or resource outcomes. The separate real
 runtime cases verify schema integration at eight updates, not full horizons.
+
+## Phase 8 — Final workflow and compatibility evidence (T055–T058)
+
+The [quickstart](../specs/013-tinystories-optimizer-ownership/quickstart.md) now
+documents the implemented read-only audit/preflight, individual training,
+continuation, completion-only recovery, freeze and report commands. For example,
+after a separate researcher launch request and a fresh final-revision preflight:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python train.py \
+  --config /scratch/ivo.navarrete/tmp/optimizer-ownership-campaign/configs/C3.yaml \
+  --output-dir /scratch/ivo.navarrete/tmp/optimizer-ownership-runs/C3
+```
+
+Use this same command and immutable paths to resume an interrupted C3 run, or
+recover a missing terminal sidecar from its existing terminal checkpoint. The
+materialized config already enables continuation; no new resume flag or shortened
+budget is needed. For another individual arm, select its manifest-recorded config
+and output path, such as `ST-g250.yaml` and `optimizer-ownership-runs/ST-g250`.
+Adding `--preflight` performs config-only inspection without training.
+
+After an owner/clock/accounting mutation failure, discard the live poisoned state
+and restart from the prior durable checkpoint. Preserve `resource_attempts.json`
+and failure records so replayed work remains charged. Recovery at terminal budget
+takes zero optimizer steps and preserves checkpoint SHA256; a valid sidecar is
+reused. An invalid checkpoint or sidecar fails explicitly. Do not change the
+horizon, cross-load arms, or restart fresh in an occupied run directory.
+
+Freeze only after all intended continuation/recovery finishes. Report rechecks
+the saved source hashes; changed summaries or resource ledgers require another
+freeze into a new output directory. Both freeze and report require explicit
+`--allow-partial` for a separately requested incomplete diagnostic. The six
+comparison interpretations and resource caveats are tabulated in the
+[quickstart](../specs/013-tinystories-optimizer-ownership/quickstart.md#6-read-the-comparisons-and-resource-limits).
+
+The [final verification record](../specs/013-tinystories-optimizer-ownership/verification.md)
+contains every requested test command, saved evidence paths and a complete
+FR-001–028 / EX-001–013 / SC-001–008 reconciliation. The initial requested suites
+produced **976 passes and one existing expected failure**; four Gloo cases failed
+because sandbox sockets were prohibited, then **all four passed outside the
+sandbox**. The final affected ownership suites produced **322 passes and 28 CUDA
+skips**. The added Feature 12 fixture preserves six-run/three-seed reporting,
+trailing-five validation means and preference for saved synthetic holdout results.
+
+CUDA is unavailable both inside and outside this environment's sandbox. The new
+eight-update C3 runtime and all-nine-arm epoch-boundary resume variants are ready
+for one native-bf16 GPU, but their 28 CUDA skips provide no GPU execution or peak
+memory evidence. T057 is completed through its explicit unavailable-GPU reporting
+path. Successful CUDA verification remains a follow-up on a suitable machine.
+
+Phase 8 changes tests/documentation only; the campaign YAML, historical analyzer,
+legacy hash inputs and training hot loop are unchanged. The restore-only full-
+bundle guard remains outside per-step execution. Short real-model and synthetic
+report tests verify tooling; full-budget learning/resource results and uniform
+holdout evaluation remain separately requested researcher work.

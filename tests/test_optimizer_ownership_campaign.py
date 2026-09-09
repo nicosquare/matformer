@@ -17,6 +17,52 @@ from src.utils.reproducibility import seed_for
 RECIPE = Path("configs/controlled_exps/tinystories_instruct_optimizer_ownership.yaml")
 
 
+@pytest.mark.parametrize('with_holdout', [False, True])
+def test_historical_feature12_analyzer_retains_six_run_endpoint_policy(tmp_path, with_holdout):
+    """Synthetic legacy artifacts retain their own seeds and endpoint selection."""
+    import math
+    from test_reporting import _write_optimizer_scope_reporting_runs
+    from scripts.analyze_tinystories_per_width_optimizer import freeze_manifest, write_report
+    from src.utils.metrics import METRICS_COLUMNS, write_metrics_csv
+
+    run_dirs = _write_optimizer_scope_reporting_runs(tmp_path / 'legacy-runs')
+    for run_dir in run_dirs:
+        # A large oldest value must be excluded by the legacy trailing-five rule.
+        rows = []
+        for width in campaign.WIDTH_LABELS:
+            for step, loss in enumerate([100.0, 1.0, 2.0, 3.0, 4.0, 5.0], 1):
+                row = dict.fromkeys(METRICS_COLUMNS)
+                row.update(run_id=run_dir.name, step=step, split='validation',
+                           granularity=width, loss=loss, perplexity=math.exp(loss))
+                rows.append(row)
+        # Preserve the fixture's audited optimizer action rows.
+        import csv
+        with (run_dir / 'metrics.csv').open() as source:
+            rows = [r for r in csv.DictReader(source) if r['split'] == 'train'] + rows
+        write_metrics_csv(run_dir, rows)
+    manifest = freeze_manifest(phase='confirmation', run_dirs=run_dirs, output_dir=tmp_path / 'legacy-analysis')
+    if with_holdout:
+        for run_dir in run_dirs:
+            checkpoint = run_dir / 'checkpoints/latest.pt'
+            (run_dir / 'final_holdout_results.json').write_text(json.dumps({
+                'checkpoint_sha256': hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
+                'ordered_granularities': list(campaign.WIDTH_LABELS),
+                'ordered_per_granularity_losses': [
+                    {'granularity': w, 'loss': 0.5, 'perplexity': math.exp(0.5)}
+                    for w in campaign.WIDTH_LABELS
+                ],
+            }))
+    report_path, *_ = write_report(manifest_path=manifest, output_dir=tmp_path / 'legacy-analysis')
+    report = json.loads(report_path.read_text())
+    assert len(report['outcomes']) == 6
+    assert report['seed_aggregate']['seed_count'] == 3
+    assert {row['seed'] for row in report['outcomes']} == {42, 43, 44}
+    assert report['holdout_results_complete'] is with_holdout
+    for row in report['outcomes']:
+        for endpoint in row['per_width_outcomes'].values():
+            assert endpoint['loss'] == pytest.approx(0.5 if with_holdout else 3.0)
+
+
 @pytest.fixture
 def audited_inputs(tmp_path, monkeypatch):
     """Mock external integrity IO only; retain the real resolver/model checks."""
