@@ -6,9 +6,11 @@ Phase 1 establishes the experiment record and fixed definitions in
 [`src/evaluation/optimizer_ownership.py`](../src/evaluation/optimizer_ownership.py).
 Phase 2 supplies campaign-only scientific hashing, physical FFN metadata and a
 validated static five-owner concat partition (T003–T005).
-Campaign preflight, C3 runtime support, exact campaign resume, terminal sidecars,
-and comparison commands are later implementation tasks. This record does not
-claim that those interfaces work or that campaign results exist.
+Phase 3 implements nine-arm preflight, fixed-control and identity validation,
+C3 config eligibility, CPU model/partition inspection, and full expected traces
+(T006–T015). C3 optimizer stepping/clipping, exact campaign resume, terminal
+sidecars, and freeze/report commands remain later phases. No full-budget campaign
+results exist and phase-3 preflight does not establish runtime ownership support.
 
 The schema-1 `build_optimizer_ownership_signature` helper in
 `src/utils/reproducibility.py` accepts explicit resolved contract sections and
@@ -17,7 +19,7 @@ identity, representation, state scope, clipping, initialization, model, optimize
 sampling, data, budget, evaluation and count convention. It hashes every supplied
 control, normalizes tuples to JSON arrays and rejects missing sections, unsupported
 schema versions, non-string keys and nonfinite/nonserializable values. Preflight
-will supply and validate the fixed scientific values; this helper does not resolve
+supplies and validates the fixed scientific values; this helper does not resolve
 trainer defaults. Historical paired/full signature functions remain unchanged.
 
 `physical_parameter_metadata()` on both FFNs describes whole physical tensors,
@@ -236,3 +238,118 @@ Result: **83 passed**, with two SWIG import deprecation warnings, in 8.65 second
 `git diff --check` also passed. T001 and T002 are complete; later tasks remain
 unchecked. No runtime ownership test, campaign preflight, training, or holdout
 evaluation is claimed by the setup phase.
+
+
+## Phase 3 verification — 2026-09-09
+
+T006–T015 are implemented and verified. The focused missing-behavior tests first
+failed for the unsupported scope, missing campaign recipe, and stale materialized
+controls. Final verification used the pinned environment:
+
+```bash
+/home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest \
+  tests/test_optimizer_ownership_campaign.py tests/test_config.py \
+  tests/test_train_cli.py tests/test_reproducibility.py -q
+```
+
+Result: **343 passed**, with two existing SWIG deprecation warnings. These tests
+cover the supported C3 config and five owner caps; unsupported scope/topology/
+action/distribution/correction/warmup and invalid clipping rejection; legacy
+optimizer mappings/signatures; fixed common and arm controls; complete expected
+RNG/sampler digests; exact real-model counts; normal seed construction and RNG
+restoration; fresh model parameter objects; and staged publication with injected
+model/publication failures. A saved trainer config rejects changed scientific
+controls or a stale contract hash. Small CPU fixtures in the existing CLI and
+reproducibility suites remain diagnostic tests, not campaign runs.
+
+The read-only audit command from the quickstart passed again: all **89 shards**,
+**5,576,491** stored ordering entries, source exhaustion, tokenizer identity and
+all reserved-role intersections were verified. It retained all eight pinned hashes
+from `inspection.md`. The designated epoch contains **5,576,448 sequences**,
+excluding the same **43 sequences / 5,504 tokens**. The full audit result is
+embedded in the published `preflight.json`.
+
+The final campaign command was:
+
+```bash
+/home/ivo.navarrete/.conda/envs/elasticnn/bin/python \
+  scripts/analyze_tinystories_optimizer_ownership.py preflight \
+  --campaign configs/controlled_exps/tinystories_instruct_optimizer_ownership.yaml \
+  --prepared-corpus-dir /nfs-stor/ivo.navarrete/matformer-corpora/tinystories-instruct-packed-full-v1 \
+  --tokenizer-dir /nfs-stor/ivo.navarrete/matformer-tokenizers/tinystories-instruct-sentencepiece-bpe-2k-v1 \
+  --output-dir /scratch/ivo.navarrete/tmp/optimizer-ownership-phase3-verified-20260909 \
+  --run-output-root /scratch/ivo.navarrete/tmp/optimizer-ownership-phase3-verified-runs-20260909
+```
+
+Artifacts:
+
+- Manifest: `/scratch/ivo.navarrete/tmp/optimizer-ownership-phase3-verified-20260909/campaign_manifest.json`
+- Audit and digest report: `/scratch/ivo.navarrete/tmp/optimizer-ownership-phase3-verified-20260909/preflight.json`
+- Nine ordinary trainer YAMLs: the same directory's `configs/`.
+- Identity reservation: `/scratch/ivo.navarrete/tmp/.optimizer-ownership-phase3-verified-runs-20260909.optimizer-ownership-reservation.json`.
+
+The reservation is an exclusive sibling sidecar and records the manifest hash
+and all nine run IDs. Preflight rejects occupied arm paths or an existing
+reservation. It does not create the run root or any arm directory. On a failed
+publication it removes its reservation and staged output. Use fresh output/root
+paths for another preflight; campaign IDs should distinguish separately intended
+experiments. The manifest stores every resolved control, the allowed-difference
+matrix, constructor/seed provenance, code revision and source-file checksums
+(including uncommitted implementation), dependency versions, model descriptors,
+owner topology and per-run scientific hashes.
+
+CPU checks verified dense FFN dimensions **64/128/192/256** and matching active
+non-embedding counts **115264/164416/213568/262720** across representations.
+Each concat quarter owner contains **49152** parameter elements across layers;
+common contains **328256**, for **524864** total physical parameters. The clipping
+contract binds the inspected parameter topology. The four standalones resolve to
+**87132 updates / 713785344 tokens / one epoch**; the five elastic arms resolve to
+**348528 updates / 2855141376 tokens / four epochs**. No optimizer is constructed
+by campaign preflight and no forward/backward or model evaluation occurs.
+
+All nine first epochs match, and all five elastic four-epoch streams match.
+Digests encode flattened ordered sequence IDs as little-endian uint64; fixed batch
+size 64 makes every batch recoverable from that order. Each later epoch uses the
+existing repeat sampler over precisely the same stored-permutation prefix.
+
+| Epoch (one-based) | SHA256 |
+| --- | --- |
+| 1 | `b12bb2e42d4f6625f48c68dd39a872a962ffa01cbbfc87c0edbe47368d387f27` |
+| 2 | `0359d3e543bbb65fe0cb401f872a8c28fdd10d68a387157d324a52097e4b5cd4` |
+| 3 | `32b4df4d8a74bc017076c3a20135649ab2e933b53ee0b9cfa1f86b08fb7d949c` |
+| 4 | `7e36c5b85d9ba4a92c94837224635689a47a0deefa4a5376d18c8ed4f03c78fb` |
+
+Fixed designated-set hash: `1329fd4243b12fad836f2ba1328b4bd679450d516ae643ca8473ca57c953f0a2`.
+
+Complete elastic action SHA256: `275c4fd957d103c609b3cb1ae9e7d1f37635e58e6eca92994261ddb5f0346b26`.
+Encoding is one ASCII width label plus LF per update, generated with an isolated
+`granularity_selection` RNG using the trainer's uniform `randrange(4)` path.
+The actual expected trace contains g250=86898,
+g500=87221, g750=87337,
+g1000=87072 selections, totaling 348528. The statistical
+expectation of 87132 per width is recorded separately; counts are not balanced.
+These are precomputed traces, not observations of completed training.
+
+Manifest hash: `0e1499f79ebc31ae79e62f0db1d51874f6071745e2bf4f2118e948305a77d8ed`.
+
+The following config-only CLI also passed and reported C3 ownership, per-owner
+L2 clipping, campaign identity and the bound scientific contract:
+
+```bash
+/home/ivo.navarrete/.conda/envs/elasticnn/bin/python train.py \
+  --config /scratch/ivo.navarrete/tmp/optimizer-ownership-phase3-verified-20260909/configs/C3.yaml \
+  --preflight
+```
+
+Named CLI rejection evidence is saved in
+`/scratch/ivo.navarrete/tmp/optimizer-ownership-phase3-rejections-20260909.json`:
+changed learning rate, stale corpus hash, reserved run identities and a stale
+materialized contract hash all fail nonzero. Unit tests additionally reject
+changed tail alignment, partial/wrong horizons, missing/extra arms, historical
+run IDs, changed clipping and injected partial failures without success output.
+
+**Boundary:** no campaign training or sealed-holdout model evaluation ran. The
+published records explicitly set `training_started=false`,
+`holdout_evaluated=false`, and `runtime_ownership_verified=false`. Phase 4 must
+implement and verify C3 optimizer stepping and clipping; later phases add exact
+campaign resume, terminal sidecars and freeze/report commands.

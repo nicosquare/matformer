@@ -3462,3 +3462,56 @@ def test_cosine_schedule_resolution_remains_unchanged(tmp_path):
     assert resolved["training"]["scheduler_name"] == "cosine"
     assert resolved["training"]["scheduler_kwargs"] == {}
     assert resolved["training"]["scheduler_contract"] is None
+
+
+OWNERSHIP_CAPS = {f"O-{name}": 1.0 for name in ("A", "B", "C", "D", "common")}
+
+
+def _ownership_config(tmp_path):
+    raw = yaml.safe_load(Path("tests/fixtures/per_granularity_optimizer_smoke.yaml").read_text())
+    raw["model"].update(variant="concat", granularities=["g250", "g500", "g750", "g1000"],
+                        granularity_prefixes={"g250": .25, "g500": .5, "g750": .75, "g1000": 1.0},
+                        global_sampling_schedule="random_with_replacement")
+    raw["training"]["optimizer"]["state_scope"] = "per_ffn_block"
+    raw["training"]["gradient_clipping"] = {"mode": "per_owner", "norm_type": 2, "owner_max_norms": OWNERSHIP_CAPS.copy()}
+    path = tmp_path / "ownership.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    return path
+
+
+def test_ownership_config_resolves_five_caps_and_preserves_optimizer_mapping(tmp_path):
+    resolved = resolve_run_config(_ownership_config(tmp_path), create_output_dirs=False)
+    training = resolved["training"]
+    assert set(training["optimizer"]) == {"name", "kwargs"}
+    assert training["optimizer_state_scope"] == "per_ffn_block"
+    assert training["optimizer_scheduler_clock"] == "global_step"
+    assert training["gradient_clipping"]["owner_max_norms"] == OWNERSHIP_CAPS
+    assert training["gradient_clipping"]["stabilization_epsilon"] == 1e-6
+    assert training["optimizer_state_contract"]["single_process_required"]
+
+
+@pytest.mark.parametrize("override", [
+    "model.variant=slicing", "run.model_family=standalone", "run.sampling_mode=nested-all",
+    "model.granularity_sampling_mode=per_block", "model.global_sampling_interval_steps=2",
+    "model.global_sampling_schedule=balanced_cycle", "model.correction_mode=gmc",
+    "training.pre_nested_warmup.enabled=true", "training.distributed.expected_world_size=2",
+    "training.distributed.strategy=ddp", "training.optimizer.name=sgd",
+    "model.granularity_prefixes.g250=0.20", "training.optimizer.scheduler_clock=owner_step",
+    "training.gradient_clipping.mode=global", "training.gradient_clipping.norm_type=1",
+    "training.gradient_clip_norm=2", "training.gradient_clipping.owner_max_norms.O-A=0",
+    "training.gradient_clipping.owner_max_norms.O-A=-1",
+    "training.gradient_clipping.owner_max_norms.O-A=.nan",
+    "training.gradient_clipping.owner_max_norms.O-A=.inf",
+    "training.gradient_clipping.owner_max_norms.O-extra=1",
+    "training.gradient_clipping.owner_max_norms={O-A: 1}",
+    "training.optimizer.state_scope=shared",
+])
+def test_ownership_config_rejects_ineligible_controls(tmp_path, override):
+    with pytest.raises(ConfigError):
+        resolve_run_config(_ownership_config(tmp_path), overrides=["run.granularity=g250", override], create_output_dirs=False)
+
+
+@pytest.mark.parametrize("cap", [0, -1, float("nan"), float("inf")])
+def test_explicit_global_clipping_rejects_invalid_threshold(tmp_path, cap):
+    with pytest.raises(ConfigError, match="gradient_clip"):
+        resolve_run_config(_write_single_run_config(tmp_path), overrides={"training.gradient_clipping": {"mode": "global", "norm_type": 2}, "training.gradient_clip_norm": cap}, create_output_dirs=False)

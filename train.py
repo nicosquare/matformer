@@ -79,6 +79,18 @@ def main(argv: list[str] | None = None) -> None:
         print(
             json.dumps(
                 {
+                    "preflight_kind": "config_only",
+                    "gradient_clipping": training.get("gradient_clipping", {
+                        "mode": "global", "norm_type": 2,
+                        "max_norm": training["gradient_clip_norm"],
+                        "stabilization_epsilon": 1e-6,
+                    }),
+                    "optimizer_ownership_contract": resolved.get("optimizer_ownership_contract"),
+                    "optimizer_ownership_contract_hash": resolved.get("optimizer_ownership_contract_hash"),
+                    "campaign_identity": {
+                        key: resolved["run"].get(key)
+                        for key in ("campaign_id", "arm_id", "run_id")
+                    } if resolved["run"].get("campaign_id") else None,
                     "seed": resolved["run"]["seed"],
                     "reproducibility": resolved["run"]["reproducibility"],
                     "optimizer": training["optimizer"],
