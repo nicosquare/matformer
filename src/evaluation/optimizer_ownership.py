@@ -2,8 +2,9 @@
 
 This setup module does not resolve configs, construct models, or run experiments.
 Record types describe JSON-compatible dictionaries, not runtime validators.
-Use the imported stable_hash and write_json_artifact utilities directly as later
-phases add scientific contract serialization and atomic artifact publication.
+Campaign scientific contract serialization lives in src.utils.reproducibility.
+Use the imported stable_hash and write_json_artifact utilities for artifact
+identity and atomic publication as the campaign workflow is implemented.
 Scientific hashes must cover resolved controls; hashing an arm definition alone
 does not establish a valid campaign identity. Paths in saved records are strings.
 """
@@ -13,11 +14,10 @@ from __future__ import annotations
 from typing import Any, Literal, NotRequired, TypedDict
 
 from src.utils.metrics import write_json_artifact
-from src.utils.reproducibility import stable_hash
+from src.utils.reproducibility import SCIENTIFIC_CONTRACT_SCHEMA_VERSION, stable_hash
 
 
 CAMPAIGN_SCHEMA_VERSION = 1
-SCIENTIFIC_CONTRACT_SCHEMA_VERSION = 1
 CLIPPING_SCHEMA_VERSION = 1
 OPTIMIZER_OWNERSHIP_CHECKPOINT_SCHEMA_VERSION = 1
 RESOURCE_ATTEMPTS_SCHEMA_VERSION = 1

@@ -26,9 +26,9 @@
 
 **Purpose**: Supply stable identities and static model support shared by preflight, ownership, restore, and reports.
 
-- [ ] T003 [P] Add campaign-only schema-1 scientific contract serialization and canonical hashing in `src/utils/reproducibility.py`, covering representation, scope, clipping, initialization, data, budgets, evaluation, and count convention; add legacy-signature stability and changed-control hash checks in `tests/test_reproducibility.py` without injecting new defaults into historical signature inputs.
-- [ ] T004 [P] Expose or reuse explicit quarter parameter metadata in `src/models/ffn.py` for gate/up/down blocks and segment biases, distinguishing the common down bias and preserving both forward paths and full-shaped slicing gradients.
-- [ ] T005 Build stable ordered parameter descriptors and a reusable five-way concat partition in `src/training/optimizer_state.py` using T004 metadata: canonical names/tied aliases, shapes/dtypes, physical gradient support by width, quarter/common membership, and complete identity-deduplicated coverage; reject unequal quarters, overlap, or missing trainable parameters without allocating optimizer state.
+- [X] T003 [P] Add campaign-only schema-1 scientific contract serialization and canonical hashing in `src/utils/reproducibility.py`, covering representation, scope, clipping, initialization, data, budgets, evaluation, and count convention; add legacy-signature stability and changed-control hash checks in `tests/test_reproducibility.py` without injecting new defaults into historical signature inputs.
+- [X] T004 [P] Expose or reuse explicit quarter parameter metadata in `src/models/ffn.py` for gate/up/down blocks and segment biases, distinguishing the common down bias and preserving both forward paths and full-shaped slicing gradients.
+- [X] T005 Build stable ordered parameter descriptors and a reusable five-way concat partition in `src/training/optimizer_state.py` using T004 metadata: canonical names/tied aliases, shapes/dtypes, physical gradient support by width, quarter/common membership, and complete identity-deduplicated coverage; reject unequal quarters, overlap, or missing trainable parameters without allocating optimizer state.
 
 **Checkpoint**: Identity and topology helpers are ready. T005 depends on T004; T003 can overlap T004–T005. All story implementation depends on this phase.
 

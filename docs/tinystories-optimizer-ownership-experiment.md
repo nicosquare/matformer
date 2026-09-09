@@ -4,9 +4,31 @@
 
 Phase 1 establishes the experiment record and fixed definitions in
 [`src/evaluation/optimizer_ownership.py`](../src/evaluation/optimizer_ownership.py).
+Phase 2 supplies campaign-only scientific hashing, physical FFN metadata and a
+validated static five-owner concat partition (T003–T005).
 Campaign preflight, C3 runtime support, exact campaign resume, terminal sidecars,
 and comparison commands are later implementation tasks. This record does not
 claim that those interfaces work or that campaign results exist.
+
+The schema-1 `build_optimizer_ownership_signature` helper in
+`src/utils/reproducibility.py` accepts explicit resolved contract sections and
+returns `(hash, JSON-compatible inputs)`. Required sections cover campaign/run/arm
+identity, representation, state scope, clipping, initialization, model, optimizer,
+sampling, data, budget, evaluation and count convention. It hashes every supplied
+control, normalizes tuples to JSON arrays and rejects missing sections, unsupported
+schema versions, non-string keys and nonfinite/nonserializable values. Preflight
+will supply and validate the fixed scientific values; this helper does not resolve
+trainer defaults. Historical paired/full signature functions remain unchanged.
+
+`physical_parameter_metadata()` on both FFNs describes whole physical tensors,
+concat segment indices and gradient presence by width, including the common down
+bias. `build_parameter_descriptors(model, ordered_widths=...)` retains canonical
+names, tied aliases, shapes/dtypes, trainability, scalar counts and quarter/support
+metadata in model registration order. `build_concat_parameter_partition` uses
+those descriptors to return ordered O-A/O-B/O-C/O-D/O-common groups without
+constructing optimizers. It rejects unequal quarters, invalid block shapes,
+unclassified FFN parameters, conflicting tied ownership and mixed FFN layouts.
+Frozen parameters remain described and are excluded from owner groups.
 
 The authoritative protocol is the [specification](../specs/013-tinystories-optimizer-ownership/spec.md),
 with the [plan](../specs/013-tinystories-optimizer-ownership/plan.md),
@@ -136,8 +158,10 @@ combined caps, and each elastic width against its matching standalone.
 
 ## Requirement-to-verification outline
 
-All runtime evidence below is pending later phases. Tests use small real models
-or controlled fixtures and write their outcomes into this record.
+The table maps the full feature's required evidence. Phase 2 static identity and
+topology checks are recorded below; optimizer intervention, campaign, resume and
+reporting evidence remains pending. Tests use small real models or controlled
+fixtures and write their outcomes into this record.
 
 | Requirements | Tasks | Required evidence |
 | --- | --- | --- |
@@ -154,6 +178,31 @@ the maximum peak across attempts, retaining failed/replayed work and flagging
 incomplete hard-kill measurements. Checkpoint watermarks are not added twice.
 After optimizer mutation begins, a failed multi-owner update must abort and
 must never replace the prior durable checkpoint with partial state.
+
+## Phase 2 verification (2026-09-09)
+
+Both new helper suites initially failed on the missing APIs before implementation.
+Final CPU verification used the pinned environment:
+
+```bash
+/home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest \
+  tests/test_reproducibility.py tests/test_optimizer_ownership.py \
+  tests/test_matformer_prefixes.py tests/test_model_size.py \
+  tests/test_per_granularity_optimizer.py tests/test_per_granularity_optimizer_resume.py -q
+```
+
+Result: **186 passed**, with two dependency SWIG deprecation warnings.
+`git diff --check` also passed. Evidence includes canonical JSON/hash stability,
+changed scientific controls, pinned legacy signatures, exact real-model gradient
+presence, unchanged FFN forward/backward values, frozen/tied/bias coverage,
+malformed partition rejection and no optimizer construction by static helpers.
+The d64/l4/v2048/FFN256 fixture has 49,152 parameters per quarter owner and
+328,256 common parameters (524,864 physical parameters total).
+
+These are foundation and compatibility checks. Later optimizer/clipping tests
+will extend `tests/test_optimizer_ownership.py`; T016 and subsequent tasks remain
+incomplete. No full campaign or sealed-holdout evaluation was run, and Phase 2
+does not establish C3 runtime or GPU bf16 behavior.
 
 ## Execution boundaries
 

@@ -65,6 +65,22 @@ def build_prefix_membership_segment_metadata(
 
 
 @dataclass(frozen=True)
+class FFNPhysicalParameter:
+    """Physical tensor support, distinct from the active slices of a tensor.
+
+    ``block_index`` identifies a concat segment; the common down bias and
+    full-shaped slicing tensors have no physical block owner. Frozen tensors
+    remain visible so callers can validate coverage before filtering them.
+    """
+
+    parameter_name: str
+    parameter: nn.Parameter
+    component: str
+    block_index: int | None
+    gradient_support: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ControlledFFNSupportEntry:
     """One exact, granularity-controlled slice of an FFN parameter."""
 
@@ -223,6 +239,22 @@ class ModifiedLlamaMLP(_ControlledFFNSupportMixin, LlamaMLP):
         self.current_subset_hd = None
         if self.gradient_membership_correction_enabled:
             self._register_gradient_membership_correction_hooks()
+
+    def physical_parameter_metadata(self) -> tuple[FFNPhysicalParameter, ...]:
+        """Every width reaches each full physical projection, including tails."""
+
+        widths = tuple(entry["name"] for entry in self.ffn_prefix_metadata)
+        entries = []
+        for family in ("gate", "up", "down"):
+            projection = getattr(self, f"{family}_proj")
+            for kind in ("weight", "bias"):
+                parameter = getattr(projection, kind)
+                if parameter is not None:
+                    entries.append(FFNPhysicalParameter(
+                        f"{family}_proj.{kind}", parameter, f"{family}_{kind}",
+                        None, widths if parameter.requires_grad else (),
+                    ))
+        return tuple(entries)
 
     def _build_gradient_membership_scale_vector(self):
         scale_vector = torch.ones(self.intermediate_size, dtype=torch.float32)
@@ -538,6 +570,29 @@ class CatLlamaMLP(_ControlledFFNSupportMixin, LlamaMLP):
         if self.gradient_membership_correction_enabled:
             self._register_gradient_membership_correction_hooks()
 
+    def physical_parameter_metadata(self) -> tuple[FFNPhysicalParameter, ...]:
+        """Expose independent segment tensors and the all-width output bias.
+
+        This describes the existing forward's ParameterList prefix selection;
+        it does not assemble tensors, allocate gradients or change active width.
+        Equal-quarter eligibility is checked by the campaign partition builder.
+        """
+
+        widths = tuple(entry["name"] for entry in self.ffn_prefix_metadata)
+        entries = []
+        for component in ("gate_weight", "up_weight", "down_weight", "gate_bias", "up_bias"):
+            for index, parameter in enumerate(getattr(self, f"{component}_blocks")):
+                entries.append(FFNPhysicalParameter(
+                    f"{component}_blocks.{index}", parameter, component, index,
+                    widths[index:] if parameter.requires_grad else (),
+                ))
+        if self.down_bias is not None:
+            entries.append(FFNPhysicalParameter(
+                "down_bias", self.down_bias, "down_bias", None,
+                widths if self.down_bias.requires_grad else (),
+            ))
+        return tuple(entries)
+
     def _register_gradient_membership_correction_hooks(self):
         block_groups = [
             self.gate_weight_blocks,
@@ -692,6 +747,7 @@ class CatLlamaMLP(_ControlledFFNSupportMixin, LlamaMLP):
 __all__ = [
     "MATFORMER_GRANULARITY_ORDER",
     "ControlledFFNSupportEntry",
+    "FFNPhysicalParameter",
     "ModifiedLlamaMLP",
     "CatLlamaMLP",
     "build_concat_layout_diagnostic",

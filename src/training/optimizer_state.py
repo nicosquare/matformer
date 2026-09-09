@@ -1,4 +1,4 @@
-"""Per-granularity optimizer ownership with one global scheduler clock."""
+"""Static parameter ownership and per-granularity optimizer runtime."""
 
 from __future__ import annotations
 
@@ -9,11 +9,176 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import torch
 from transformers import get_scheduler
+from transformers.models.llama.modeling_llama import LlamaMLP
 
+from src.models.ffn import CatLlamaMLP, ModifiedLlamaMLP
 from src.utils.config import ConfigError, resolve_optimizer_kwargs
 
 
 OPTIMIZER_COLLECTION_SCHEMA_VERSION = 1
+FFN_QUARTER_IDS = ("A", "B", "C", "D")
+
+
+def build_parameter_descriptors(
+    model: torch.nn.Module,
+    *,
+    ordered_widths: Sequence[str],
+) -> tuple[dict[str, Any], ...]:
+    """Describe each physical parameter once, in model registration order.
+
+    Canonical names are the first registered names, with remaining tied aliases
+    retained for checkpoint identity. Support describes gradient *presence*,
+    not nonzero entries: sliced tails still belong to full-shaped gradients.
+    All non-FFN trainable parameters have common, all-width support in the
+    campaign graph. The caller supplies the dense source label when applicable.
+    """
+
+    widths = tuple(ordered_widths)
+    if not widths or len(set(widths)) != len(widths):
+        raise ConfigError("Parameter descriptors require unique ordered widths")
+    metadata = {}
+    for module_name, module in model.named_modules(remove_duplicate=False):
+        if not isinstance(module, (CatLlamaMLP, ModifiedLlamaMLP)):
+            continue
+        available = tuple(item["name"] for item in module.ffn_prefix_metadata)
+        if any(width not in available for width in widths):
+            raise ConfigError(f"{module_name}: descriptor width is not in FFN metadata")
+        entries = module.physical_parameter_metadata()
+        known_names = {entry.parameter_name for entry in entries}
+        unknown = set(dict(module.named_parameters(remove_duplicate=False))) - known_names
+        if unknown:
+            raise ConfigError(f"{module_name}: unclassified FFN parameters: {sorted(unknown)}")
+        for entry in entries:
+            name = f"{module_name}.{entry.parameter_name}" if module_name else entry.parameter_name
+            # A quarter ID is only meaningful for the four-block topology.
+            quarter = (
+                FFN_QUARTER_IDS[entry.block_index]
+                if entry.block_index is not None
+                and len(module.ffn_concat_block_metadata) == 4
+                and entry.block_index < 4
+                else None
+            )
+            metadata[name] = (
+                entry.component, quarter,
+                tuple(width for width in widths if width in entry.gradient_support),
+            )
+
+    descriptors = []
+    by_identity = {}
+    for name, parameter in model.named_parameters(remove_duplicate=False):
+        component, quarter, support = metadata.get(
+            name, ("common", None, widths if parameter.requires_grad else ()),
+        )
+        existing = by_identity.get(id(parameter))
+        if existing is not None:
+            previous_support = (
+                existing["component"], existing["quarter_id"],
+                tuple(existing["gradient_support"]),
+            )
+            if previous_support != (component, quarter, support):
+                raise ConfigError(
+                    "Parameter ownership/support overlap: "
+                    f"{existing['canonical_name']} and {name}"
+                )
+            existing["tied_aliases"].append(name)
+            continue
+        descriptor = {
+            "canonical_name": name,
+            "tied_aliases": [],
+            "shape": list(parameter.shape),
+            "dtype": str(parameter.dtype),
+            "trainable": bool(parameter.requires_grad),
+            "scalar_count": parameter.numel(),
+            "component": component,
+            "quarter_id": quarter,
+            "gradient_support": list(support),
+        }
+        descriptors.append(descriptor)
+        by_identity[id(parameter)] = descriptor
+    return tuple(descriptors)
+
+
+@dataclass(frozen=True)
+class ParameterOwner:
+    """A static group usable by C3 optimizers and C1 clipping diagnostics."""
+
+    owner_id: str
+    parameters: tuple[torch.nn.Parameter, ...]
+    descriptors: tuple[dict[str, Any], ...]
+    active_widths: tuple[str, ...]
+
+
+def _validate_concat_quarters(module: CatLlamaMLP, widths: tuple[str, ...]) -> None:
+    blocks = module.ffn_concat_block_metadata
+    quarter_size, remainder = divmod(module.intermediate_size, 4)
+    if remainder or quarter_size <= 0 or len(blocks) != 4 or any(
+        block["block_width"] != quarter_size for block in blocks
+    ):
+        raise ConfigError("Concat ownership requires four equal quarters")
+    if tuple(entry["name"] for entry in module.ffn_prefix_metadata) != widths:
+        raise ConfigError("Concat ownership width order must match FFN metadata")
+    for index, width in enumerate(widths):
+        if module.granularity_prefixes[width] != (index + 1) / 4:
+            raise ConfigError("Concat ownership widths must select equal quarter prefixes")
+    hidden_size = module.config.hidden_size
+    for component in ("gate_weight", "up_weight", "down_weight", "gate_bias", "up_bias"):
+        parameters = getattr(module, f"{component}_blocks")
+        optional = component.endswith("bias")
+        if len(parameters) != 4 and not (optional and len(parameters) == 0):
+            raise ConfigError(f"Concat {component} requires four parameter blocks")
+        shape = (
+            (quarter_size,) if optional else
+            (hidden_size, quarter_size) if component == "down_weight" else
+            (quarter_size, hidden_size)
+        )
+        if any(tuple(parameter.shape) != shape for parameter in parameters):
+            raise ConfigError(f"Concat {component} block shape must be {shape}")
+    if module.down_bias is not None and tuple(module.down_bias.shape) != (hidden_size,):
+        raise ConfigError("Concat common down bias shape must match hidden size")
+
+
+def build_concat_parameter_partition(
+    model: torch.nn.Module,
+    *,
+    ordered_widths: Sequence[str],
+) -> tuple[ParameterOwner, ...]:
+    """Validate and partition trainable concat tensors without optimizer state.
+
+    Quarter owners span every FFN layer; the identity-deduplicated remainder
+    belongs to O-common. Frozen parameters stay in model descriptors but are
+    excluded from owners. This helper does not configure subnetworks or step.
+    """
+
+    widths = tuple(ordered_widths)
+    if len(widths) != 4 or len(set(widths)) != 4:
+        raise ConfigError("Concat ownership requires four unique ordered widths")
+    ffns = [module for module in model.modules() if isinstance(module, LlamaMLP)]
+    if not ffns or any(not isinstance(module, CatLlamaMLP) for module in ffns):
+        raise ConfigError("Five-way FFN ownership requires concat FFNs throughout")
+    for module in ffns:
+        _validate_concat_quarters(module, widths)
+    descriptors = build_parameter_descriptors(model, ordered_widths=widths)
+    parameters = dict(model.named_parameters())
+    owners = []
+    for index, quarter in enumerate((*FFN_QUARTER_IDS, None)):
+        members = tuple(
+            d for d in descriptors if d["trainable"] and d["quarter_id"] == quarter
+        )
+        if not members:
+            raise ConfigError(f"Concat owner {quarter or 'common'} has no trainable parameters")
+        owners.append(ParameterOwner(
+            owner_id=f"O-{quarter or 'common'}",
+            parameters=tuple(parameters[d["canonical_name"]] for d in members),
+            descriptors=members,
+            active_widths=widths[index:] if quarter is not None else widths,
+        ))
+    assigned = [id(parameter) for owner in owners for parameter in owner.parameters]
+    expected = {id(parameter) for parameter in model.parameters() if parameter.requires_grad}
+    if len(assigned) != len(set(assigned)):
+        raise ConfigError("Concat owners overlap")
+    if set(assigned) != expected:
+        raise ConfigError("Concat partition is missing trainable parameters")
+    return tuple(owners)
 
 
 def _require_nonnegative_int(value: Any, field: str) -> int:
