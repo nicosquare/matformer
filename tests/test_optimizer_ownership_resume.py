@@ -19,8 +19,6 @@ ARMS = ('ST-g250', 'ST-g500', 'ST-g750', 'ST-g1000', 'S1', 'S2', 'C1', 'C2', 'C3
 def fixture(tmp_path, arm='C3', *, device='cpu'):
     scope = 'per_ffn_block' if arm == 'C3' else 'per_granularity' if arm in ('S2', 'C2') else 'shared'
     config, model, opt, clock, batches, state = runtime_fixture(tmp_path, scope=scope, device=device)
-    from src.utils.reproducibility import configure_strict_determinism
-    configure_strict_determinism(config)
     if arm.startswith('S'):
         config['model']['variant'] = 'slicing'
         model = build_model(config)

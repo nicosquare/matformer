@@ -13,6 +13,9 @@ From the repository root, use the validated environment:
 ```bash
 conda activate elasticnn
 python --version
+export OO_BASE=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1
+export SLURM_EXCLUDE='gpu-[05,50,51]'
+mkdir -p "$OO_BASE/diagnostics" "$OO_BASE/logs"
 ```
 
 Alternatively use `/home/ivo.navarrete/.conda/envs/elasticnn/bin/python` directly.
@@ -34,15 +37,18 @@ failure durability. Report fixtures check all 24 endpoints and PNG/PDF structure
 The campaign suite retains Feature 12's six-run/three-seed analyzer fixture,
 including its trailing-five validation and saved-holdout endpoint policies.
 These synthetic files do not open the real sealed holdout. Gloo integration tests
-need local loopback sockets. On a machine with one visible native-bf16 CUDA GPU,
-run the eight-update runtime and all-nine-arm resume diagnostics:
+need local loopback sockets. Submit a Slurm job with one native-bf16 CUDA GPU
+to run the eight-update runtime and all-nine-arm resume diagnostics:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 python -m pytest \
-  tests/test_optimizer_ownership.py::test_real_trainer_orders_owner_calls_then_clock_and_publishes_complete_updates \
-  tests/test_optimizer_ownership_resume.py::test_repeating_packed_sampler_exact_batches_actions_rng_and_state \
-  -k cuda -q -rs --basetemp=/scratch/ivo.navarrete/tmp/optimizer-ownership-gpu-check
+sbatch scripts/slurm_optimizer_ownership_gpu_check.sh
 ```
+
+Submit from the login node. The launcher requests one GPU, four CPUs, 16 GiB and
+30 minutes on `cscc-gpu-p` / `cscc-gpu-qos`, excludes `gpu-[05,50,51]`, and writes
+job-specific logs and test artifacts to `$OO_BASE/diagnostics`. It keeps Slurm's
+`CUDA_VISIBLE_DEVICES` assignment. Job 220964 passed all 28 GPU cases on an A100;
+see the [GPU follow-up](verification.md#slurm-gpu-follow-up--2026-09-09).
 
 The tests assert bf16 LM-head output, finite weights/histories/clipping, owner
 order and one clock advance, exact resumed actions/batches/state around epoch
@@ -73,8 +79,8 @@ python scripts/analyze_tinystories_optimizer_ownership.py preflight \
   --campaign configs/controlled_exps/tinystories_instruct_optimizer_ownership.yaml \
   --prepared-corpus-dir /nfs-stor/ivo.navarrete/matformer-corpora/tinystories-instruct-packed-full-v1 \
   --tokenizer-dir /nfs-stor/ivo.navarrete/matformer-tokenizers/tinystories-instruct-sentencepiece-bpe-2k-v1 \
-  --output-dir /scratch/ivo.navarrete/tmp/optimizer-ownership-campaign \
-  --run-output-root /scratch/ivo.navarrete/tmp/optimizer-ownership-runs
+  --output-dir "$OO_BASE/campaign" \
+  --run-output-root "$OO_BASE/runs"
 ```
 
 Inspect `preflight.json`, `campaign_manifest.json` and nine `configs/*.yaml`:
@@ -102,7 +108,7 @@ preflight validation. Config-only inspection is safe before that request:
 
 ```bash
 python train.py \
-  --config /scratch/ivo.navarrete/tmp/optimizer-ownership-campaign/configs/C3.yaml \
+  --config "$OO_BASE/campaign/configs/C3.yaml" \
   --preflight
 ```
 
@@ -110,13 +116,17 @@ After an explicit launch request, execute one selected arm using its immutable
 manifest paths. For example, C3:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 python train.py \
-  --config /scratch/ivo.navarrete/tmp/optimizer-ownership-campaign/configs/C3.yaml \
-  --output-dir /scratch/ivo.navarrete/tmp/optimizer-ownership-runs/C3
+sbatch --exclude="$SLURM_EXCLUDE" --time=24:00:00 \
+  --output="$OO_BASE/logs/C3-%j.out" \
+  --error="$OO_BASE/logs/C3-%j.err" \
+  scripts/slurm_tinystories_controlled.sh \
+  --python-bin /home/ivo.navarrete/.conda/envs/elasticnn/bin/python \
+  --config "$OO_BASE/campaign/configs/C3.yaml" \
+  --output-dir "$OO_BASE/runs/C3"
 ```
 
 For an individual standalone, use `configs/ST-g250.yaml` and the recorded
-`optimizer-ownership-runs/ST-g250` output; the other arm names work likewise.
+`$OO_BASE/runs/ST-g250` output; the other arm names work likewise.
 There is no implicit nine-run launcher. Do not extend a historical run, change
 the full schedule horizon, or extract standalone initialization.
 
@@ -126,7 +136,9 @@ checkpoint identity and exact action/batch/clock reconciliation. C3 failure afte
 an owner mutation must abort and recover from the previous durable checkpoint.
 Resource summaries retain all continuation attempt costs, including replayed work.
 
-**Resume and completion-only recovery use exactly the same trainer command above.**
+**Resume and completion-only recovery use exactly the same sbatch command above.**
+Submit only one active job per arm/output directory. A new allocation continues
+the same full horizon if the previous allocation hit its wall-time limit.
 The materialized config enables continuation. An interrupted run loads its latest
 durable compatible checkpoint and reconciles scientific rows beyond that boundary.
 Keep `resource_attempts.json`, failure records and the original config with the
@@ -153,12 +165,12 @@ After the nine runs complete their assigned budgets:
 
 ```bash
 python scripts/analyze_tinystories_optimizer_ownership.py freeze \
-  --campaign-manifest /scratch/ivo.navarrete/tmp/optimizer-ownership-campaign/campaign_manifest.json \
-  --run-root /scratch/ivo.navarrete/tmp/optimizer-ownership-runs \
-  --output-dir /scratch/ivo.navarrete/tmp/optimizer-ownership-frozen
+  --campaign-manifest "$OO_BASE/campaign/campaign_manifest.json" \
+  --run-root "$OO_BASE/runs" \
+  --output-dir "$OO_BASE/frozen"
 python scripts/analyze_tinystories_optimizer_ownership.py report \
-  --manifest /scratch/ivo.navarrete/tmp/optimizer-ownership-frozen/frozen_manifest.json \
-  --output-dir /scratch/ivo.navarrete/tmp/optimizer-ownership-report
+  --manifest "$OO_BASE/frozen/frozen_manifest.json" \
+  --output-dir "$OO_BASE/report"
 ```
 
 Expect `optimizer_ownership_endpoints.csv` and `.json` with 24 identical rows,

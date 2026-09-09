@@ -465,9 +465,6 @@ def runtime_fixture(tmp_path, *, scope='per_ffn_block', max_steps=8, widths=WIDT
     if device == 'cuda':
         if not torch.cuda.is_available():
             pytest.skip('CUDA unavailable; bf16 diagnostic requires one GPU')
-        if not torch.cuda.is_bf16_supported():
-            pytest.skip('CUDA device does not support bf16')
-        torch.cuda.reset_peak_memory_stats()
 
     config = resolve_run_config(
         'tests/fixtures/per_granularity_optimizer_smoke.yaml',
@@ -493,6 +490,27 @@ def runtime_fixture(tmp_path, *, scope='per_ffn_block', max_steps=8, widths=WIDT
             'training.eval_interval': 0,
         },
     )
+    from src.utils.reproducibility import (
+        configure_strict_determinism, deterministic_runtime_settings,
+        STRICT_CUBLAS_WORKSPACE_CONFIG,
+    )
+    # Multiple diagnostic bundles share one pytest process/CUDA context. Set the
+    # strict recipe before the first device operation, then verify it on reuse.
+    if not torch.cuda.is_initialized():
+        configure_strict_determinism(config)
+    assert deterministic_runtime_settings() == {
+        'mode': 'strict',
+        'cublas_workspace_config': STRICT_CUBLAS_WORKSPACE_CONFIG,
+        'deterministic_algorithms': True,
+        'cudnn_benchmark': False,
+        'cudnn_deterministic': True,
+        'cudnn_allow_tf32': False,
+        'cuda_matmul_allow_tf32': False,
+    }
+    if device == 'cuda':
+        if not torch.cuda.is_bf16_supported():
+            pytest.skip('CUDA device does not support bf16')
+        torch.cuda.reset_peak_memory_stats()
     torch.manual_seed(42)
     from src.training.distributed import resolve_runtime_settings
     resolve_runtime_settings(config['training'], device, single_process=True)
@@ -501,6 +519,27 @@ def runtime_fixture(tmp_path, *, scope='per_ffn_block', max_steps=8, widths=WIDT
     batches = [{'input_ids': torch.arange(1, 9).reshape(1, 8),
                 'labels': torch.arange(1, 9).reshape(1, 8)} for _ in range(2)]
     return config, model, optimizer, scheduler, batches, build_initial_continuation_state(config)
+
+
+def test_runtime_fixture_sets_determinism_before_device_operations(tmp_path, monkeypatch):
+    from src.utils.reproducibility import deterministic_runtime_settings, STRICT_CUBLAS_WORKSPACE_CONFIG
+
+    monkeypatch.setattr(torch.cuda, 'is_available', lambda: True)
+    monkeypatch.setattr(torch.cuda, 'is_initialized', lambda: False)
+    monkeypatch.delenv('CUBLAS_WORKSPACE_CONFIG', raising=False)
+    monkeypatch.setattr(torch.backends.cudnn, 'deterministic', False)
+
+    def check_bf16():
+        settings = deterministic_runtime_settings()
+        assert settings['deterministic_algorithms'] is True
+        assert settings['cudnn_deterministic'] is True
+        assert settings['cublas_workspace_config'] == STRICT_CUBLAS_WORKSPACE_CONFIG
+        # End the test before requiring real GPU hardware.
+        raise RuntimeError('reached CUDA with strict determinism configured')
+
+    monkeypatch.setattr(torch.cuda, 'is_bf16_supported', check_bf16)
+    with pytest.raises(RuntimeError, match='reached CUDA with strict determinism configured'):
+        runtime_fixture(tmp_path, device='cuda')
 
 
 @pytest.mark.parametrize('device', ['cpu', 'cuda'])

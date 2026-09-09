@@ -16,7 +16,7 @@ complete/partial comparison reports (T046–T054). Phase 8 finalizes commands an
 compatibility evidence, with native-CUDA bf16 tests that explicitly skip when no
 GPU is available (T055–T058). See the final
 [verification record](../specs/013-tinystories-optimizer-ownership/verification.md)
-for results and the outstanding GPU environment limitation. No full-budget
+for CPU results and the successful Slurm GPU follow-up (job 220964). No full-budget
 campaign results exist; evidence comes from short diagnostics and controlled
 fixtures. Full campaign launch and future uniform holdout evaluation each
 require a separate researcher request.
@@ -137,10 +137,10 @@ define later commands and required arguments.
 
 | Location | Artifacts |
 | --- | --- |
-| `/scratch/ivo.navarrete/tmp/optimizer-ownership-campaign/` | `preflight.json`, `campaign_manifest.json`, nine `configs/<arm>.yaml` |
-| `/scratch/ivo.navarrete/tmp/optimizer-ownership-runs/<arm>/` | Existing resolved config, metrics CSV, summary and resumable checkpoints; `optimizer_ownership_trace.jsonl`, `optimizer_ownership_clipping.jsonl`, `resource_attempts.json`, `terminal_validation_results.json` |
-| `/scratch/ivo.navarrete/tmp/optimizer-ownership-frozen/` | `frozen_manifest.json` binding nine terminal identities and sidecar hashes |
-| `/scratch/ivo.navarrete/tmp/optimizer-ownership-report/` | `comparison_report.json`, `optimizer_ownership_endpoints.csv` and `.json`, individual trajectory/resource plots, combined figures |
+| `/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/campaign/` | `preflight.json`, `campaign_manifest.json`, nine `configs/<arm>.yaml` |
+| `/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/<arm>/` | Existing resolved config, metrics CSV, summary and resumable checkpoints; `optimizer_ownership_trace.jsonl`, `optimizer_ownership_clipping.jsonl`, `resource_attempts.json`, `terminal_validation_results.json` |
+| `/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/frozen/` | `frozen_manifest.json` binding nine terminal identities and sidecar hashes |
+| `/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/report/` | `comparison_report.json`, `optimizer_ownership_endpoints.csv` and `.json`, individual trajectory/resource plots, combined figures |
 
 Records use plain JSON-compatible dictionaries, explicit schema versions,
 ordered arm/width definitions, string paths, and full campaign/run identities.
@@ -647,12 +647,12 @@ After separately requested full training has supplied the nine terminals:
 
 ```bash
 python scripts/analyze_tinystories_optimizer_ownership.py freeze \
-  --campaign-manifest /scratch/ivo.navarrete/tmp/optimizer-ownership-campaign/campaign_manifest.json \
-  --run-root /scratch/ivo.navarrete/tmp/optimizer-ownership-runs \
-  --output-dir /scratch/ivo.navarrete/tmp/optimizer-ownership-frozen
+  --campaign-manifest /nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/campaign/campaign_manifest.json \
+  --run-root /nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs \
+  --output-dir /nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/frozen
 python scripts/analyze_tinystories_optimizer_ownership.py report \
-  --manifest /scratch/ivo.navarrete/tmp/optimizer-ownership-frozen/frozen_manifest.json \
-  --output-dir /scratch/ivo.navarrete/tmp/optimizer-ownership-report
+  --manifest /nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/frozen/frozen_manifest.json \
+  --output-dir /nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/report
 ```
 
 `--run-dir` may be repeated instead of `--run-root`; saved identities determine
@@ -755,9 +755,15 @@ continuation, completion-only recovery, freeze and report commands. For example,
 after a separate researcher launch request and a fresh final-revision preflight:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python train.py \
-  --config /scratch/ivo.navarrete/tmp/optimizer-ownership-campaign/configs/C3.yaml \
-  --output-dir /scratch/ivo.navarrete/tmp/optimizer-ownership-runs/C3
+export OO_BASE=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1
+mkdir -p "$OO_BASE/logs"
+sbatch --exclude='gpu-[05,50,51]' --time=24:00:00 \
+  --output="$OO_BASE/logs/C3-%j.out" \
+  --error="$OO_BASE/logs/C3-%j.err" \
+  scripts/slurm_tinystories_controlled.sh \
+  --python-bin /home/ivo.navarrete/.conda/envs/elasticnn/bin/python \
+  --config /nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/campaign/configs/C3.yaml \
+  --output-dir /nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/C3
 ```
 
 Use this same command and immutable paths to resume an interrupted C3 run, or
@@ -790,11 +796,22 @@ sandbox**. The final affected ownership suites produced **322 passes and 28 CUDA
 skips**. The added Feature 12 fixture preserves six-run/three-seed reporting,
 trailing-five validation means and preference for saved synthetic holdout results.
 
-CUDA is unavailable both inside and outside this environment's sandbox. The new
-eight-update C3 runtime and all-nine-arm epoch-boundary resume variants are ready
-for one native-bf16 GPU, but their 28 CUDA skips provide no GPU execution or peak
-memory evidence. T057 is completed through its explicit unavailable-GPU reporting
-path. Successful CUDA verification remains a follow-up on a suitable machine.
+The initial login-node checks could not access CUDA. The subsequent Slurm GPU
+follow-up passed **28 tests with no skips** on an NVIDIA A100-SXM4-40GB in job
+**220964** on `gpu-52`, with exit code `0:0`. The test fixture now configures strict
+determinism before CUDA initialization and verifies the settings when reusing the
+CUDA context. Production determinism checks remain unchanged. The runtime test
+measured 69,053,952 allocated and 90,177,536 reserved peak bytes for its eight-update
+small model; these are diagnostic measurements, not full-campaign memory estimates.
+
+All future campaign and diagnostic outputs belong under
+`/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1`. GPU submissions
+exclude `gpu-[05,50,51]` and use `sbatch`. The reusable
+[`slurm_optimizer_ownership_gpu_check.sh`](../scripts/slurm_optimizer_ownership_gpu_check.sh)
+launcher writes directly to the shared `diagnostics/` directory. Job 220964 was
+already running on allowed node gpu-52 when the output-root correction arrived;
+its completed evidence was copied to that directory without rewriting embedded
+original paths. The verification record documents the failed attempts as well.
 
 Phase 8 changes tests/documentation only; the campaign YAML, historical analyzer,
 legacy hash inputs and training hot loop are unchanged. The restore-only full-

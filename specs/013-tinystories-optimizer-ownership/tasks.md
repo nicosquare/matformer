@@ -161,10 +161,10 @@
 - [X] T058 Reconcile FR-001–028, EX-001–013 and SC-001–008 against implemented checks and saved evidence in `docs/tinystories-optimizer-ownership-experiment.md` and `specs/013-tinystories-optimizer-ownership/verification.md`; distinguish diagnostic/fixture evidence from future full-budget observations, inspect the final diff for historical behavior changes or new hot-loop snapshots, and update completion checkboxes in `specs/013-tinystories-optimizer-ownership/tasks.md` only for work actually verified.
 
 **Phase 8 result (2026-09-09)**: T055–T058 verified as documented in
-[verification.md](verification.md). GPU cases are implemented but skipped because
-CUDA is unavailable, including outside the sandbox; T057 uses its explicit
-unavailable-GPU reporting path. No GPU measurement or full-budget outcome is
-claimed. Full campaign launch and future uniform holdout evaluation remain
+[verification.md](verification.md). The later Slurm follow-up passed all 28 GPU cases on an A100 in job
+220964 after correcting test-only determinism setup ordering. Evidence is saved
+under `/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/diagnostics`.
+Future GPU submissions exclude `gpu-[05,50,51]`. No full-budget outcome is claimed. Full campaign launch and future uniform holdout evaluation remain
 separately requested researcher work.
 
 ## Dependencies & Execution Order

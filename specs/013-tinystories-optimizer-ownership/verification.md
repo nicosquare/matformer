@@ -1,5 +1,10 @@
 # Phase 8 verification — 2026-09-09
 
+**GPU follow-up passed:** Slurm job 220964 on gpu-52 completed all 28 CUDA bf16
+checks with no skips. See [the follow-up record](#slurm-gpu-follow-up--2026-09-09)
+for the test setup correction, measurements and shared evidence location. The
+initial login-node limitations recorded below are retained as historical evidence.
+
 Scope: T055–T058, on branch `013-tinystories-optimizer-ownership`, based on
 `341e5de` plus the Phase 8 test/documentation changes. Full campaign configurations
 and runtime implementation are unchanged. No full-budget training or real
@@ -196,3 +201,83 @@ file links in the runbook/quickstart/verification record, and explicit presence
 of every FR/EX/SC identifier in the reconciliation all passed. Saved fixture
 directory names were checked against the final focused output. GPU execution
 and full-budget scientific observations remain explicitly unclaimed.
+
+## Slurm GPU follow-up — 2026-09-09
+
+User execution requirements: all outputs under `/nfs-stor/ivo.navarrete/results`,
+and exclude `gpu-05`, `gpu-50`, `gpu-51`. The campaign root is
+`/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1`; diagnostic
+logs, XML and fixture artifacts are in its `diagnostics/` subdirectory. The
+repository's existing `cscc-gpu-p` partition / `cscc-gpu-qos` QoS is retained.
+
+| Job | Node | Result |
+| --- | --- | --- |
+| 220959 | gpu-51 | Failed in 8 seconds; logs targeted login-node-local scratch and were not accessible from the login node afterward |
+| 220961 | gpu-51 | Shared logs captured CUDA driver initialization failure before pytest |
+| 220962 | gpu-52 | A100 bf16 runtime/clipping test passed; 27 resume cases failed at the late strict-determinism setup guard |
+| 220964 | gpu-52 | **28 passed**, 222 deselected, two dependency deprecation warnings, **18.22 seconds**; Slurm **COMPLETED**, exit **0:0**, allocation elapsed **24 seconds** |
+
+The resume fixture previously called `configure_strict_determinism` after
+`runtime_fixture` had initialized CUDA through capability checks/peak reset/model
+placement. It also tried to configure determinism again for each restored bundle
+in the same CUDA process. The shared test fixture now applies the normal strict
+recipe before the first CUDA operation and verifies every strict setting on
+context reuse. The late resume-fixture call is removed. A CPU regression test
+clears the workspace setting and checks that determinism is established before
+the device capability call. Production guards, training code, numeric equality
+assertions and campaign configs are unchanged.
+
+CPU regression command:
+
+```bash
+OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest \
+  tests/test_optimizer_ownership.py tests/test_optimizer_ownership_resume.py \
+  tests/test_optimizer_ownership_reporting.py -q -rs --tb=short
+```
+
+Result: **290 passed, 28 CUDA-unavailable skips**, two dependency warnings,
+70.85 seconds. Log: `diagnostics/ownership-cuda-order-regression.log` under the
+shared campaign root. The separate GPU job executes those 28 CUDA cases with no
+skips. Actual CUDA checks retain exact model/history/RNG/action/batch comparisons
+across all nine arms and all three synthetic epoch-boundary positions.
+
+Job 220964 used an NVIDIA A100-SXM4-40GB, driver 570.195.03, PyTorch 2.11.0+cu128,
+and verified `torch.bfloat16` LM-head output. Its eight-update C3 diagnostic
+recorded **69,053,952 peak allocated bytes**, **90,177,536 peak reserved bytes**,
+eight attempted updates, one finalized attempt and 1.1056 seconds of observer
+elapsed time. These small-model diagnostics do not estimate full-campaign peaks
+or throughput. The GPU case proves one-clock/owner order, finite independent
+clipping and state, and positive measured allocated/reserved peaks.
+
+Preserved files under the shared `diagnostics/` directory:
+
+- `gpu-check-220964.out`, `.err`, `.xml`, and `gpu-verification-220964.json`.
+- `gpu-tests-220964/test_real_trainer_orders_owner0/cuda_bf16_diagnostic.json`
+  and its resource ledger; all 27 real resume fixture directories.
+- Logs from failed jobs 220961 and 220962, plus the preliminary CPU regression.
+
+The successful log SHA256 is
+`b3a474eca247c07cef4ea2bd1a2f41cda749b624bd7df312a266cfeee9248386`.
+It records base revision `4746bd1` and the uncommitted fixed test file hashes:
+`da36fc42d1581f6347ac09adf8ea690d3501945b3e828150934814b482662ae0`
+(`test_optimizer_ownership.py`) and
+`bf3259089a9361f76815955af4e3cdc4fb2d53da6398b467b985baaa5f8daeed`
+(`test_optimizer_ownership_resume.py`). Job 220964 was already running on allowed
+node gpu-52 with the earlier output paths when the user restated the storage and
+exclusion requirements. Evidence was copied intact after completion; original
+embedded paths and source copies were retained for provenance. Subsequent jobs
+use the corrected shared paths and all three exclusions directly.
+
+Reusable submission, from the repository root:
+
+```bash
+export OO_BASE=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1
+mkdir -p "$OO_BASE/diagnostics"
+sbatch scripts/slurm_optimizer_ownership_gpu_check.sh
+```
+
+The launcher requests one GPU, four CPUs, 16 GiB and 30 minutes, retains Slurm's
+GPU visibility assignment and writes job-specific artifacts. This successful
+follow-up closes the GPU-execution limitations for T057, FR-028 and SC-003/004 in
+the earlier tables. Actual full-budget campaign observations remain future work;
+no campaign training or sealed holdout evaluation was launched.
