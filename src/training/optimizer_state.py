@@ -730,6 +730,57 @@ class BlockOptimizerCollection:
         }
 
 
+    def validate_state_dict(self, state):
+        if not isinstance(state, Mapping) or set(state) != set(self.state_dict()):
+            raise ConfigError('Block collection state is incomplete')
+        for key in ('block_optimizer_collection_schema_version', 'state_scope', 'diagnostic_global_clip'):
+            if state[key] != self.state_dict()[key]:
+                raise ConfigError(f'Block collection mismatch: {key}')
+        owners = state['ordered_owners']
+        if not isinstance(owners, list) or len(owners) != len(self.owners):
+            raise ConfigError('Block owner mapping mismatch')
+        counts = state['width_selection_counts']
+        if not isinstance(counts, Mapping) or set(counts) != set(self.ordered_granularities):
+            raise ConfigError('Block width counts mismatch')
+        for value in counts.values():
+            _require_nonnegative_int(value, 'block width count')
+        total = _require_nonnegative_int(state['total_successful_updates'], 'block total')
+        expected_calls = {o.owner_id: sum(counts[w] for w in o.active_widths) for o in self.owners}
+        if sum(counts.values()) != total or state['successful_update_counts'] != expected_calls:
+            raise ConfigError('Block exposure/call counts do not reconcile')
+        for value in state['successful_update_counts'].values():
+            _require_nonnegative_int(value, 'owner calls')
+        last = state['last_active_granularity']
+        if (total == 0 and last is not None) or (total > 0 and (last not in counts or counts[last] == 0)):
+            raise ConfigError('Block last active width is invalid')
+        rates = state['current_learning_rates']
+        if not isinstance(rates, list) or len(rates) != len(self.current_learning_rates):
+            raise ConfigError('Block learning rates mismatch')
+        for owner, saved in zip(self.owners, owners, strict=True):
+            if not isinstance(saved, Mapping) or set(saved) != {'owner_id', 'descriptors', 'active_widths', 'state_dict'}:
+                raise ConfigError('Block owner state is incomplete')
+            if saved['owner_id'] != owner.owner_id or saved['descriptors'] != list(owner.descriptors) or saved['active_widths'] != list(owner.active_widths):
+                raise ConfigError('Block ordered owner topology mismatch')
+            validate_adamw_history(self.optimizer_for(owner.owner_id), saved['state_dict'], owner.descriptors,
+                                   [expected_calls[owner.owner_id]] * len(owner.parameters), learning_rates=rates)
+        return copy.deepcopy(dict(state))
+
+    def _load_validated_state_dict(self, state):
+        for owner, saved in zip(self.owners, state['ordered_owners'], strict=True):
+            self.optimizer_for(owner.owner_id).load_state_dict(saved['state_dict'])
+        for key in ('width_selection_counts', 'successful_update_counts', 'total_successful_updates', 'last_active_granularity'):
+            setattr(self, key, copy.deepcopy(state[key]))
+
+    def load_state_dict(self, state):
+        staged = self.validate_state_dict(state)
+        snapshot = copy.deepcopy(self.state_dict())
+        try:
+            self._load_validated_state_dict(staged)
+        except BaseException:
+            self._load_validated_state_dict(snapshot)
+            raise
+
+
 def build_block_optimizer_runtime(model, training, *, diagnostic_global_clip=False):
     collection = BlockOptimizerCollection.from_model(
         model, training, diagnostic_global_clip=diagnostic_global_clip
@@ -895,3 +946,81 @@ def build_per_granularity_optimizer_runtime(
     clock = GlobalSchedulerClock.from_training(training)
     clock.synchronize(collection)
     return collection, clock
+
+
+def validate_adamw_history(optimizer, saved, descriptors, expected_steps, *, learning_rates=None):
+    """Check required *and absent* histories without allocating lazy state."""
+    if not isinstance(optimizer, torch.optim.AdamW) or not isinstance(saved, Mapping):
+        raise ConfigError('Campaign resume requires complete AdamW state')
+    runtime = optimizer.state_dict()
+    groups = saved.get('param_groups')
+    states = saved.get('state')
+    if not isinstance(groups, list) or len(groups) != len(runtime['param_groups']) or not isinstance(states, Mapping):
+        raise ConfigError('AdamW parameter groups/state are malformed')
+    ids = []
+    parameters = []
+    for index, (group, expected, live) in enumerate(zip(groups, runtime['param_groups'], optimizer.param_groups, strict=True)):
+        if set(group) != set(expected):
+            raise ConfigError('AdamW group keys do not match')
+        for key, value in expected.items():
+            target = learning_rates[index] if key == 'lr' and learning_rates is not None else value
+            if key != 'lr' and group[key] != target or key == 'lr' and learning_rates is not None and group[key] != target:
+                raise ConfigError(f'AdamW ordered mapping or kwargs mismatch: {key}')
+        if not math.isfinite(float(group['lr'])):
+            raise ConfigError('AdamW learning rate is nonfinite')
+        ids.extend(group['params'])
+        parameters.extend(live['params'])
+    if any(type(pid) is not int or pid < 0 for pid in (*ids, *states)) or len(ids) != len(descriptors) or len(ids) != len(set(ids)) or set(states) - set(ids):
+        raise ConfigError('AdamW parameter identity mapping mismatch')
+    for pid, parameter, descriptor, count in zip(ids, parameters, descriptors, expected_steps, strict=True):
+        _require_nonnegative_int(count, 'expected history exposure')
+        name = descriptor['canonical_name']
+        if count == 0:
+            if pid in states:
+                raise ConfigError(f'Impossible allocated AdamW history: {name}')
+            continue
+        state = states.get(pid)
+        group = next(g for g in groups if pid in g['params'])
+        components = {'step', 'exp_avg', 'exp_avg_sq'}
+        if group.get('amsgrad'):
+            components.add('max_exp_avg_sq')
+        if not isinstance(state, Mapping) or set(state) != components:
+            raise ConfigError(f'Missing required AdamW history/components: {name}')
+        counter = state['step']
+        counter_dtype = torch.float64 if torch.get_default_dtype() == torch.float64 and not group.get('fused') else torch.float32
+        if not torch.is_tensor(counter) or counter.shape != torch.Size([]) or counter.dtype != counter_dtype or counter.item() != count:
+            raise ConfigError(f'AdamW counter differs from exposure: {name}')
+        for component in components - {'step'}:
+            value = state[component]
+            if not torch.is_tensor(value) or value.shape != parameter.shape or value.dtype != parameter.dtype:
+                raise ConfigError(f'AdamW component shape/dtype mismatch: {name}.{component}')
+            if not bool(torch.isfinite(value).all()) or component != 'exp_avg' and bool((value < 0).any()):
+                raise ConfigError(f'AdamW component invalid: {name}.{component}')
+
+
+def validate_campaign_optimizer(model, optimizer, saved, *, widths, width_counts, learning_rates):
+    descriptors = build_parameter_descriptors(model, ordered_widths=widths)
+    if set(width_counts) != set(widths):
+        raise ConfigError('Campaign width exposure mapping mismatch')
+    for count in width_counts.values():
+        _require_nonnegative_int(count, 'width exposure')
+    if isinstance(optimizer, BlockOptimizerCollection):
+        staged = optimizer.validate_state_dict(saved)
+        if staged['width_selection_counts'] != width_counts:
+            raise ConfigError('Block histories and campaign exposures differ')
+        entries = [(optimizer.optimizer_for(o.owner_id), s['state_dict'], o.descriptors,
+                    [sum(width_counts[w] for w in d['gradient_support']) for d in o.descriptors])
+                   for o, s in zip(optimizer.owners, staged['ordered_owners'], strict=True)]
+    elif isinstance(optimizer, PerGranularityOptimizerCollection):
+        staged = optimizer.validate_state_dict(saved)
+        if staged['successful_update_counts'] != width_counts:
+            raise ConfigError('Width histories and campaign exposures differ')
+        entries = [(e.optimizer, s['state_dict'], descriptors,
+                    [width_counts[e.granularity] if e.granularity in d['gradient_support'] else 0 for d in descriptors])
+                   for e, s in zip(optimizer.entries, staged['ordered_entries'], strict=True)]
+    else:
+        entries = [(optimizer, saved, descriptors,
+                    [sum(width_counts[w] for w in d['gradient_support']) for d in descriptors])]
+    for live, state, desc, counts in entries:
+        validate_adamw_history(live, state, desc, counts, learning_rates=learning_rates)
+    return descriptors

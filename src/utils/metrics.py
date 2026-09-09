@@ -1023,6 +1023,22 @@ def build_optimizer_state_summary_fields(
         )
     )
 
+    if config.get('optimizer_ownership_contract'):
+        exposures = dict(state.get('optimizer_width_selection_counts') or {})
+        updates = dict(state.get('optimizer_update_counts') or {})
+        scheduler_position = int(state.get('global_scheduler_position', 0))
+        resources = state.get('resource_summary')
+        if isinstance(resources, Mapping):
+            wall_time_seconds = resources['elapsed_seconds']
+            peak_memory_bytes = resources['peak_allocated_bytes']
+        quarters = {f'O-{q}': sum(exposures.get(w, 0) for w in ordered[i:]) for i, q in enumerate('ABCD')} if len(ordered) == 4 else {}
+        expected_calls = ({**quarters, 'O-common': committed} if scope == 'per_ffn_block'
+                          else exposures if scope == 'per_granularity' else {'shared': committed})
+        reconciled = (sum(exposures.values()) == committed and updates == expected_calls
+                      and state.get('optimizer_quarter_activation_counts') == quarters
+                      and scheduler_position == committed
+                      and not state.get('update_in_flight') and not state.get('optimizer_poisoned'))
+
     resolved_checkpoint: Path | None = None
     checkpoint_bytes = None
     checkpoint_sha256 = None

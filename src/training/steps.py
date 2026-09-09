@@ -666,7 +666,8 @@ def _optimizer_batch_provenance(
             "permutation_hash",
             "epoch",
             "global_batch_cursor",
-            "sample_cursor",
+            "sample_cursor", "total_cursor", "epoch_index", "within_epoch_cursor",
+            "fixed_epoch_set_hash", "ordering_policy_version", "data_seed",
         ):
             if field in sampler_state:
                 provenance[field] = copy.deepcopy(sampler_state[field])
@@ -838,6 +839,7 @@ def train_for_steps(
             resume_epoch += 1
     else:
         resume_batch_index = 0
+    epoch = resume_epoch
     run_state["epoch"] = resume_epoch
     run_state["batch_index"] = resume_batch_index
     run_state["content_tokens_seen"] = content_tokens_seen
@@ -929,6 +931,10 @@ def train_for_steps(
         run_state.setdefault("update_in_flight", False)
         if scheduler.current_learning_rates != optimizer.current_learning_rates:
             raise ConfigError("Block optimizer and global clock rates do not reconcile")
+    campaign = bool(config.get('optimizer_ownership_contract'))
+    if campaign:
+        training_checkpointing.assert_checkpoint_safe(run_state)
+        optimizer._ownership_dataloader = train_dataloader
     model.train()
     with heartbeat_stage(heartbeat_writer, stage_name):
         while step < max_steps and tokens_seen < token_budget:
@@ -936,7 +942,14 @@ def train_for_steps(
             made_progress = False
             current_epoch = epoch
             epoch += 1
-            indexed_batches = iter(enumerate(train_dataloader))
+            if campaign and packed_batch_sampler is not None:
+                # DataLoader iterator creation draws a worker seed even with zero
+                # workers. It must not advance the model RNG again on resume.
+                loader_rng = torch.get_rng_state()
+                indexed_batches = iter(enumerate(train_dataloader))
+                torch.set_rng_state(loader_rng)
+            else:
+                indexed_batches = iter(enumerate(train_dataloader))
             while step < max_steps and tokens_seen < token_budget:
                 window_rng_snapshot = capture_rng_state()
                 window_state_snapshot = copy.deepcopy(run_state)
@@ -969,6 +982,9 @@ def train_for_steps(
                 if not window:
                     break
                 made_progress = True
+                resource_observer = getattr(optimizer, '_resource_observer', None)
+                if resource_observer is not None:
+                    resource_observer(run_state=run_state, boundary='attempt')
                 optimizer_committed = False
                 mutation_started = False
                 returned_owners = []
@@ -1089,6 +1105,8 @@ def train_for_steps(
                                 step=pending_step, now=now
                             )
                             in_flight_heartbeat_emitted = True
+                            if resource_observer is not None:
+                                resource_observer(run_state=run_state, boundary='heartbeat')
 
                     committed_tokens = sum_int(
                         local_window_content_tokens,
@@ -1136,9 +1154,16 @@ def train_for_steps(
                         )
                     committed_learning_rate = committed_learning_rates[0]
                     failure_stage = "optimizer_step"
-                    if isinstance(optimizer, BlockOptimizerCollection):
+                    if (campaign or isinstance(optimizer, BlockOptimizerCollection)) and isinstance(scheduler, GlobalSchedulerClock):
                         if scheduler.current_learning_rates != optimizer.current_learning_rates:
-                            raise RuntimeError("Block optimizer and global clock rates differ")
+                            raise RuntimeError("Optimizer and global clock rates differ")
+                    if campaign:
+                        run_state['update_in_flight'] = True
+                        run_state['pending_optimizer_step'] = pending_step
+                        mutation_started = True
+                        if not active_owners:
+                            active_owners = (optimizer_owner or 'shared',)
+                    if isinstance(optimizer, BlockOptimizerCollection):
                         run_state["update_in_flight"] = True
                         run_state["pending_optimizer_step"] = pending_step
                         mutation_started = True
@@ -1156,8 +1181,10 @@ def train_for_steps(
                     # A successful optimizer return is irreversible. Scheduler
                     # and accounting failures after this point are fatal and do
                     # not restore the pre-window transactional snapshots.
-                    optimizer_committed = not isinstance(optimizer, BlockOptimizerCollection)
-                    failure_stage = "post_commit_accounting"
+                    if campaign and not isinstance(optimizer, BlockOptimizerCollection):
+                        returned_owners.append(optimizer_owner or 'shared')
+                    optimizer_committed = not campaign and not isinstance(optimizer, BlockOptimizerCollection)
+                    failure_stage = "scheduler_step" if campaign or isinstance(optimizer, BlockOptimizerCollection) else "post_commit_accounting"
                     scheduler.step()
                     if isinstance(optimizer, (PerGranularityOptimizerCollection, BlockOptimizerCollection)):
                         if not isinstance(scheduler, GlobalSchedulerClock):
@@ -1177,6 +1204,7 @@ def train_for_steps(
                             optimizer.last_active_granularity
                         )
                         run_state["global_scheduler_position"] = scheduler.position
+                    failure_stage = "accounting" if campaign or isinstance(optimizer, BlockOptimizerCollection) else failure_stage
                     step = pending_step
 
                     previous_tokens_seen = tokens_seen
@@ -1257,9 +1285,28 @@ def train_for_steps(
                             "optimizer_total_successful_updates": optimizer.total_successful_updates,
                             "optimizer_last_active_granularity": optimizer.last_active_granularity,
                             "global_scheduler_position": scheduler.position,
-                            "update_in_flight": False,
-                            "pending_optimizer_step": None,
+                            "update_in_flight": campaign,
+                            "pending_optimizer_step": pending_step if campaign else None,
                         })
+                        optimizer_committed = not campaign
+                    if campaign:
+                        counts = _optimizer_exposure_counts(run_state) or {granularities[0]: step}
+                        quarters = {f'O-{q}': sum(counts[w] for w in granularities[i:]) for i, q in enumerate('ABCD')} if len(granularities) == 4 else {}
+                        calls = (dict(optimizer.successful_update_counts) if isinstance(optimizer, (PerGranularityOptimizerCollection, BlockOptimizerCollection)) else {'shared': step})
+                        if sum(counts.values()) != step:
+                            raise ConfigError('Campaign action counts and committed step differ')
+                        if sampler_state is not None:
+                            run_state['epoch'] = sampler_state['epoch_index']
+                            run_state['batch_index'] = sampler_state['within_epoch_cursor'] // training['batch_size_per_process']
+                        run_state.update(optimizer_width_selection_counts=dict(counts),
+                                         optimizer_quarter_activation_counts=quarters,
+                                         optimizer_update_counts=calls, optimizer_total_successful_updates=step,
+                                         global_scheduler_position=step,
+                                         optimizer_last_active_granularity=action['granularities'][0],
+                                         last_optimizer_batch_provenance=copy.deepcopy(optimizer_batch_provenance))
+                        training_data.validate_campaign_sampler_boundary(config, run_state, train_dataloader=train_dataloader)
+                        run_state['update_in_flight'] = False
+                        run_state['pending_optimizer_step'] = None
                         optimizer_committed = True
                     if clipping_observation is not None:
                         run_state["last_clipping_observation"] = {
@@ -1278,6 +1325,8 @@ def train_for_steps(
                     latest_loss = sum(global_losses.values()) / len(global_losses)
                     latest_committed_loss = latest_loss
                     latest_committed_loss_step = step
+                    if resource_observer is not None:
+                        resource_observer(run_state=run_state, boundary='committed')
                     if successful_step_callback is not None:
                         successful_step_callback(step=step, tokens_seen=tokens_seen)
                     if probabilistic_boundary_callback is not None:
@@ -1537,7 +1586,7 @@ def train_for_steps(
                         step=step,
                         distributed_context=distributed_context,
                     )
-                except Exception:
+                except BaseException:
                     if mutation_started and not optimizer_committed:
                         run_state["optimizer_poisoned"] = True
                         run_state["optimizer_failure"] = {
@@ -1545,6 +1594,8 @@ def train_for_steps(
                             "stage": failure_stage,
                             "active_owners": list(active_owners),
                             "returned_owners": list(returned_owners),
+                            "last_durable_checkpoint_path": run_state.get('continuation_source_checkpoint_path'),
+                            "last_durable_checkpoint_step": run_state.get('last_durable_checkpoint_step', 0),
                         }
                     if action is not None and optimizer_action_id is not None:
                         failed_label = str(

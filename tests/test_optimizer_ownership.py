@@ -574,3 +574,42 @@ def test_explicit_global_clipping_preserves_other_concat_layouts(tmp_path):
     assert state["last_completed_step"] == 2
     assert state["last_clipping_observation"]["mode"] == "global"
     assert state["last_clipping_observation"]["combined_post_norm"] <= 1.000001
+
+
+@pytest.mark.parametrize('failure', ['O-A', 'O-C', 'O-common', 'scheduler', 'accounting'])
+def test_mutating_failure_poison_and_all_save_paths_preserve_durable_checkpoint(tmp_path, monkeypatch, failure):
+    from test_optimizer_ownership_resume import fixture, train, save
+    from src.training import checkpointing as cp
+    import hashlib
+
+    bundle = fixture(tmp_path)
+    config, model, optimizer, clock, batches, state = bundle
+    train(bundle, stop=1)
+    path = tmp_path / 'latest.pt'
+    save(bundle, path)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    original_select = steps._select_optimizer_window_action
+    def select(*args, **kwargs):
+        action = original_select(*args, **kwargs)
+        action['granularities'] = ['g1000']
+        kwargs['run_state']['global_sampling_state']['held_granularity'] = 'g1000'
+        return action
+    monkeypatch.setattr(steps, '_select_optimizer_window_action', select)
+    target = clock if failure == 'scheduler' else optimizer if failure == 'accounting' else optimizer.optimizer_for(failure)
+    method = 'record_successful_update' if failure == 'accounting' else 'step'
+    original = getattr(target, method)
+    def fail(*args, **kwargs):
+        original(*args, **kwargs)
+        raise RuntimeError('injected mutation failure')
+    monkeypatch.setattr(target, method, fail)
+    with pytest.raises(RuntimeError, match='injected'): train(bundle)
+    assert state['optimizer_poisoned'] and state['update_in_flight']
+    record = state['optimizer_failure']
+    assert record['pending_step'] == 2
+    expected = list(OWNERS) if failure in ('scheduler', 'accounting') else list(OWNERS[:OWNERS.index(failure)])
+    assert record['returned_owners'] == expected
+    for reason in ('periodic', 'failure', 'signal', 'finalization'):
+        with pytest.raises(ConfigError, match='unsafe|poison'):
+            cp.maybe_write_latest_checkpoint(config, model, optimizer, clock, None, state, reason=reason, step=2)
+    with pytest.raises(ConfigError, match='unsafe|poison'): save(bundle, path)
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == digest

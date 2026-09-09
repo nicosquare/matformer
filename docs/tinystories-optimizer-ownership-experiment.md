@@ -437,3 +437,84 @@ restore validation, all-save-path unsafe-state gating, failure durability and
 resource-attempt accounting. This phase does not establish interrupted C3 resume
 support. Persistent clipping reports and terminal outputs remain in later phases;
 GPU bf16 validation remains T057.
+
+## Phase 5 verification — exact continuation and failure durability (2026-09-09)
+
+Implemented T026–T036. Campaign resumable checkpoints now carry
+`optimizer_ownership_checkpoint_schema_version=1`, the full scientific contract,
+ordered parameter descriptors, clipping/budget/epoch identities, reconciled
+width/quarter/owner accounting and a resource-ledger watermark. C3's explicitly
+versioned collection has a complete validated loader. Historical shared and
+per-width checkpoints retain their existing compatibility path.
+
+AdamW validation derives required parameter counters from committed exposure:
+full tensors for slicing, support-dependent histories for concat, and disjoint
+quarter/common counts for C3. It rejects lost histories and impossible allocated
+histories, reordered IDs/owners, changed kwargs, wrong shapes/dtypes, nonfinite
+moments, negative second moments and nonintegral or incorrect counters. True
+unexposed state remains absent. Model tensors, tied aliases, scheduler formula
+and full horizon, RNG payloads, seeded action ordinal, sampler membership/cursor,
+metrics and ledger watermarks are checked before installing anything. A snapshot
+of the whole live bundle is taken only at resume to recover from unexpected
+installation failure; no model or optimizer snapshot was added to the hot loop.
+
+The update boundary remains unsafe from immediately before the first optimizer
+call through scheduler and accounting completion. A mutation-then-raise failure
+poisons the live state and aborts. All resumable save entry points reject it;
+the operational failure record identifies the pending update, failure stage,
+active/returned owners and last durable checkpoint. Pre-mutation failures restore
+the existing RNG/data/accounting transaction and clear gradients.
+
+Repeat-sampler provenance now includes total cursor, epoch position, fixed-set
+hash, order policy and data seed. Campaign epoch/batch accounting uses the
+sampler's logical position, including exactly completed terminal epochs. The
+raw-loader epoch normalization bug found at resume was fixed. Creating a campaign
+DataLoader iterator preserves the model RNG, so reopening the loader cannot add
+an extra model RNG draw. Resume segregates non-durable JSONL trace/clipping rows;
+the existing metrics journal repairs CSV rows beyond the restored boundary.
+
+`resource_attempts.json` is an atomic schema-1 ledger with a unique ID per attempt,
+source checkpoint hash/step, timestamps, latest observation sequence/duration,
+attempted updates, allocated/reserved peaks and status/completeness. Observations
+occur at start, metric cadence, heartbeat, checkpoint, completion and failure
+boundaries. Durations sum once per attempt and peaks take the maximum; checkpoint
+watermarks only reference observations and never add costs again. Replayed work
+and failed attempts remain in the ledger. An unfinalized attempt is explicitly
+incomplete, and unavailable accelerator measurements are null. Campaign summaries
+use cumulative observed wall time and peaks.
+
+Verification command:
+
+```bash
+OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest \
+  tests/test_optimizer_ownership_resume.py tests/test_optimizer_ownership.py \
+  tests/test_per_granularity_optimizer_resume.py tests/test_per_granularity_optimizer.py \
+  tests/test_training_smoke.py tests/test_artifacts.py tests/test_reporting.py \
+  tests/test_packed_corpus.py tests/test_global_sampling_windows.py -q --tb=short
+```
+
+Result: **513 passed, 1 expected failure** in 63.95 seconds. Log:
+`/tmp/optimizer-ownership-phase5-verification.log`. The focused ownership/resume
+and historical resume suites separately passed **233 tests**. Only existing
+SWIG deprecation warnings were emitted. `git diff --check` and Python compilation
+also passed. After the final placement of the pre-mutation clock-rate check,
+**86 targeted failure/rejection tests passed**; their log is
+`/tmp/optimizer-ownership-phase5-failure-check.log`.
+
+Evidence includes 54 all-arm round trips before/at/after a synthetic two-update
+epoch boundary: 27 raw-loader cases and 27 real repeat-sampler cases. Packed cases
+compare actual ordered input batches, actions, final RNG, model tensors, AdamW
+histories, scheduler state and sampler cursor exactly (`torch.equal`, not a relaxed
+numerical tolerance). Additional cases verify fresh lazy checkpoints, corrupted
+payload non-mutation, whole-bundle rollback after a scheduler installation failure,
+and first/middle/last owner plus scheduler/accounting failures preserving the
+previous durable checkpoint SHA256. Trainer-level checks verify a failed second
+update retains checkpoint step 1 and attempt costs; reopening a completed run
+records a second attempt with zero additional optimizer updates. Ledger fixtures
+verify stale/repeated observation handling, older-checkpoint replay, null CPU
+accelerator metrics and incomplete hard-kill measurements.
+
+These are short CPU diagnostics with synthetic budgets, not full campaign
+results. No full campaign or sealed-holdout evaluation was launched. Persistent
+clipping reports, terminal-validation sidecars, endpoint reporting and GPU bf16
+verification remain in their later task phases.

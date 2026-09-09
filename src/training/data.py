@@ -1019,3 +1019,51 @@ def _stack_feature(batch: list[dict[str, Any]], name: str) -> torch.Tensor:
         for value in values
     ]
     return torch.stack(tensors).long()
+
+
+def validate_campaign_sampler_boundary(config, state, *, train_dataloader=None):
+    """Validate on a shallow local sampler copy; immutable mmap order is shared."""
+    import copy
+    from src.utils.config import ConfigError
+
+    if config.get('dataset', {}).get('mode') != 'packed_mmap':
+        if state.get('sampler_state') is not None:
+            raise ConfigError('Raw campaign fixture contains packed sampler state')
+        if train_dataloader is not None:
+            length = len(train_dataloader)
+            step = state['step']
+            if length and (state['epoch'], state['batch_index']) != ((step - 1) // length, (step - 1) % length + 1) and step:
+                raise ConfigError('Campaign raw epoch cursor mismatch')
+        return
+    sampler = getattr(train_dataloader, 'batch_sampler', None)
+    if not isinstance(sampler, RepeatingNoPaddingDistributedBatchSampler):
+        raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+    saved = state.get('sampler_state')
+    if not isinstance(saved, Mapping):
+        raise ConfigError('Campaign packed sampler state missing')
+    expected = sampler.state_dict()
+    if set(saved) != set(expected) or any(
+        type(saved[key]) is not int for key, value in expected.items()
+        if type(value) is int
+    ):
+        raise ConfigError('Campaign sampler schema/integer fields mismatch')
+    batch = config['training']['batch_size_per_process']
+    cursor = state['step'] * batch
+    if type(saved.get('total_cursor')) is not int or saved['total_cursor'] != cursor:
+        raise ConfigError('Campaign sampler cursor and committed step differ')
+    try:
+        staged = copy.copy(sampler)
+        staged.load_state_dict(saved)
+    except (PackedCorpusError, ValueError, TypeError) as error:
+        raise ConfigError(f'Campaign sampler boundary invalid: {error}') from error
+    iteration = config['dataset']['optimizer_iteration']
+    if (saved['epoch_sample_count'] != iteration['aligned_epoch_samples']
+            or saved['planned_sample_count'] * config['model']['context_length'] != config['training']['token_budget']):
+        raise ConfigError('Campaign sampler epoch/budget mismatch')
+    epoch, within = divmod(cursor, saved['epoch_sample_count'])
+    if state['epoch'] != epoch or state['batch_index'] != within // batch:
+        raise ConfigError('Campaign epoch/batch cursor does not reconcile')
+    if state['tokens_seen'] == config['training']['token_budget']:
+        assigned = config.get('optimizer_ownership_contract', {}).get('budget', {}).get('assigned_epochs')
+        if within or assigned is not None and epoch != assigned:
+            raise ConfigError('Campaign terminal cursor does not match assigned complete epochs')

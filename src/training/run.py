@@ -900,6 +900,8 @@ def run_training(
     run_state = training_checkpointing.build_initial_continuation_state(config)
     checkpoint_state: dict[str, Any] = {}
     metrics_journal = None
+    resource_observer = None
+    attempt_finished = False
     continuation_load_succeeded = not bool(run["continuation"]["enabled"])
     optimizer = None
     scheduler = None
@@ -1125,8 +1127,18 @@ def run_training(
                 optimizer,
                 scheduler,
                 distributed_context=distributed_context,
+                train_dataloader=train_dataloader,
             )
             continuation_load_succeeded = True
+        if config.get('optimizer_ownership_contract'):
+            from src.training.packed_corpus import sha256_file
+            source_path = run_state.get('continuation_source_checkpoint_path')
+            source = {'path': source_path, 'step': run_state['last_completed_step'], 'sha256': sha256_file(Path(source_path))} if source_path else None
+            resource_observer = _resource_attempt_observer(config, device, started_at=run_started_at, source_checkpoint=source)
+            optimizer._resource_observer = resource_observer
+            optimizer._ownership_dataloader = train_dataloader
+            resource_observer(run_state=run_state, boundary='start')
+            training_checkpointing.reconcile_ownership_scientific_rows(output_dir, run_state['last_completed_step'])
         _validate_restored_optimizer_ownership_runtime(
             config,
             run_state,
@@ -1940,7 +1952,10 @@ def run_training(
         )
         config["model"]["granularity_pattern_summary"] = runtime_pattern_summary
         config["model"]["correction_context"] = correction_context
+        if resource_observer is not None:
+            resource_observer(run_state=run_state, boundary='committed')
         extra_summary_fields = {
+            **({'resource_summary': run_state.get('resource_summary')} if resource_observer is not None else {}),
             "steps_completed": training_outcome["steps_completed"],
             "stop_reason": training_outcome["stop_reason"],
             "content_tokens_seen": training_outcome["content_tokens_seen"],
@@ -2097,6 +2112,11 @@ def run_training(
                 extraction_metadata_path
             )
 
+        if resource_observer is not None:
+            resource_observer(run_state=run_state, boundary='completed')
+            extra_summary_fields['resource_summary'] = run_state['resource_summary']
+            extra_summary_fields['training_wall_time_seconds'] = run_state['resource_summary']['elapsed_seconds']
+            extra_summary_fields['peak_accelerator_memory_bytes'] = run_state['resource_summary']['peak_allocated_bytes']
         summary = build_run_summary(
             config,
             tokens_seen=tokens_seen,
@@ -2123,13 +2143,18 @@ def run_training(
             "parameter_counts_by_granularity": parameter_counts_by_granularity,
             "controller_summary_path": controller_summary_path,
         }
-    except Exception as error:
+    except BaseException as error:
+        if resource_observer is not None:
+            resource_observer(run_state=run_state, boundary='failed')
+            attempt_finished = True
         try:
             if metrics_journal is not None:
                 metrics_journal.flush()
             if (
                 run["continuation"]["enabled"]
                 and continuation_load_succeeded
+                and not run_state.get("update_in_flight")
+                and not run_state.get("optimizer_poisoned")
                 and model is not None
                 and optimizer is not None
                 and scheduler is not None
@@ -2256,6 +2281,9 @@ def run_training(
                         checkpoint_path=run_state.get("latest_checkpoint_path"),
                     ),
                 }
+                if resource_observer is not None:
+                    failure_extra_fields['resource_summary'] = run_state.get('resource_summary')
+                    failure_extra_fields['optimizer_failure'] = run_state.get('optimizer_failure')
                 failure_summary = build_run_summary(
                     config,
                     tokens_seen=int(run_state.get("tokens_seen", 0)),
@@ -2280,5 +2308,118 @@ def run_training(
             )
         raise
     finally:
+        if resource_observer is not None and not attempt_finished:
+            resource_observer(run_state=run_state, boundary='completed')
         monitoring_session.close()
         training_distributed.destroy_distributed_process_group(distributed_context)
+
+
+class ResourceAttemptLedger:
+    """Latest observation per unique process attempt, independent of checkpoints."""
+
+    def __init__(self, output_dir, *, run_id, artifact_io=None):
+        self.path = Path(output_dir) / 'resource_attempts.json'
+        self.run_id = run_id
+        self.artifact_io = artifact_io
+        self.attempts = {}
+        if self.path.exists():
+            payload = json.loads(self.path.read_text())
+            if payload.get('schema_version') != 1 or payload.get('run_id') != run_id or not isinstance(payload.get('attempts'), dict):
+                raise ConfigError('Resource ledger identity/schema mismatch')
+            self.attempts = payload['attempts']
+            for record in self.attempts.values():
+                self._validate_record(record)
+
+    @staticmethod
+    def _validate_record(record):
+        import math
+        if type(record.get('sequence')) is not int or record['sequence'] < 1:
+            raise ConfigError('Resource observation sequence is invalid')
+        duration = record.get('elapsed_seconds')
+        if not isinstance(duration, (int, float)) or isinstance(duration, bool) or not math.isfinite(duration) or duration < 0:
+            raise ConfigError('Resource attempt duration is invalid')
+        for field in ('peak_allocated_bytes', 'peak_reserved_bytes', 'attempted_steps'):
+            value = record.get(field)
+            if value is None and field.startswith('peak_'):
+                continue
+            if type(value) is not int or value < 0:
+                raise ConfigError(f'Resource {field} is invalid')
+        if record.get('status') not in {'running', 'failed', 'completed', 'interrupted'}:
+            raise ConfigError('Resource attempt status is invalid')
+
+    def observe(self, attempt_id, **record):
+        record['measurement_complete'] = record.get('status') != 'running'
+        self._validate_record(record)
+        previous = self.attempts.get(attempt_id)
+        if previous:
+            if record['sequence'] < previous['sequence']:
+                return
+            if record['sequence'] == previous['sequence']:
+                if record != previous:
+                    raise ConfigError('Conflicting resource observation sequence')
+                return
+            for field in ('elapsed_seconds', 'attempted_steps', 'peak_allocated_bytes', 'peak_reserved_bytes'):
+                if previous.get(field) is not None and (record.get(field) is None or record[field] < previous[field]):
+                    raise ConfigError(f'Resource observation regresses: {field}')
+            if record.get('source_checkpoint') != previous.get('source_checkpoint'):
+                raise ConfigError('Resource source checkpoint changed within an attempt')
+        candidate = {**self.attempts, attempt_id: copy.deepcopy(record)}
+        write_json_artifact(self.path, {'schema_version': 1, 'run_id': self.run_id, 'attempts': candidate}, artifact_io=self.artifact_io)
+        self.attempts = candidate
+
+    def validate_watermark(self, watermark):
+        if not isinstance(watermark, Mapping):
+            raise ConfigError('Resource watermark is invalid')
+        for attempt, sequence in watermark.items():
+            if type(sequence) is not int or sequence < 1 or attempt not in self.attempts or sequence > self.attempts[attempt]['sequence']:
+                raise ConfigError('Resource watermark references an unavailable observation')
+
+    def watermark(self):
+        return {key: value['sequence'] for key, value in self.attempts.items()}
+
+    def summary(self):
+        records = list(self.attempts.values())
+        def peak(field):
+            values = [r[field] for r in records if r.get(field) is not None]
+            return max(values) if values else None
+        return {
+            'elapsed_seconds': sum(r['elapsed_seconds'] for r in records),
+            'attempted_steps': sum(r['attempted_steps'] for r in records),
+            'peak_allocated_bytes': peak('peak_allocated_bytes'),
+            'peak_reserved_bytes': peak('peak_reserved_bytes'),
+            'measurement_complete': all(r['status'] != 'running' for r in records),
+            'attempt_count': len(records),
+        }
+
+
+def _resource_attempt_observer(config, device, *, started_at, source_checkpoint):
+    import uuid
+    from datetime import datetime, timezone
+    ledger = ResourceAttemptLedger(config['run']['output_dir'], run_id=config['run']['run_id'], artifact_io=config)
+    attempt_id = uuid.uuid4().hex
+    started = datetime.now(timezone.utc).isoformat()
+    sequence = attempted_steps = 0
+    last_observation = 0.0
+    terminal_status = None
+
+    def observe(*, run_state, boundary):
+        nonlocal sequence, attempted_steps, last_observation, terminal_status
+        if boundary == 'attempt':
+            attempted_steps += 1
+            return
+        now = time.perf_counter()
+        if boundary == 'committed' and now - last_observation < 30 and attempted_steps % max(1, config['outputs']['metrics_flush_interval_steps']):
+            return
+        sequence += 1
+        if boundary in {'completed', 'failed', 'interrupted'}:
+            terminal_status = boundary
+        status = terminal_status or 'running'
+        ledger.observe(attempt_id, sequence=sequence, elapsed_seconds=now - started_at,
+                       peak_allocated_bytes=torch.cuda.max_memory_allocated(device) if device.type == 'cuda' else None,
+                       peak_reserved_bytes=torch.cuda.max_memory_reserved(device) if device.type == 'cuda' else None,
+                       attempted_steps=attempted_steps, status=status, source_checkpoint=source_checkpoint,
+                       started_at=started, failure=copy.deepcopy(run_state.get('optimizer_failure')))
+        last_observation = now
+        run_state['resource_ledger_watermark'] = ledger.watermark()
+        run_state['resource_summary'] = ledger.summary()
+    return observe
