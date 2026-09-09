@@ -19,8 +19,8 @@
 
 **Purpose**: Establish the implementation record and the one new campaign module without changing runtime behavior.
 
-- [ ] T001 Create `docs/tinystories-optimizer-ownership-experiment.md` with the nine-arm protocol, pinned environment, artifact paths, requirement-to-verification outline, and the separate boundaries for diagnostic checks, later full training, and sealed holdout.
-- [ ] T002 Create `src/evaluation/optimizer_ownership.py` with the fixed arm/width definitions, exact active counts 115264/164416/213568/262720, schema-version constants, and plain campaign/run/endpoint record conventions from `specs/013-tinystories-optimizer-ownership/data-model.md`; reuse existing hashing and atomic artifact utilities.
+- [X] T001 Create `docs/tinystories-optimizer-ownership-experiment.md` with the nine-arm protocol, pinned environment, artifact paths, requirement-to-verification outline, and the separate boundaries for diagnostic checks, later full training, and sealed holdout.
+- [X] T002 Create `src/evaluation/optimizer_ownership.py` with the fixed arm/width definitions, exact active counts 115264/164416/213568/262720, schema-version constants, and plain campaign/run/endpoint record conventions from `specs/013-tinystories-optimizer-ownership/data-model.md`; reuse existing hashing and atomic artifact utilities.
 
 ## Phase 2: Foundational (Blocking Prerequisites)
 
