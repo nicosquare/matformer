@@ -765,9 +765,10 @@ def _forward_backward_microbatch(
 
 
 def snapshot_run_state(run_state):
-    """Copy rollback state, retaining an independent attempt-ID list.
+    """Copy rollback state; campaign metrics contain only a compact marker.
 
-    These IDs are immutable strings. A list copy preserves deepcopy semantics
+    Legacy/unordered metrics still contain immutable IDs. A list copy preserves
+    deepcopy semantics
     without dispatching through Python's recursive copier for every past step.
     Other state, including unexpected ID types, still uses ordinary deepcopy.
     """

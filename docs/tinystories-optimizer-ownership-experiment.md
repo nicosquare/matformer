@@ -818,3 +818,29 @@ legacy hash inputs and training hot loop are unchanged. The restore-only full-
 bundle guard remains outside per-step execution. Short real-model and synthetic
 report tests verify tooling; full-budget learning/resource results and uniform
 holdout evaluation remain separately requested researcher work.
+
+## Compact campaign metrics accounting
+
+Campaign metrics now use accumulator schema 2: counters plus
+`optimizer_last_attempt_id`, rather than the schema-1 list of every action ID.
+The fixed campaign emits one ordered `global:<ordinal>:-:-:<width>` action per
+update. Repeated rows for the most recent action do not count it twice; gaps,
+older out-of-order rows, or a different action at the same ordinal are rejected.
+Normal continuation first repairs disk metrics to the durable checkpoint boundary,
+then continues from that checkpoint's marker. Failure rollback copies only this
+compact metrics state. Detailed action/batch records remain in the existing logs,
+and the independent resource-attempt ledger continues to charge interrupted work.
+
+On loading a schema-1 campaign checkpoint, the reader checks that the IDs form a
+complete numeric prefix and that attempt counters reconcile, then converts the
+history once. It preserves all counters and learning state. New checkpoints omit
+the full ID list, avoiding history-size-dependent per-update copies and checkpoint
+serialization. Generic unordered metrics readers retain schema-1 deduplication.
+Schema-2 checkpoints require this updated reader; retain the source snapshot used
+by each attempt and never resume them with the older runtime.
+
+Deploying this change to an existing campaign requires a new recorded source
+snapshot and a checkpoint-based restart; editing the main checkout does not change
+jobs running from an isolated snapshot. Preserve the prior checkpoints, metrics,
+traces, resource ledgers, and submission records before reconciliation. Keep
+original scientific contract hashes and record runtime source hashes separately.

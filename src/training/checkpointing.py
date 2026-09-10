@@ -3836,8 +3836,11 @@ def _validate_ownership_payload(payload, config, model, optimizer, scheduler, *,
     metrics = payload.get('metrics_accumulator_state')
     if metrics is not None:
         try:
-            expected_keys = set(StreamingMetricsAccumulator().state_dict())
-            if not isinstance(metrics, Mapping) or set(metrics) != expected_keys or metrics['schema_version'] != 1:
+            if not isinstance(metrics, Mapping) or metrics.get('schema_version') not in (1, 2):
+                raise ValueError('invalid metrics schema')
+            expected_keys = set(StreamingMetricsAccumulator(
+                ordered_attempts=metrics['schema_version'] == 2).state_dict())
+            if set(metrics) != expected_keys:
                 raise ValueError('invalid metrics schema')
             for key in ('last_training_step', 'tokens_seen', 'content_tokens_seen', 'training_row_count', 'validation_row_count', 'attempted_optimizer_steps', 'committed_optimizer_steps', 'failed_optimizer_attempts'):
                 _require_nonnegative_int(metrics[key], f'metrics {key}')
@@ -3845,7 +3848,7 @@ def _validate_ownership_payload(payload, config, model, optimizer, scheduler, *,
                 raise ValueError('metrics watermark exceeds or differs from committed work')
             from src.training.optimizer_state import _validate_finite_values
             _validate_finite_values(metrics, 'campaign metrics')
-            StreamingMetricsAccumulator(metrics)
+            StreamingMetricsAccumulator(metrics, ordered_attempts=True)
         except (ValueError, TypeError, KeyError) as error:
             raise ConfigError(f'Campaign metrics state invalid: {error}') from error
     watermark = payload.get('resource_ledger_watermark')
@@ -3896,7 +3899,13 @@ def _load_ownership_checkpoint(payload, path, config, model, optimizer, schedule
             restore_packed_sampler_state(train_dataloader, snapshot[4])
         raise
     state = build_initial_continuation_state(config)
-    state.update({key: copy.deepcopy(payload.get(key)) for key in OWNERSHIP_STATE_FIELDS})
+    state.update({key: copy.deepcopy(payload.get(key)) for key in OWNERSHIP_STATE_FIELDS
+                  if key != 'metrics_accumulator_state'})
+    from src.utils.metrics import StreamingMetricsAccumulator
+    metrics = payload.get('metrics_accumulator_state')
+    state['metrics_accumulator_state'] = (
+        copy.deepcopy(StreamingMetricsAccumulator(metrics, ordered_attempts=True).state_dict())
+        if metrics is not None else None)
     state.update(status='resumed', last_completed_step=payload['step'],
                  latest_checkpoint_step=payload['step'], last_durable_checkpoint_step=payload['step'],
                  latest_checkpoint_path=str(path), continuation_source_checkpoint_path=str(path),

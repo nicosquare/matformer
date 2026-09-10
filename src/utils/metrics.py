@@ -458,10 +458,18 @@ class ArtifactError(ValueError):
 
 
 class StreamingMetricsAccumulator:
-    """Checkpointable bounded summary of an arbitrarily large metrics stream."""
+    """Streaming summary; ordered campaigns use a constant-size attempt marker.
 
-    def __init__(self, state: Mapping[str, Any] | None = None, *, trailing_count: int = 5):
+    Schema 1 retains exact arbitrary-order ID deduplication for legacy readers.
+    Schema 2 requires the campaign's sequential, one-width-per-update protocol.
+    Disk metrics are repaired to the saved boundary before new rows arrive;
+    stale or conflicting attempts are errors, rather than guessed duplicates.
+    """
+
+    def __init__(self, state: Mapping[str, Any] | None = None, *, trailing_count: int = 5,
+                 ordered_attempts: bool = False):
         state = dict(state or {})
+        self.ordered_attempts = ordered_attempts or state.get("schema_version") == 2
         self.trailing_count = max(1, int(state.get("trailing_count", trailing_count)))
         self.last_training_step = int(state.get("last_training_step", 0))
         self.tokens_seen = int(state.get("tokens_seen", 0))
@@ -485,7 +493,7 @@ class StreamingMetricsAccumulator:
             str(key): int(value)
             for key, value in dict(state.get("selection_counts", {})).items()
         }
-        self.optimizer_attempt_ids = {
+        self.optimizer_attempt_ids = set() if self.ordered_attempts else {
             str(value) for value in state.get("optimizer_attempt_ids", [])
         }
         # Preserve canonical checkpoint ordering without re-sorting the full
@@ -500,9 +508,70 @@ class StreamingMetricsAccumulator:
         self.failed_optimizer_attempts = int(
             state.get("failed_optimizer_attempts", 0)
         )
+        self.optimizer_last_attempt_id = None
+        if self.ordered_attempts:
+            self._restore_ordered_attempts(state)
         self.checkpoint_selection = copy_json_mapping(
             state.get("checkpoint_selection")
         )
+
+    @staticmethod
+    def _attempt_ordinal(key: str) -> int:
+        # The ownership campaign selects one width per update, without held
+        # windows or balancing. Do not silently accept a different ID protocol.
+        fields = key.split(":") if isinstance(key, str) else []
+        if (len(fields) != 5 or fields[0] != "global" or fields[2:4] != ["-", "-"]
+                or fields[4] not in {"g250", "g500", "g750", "g1000"}
+                or not fields[1].isascii() or not fields[1].isdigit()
+                or str(int(fields[1])) != fields[1]):
+            raise ValueError("Ordered campaign attempt ID is invalid")
+        return int(fields[1])
+
+    def _restore_ordered_attempts(self, state):
+        count = self.attempted_optimizer_steps
+        if (min(count, self.committed_optimizer_steps, self.failed_optimizer_attempts) < 0
+                or count != self.committed_optimizer_steps + self.failed_optimizer_attempts):
+            raise ValueError("Ordered campaign attempt counters do not reconcile")
+        if state.get("schema_version", 1) == 1:
+            # One-time conversion only. The old checkpoint may sort IDs
+            # lexicographically; verify the complete numeric prefix before
+            # replacing it with its last member. Never guess across a gap.
+            ids = state.get("optimizer_attempt_ids", [])
+            if not isinstance(ids, list) or len(ids) != count:
+                raise ValueError("Legacy campaign attempt history/count mismatch")
+            seen = set()
+            for key in ids:
+                ordinal = self._attempt_ordinal(key)
+                if ordinal >= count or ordinal in seen:
+                    raise ValueError("Legacy campaign attempt history is not a complete prefix")
+                seen.add(ordinal)
+                if ordinal == count - 1:
+                    self.optimizer_last_attempt_id = key
+        elif state.get("schema_version") == 2:
+            key = state.get("optimizer_last_attempt_id")
+            if ((count == 0 and key is not None)
+                    or (count > 0 and self._attempt_ordinal(key) != count - 1)):
+                raise ValueError("Ordered campaign attempt marker/count mismatch")
+            self.optimizer_last_attempt_id = key
+        else:
+            raise ValueError("Unsupported metrics schema")
+
+    def _is_new_attempt(self, key: str) -> bool:
+        if not self.ordered_attempts:
+            if key in self.optimizer_attempt_ids:
+                return False
+            from bisect import insort
+            insort(self._sorted_optimizer_attempt_ids, key)
+            self.optimizer_attempt_ids.add(key)
+            return True
+        if key == self.optimizer_last_attempt_id:
+            # Repeated metric rows, including a failure reported after a
+            # committed update, must not count that same attempt twice.
+            return False
+        if self._attempt_ordinal(key) != self.attempted_optimizer_steps:
+            raise ValueError("Campaign attempts must arrive in order without gaps or conflicts")
+        self.optimizer_last_attempt_id = key
+        return True
 
     def update(self, rows: Iterable[Mapping[str, Any]]) -> None:
         for raw_row in rows:
@@ -512,12 +581,11 @@ class StreamingMetricsAccumulator:
                 attempt_id = row.get("optimizer_action_id")
                 if attempt_id not in (None, ""):
                     attempt_key = str(attempt_id)
-                    if attempt_key not in self.optimizer_attempt_ids:
-                        from bisect import insort
-                        insort(self._sorted_optimizer_attempt_ids, attempt_key)
-                        self.optimizer_attempt_ids.add(attempt_key)
-                        attempted = _bool_value(row.get("optimizer_step_attempted"))
-                        committed = _bool_value(row.get("optimizer_step_committed"))
+                    attempted = _bool_value(row.get("optimizer_step_attempted"))
+                    committed = _bool_value(row.get("optimizer_step_committed"))
+                    if self.ordered_attempts and not attempted:
+                        raise ValueError("Campaign attempt row must record an attempted update")
+                    if self._is_new_attempt(attempt_key):
                         if attempted:
                             self.attempted_optimizer_steps += 1
                         if committed:
@@ -566,7 +634,7 @@ class StreamingMetricsAccumulator:
 
     def state_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": 2 if self.ordered_attempts else 1,
             "trailing_count": self.trailing_count,
             "last_training_step": self.last_training_step,
             "tokens_seen": self.tokens_seen,
@@ -579,7 +647,9 @@ class StreamingMetricsAccumulator:
                 self.trailing_validation_by_granularity
             ),
             "selection_counts": self.selection_counts,
-            "optimizer_attempt_ids": self._sorted_optimizer_attempt_ids.copy(),
+            **({"optimizer_last_attempt_id": self.optimizer_last_attempt_id}
+               if self.ordered_attempts else
+               {"optimizer_attempt_ids": self._sorted_optimizer_attempt_ids.copy()}),
             "attempted_optimizer_steps": self.attempted_optimizer_steps,
             "committed_optimizer_steps": self.committed_optimizer_steps,
             "failed_optimizer_attempts": self.failed_optimizer_attempts,
@@ -634,7 +704,10 @@ class MetricsJournal:
             if isinstance(artifact_state, Mapping)
             else None
         )
-        self.accumulator = StreamingMetricsAccumulator(saved_accumulator)
+        self.accumulator = StreamingMetricsAccumulator(
+            saved_accumulator,
+            ordered_attempts=bool((artifact_io_config or {}).get("optimizer_ownership_contract")),
+        )
         self._retained_row_limit = 100_000
         self._retained_rows: list[dict[str, Any]] = []
         self._retention_overflow = False
