@@ -764,6 +764,21 @@ def _forward_backward_microbatch(
     return metric_data, 1
 
 
+def snapshot_run_state(run_state):
+    """Copy rollback state, retaining an independent attempt-ID list.
+
+    These IDs are immutable strings. A list copy preserves deepcopy semantics
+    without dispatching through Python's recursive copier for every past step.
+    Other state, including unexpected ID types, still uses ordinary deepcopy.
+    """
+    metrics = run_state.get('metrics_accumulator_state')
+    ids = metrics.get('optimizer_attempt_ids') if isinstance(metrics, dict) else None
+    memo = {}
+    if isinstance(ids, list) and all(type(value) is str for value in ids):
+        memo[id(ids)] = ids.copy()
+    return copy.deepcopy(run_state, memo)
+
+
 def train_for_steps(
     config: dict[str, Any],
     model,
@@ -952,7 +967,7 @@ def train_for_steps(
                 indexed_batches = iter(enumerate(train_dataloader))
             while step < max_steps and tokens_seen < token_budget:
                 window_rng_snapshot = capture_rng_state()
-                window_state_snapshot = copy.deepcopy(run_state)
+                window_state_snapshot = snapshot_run_state(run_state)
                 controller_snapshot = (
                     probabilistic_controller.transaction_snapshot()
                     if probabilistic_controller is not None

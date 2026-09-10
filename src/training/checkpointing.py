@@ -1787,7 +1787,10 @@ def _save_model_checkpoint_rank_zero(
 
     if config.get('optimizer_ownership_contract'):
         from src.training.optimizer_state import measure_optimizer_storage
-        payload['optimizer_storage'] = measure_optimizer_storage(optimizer, step=run_state['last_completed_step'])
+        payload['optimizer_storage'] = (
+            measure_optimizer_storage(optimizer, step=run_state['last_completed_step'])
+            if optimizer is not None else None
+        )
         payload.update(_ownership_identity(config, model))
         for key in OWNERSHIP_STATE_FIELDS:
             payload[key] = copy.deepcopy(run_state.get(key))

@@ -488,6 +488,9 @@ class StreamingMetricsAccumulator:
         self.optimizer_attempt_ids = {
             str(value) for value in state.get("optimizer_attempt_ids", [])
         }
+        # Preserve canonical checkpoint ordering without re-sorting the full
+        # attempt history after every training row.
+        self._sorted_optimizer_attempt_ids = sorted(self.optimizer_attempt_ids)
         self.attempted_optimizer_steps = int(
             state.get("attempted_optimizer_steps", 0)
         )
@@ -510,6 +513,8 @@ class StreamingMetricsAccumulator:
                 if attempt_id not in (None, ""):
                     attempt_key = str(attempt_id)
                     if attempt_key not in self.optimizer_attempt_ids:
+                        from bisect import insort
+                        insort(self._sorted_optimizer_attempt_ids, attempt_key)
                         self.optimizer_attempt_ids.add(attempt_key)
                         attempted = _bool_value(row.get("optimizer_step_attempted"))
                         committed = _bool_value(row.get("optimizer_step_committed"))
@@ -574,7 +579,7 @@ class StreamingMetricsAccumulator:
                 self.trailing_validation_by_granularity
             ),
             "selection_counts": self.selection_counts,
-            "optimizer_attempt_ids": sorted(self.optimizer_attempt_ids),
+            "optimizer_attempt_ids": self._sorted_optimizer_attempt_ids.copy(),
             "attempted_optimizer_steps": self.attempted_optimizer_steps,
             "committed_optimizer_steps": self.committed_optimizer_steps,
             "failed_optimizer_attempts": self.failed_optimizer_attempts,
