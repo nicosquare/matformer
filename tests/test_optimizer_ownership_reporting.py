@@ -246,7 +246,7 @@ def test_complete_freeze_tables_and_figures(tmp_path, terminal_campaign):
         assert len(ax.lines) == 9 and not ax.containers
         assert [list(line.get_xdata()) for line in ax.lines[:5]] == [[w['non_embedding_parameters'] for w in campaign.WIDTHS]] * 5
         assert all(line.get_linestyle() == 'None' for line in ax.lines[5:])
-        assert len(set(line.get_label() for line in ax.lines)) == 9
+        assert ax.get_legend_handles_labels()[1] == ['S1', 'S2', 'C1', 'C2', 'C3', 'Standalone']
         assert 'seed 42' in fig.texts[0].get_text()
 
 

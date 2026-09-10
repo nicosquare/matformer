@@ -1670,24 +1670,27 @@ def endpoint_figure(rows, *, metric, partial):
     figure = Figure(figsize=(11, 7))
     ax = figure.subplots()
     colors = dict(zip(('S1', 'S2', 'C1', 'C2', 'C3'), ('#0072B2', '#E69F00', '#009E73', '#CC79A7', '#D55E00')))
+    standalone_labeled = False
     for arm in (*ELASTIC_ARMS, *STANDALONE_ARMS):
         values = sorted((r for r in rows if r['arm_id'] == arm['arm_id']), key=lambda r: r['non_embedding_parameters'])
         if not values:
             continue
         elastic = not arm['source_width']
+        label = arm['arm_id'] if elastic else ('Standalone' if not standalone_labeled else '_nolegend_')
+        if not elastic:
+            standalone_labeled = True
         ax.plot([r['non_embedding_parameters'] for r in values], [r[metric] for r in values],
-                label=arm['arm_id'], color=colors.get(arm['arm_id'], '#333333'),
-                linestyle='-' if elastic else 'None', marker='o' if elastic else 'X',
+                label=label, color=colors.get(arm['arm_id'], '#8B4513'),
+                linestyle='-' if elastic else 'None', marker='o' if elastic else '^',
                 markersize=5 if elastic else 9, fillstyle='none' if elastic else 'full')
-    ax.set(xlabel='Active non-embedding parameters (input embeddings and LM head excluded)',
-           ylabel='Perplexity' if metric == 'perplexity' else 'Language-model loss')
+    ax.set(xlabel='Active non-embedding parameters',
+           ylabel='Perplexity' if metric == 'perplexity' else 'Loss')
     ax.set_xticks([w['non_embedding_parameters'] for w in WIDTHS])
     ax.ticklabel_format(axis='x', style='plain'); ax.grid(alpha=.2)
     ax.legend(ncol=3)
     title = ('PARTIAL diagnostic — ' if partial else '') + 'TinyStories-Instruct · seed 42 · ordinary validation\nExact terminal checkpoint endpoints'
     figure.suptitle(title)
-    figure.text(.5, .025, 'Standalone: 1 epoch / 713,785,344 tokens per run; elastic: 4 epochs / 2,855,141,376 tokens per run.\n'
-                'One elastic run matches the four-standalone panel tokens; compute, time and realized width coverage are not matched.', ha='center', fontsize=9)
+    figure.text(.5, .025, 'Standalone: 1 epoch / 713,785,344 tokens per run; elastic: 4 epochs / 2,855,141,376 tokens per run.', ha='center', fontsize=9)
     figure.tight_layout(rect=(0, .09, 1, .9))
     return figure
 

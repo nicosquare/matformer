@@ -241,21 +241,16 @@ def _is_concat_lmc_module(module: torch.nn.Module) -> bool:
 
 def _capture_concat_lmc_snapshots(
     model: torch.nn.Module,
-    total_losses: int,
 ) -> list[tuple[torch.nn.Parameter, torch.Tensor, float]]:
     snapshots: list[tuple[torch.nn.Parameter, torch.Tensor, float]] = []
-    if total_losses <= 0:
-        return snapshots
 
     for module in model.modules():
         if not _is_concat_lmc_module(module):
             continue
 
-        counts = list(getattr(module, "gradient_membership_counts", []))
-        scales = [
-            (float(total_losses) / float(count)) if int(count) > 0 else 1.0
-            for count in counts
-        ]
+        # Match GMC's configured trained-width membership factors. The number
+        # of widths sampled in this update must not change the normalization.
+        scales = module.gradient_membership_correction_scales
         block_groups = [
             getattr(module, "gate_weight_blocks", None),
             getattr(module, "up_weight_blocks", None),
@@ -298,13 +293,12 @@ def _maybe_apply_concat_lmc_optimizer_step(
     config: Mapping[str, Any],
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
-    total_losses: int,
 ) -> None:
     if config.get("model", {}).get("correction_mode") != "lmc":
         optimizer.step()
         return
 
-    snapshots = _capture_concat_lmc_snapshots(model, total_losses)
+    snapshots = _capture_concat_lmc_snapshots(model)
     optimizer.step()
     _apply_concat_lmc_corrections(snapshots)
 
@@ -1069,7 +1063,6 @@ def train_for_steps(
                     runtime_artifacts: dict[
                         str, tuple[dict[str, Any], dict[str, Any]]
                     ] = {}
-                    total_losses = 1
                     local_window_content_tokens = 0
                     failure_stage = "forward_backward"
                     for microstep_index, (
@@ -1077,7 +1070,7 @@ def train_for_steps(
                         batch,
                     ) in enumerate(prepared_window, start=1):
                         local_count = local_target_counts[microstep_index - 1]
-                        micro_metrics, total_losses = _forward_backward_microbatch(
+                        micro_metrics, _ = _forward_backward_microbatch(
                             config,
                             model,
                             batch,
@@ -1192,7 +1185,6 @@ def train_for_steps(
                             config,
                             model,
                             step_optimizer,
-                            total_losses=total_losses,
                         )
                     # A successful optimizer return is irreversible. Scheduler
                     # and accounting failures after this point are fatal and do
