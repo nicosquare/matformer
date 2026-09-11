@@ -12,6 +12,7 @@ import numpy as np
 
 
 SEED_STREAM_VERSION = 1
+SCIENTIFIC_CONTRACT_SCHEMA_VERSION = 1
 DATA_SPLIT_VERSION = 1
 STRICT_CUBLAS_WORKSPACE_CONFIG = ":4096:8"
 PROBABILISTIC_SEED_STREAMS = (
@@ -228,6 +229,46 @@ def stable_hash(value: Any) -> str:
         ensure_ascii=True,
     ).encode("utf-8")
     return hashlib.sha256(serialized).hexdigest()
+
+
+def build_optimizer_ownership_signature(
+    contract: Mapping[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    """Serialize explicit campaign scientific controls and return their hash.
+
+    Preflight supplies resolved sections, including all data-role identities,
+    schedule horizons, initialization provenance and physical/source widths.
+    This is serialization, not fixed-matrix eligibility validation. No trainer
+    defaults are inferred here and no historical signature inputs are extended.
+    Extra scientific fields are retained and hashed; artifact locations and the
+    resulting hash belong outside this contract to avoid circular identities.
+    """
+
+    required = {
+        "schema_version", "campaign_id", "run_id", "arm_id", "representation",
+        "state_scope", "clipping", "initialization", "model", "optimizer",
+        "sampling", "data", "budget", "evaluation", "count_convention",
+    }
+    missing = required - contract.keys()
+    if missing:
+        raise ValueError(f"optimizer_ownership_contract missing fields: {sorted(missing)}")
+    version = contract["schema_version"]
+    if type(version) is not int or version != SCIENTIFIC_CONTRACT_SCHEMA_VERSION:
+        raise ValueError("optimizer_ownership_contract.schema_version must be 1")
+
+    def json_value(value: Any) -> Any:
+        if isinstance(value, Mapping):
+            if any(not isinstance(key, str) for key in value):
+                raise ValueError("Scientific contract mapping keys must be strings")
+            return {key: json_value(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [json_value(item) for item in value]
+        return value
+
+    # A JSON round trip detaches nested inputs and rejects tensors, non-finite
+    # numbers and other values that cannot be preserved in saved artifacts.
+    inputs = json.loads(json.dumps(json_value(contract), sort_keys=True, allow_nan=False))
+    return stable_hash(inputs), inputs
 
 
 def build_balanced_warmup_schedule(

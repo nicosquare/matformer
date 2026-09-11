@@ -809,6 +809,7 @@ class ToyConcatLMCModel(torch.nn.Module):
         self.current_granularity = None
         self.current_subset_blocks = None
         self.gradient_membership_counts = [4, 3, 2, 1]
+        self.gradient_membership_correction_scales = [1.0, 4.0 / 3.0, 2.0, 4.0]
         self.gate_weight_blocks = torch.nn.ParameterList(
             [torch.nn.Parameter(torch.tensor(value)) for value in [1.0, 2.0, 3.0, 4.0]]
         )
@@ -888,7 +889,7 @@ def _assert_optimizer_states_equal(left, right):
                 assert left_value == right_value
 
 
-def _run_concat_lmc_case(tmp_path, monkeypatch, correction_mode):
+def _run_concat_lmc_case(tmp_path, monkeypatch, correction_mode, selected_granularities):
     import src.training.run as training_run
 
     output_dir = tmp_path / f"concat-{correction_mode}" / "debug-nested-001"
@@ -899,6 +900,7 @@ def _run_concat_lmc_case(tmp_path, monkeypatch, correction_mode):
         overrides=[
             "model.variant=concat",
             f"model.correction_mode={correction_mode}",
+            "run.sampling_mode=" + ("nested-all" if len(selected_granularities) > 1 else "nested-random"),
             "training.max_steps=1",
             "training.eval_interval=0",
             "training.batch_size_per_process=1",
@@ -946,12 +948,11 @@ def _run_concat_lmc_case(tmp_path, monkeypatch, correction_mode):
             for granularity in ["s", "m", "l", "xl"]
         },
     )
-    # Keep the legacy concat-LMC smoke deterministic so it still exercises the
-    # full four-granularity correction path after the sampling-mode refactor.
+    # Exercise both single-width sampling and the all-width update path.
     monkeypatch.setattr(
         training_steps,
         "select_training_granularities",
-        lambda config, granularities, device: list(granularities),
+        lambda config, granularities, device: list(selected_granularities),
     )
 
     result = run_training(
@@ -2661,12 +2662,17 @@ def test_config_driven_nested_training_uses_resolved_sgd_optimizer(tmp_path, mon
     assert summary["scheduler_resolved_warmup_steps"] == 0
 
 
+@pytest.mark.parametrize(
+    "selected_granularities",
+    [("s",), ("m",), ("l",), ("xl",), ("s", "m", "l", "xl")],
+)
 def test_concat_lmc_applies_block_specific_effective_learning_rates_without_changing_gradients_or_optimizer_state(
     tmp_path,
     monkeypatch,
+    selected_granularities,
 ):
-    none_case = _run_concat_lmc_case(tmp_path, monkeypatch, "none")
-    lmc_case = _run_concat_lmc_case(tmp_path, monkeypatch, "lmc")
+    none_case = _run_concat_lmc_case(tmp_path, monkeypatch, "none", selected_granularities)
+    lmc_case = _run_concat_lmc_case(tmp_path, monkeypatch, "lmc", selected_granularities)
 
     expected_scales = {
         "gate_weight_blocks": [1.0, 4.0 / 3.0, 2.0, 4.0],
@@ -2676,6 +2682,9 @@ def test_concat_lmc_applies_block_specific_effective_learning_rates_without_chan
         "up_bias_blocks": [1.0, 4.0 / 3.0, 2.0, 4.0],
     }
 
+    active_blocks = max(
+        ["s", "m", "l", "xl"].index(g) + 1 for g in selected_granularities
+    )
     for name, initial_value in none_case["initial_parameters"].items():
         none_delta = initial_value - none_case["final_parameters"][name]
         lmc_delta = initial_value - lmc_case["final_parameters"][name]
@@ -2684,11 +2693,18 @@ def test_concat_lmc_applies_block_specific_effective_learning_rates_without_chan
             continue
 
         block_group, block_index = name.split(".")
+        if int(block_index) >= active_blocks:
+            assert none_case["grads"][name] is None
+            assert lmc_case["grads"][name] is None
+            assert torch.equal(lmc_case["final_parameters"][name], initial_value)
         scale = expected_scales[block_group][int(block_index)]
         torch.testing.assert_close(lmc_delta, none_delta * scale)
 
     for name in none_case["grads"]:
-        torch.testing.assert_close(none_case["grads"][name], lmc_case["grads"][name])
+        if none_case["grads"][name] is None:
+            assert lmc_case["grads"][name] is None
+        else:
+            torch.testing.assert_close(none_case["grads"][name], lmc_case["grads"][name])
 
     _assert_optimizer_states_equal(
         none_case["optimizer_state"],

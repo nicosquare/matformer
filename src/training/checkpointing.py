@@ -68,6 +68,7 @@ from src.training.portfolio_catchup import (
     validate_portfolio_catchup_state,
 )
 from src.training.optimizer_state import (
+    BlockOptimizerCollection,
     GlobalSchedulerClock,
     PerGranularityOptimizerCollection,
 )
@@ -205,8 +206,8 @@ def _validate_optimizer_resume_contract(
         str(config.get("training", {}).get("optimizer_state_scope", "shared"))
         if config is not None
         else (
-            "per_granularity"
-            if isinstance(optimizer, PerGranularityOptimizerCollection)
+            "per_ffn_block" if isinstance(optimizer, BlockOptimizerCollection) else "per_granularity"
+            if isinstance(optimizer, (PerGranularityOptimizerCollection, BlockOptimizerCollection))
             else "shared"
         )
     )
@@ -230,8 +231,8 @@ def _validate_optimizer_resume_contract(
     step = checkpoint.get("step", checkpoint.get("last_completed_step", 0))
     if isinstance(step, bool) or not isinstance(step, int) or step < 0:
         raise ConfigError("Checkpoint committed step is invalid")
-    if runtime_scope == "per_granularity":
-        if not isinstance(optimizer, PerGranularityOptimizerCollection):
+    if runtime_scope in {"per_granularity", "per_ffn_block"}:
+        if not isinstance(optimizer, (PerGranularityOptimizerCollection, BlockOptimizerCollection)):
             raise ConfigError("Per-granularity checkpoint requires an optimizer collection")
         if not isinstance(scheduler, GlobalSchedulerClock):
             raise ConfigError("Per-granularity checkpoint requires a global scheduler clock")
@@ -259,14 +260,14 @@ def _validate_optimizer_resume_contract(
             if (
                 not isinstance(exposures, Mapping)
                 or dict(exposures)
-                != collection_state["successful_update_counts"]
+                != collection_state["width_selection_counts" if runtime_scope == "per_ffn_block" else "successful_update_counts"]
                 or sampling_total != step
             ):
                 raise ConfigError(
                     "Checkpoint optimizer updates and global sampling exposures do not reconcile"
                 )
     else:
-        if isinstance(optimizer, PerGranularityOptimizerCollection):
+        if isinstance(optimizer, (PerGranularityOptimizerCollection, BlockOptimizerCollection)):
             raise ConfigError("Shared checkpoint cannot load into an optimizer collection")
         if checkpoint.get("optimizer_state_collection") is not None:
             raise ConfigError("Shared checkpoint contains an optimizer collection")
@@ -1034,6 +1035,13 @@ def maybe_write_latest_checkpoint(
     distributed_context=None,
     force: bool = False,
 ) -> None:
+    assert_checkpoint_safe(run_state)
+    # A durable campaign terminal is immutable, including on failure/reentry.
+    if (config.get('optimizer_ownership_contract')
+            and int(step) == config['training']['max_steps']
+            and int(run_state.get('latest_checkpoint_step', 0)) == int(step)
+            and Path(run_state.get('latest_checkpoint_path') or Path(config['run']['output_dir']) / 'checkpoints/latest.pt').is_file()):
+        return
     pending_retry = bool(run_state.get("pending_latest_checkpoint", False))
     if not force and not pending_retry and not should_save_latest_checkpoint(config, step, reason):
         return
@@ -1169,6 +1177,7 @@ def write_checkpoint_if_needed(
     run_state: dict[str, Any],
     distributed_context=None,
 ) -> dict[str, Any]:
+    assert_checkpoint_safe(run_state)
     if should_write_shared_artifact(distributed_context):
         checkpoint_fields = build_checkpoint_summary_fields(config, metrics_rows)
         checkpoint_path = checkpoint_fields.get("best_checkpoint_path")
@@ -1473,6 +1482,7 @@ def _save_model_checkpoint_rank_zero(
     collected_optimizer_state_dict: dict[str, Any] | None = None,
     rng_states_by_rank: list[dict[str, Any]] | None = None,
 ) -> None:
+    assert_checkpoint_safe(run_state)
     model_state_dict = collected_model_state_dict
     optimizer_state_dict = collected_optimizer_state_dict
     if model_state_dict is None:
@@ -1490,8 +1500,8 @@ def _save_model_checkpoint_rank_zero(
     optimizer_state_collection = None
     if checkpoint_kind == MODEL_ONLY_CHECKPOINT_KIND:
         optimizer_state_dict = None
-    elif state_scope == "per_granularity":
-        if not isinstance(optimizer, PerGranularityOptimizerCollection):
+    elif state_scope in {"per_granularity", "per_ffn_block"}:
+        if not isinstance(optimizer, (PerGranularityOptimizerCollection, BlockOptimizerCollection)):
             raise ConfigError(
                 "Per-granularity resumable checkpoint requires the ordered collection"
             )
@@ -1516,7 +1526,7 @@ def _save_model_checkpoint_rank_zero(
                 "Cannot save an unreconciled per-granularity optimizer checkpoint"
             )
         optimizer_state_dict = None
-    elif isinstance(optimizer, PerGranularityOptimizerCollection):
+    elif isinstance(optimizer, (PerGranularityOptimizerCollection, BlockOptimizerCollection)):
         raise ConfigError("Shared checkpoint cannot serialize an optimizer collection")
 
     probabilistic_controller_state = run_state.get(
@@ -1781,6 +1791,20 @@ def _save_model_checkpoint_rank_zero(
             ),
         }
 
+    if config.get('optimizer_ownership_contract'):
+        from src.training.optimizer_state import measure_optimizer_storage
+        payload['optimizer_storage'] = (
+            measure_optimizer_storage(optimizer, step=run_state['last_completed_step'])
+            if optimizer is not None else None
+        )
+        payload.update(_ownership_identity(config, model))
+        for key in OWNERSHIP_STATE_FIELDS:
+            payload[key] = copy.deepcopy(run_state.get(key))
+        payload['resource_ledger_watermark'] = copy.deepcopy(run_state.get('resource_ledger_watermark', {}))
+        if checkpoint_kind == RESUMABLE_CHECKPOINT_KIND:
+            _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+                                        train_dataloader=getattr(optimizer, '_ownership_dataloader', None))
+
     artifact_io = resolved_artifact_io(config)
     staging_path = _stage_checkpoint_payload(
         payload,
@@ -1879,6 +1903,11 @@ def save_model_checkpoint(
     heartbeat_writer=None,
 ) -> None:
     """Collect FSDP state on every rank and install it only from rank zero."""
+
+    assert_checkpoint_safe(run_state)
+    observer = getattr(optimizer, "_resource_observer", None)
+    if observer is not None:
+        observer(run_state=run_state, boundary="checkpoint")
 
     model_state_dict, optimizer_state_dict = checkpoint_state_dicts(
         model,
@@ -2206,7 +2235,7 @@ def build_initial_continuation_state(config: dict[str, Any]) -> dict[str, Any]:
     per_granularity = (
         training.get("optimizer_state_scope", "shared") == "per_granularity"
     )
-    return {
+    state = {
         "status": "fresh",
         "latest_checkpoint_path": None,
         "latest_checkpoint_step": 0,
@@ -2303,6 +2332,17 @@ def build_initial_continuation_state(config: dict[str, Any]) -> dict[str, Any]:
             None,
         ),
     }
+
+    if config.get('optimizer_ownership_contract') or training.get('optimizer_state_scope') == 'per_ffn_block':
+        widths = list(model.get('granularities', []))
+        counts = dict.fromkeys(widths, 0)
+        quarters = dict.fromkeys(('O-A', 'O-B', 'O-C', 'O-D'), 0) if len(widths) == 4 else {}
+        calls = ({**quarters, 'O-common': 0} if training.get('optimizer_state_scope') == 'per_ffn_block'
+                 else counts.copy() if per_granularity else {'shared': 0})
+        state.update(optimizer_width_selection_counts=counts, optimizer_quarter_activation_counts=quarters,
+                     optimizer_update_counts=calls, optimizer_total_successful_updates=0,
+                     global_scheduler_position=0, resource_ledger_watermark={}, update_in_flight=False)
+    return state
 
 
 def update_run_continuation_state(
@@ -3028,10 +3068,12 @@ def load_run_continuation_state(
     scheduler,
     distributed_context=None,
     sign_dynamics_runtime=None,
+    train_dataloader=None,
 ) -> dict[str, Any]:
     checkpoint_path = Path(config["run"]["output_dir"]) / "checkpoints" / "latest.pt"
     previous_path = checkpoint_path.with_name("latest.prev.pt")
     load_kwargs = {
+        "train_dataloader": train_dataloader,
         "config": config,
         "fallback_tokens_per_step": int(
             config["training"]["expected_tokens_per_step"]
@@ -3100,6 +3142,7 @@ def load_checkpoint_state(
     output_dir: str | Path | None = None,
     run_id: str | None = None,
     sign_dynamics_runtime=None,
+    train_dataloader=None,
 ) -> dict[str, Any]:
     checkpoint_path = Path(checkpoint_path)
     if not checkpoint_path.exists():
@@ -3181,6 +3224,8 @@ def load_checkpoint_state(
             state["run_id"] = str(run_id)
         if config is not None:
             _populate_adaptive_sampler_state_metadata(state, config)
+        if config is not None and (config.get('optimizer_ownership_contract') or config['training'].get('optimizer_state_scope') == 'per_ffn_block'):
+            state.update(build_initial_continuation_state(config))
         return state
 
     collective_fsdp = bool(
@@ -3246,6 +3291,13 @@ def load_checkpoint_state(
             )
         except Exception as error:
             raise ConfigError(str(error)) from error
+    if config is not None and config.get('optimizer_ownership_contract'):
+        return _load_ownership_checkpoint(checkpoint, checkpoint_path, config, model, optimizer, scheduler,
+                                         train_dataloader=train_dataloader,
+                                         sign_dynamics_runtime=sign_dynamics_runtime,
+                                         validated_sign_dynamics_state=validated_sign_dynamics_state)
+    if checkpoint.get('optimizer_ownership_checkpoint_schema_version') is not None:
+        raise ConfigError('Campaign checkpoint requires its campaign configuration')
     optimizer_state_scope = _validate_optimizer_resume_contract(
         checkpoint,
         config=config,
@@ -3400,7 +3452,7 @@ def load_checkpoint_state(
 
     optimizer_state_dict = checkpoint.get("optimizer_state_dict")
     scheduler_state_dict = checkpoint.get("scheduler_state_dict")
-    if optimizer_state_scope == "per_granularity":
+    if optimizer_state_scope in {"per_granularity", "per_ffn_block"}:
         load_model_and_optimizer_state(
             model,
             None,
@@ -3492,19 +3544,20 @@ def load_checkpoint_state(
             else None
         ),
         "global_sampling_state": global_sampling_state,
+        "optimizer_width_selection_counts": copy.deepcopy(optimizer.width_selection_counts) if isinstance(optimizer, BlockOptimizerCollection) else None,
         "optimizer_update_counts": (
             copy.deepcopy(optimizer.successful_update_counts)
-            if isinstance(optimizer, PerGranularityOptimizerCollection)
+            if isinstance(optimizer, (PerGranularityOptimizerCollection, BlockOptimizerCollection))
             else copy.deepcopy(checkpoint.get("optimizer_update_counts"))
         ),
         "optimizer_total_successful_updates": (
             optimizer.total_successful_updates
-            if isinstance(optimizer, PerGranularityOptimizerCollection)
+            if isinstance(optimizer, (PerGranularityOptimizerCollection, BlockOptimizerCollection))
             else int(checkpoint.get("optimizer_total_successful_updates", last_completed_step))
         ),
         "optimizer_last_active_granularity": (
             optimizer.last_active_granularity
-            if isinstance(optimizer, PerGranularityOptimizerCollection)
+            if isinstance(optimizer, (PerGranularityOptimizerCollection, BlockOptimizerCollection))
             else checkpoint.get("optimizer_last_active_granularity")
         ),
         "optimizer_active_owner_granularity": checkpoint.get(
@@ -3692,3 +3745,263 @@ def _validate_reproducibility_payload(
     ):
         raise ConfigError("Checkpoint did not record strict deterministic settings")
     return payload
+
+
+OWNERSHIP_CHECKPOINT_SCHEMA_VERSION = 1
+OWNERSHIP_STATE_FIELDS = (
+    'step', 'microstep', 'epoch', 'batch_index', 'tokens_seen', 'content_tokens_seen',
+    'sampler_state', 'global_sampling_state', 'optimizer_update_counts',
+    'optimizer_width_selection_counts', 'optimizer_quarter_activation_counts',
+    'optimizer_total_successful_updates', 'optimizer_last_active_granularity',
+    'global_scheduler_position', 'metrics_accumulator_state', 'next_validation_tokens',
+    'resource_ledger_watermark', 'last_optimizer_batch_provenance',
+)
+
+
+def assert_checkpoint_safe(run_state):
+    if run_state.get('update_in_flight') or run_state.get('optimizer_poisoned'):
+        raise ConfigError('Cannot publish an unsafe or poisoned optimizer checkpoint')
+
+
+def _ownership_identity(config, model):
+    from src.training.optimizer_state import build_parameter_descriptors
+    return {
+        'optimizer_ownership_checkpoint_schema_version': OWNERSHIP_CHECKPOINT_SCHEMA_VERSION,
+        'optimizer_ownership_contract': copy.deepcopy(config['optimizer_ownership_contract']),
+        'optimizer_ownership_contract_hash': config['optimizer_ownership_contract_hash'],
+        'optimizer_parameter_descriptors': list(build_parameter_descriptors(model, ordered_widths=config['model']['granularities'])),
+        'ownership_clipping_contract': copy.deepcopy(config['training'].get('gradient_clipping')),
+        'ownership_budget': {key: config['training'][key] for key in ('max_steps', 'token_budget', 'expected_tokens_per_step')},
+        'ownership_epoch_contract': copy.deepcopy(config.get('dataset', {}).get('optimizer_iteration')),
+    }
+
+
+def _validate_rng_locally(state):
+    import numpy as np
+    if not isinstance(state, Mapping) or set(state) != {'python', 'numpy', 'torch_cpu', 'torch_cuda', 'dedicated'}:
+        raise ConfigError('Campaign RNG state is incomplete')
+    try:
+        random.Random().setstate(state['python'])
+        ns = state['numpy']
+        np.random.RandomState().set_state((ns['bit_generator'], np.asarray(ns['keys'], dtype=np.uint32), ns['position'], ns['has_gauss'], ns['cached_gaussian']))
+        torch.Generator(device='cpu').set_state(state['torch_cpu'])
+        if len(state['torch_cuda']) != (torch.cuda.device_count() if torch.cuda.is_available() else 0):
+            raise ValueError('CUDA RNG topology mismatch')
+        for i, value in enumerate(state['torch_cuda']):
+            torch.Generator(device=f'cuda:{i}').set_state(value)
+        for name, value in state['dedicated'].items():
+            if not isinstance(name, str):
+                raise ValueError('Invalid dedicated RNG name')
+            random.Random().setstate(value)
+    except (TypeError, ValueError, RuntimeError, KeyError, IndexError) as error:
+        raise ConfigError(f'Campaign RNG state is malformed: {error}') from error
+
+
+def _validate_ownership_payload(payload, config, model, optimizer, scheduler, *, train_dataloader=None):
+    from src.training.optimizer_state import validate_campaign_optimizer, _require_nonnegative_int
+    from src.utils.metrics import StreamingMetricsAccumulator
+    from src.utils.reproducibility import stable_hash
+    from src.training.data import validate_campaign_sampler_boundary
+
+    if payload.get('checkpoint_kind') != RESUMABLE_CHECKPOINT_KIND or payload.get('checkpoint_schema_version') != CHECKPOINT_SCHEMA_VERSION:
+        raise ConfigError('Campaign resume requires schema-1 resumable_training purpose')
+    for key, expected in _ownership_identity(config, model).items():
+        if payload.get(key) != expected:
+            raise ConfigError(f'Campaign checkpoint identity mismatch: {key}')
+    if stable_hash(payload['optimizer_ownership_contract']) != payload['optimizer_ownership_contract_hash']:
+        raise ConfigError('Campaign scientific contract hash mismatch')
+    if payload.get('run_id') != config['run']['run_id']:
+        raise ConfigError('Campaign run identity mismatch')
+    if payload.get('optimizer_state_contract') != _optimizer_checkpoint_contract(config):
+        raise ConfigError('Campaign optimizer contract mismatch')
+    if payload.get('scheduler_contract') != config['training'].get('scheduler_contract'):
+        raise ConfigError('Campaign scheduler horizon mismatch')
+    for key in ('step', 'microstep', 'tokens_seen', 'content_tokens_seen', 'epoch', 'batch_index', 'resume_count'):
+        _require_nonnegative_int(payload.get(key), f'campaign {key}')
+    assert_checkpoint_safe(payload)
+    if payload.get('optimizer_active_owner_granularity') is not None:
+        raise ConfigError('Campaign checkpoint contains a pending owner')
+    step = payload['step']
+    tokens = step * config['training']['expected_tokens_per_step']
+    if step > config['training']['max_steps'] or tokens > config['training']['token_budget'] or payload['tokens_seen'] != tokens or payload['content_tokens_seen'] != tokens or payload['microstep'] != step:
+        raise ConfigError('Campaign step/token accounting mismatch')
+    _validate_model_state_before_load(model, payload.get('model_state_dict'))
+    for key, value in model.state_dict().items():
+        if payload['model_state_dict'][key].dtype != value.dtype:
+            raise ConfigError(f'Campaign model dtype mismatch: {key}')
+    # Tied aliases must describe one value, even if the incoming mapping has two tensors.
+    for descriptor in payload['optimizer_parameter_descriptors']:
+        for alias in descriptor['tied_aliases']:
+            if not torch.equal(payload['model_state_dict'][alias], payload['model_state_dict'][descriptor['canonical_name']]):
+                raise ConfigError('Campaign tied model values disagree')
+    widths = config['model']['granularities']
+    sampling = validate_global_sampling_state(payload.get('global_sampling_state'), config=config)
+    counts = sampling['exposure_counts'] if sampling else {widths[0]: step}
+    if sum(counts.values()) != step:
+        raise ConfigError('Campaign action ordinal and step mismatch')
+    last_width = sampling['held_granularity'] if sampling else widths[0] if step else None
+    if payload.get('optimizer_last_active_granularity') != last_width:
+        raise ConfigError('Campaign last action does not match accounting')
+    # Evaluate the existing scheduler formula locally at the committed position.
+    reference = GlobalSchedulerClock.from_training(config['training'])
+    formula = reference._scheduler.lr_lambdas
+    rates = [base * fn(step) for base, fn in zip(reference._scheduler.base_lrs, formula, strict=True)]
+    expected_scheduler = reference._scheduler.state_dict()
+    expected_scheduler.update(last_epoch=step, _step_count=step + 1, _last_lr=rates)
+    saved_clock = payload.get('scheduler_state_dict')
+    is_collection = isinstance(optimizer, (PerGranularityOptimizerCollection, BlockOptimizerCollection))
+    if is_collection:
+        scheduler.validate_state_dict(saved_clock)
+        if set(saved_clock) != set(reference.state_dict()) or saved_clock['position'] != step:
+            raise ConfigError('Campaign global clock layout/position mismatch')
+        previous_rates = [base * fn(step - 1) for base, fn in zip(reference._scheduler.base_lrs, formula, strict=True)] if step else None
+        if saved_clock['last_committed_learning_rates'] != previous_rates:
+            raise ConfigError('Campaign previous learning rates mismatch')
+        carrier = copy.deepcopy(reference._carrier_optimizer.state_dict())
+        for group, rate in zip(carrier['param_groups'], rates, strict=True): group['lr'] = rate
+        if saved_clock['carrier_optimizer_state_dict'] != carrier:
+            raise ConfigError('Campaign scheduler carrier mismatch')
+        scheduler_state = saved_clock['scheduler_state_dict']
+        if payload.get('optimizer_state_dict') is not None:
+            raise ConfigError('Campaign collection contains shared state')
+        saved_optimizer = payload.get('optimizer_state_collection')
+    else:
+        scheduler_state = saved_clock
+        if payload.get('optimizer_state_collection') is not None:
+            raise ConfigError('Campaign shared optimizer contains collection state')
+        saved_optimizer = payload.get('optimizer_state_dict')
+    if scheduler_state != expected_scheduler:
+        raise ConfigError('Campaign scheduler state/rates mismatch')
+    validate_campaign_optimizer(model, optimizer, saved_optimizer, widths=widths, width_counts=counts, learning_rates=rates)
+    quarter_counts = {f'O-{q}': sum(counts[w] for w in widths[i:]) for i, q in enumerate('ABCD')} if len(widths) == 4 else {}
+    expected_calls = ({**quarter_counts, 'O-common': step} if isinstance(optimizer, BlockOptimizerCollection)
+                      else counts if isinstance(optimizer, PerGranularityOptimizerCollection) else {'shared': step})
+    if payload.get('optimizer_width_selection_counts') != counts or payload.get('optimizer_update_counts') != expected_calls or payload.get('optimizer_quarter_activation_counts') != quarter_counts or payload.get('optimizer_total_successful_updates') != step or payload.get('global_scheduler_position') != step:
+        raise ConfigError('Campaign owner/width/quarter accounting mismatch')
+    repro = payload.get('reproducibility')
+    if not isinstance(repro, Mapping) or not isinstance(repro.get('rng_states_by_rank'), list) or len(repro['rng_states_by_rank']) != 1:
+        raise ConfigError('Campaign per-rank RNG payload mismatch')
+    _validate_rng_locally(repro['rng_states_by_rank'][0])
+    _validate_rng_locally(repro.get('rng_state'))
+    # Both compatibility views of RNG state must agree.
+    if _controller_state_hash(repro['rng_state']) != _controller_state_hash(repro['rng_states_by_rank'][0]):
+        raise ConfigError('Campaign RNG payload copies disagree')
+    _validate_reproducibility_payload(payload, config=config, checkpoint_path=Path('campaign checkpoint'), distributed_context=None)
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+    metrics = payload.get('metrics_accumulator_state')
+    if metrics is not None:
+        try:
+            if not isinstance(metrics, Mapping) or metrics.get('schema_version') not in (1, 2):
+                raise ValueError('invalid metrics schema')
+            expected_keys = set(StreamingMetricsAccumulator(ordered_attempts=True).state_dict())
+            if metrics['schema_version'] == 1:
+                expected_keys.remove('optimizer_last_attempt_id')
+                expected_keys.add('optimizer_attempt_ids')
+            if set(metrics) != expected_keys:
+                raise ValueError('invalid metrics schema')
+            for key in ('last_training_step', 'tokens_seen', 'content_tokens_seen', 'training_row_count', 'validation_row_count', 'attempted_optimizer_steps', 'committed_optimizer_steps', 'failed_optimizer_attempts'):
+                _require_nonnegative_int(metrics[key], f'metrics {key}')
+            if metrics['last_training_step'] > step or metrics['tokens_seen'] != metrics['last_training_step'] * config['training']['expected_tokens_per_step'] or metrics['content_tokens_seen'] != metrics['tokens_seen']:
+                raise ValueError('metrics watermark exceeds or differs from committed work')
+            from src.training.optimizer_state import _validate_finite_values
+            _validate_finite_values(metrics, 'campaign metrics')
+            StreamingMetricsAccumulator(metrics, ordered_attempts=True)
+        except (ValueError, TypeError, KeyError) as error:
+            raise ConfigError(f'Campaign metrics state invalid: {error}') from error
+    watermark = payload.get('resource_ledger_watermark')
+    if not isinstance(watermark, Mapping):
+        raise ConfigError('Campaign resource watermark missing')
+    if watermark:
+        from src.training.run import ResourceAttemptLedger
+        ResourceAttemptLedger(Path(config['run']['output_dir']), run_id=config['run']['run_id']).validate_watermark(watermark)
+    return saved_optimizer, repro['rng_states_by_rank'][0]
+
+
+def _load_ownership_checkpoint(payload, path, config, model, optimizer, scheduler, *, train_dataloader=None,
+                              sign_dynamics_runtime=None, validated_sign_dynamics_state=None):
+    from src.training.data import packed_sampler_state, restore_packed_sampler_state
+    saved_optimizer, rng = _validate_ownership_payload(payload, config, model, optimizer, scheduler, train_dataloader=train_dataloader)
+    sampling = payload.get('global_sampling_state')
+    if sampling is not None:
+        generator = random.Random(seed_for(config, 'granularity_selection'))
+        widths = config['model']['granularities']
+        counts = dict.fromkeys(widths, 0)
+        last = None
+        for _ in range(payload['step']):
+            last = widths[generator.randrange(len(widths))]
+            counts[last] += 1
+        if counts != sampling['exposure_counts'] or last != sampling['held_granularity']:
+            raise ConfigError('Campaign action trace does not match its seeded ordinal')
+        saved_action_rng = rng['dedicated'].get('granularity_selection')
+        if saved_action_rng != generator.getstate():
+            raise ConfigError('Campaign action RNG differs from committed ordinal')
+    # Resume-only snapshot: the training hot loop never copies model/history tensors.
+    snapshot = (copy.deepcopy(model.state_dict()), copy.deepcopy(optimizer.state_dict()),
+                copy.deepcopy(scheduler.state_dict()), capture_rng_state(),
+                copy.deepcopy(packed_sampler_state(train_dataloader)))
+    try:
+        model.load_state_dict(payload['model_state_dict'])
+        optimizer.load_state_dict(saved_optimizer)
+        scheduler.load_state_dict(payload['scheduler_state_dict'])
+        if isinstance(scheduler, GlobalSchedulerClock):
+            scheduler.synchronize(optimizer)
+        restore_rng_state(rng)
+        if train_dataloader is not None:
+            restore_packed_sampler_state(train_dataloader, payload.get('sampler_state'))
+        if validated_sign_dynamics_state is not None:
+            sign_dynamics_runtime.restore_validated_state(validated_sign_dynamics_state)
+    except BaseException:
+        model.load_state_dict(snapshot[0])
+        optimizer.load_state_dict(snapshot[1])
+        scheduler.load_state_dict(snapshot[2])
+        restore_rng_state(snapshot[3])
+        if train_dataloader is not None:
+            restore_packed_sampler_state(train_dataloader, snapshot[4])
+        raise
+    state = build_initial_continuation_state(config)
+    state.update({key: copy.deepcopy(payload.get(key)) for key in OWNERSHIP_STATE_FIELDS
+                  if key != 'metrics_accumulator_state'})
+    from src.utils.metrics import StreamingMetricsAccumulator
+    metrics = payload.get('metrics_accumulator_state')
+    state['metrics_accumulator_state'] = (
+        copy.deepcopy(StreamingMetricsAccumulator(metrics, ordered_attempts=True).state_dict())
+        if metrics is not None else None)
+    if validated_sign_dynamics_state is not None:
+        state['sign_dynamics_state'] = sign_dynamics_runtime.state_dict(copy_tensors=False)
+    state.update(status='resumed', last_completed_step=payload['step'],
+                 latest_checkpoint_step=payload['step'], last_durable_checkpoint_step=payload['step'],
+                 latest_checkpoint_path=str(path), continuation_source_checkpoint_path=str(path),
+                 resume_count=payload['resume_count'] + 1, update_in_flight=False, optimizer_poisoned=False)
+    return state
+
+
+def reconcile_ownership_scientific_rows(output_dir, checkpoint_step):
+    """Segregate rows beyond durable work; attempt ledgers are never rewound."""
+    import uuid
+    root = Path(output_dir)
+    for name in ('optimizer_ownership_trace.jsonl', 'optimizer_ownership_clipping.jsonl'):
+        path = root / name
+        if not path.exists():
+            continue
+        # Stream to keep resume memory bounded even for full campaign traces.
+        suffix = uuid.uuid4().hex
+        retained = path.with_name(f'.{name}.{suffix}.tmp')
+        discarded = path.with_name(f'{name}.non_durable.{suffix}')
+        try:
+            with path.open() as source, retained.open('w') as keep, discarded.open('w') as reject:
+                for line in source:
+                    try:
+                        row = json.loads(line)
+                        durable = type(row.get('step')) is int and 0 < row['step'] <= checkpoint_step
+                    except (ValueError, AttributeError):
+                        durable = False
+                    (keep if durable else reject).write(line)
+                for stream in (keep, reject):
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            os.replace(retained, path)
+            if discarded.stat().st_size == 0:
+                discarded.unlink()
+            _fsync_directory(root)
+        finally:
+            retained.unlink(missing_ok=True)

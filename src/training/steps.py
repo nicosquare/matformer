@@ -24,7 +24,10 @@ from transformers import get_scheduler
 import src.training.checkpointing as training_checkpointing
 import src.training.data as training_data
 from src.training.optimizer_state import (
+    BlockOptimizerCollection,
     GlobalSchedulerClock,
+    build_block_optimizer_runtime,
+    build_concat_parameter_partition,
     PerGranularityOptimizerCollection,
     build_per_granularity_optimizer_runtime,
 )
@@ -93,8 +96,14 @@ from src.utils.reproducibility import (
 )
 
 
-def build_optimizer_and_scheduler(model, training: Mapping[str, Any]):
+def build_optimizer_and_scheduler(model, training: Mapping[str, Any], *, _diagnostic_global_clip=False):
     """Build the training optimizer and scheduler from resolved config fields."""
+    if training.get("optimizer_state_scope") == "per_ffn_block":
+        return build_block_optimizer_runtime(
+            model, training, diagnostic_global_clip=_diagnostic_global_clip
+        )
+    if _diagnostic_global_clip:
+        raise ConfigError("Diagnostic global clipping requires block ownership")
     if training.get("optimizer_state_scope", "shared") == "per_granularity":
         return build_per_granularity_optimizer_runtime(model, training)
 
@@ -149,6 +158,71 @@ def build_optimizer_and_scheduler(model, training: Mapping[str, Any]):
     return optimizer, scheduler
 
 
+def _gradient_l2_norm(parameters):
+    gradients = [p.grad.detach() for p in parameters if p.grad is not None]
+    if not gradients:
+        return 0.0
+    norm = torch.linalg.vector_norm(torch.stack([
+        torch.linalg.vector_norm(gradient, 2) for gradient in gradients
+    ]), 2)
+    value = float(norm.item())
+    if not math.isfinite(value):
+        raise RuntimeError('Optimizer gradients and L2 norms must be finite')
+    return value
+
+
+def clip_optimizer_gradients(
+    model, training, width, *, owners=None, diagnostic_global_clip=False,
+):
+    """Apply exactly one intended rescale and return detached observations.
+
+    A global clip uses model registration order, also in the matched-state C3
+    diagnostic. Quarter observations do not change that vector or rescale it.
+    """
+    clipping = training['gradient_clipping']
+    mode = 'global' if diagnostic_global_clip else clipping['mode']
+    parameters = tuple(p for p in model.parameters() if p.requires_grad)
+    if owners is None:
+        groups = [('global', parameters, True)]
+    else:
+        groups = [(owner.owner_id, owner.parameters, width in owner.active_widths) for owner in owners]
+    if mode == 'per_owner' and owners is None:
+        raise ConfigError('Per-owner clipping requires the concat partition')
+    observations = {}
+    for name, members, active in groups:
+        if not active and any(p.grad is not None for p in members):
+            raise RuntimeError(f'Inactive owner {name} has a present gradient')
+        observations[name] = {
+            'active': active,
+            'pre_norm': _gradient_l2_norm(members) if active else None,
+            'post_norm': None, 'coefficient': None, 'max_norm': None,
+        }
+    global_coefficient = None
+    if mode == 'global':
+        cap = float(training['gradient_clip_norm'] if diagnostic_global_clip else clipping['max_norm'])
+        norm = clip_grad_norm_(parameters, cap, norm_type=2, error_if_nonfinite=True)
+        global_coefficient = float(torch.clamp(cap / (norm + 1e-6), max=1.0).item())
+    for name, members, active in groups:
+        if not active:
+            continue
+        item = observations[name]
+        if mode == 'per_owner':
+            cap = float(clipping['owner_max_norms'][name])
+            norm = clip_grad_norm_(members, cap, norm_type=2, error_if_nonfinite=True)
+            item['coefficient'] = float(torch.clamp(cap / (norm + 1e-6), max=1.0).item())
+            item['max_norm'] = cap
+        else:
+            item['coefficient'] = global_coefficient
+        item['post_norm'] = _gradient_l2_norm(members)
+    return {
+        'mode': mode, 'width': width, 'groups': observations,
+        'global_coefficient': global_coefficient,
+        'global_max_norm': cap if mode == 'global' else None,
+        'combined_pre_norm': math.sqrt(sum(item['pre_norm'] ** 2 for item in observations.values() if item['active'])),
+        'combined_post_norm': math.sqrt(sum(item['post_norm'] ** 2 for item in observations.values() if item['active'])),
+    }
+
+
 def _is_concat_lmc_module(module: torch.nn.Module) -> bool:
     return bool(
         getattr(module, "gradient_membership_counts", None)
@@ -167,21 +241,16 @@ def _is_concat_lmc_module(module: torch.nn.Module) -> bool:
 
 def _capture_concat_lmc_snapshots(
     model: torch.nn.Module,
-    total_losses: int,
 ) -> list[tuple[torch.nn.Parameter, torch.Tensor, float]]:
     snapshots: list[tuple[torch.nn.Parameter, torch.Tensor, float]] = []
-    if total_losses <= 0:
-        return snapshots
 
     for module in model.modules():
         if not _is_concat_lmc_module(module):
             continue
 
-        counts = list(getattr(module, "gradient_membership_counts", []))
-        scales = [
-            (float(total_losses) / float(count)) if int(count) > 0 else 1.0
-            for count in counts
-        ]
+        # Match GMC's configured trained-width membership factors. The number
+        # of widths sampled in this update must not change the normalization.
+        scales = module.gradient_membership_correction_scales
         block_groups = [
             getattr(module, "gate_weight_blocks", None),
             getattr(module, "up_weight_blocks", None),
@@ -196,7 +265,7 @@ def _capture_concat_lmc_snapshots(
             for block_index, param in enumerate(blocks):
                 if block_index >= len(scales) or not isinstance(param, torch.nn.Parameter):
                     continue
-                if not param.requires_grad:
+                if not param.requires_grad or param.grad is None:
                     continue
                 scale = scales[block_index]
                 if scale == 1.0:
@@ -224,13 +293,12 @@ def _maybe_apply_concat_lmc_optimizer_step(
     config: Mapping[str, Any],
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
-    total_losses: int,
 ) -> None:
     if config.get("model", {}).get("correction_mode") != "lmc":
         optimizer.step()
         return
 
-    snapshots = _capture_concat_lmc_snapshots(model, total_losses)
+    snapshots = _capture_concat_lmc_snapshots(model)
     optimizer.step()
     _apply_concat_lmc_corrections(snapshots)
 
@@ -605,7 +673,8 @@ def _optimizer_batch_provenance(
             "permutation_hash",
             "epoch",
             "global_batch_cursor",
-            "sample_cursor",
+            "sample_cursor", "total_cursor", "epoch_index", "within_epoch_cursor",
+            "fixed_epoch_set_hash", "ordering_policy_version", "data_seed",
         ):
             if field in sampler_state:
                 provenance[field] = copy.deepcopy(sampler_state[field])
@@ -702,6 +771,27 @@ def _forward_backward_microbatch(
     return metric_data, 1
 
 
+def snapshot_run_state(run_state):
+    """Copy rollback state; campaign metrics contain only a compact marker.
+
+    Legacy/unordered metrics still contain immutable IDs. A list copy preserves
+    deepcopy semantics
+    without dispatching through Python's recursive copier for every past step.
+    Other state, including unexpected ID types, still uses ordinary deepcopy.
+    """
+    metrics = run_state.get('metrics_accumulator_state')
+    ids = metrics.get('optimizer_attempt_ids') if isinstance(metrics, dict) else None
+    memo = {}
+    # Measurements mutate only after optimizer return; pre-commit rollback
+    # must retain their large live state by reference.
+    sign_state = run_state.get("sign_dynamics_state")
+    if sign_state is not None:
+        memo[id(sign_state)] = sign_state
+    if isinstance(ids, list) and all(type(value) is str for value in ids):
+        memo[id(ids)] = ids.copy()
+    return copy.deepcopy(run_state, memo)
+
+
 def train_for_steps(
     config: dict[str, Any],
     model,
@@ -778,6 +868,7 @@ def train_for_steps(
             resume_epoch += 1
     else:
         resume_batch_index = 0
+    epoch = resume_epoch
     run_state["epoch"] = resume_epoch
     run_state["batch_index"] = resume_batch_index
     run_state["content_tokens_seen"] = content_tokens_seen
@@ -791,7 +882,7 @@ def train_for_steps(
         run_state.setdefault("next_validation_tokens", None)
     run_state.setdefault("latest_checkpoint_step", int(run_state.get("last_completed_step", 0)))
     run_state.setdefault("status", "fresh")
-    if isinstance(optimizer, PerGranularityOptimizerCollection):
+    if isinstance(optimizer, (PerGranularityOptimizerCollection, BlockOptimizerCollection)):
         if not isinstance(scheduler, GlobalSchedulerClock):
             raise ConfigError(
                 "Per-granularity optimizer state requires a global scheduler clock"
@@ -799,7 +890,7 @@ def train_for_steps(
         expected_counts = run_state.get("optimizer_update_counts")
         if not isinstance(expected_counts, Mapping):
             expected_counts = {
-                label: 0 for label in optimizer.ordered_granularities
+                label: 0 for label in optimizer.successful_update_counts
             }
         if dict(expected_counts) != optimizer.successful_update_counts:
             raise ConfigError(
@@ -845,6 +936,34 @@ def train_for_steps(
     else:
         run_state.pop("adaptive_sampler_state", None)
 
+    clipping_owners = None
+    if isinstance(optimizer, BlockOptimizerCollection):
+        clipping_owners = optimizer.owners
+    elif (
+        training.get("gradient_clipping")
+        and config["model"].get("variant") == "concat"
+        and tuple(
+            config["model"].get("granularity_prefixes", {}).get(width)
+            for width in granularities
+        ) == (0.25, 0.5, 0.75, 1.0)
+    ):
+        # Quarter observations apply to the campaign topology. Other supported
+        # concat layouts still use their ordinary single global clipping vector.
+        clipping_owners = build_concat_parameter_partition(model, ordered_widths=granularities)
+    if isinstance(optimizer, BlockOptimizerCollection):
+        if run_state.get("update_in_flight") or run_state.get("optimizer_poisoned"):
+            raise ConfigError("Cannot train with an unsafe block optimizer state")
+        optimizer.validate_accounting(
+            step=step, width_counts=_optimizer_exposure_counts(run_state) or None,
+        )
+        run_state.setdefault("optimizer_width_selection_counts", dict(optimizer.width_selection_counts))
+        run_state.setdefault("update_in_flight", False)
+        if scheduler.current_learning_rates != optimizer.current_learning_rates:
+            raise ConfigError("Block optimizer and global clock rates do not reconcile")
+    campaign = bool(config.get('optimizer_ownership_contract'))
+    if campaign:
+        training_checkpointing.assert_checkpoint_safe(run_state)
+        optimizer._ownership_dataloader = train_dataloader
     model.train()
     with heartbeat_stage(heartbeat_writer, stage_name):
         while step < max_steps and tokens_seen < token_budget:
@@ -852,22 +971,17 @@ def train_for_steps(
             made_progress = False
             current_epoch = epoch
             epoch += 1
-            indexed_batches = iter(enumerate(train_dataloader))
+            if campaign and packed_batch_sampler is not None:
+                # DataLoader iterator creation draws a worker seed even with zero
+                # workers. It must not advance the model RNG again on resume.
+                loader_rng = torch.get_rng_state()
+                indexed_batches = iter(enumerate(train_dataloader))
+                torch.set_rng_state(loader_rng)
+            else:
+                indexed_batches = iter(enumerate(train_dataloader))
             while step < max_steps and tokens_seen < token_budget:
                 window_rng_snapshot = capture_rng_state()
-                # Sign-dynamics owns a large live per-coordinate state.  It is
-                # not mutated until after the optimizer commits, while this
-                # transaction snapshot is used only for pre-commit rollback.
-                # Preserve that one value by reference so exact measurement
-                # does not copy the full trainable model before every step.
-                window_state_snapshot = {
-                    key: (
-                        value
-                        if key == "sign_dynamics_state"
-                        else copy.deepcopy(value)
-                    )
-                    for key, value in run_state.items()
-                }
+                window_state_snapshot = snapshot_run_state(run_state)
                 controller_snapshot = (
                     probabilistic_controller.transaction_snapshot()
                     if probabilistic_controller is not None
@@ -897,7 +1011,14 @@ def train_for_steps(
                 if not window:
                     break
                 made_progress = True
+                resource_observer = getattr(optimizer, '_resource_observer', None)
+                if resource_observer is not None:
+                    resource_observer(run_state=run_state, boundary='attempt')
                 optimizer_committed = False
+                mutation_started = False
+                returned_owners = []
+                active_owners = ()
+                clipping_observation = None
                 action = None
                 optimizer_owner = None
                 optimizer_action_id = None
@@ -946,18 +1067,21 @@ def train_for_steps(
                         sampler_state=window_sampler_snapshot,
                     )
                     step_optimizer = optimizer
-                    if isinstance(optimizer, PerGranularityOptimizerCollection):
+                    if isinstance(optimizer, (PerGranularityOptimizerCollection, BlockOptimizerCollection)):
                         optimizer_owner = optimizer.owner_from_action(action)
-                        step_optimizer = optimizer.optimizer_for(optimizer_owner)
+                        if isinstance(optimizer, BlockOptimizerCollection):
+                            active_owners = optimizer.active_owner_ids(optimizer_owner)
+                            step_optimizer = optimizer.optimizer_for(active_owners[0])
+                        else:
+                            step_optimizer = optimizer.optimizer_for(optimizer_owner)
                         run_state["optimizer_active_owner_granularity"] = (
                             optimizer_owner
                         )
-                    optimizer.zero_grad(set_to_none=True)
+                    model.zero_grad(set_to_none=True)
                     local_loss_numerators: dict[str, float] = {}
                     runtime_artifacts: dict[
                         str, tuple[dict[str, Any], dict[str, Any]]
                     ] = {}
-                    total_losses = 1
                     local_window_content_tokens = 0
                     failure_stage = "forward_backward"
                     for microstep_index, (
@@ -965,7 +1089,7 @@ def train_for_steps(
                         batch,
                     ) in enumerate(prepared_window, start=1):
                         local_count = local_target_counts[microstep_index - 1]
-                        micro_metrics, total_losses = _forward_backward_microbatch(
+                        micro_metrics, _ = _forward_backward_microbatch(
                             config,
                             model,
                             batch,
@@ -1009,6 +1133,8 @@ def train_for_steps(
                                 step=pending_step, now=now
                             )
                             in_flight_heartbeat_emitted = True
+                            if resource_observer is not None:
+                                resource_observer(run_state=run_state, boundary='heartbeat')
 
                     committed_tokens = sum_int(
                         local_window_content_tokens,
@@ -1025,12 +1151,20 @@ def train_for_steps(
                         )
                     gradient_clip_norm = training.get("gradient_clip_norm")
                     failure_stage = "gradient_clipping"
-                    if gradient_clip_norm is not None:
+                    if training.get("gradient_clipping"):
+                        if any(not math.isfinite(value) for value in local_loss_numerators.values()):
+                            raise RuntimeError("Optimizer update loss must be finite")
+                        clipping_observation = clip_optimizer_gradients(
+                            model, training, action["granularities"][0],
+                            owners=clipping_owners,
+                            diagnostic_global_clip=getattr(optimizer, "diagnostic_global_clip", False),
+                        )
+                    elif gradient_clip_norm is not None:
                         clip_grad_norm_(model.parameters(), float(gradient_clip_norm))
                     # LambdaLR position ``pending_step - 1`` is the rate applied by
                     # this update. Capture it before optimizer.step/scheduler.step
                     # so metrics never report the rate prepared for the next update.
-                    if isinstance(optimizer, PerGranularityOptimizerCollection):
+                    if isinstance(optimizer, (PerGranularityOptimizerCollection, BlockOptimizerCollection)):
                         optimizer.validate_synchronized_learning_rates()
                     committed_learning_rates = [
                         float(group["lr"]) for group in step_optimizer.param_groups
@@ -1054,16 +1188,45 @@ def train_for_steps(
                             action=action,
                         )
                     failure_stage = "optimizer_step"
-                    _maybe_apply_concat_lmc_optimizer_step(
-                        config,
-                        model,
-                        step_optimizer,
-                        total_losses=total_losses,
-                    )
+                    if (campaign or isinstance(optimizer, BlockOptimizerCollection)) and isinstance(scheduler, GlobalSchedulerClock):
+                        if scheduler.current_learning_rates != optimizer.current_learning_rates:
+                            raise RuntimeError("Optimizer and global clock rates differ")
+                    if campaign:
+                        run_state['update_in_flight'] = True
+                        run_state['pending_optimizer_step'] = pending_step
+                        mutation_started = True
+                        if not active_owners:
+                            active_owners = (optimizer_owner or 'shared',)
+                    if isinstance(optimizer, BlockOptimizerCollection):
+                        run_state["update_in_flight"] = True
+                        run_state["pending_optimizer_step"] = pending_step
+                        mutation_started = True
+                        # One capture/application for the entire disjoint owner
+                        # update, inside the fatal boundary and before the clock.
+                        lmc_snapshots = (
+                            _capture_concat_lmc_snapshots(model)
+                            if config["model"].get("correction_mode") == "lmc"
+                            else []
+                        )
+                        for owner_id in active_owners:
+                            failure_stage = f"optimizer_step:{owner_id}"
+                            optimizer.optimizer_for(owner_id).step()
+                            returned_owners.append(owner_id)
+                        if lmc_snapshots:
+                            failure_stage = "membership_correction"
+                            _apply_concat_lmc_corrections(lmc_snapshots)
+                    else:
+                        _maybe_apply_concat_lmc_optimizer_step(
+                            config,
+                            model,
+                            step_optimizer,
+                        )
                     # A successful optimizer return is irreversible. Scheduler
                     # and accounting failures after this point are fatal and do
                     # not restore the pre-window transactional snapshots.
-                    optimizer_committed = True
+                    if campaign and not isinstance(optimizer, BlockOptimizerCollection):
+                        returned_owners.append(optimizer_owner or 'shared')
+                    optimizer_committed = not campaign and not isinstance(optimizer, BlockOptimizerCollection)
                     if sign_dynamics_runtime is not None:
                         failure_stage = "sign_dynamics_post_commit"
                         sign_dynamics_runtime.commit_step(
@@ -1073,15 +1236,16 @@ def train_for_steps(
                         run_state["sign_dynamics_state"] = (
                             sign_dynamics_runtime.state_dict(copy_tensors=False)
                         )
-                    failure_stage = "post_commit_accounting"
+                    failure_stage = "scheduler_step" if campaign or isinstance(optimizer, BlockOptimizerCollection) else "post_commit_accounting"
                     scheduler.step()
-                    if isinstance(optimizer, PerGranularityOptimizerCollection):
+                    if isinstance(optimizer, (PerGranularityOptimizerCollection, BlockOptimizerCollection)):
                         if not isinstance(scheduler, GlobalSchedulerClock):
                             raise RuntimeError(
                                 "Per-granularity optimizer state requires a global scheduler clock"
                             )
                         scheduler.synchronize(optimizer)
-                        optimizer.record_successful_update(optimizer_owner)
+                        if not isinstance(optimizer, BlockOptimizerCollection):
+                            optimizer.record_successful_update(optimizer_owner)
                         run_state["optimizer_update_counts"] = copy.deepcopy(
                             optimizer.successful_update_counts
                         )
@@ -1092,6 +1256,7 @@ def train_for_steps(
                             optimizer.last_active_granularity
                         )
                         run_state["global_scheduler_position"] = scheduler.position
+                    failure_stage = "accounting" if campaign or isinstance(optimizer, BlockOptimizerCollection) else failure_stage
                     step = pending_step
 
                     previous_tokens_seen = tokens_seen
@@ -1152,6 +1317,54 @@ def train_for_steps(
                             panelgrad_controller.state_dict()
                         )
 
+                    if isinstance(optimizer, BlockOptimizerCollection):
+                        optimizer.record_successful_update(
+                            optimizer_owner, returned_owners=returned_owners
+                        )
+                        optimizer.validate_accounting(
+                            step=step,
+                            width_counts=_optimizer_exposure_counts(run_state) or None,
+                        )
+                        if scheduler.position != step:
+                            raise RuntimeError("Block scheduler and committed update do not reconcile")
+                        run_state.update({
+                            "optimizer_update_counts": dict(optimizer.successful_update_counts),
+                            "optimizer_width_selection_counts": dict(optimizer.width_selection_counts),
+                            "optimizer_quarter_activation_counts": {
+                                owner.owner_id: optimizer.successful_update_counts[owner.owner_id]
+                                for owner in optimizer.owners[:-1]
+                            },
+                            "optimizer_total_successful_updates": optimizer.total_successful_updates,
+                            "optimizer_last_active_granularity": optimizer.last_active_granularity,
+                            "global_scheduler_position": scheduler.position,
+                            "update_in_flight": campaign,
+                            "pending_optimizer_step": pending_step if campaign else None,
+                        })
+                        optimizer_committed = not campaign
+                    if campaign:
+                        counts = _optimizer_exposure_counts(run_state) or {granularities[0]: step}
+                        quarters = {f'O-{q}': sum(counts[w] for w in granularities[i:]) for i, q in enumerate('ABCD')} if len(granularities) == 4 else {}
+                        calls = (dict(optimizer.successful_update_counts) if isinstance(optimizer, (PerGranularityOptimizerCollection, BlockOptimizerCollection)) else {'shared': step})
+                        if sum(counts.values()) != step:
+                            raise ConfigError('Campaign action counts and committed step differ')
+                        if sampler_state is not None:
+                            run_state['epoch'] = sampler_state['epoch_index']
+                            run_state['batch_index'] = sampler_state['within_epoch_cursor'] // training['batch_size_per_process']
+                        run_state.update(optimizer_width_selection_counts=dict(counts),
+                                         optimizer_quarter_activation_counts=quarters,
+                                         optimizer_update_counts=calls, optimizer_total_successful_updates=step,
+                                         global_scheduler_position=step,
+                                         optimizer_last_active_granularity=action['granularities'][0],
+                                         last_optimizer_batch_provenance=copy.deepcopy(optimizer_batch_provenance))
+                        training_data.validate_campaign_sampler_boundary(config, run_state, train_dataloader=train_dataloader)
+                        run_state['update_in_flight'] = False
+                        run_state['pending_optimizer_step'] = None
+                        optimizer_committed = True
+                    if clipping_observation is not None:
+                        run_state["last_clipping_observation"] = {
+                            "step": step, **clipping_observation,
+                        }
+
                     global_losses = {
                         label: sum_float(
                             numerator,
@@ -1164,6 +1377,11 @@ def train_for_steps(
                     latest_loss = sum(global_losses.values()) / len(global_losses)
                     latest_committed_loss = latest_loss
                     latest_committed_loss_step = step
+                    ownership_observer = getattr(optimizer, '_ownership_observer', None)
+                    if ownership_observer is not None:
+                        ownership_observer()
+                    if resource_observer is not None:
+                        resource_observer(run_state=run_state, boundary='committed')
                     if successful_step_callback is not None:
                         successful_step_callback(step=step, tokens_seen=tokens_seen)
                     if probabilistic_boundary_callback is not None:
@@ -1252,6 +1470,8 @@ def train_for_steps(
                         adaptive_artifacts["controller_sampled_probability"] = float(
                             action["sampled_probability"]
                         )
+                    if campaign:
+                        peak_memory_bytes = peak_memory_bytes if device.type == 'cuda' else None
                     step_metric_rows = []
                     for label, loss_value in global_losses.items():
                         pattern, correction = runtime_artifacts[label]
@@ -1423,9 +1643,19 @@ def train_for_steps(
                         step=step,
                         distributed_context=distributed_context,
                     )
-                except Exception:
-                    if optimizer_committed and sign_dynamics_runtime is not None:
+                except BaseException:
+                    if (optimizer_committed or mutation_started) and sign_dynamics_runtime is not None:
                         run_state["post_commit_failure_stage"] = failure_stage
+                    if mutation_started and not optimizer_committed:
+                        run_state["optimizer_poisoned"] = True
+                        run_state["optimizer_failure"] = {
+                            "pending_step": pending_step,
+                            "stage": failure_stage,
+                            "active_owners": list(active_owners),
+                            "returned_owners": list(returned_owners),
+                            "last_durable_checkpoint_path": run_state.get('continuation_source_checkpoint_path'),
+                            "last_durable_checkpoint_step": run_state.get('last_durable_checkpoint_step', 0),
+                        }
                     if action is not None and optimizer_action_id is not None:
                         failed_label = str(
                             optimizer_owner or action.get("granularities", ["unknown"])[0]
@@ -1458,7 +1688,7 @@ def train_for_steps(
                             tokens_seen=tokens_seen,
                             content_tokens_seen=content_tokens_seen,
                             wall_clock_seconds=time.time() - start_time,
-                            peak_memory_bytes=current_peak_memory_bytes(device),
+                            peak_memory_bytes=current_peak_memory_bytes(device) if device.type == 'cuda' or not campaign else None,
                             adaptive_artifacts=failure_fields,
                         )
                         _record_metric_rows(
@@ -1467,7 +1697,7 @@ def train_for_steps(
                             metrics_journal=metrics_journal,
                             force=True,
                         )
-                    if not optimizer_committed:
+                    if not optimizer_committed and not mutation_started:
                         if sign_dynamics_runtime is not None:
                             sign_dynamics_runtime.abort_pending()
                         restore_rng_state(window_rng_snapshot)
@@ -1542,6 +1772,9 @@ def _runtime_sampler_artifact_fields(
     probabilistic_controller=None,
 ) -> dict[str, Any]:
     fields = build_adaptive_sampler_artifact_fields(config, run_state)
+    if config.get('optimizer_ownership_contract'):
+        from src.utils.metrics import optimizer_ownership_metric_fields
+        fields.update(optimizer_ownership_metric_fields(config, run_state))
     fields.update(
         training_data.optimizer_iteration_artifact_fields(
             config,
@@ -1876,6 +2109,9 @@ def append_final_validation_if_needed(
     optimizer=None,
     scheduler=None,
 ) -> None:
+    # Campaign terminal evaluation is bound to the durable checkpoint by run.py.
+    if config.get('optimizer_ownership_contract'):
+        return
     validation_config = config.get("evaluation", {}).get("validation", {})
     if not validation_config.get("run_at_completion", False):
         return

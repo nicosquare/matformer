@@ -1,4 +1,5 @@
 import copy
+import json
 import random
 from types import SimpleNamespace
 
@@ -19,6 +20,7 @@ from src.training.run import run_training
 from src.utils.config import ConfigError, resolve_run_config
 from src.utils.metrics import build_scaling_result_rows
 from src.utils.reproducibility import (
+    build_optimizer_ownership_signature,
     build_balanced_warmup_schedule,
     build_controller_reset_schedule,
     build_comparison_control_signature,
@@ -28,6 +30,118 @@ from src.utils.reproducibility import (
     seed_for,
     seed_model_initialization,
 )
+
+
+def _ownership_contract():
+    # Resolved scientific inputs; config expansion supplies these in preflight.
+    return {
+        "schema_version": 1,
+        "campaign_id": "ownership-seed42",
+        "run_id": "fresh-C3",
+        "arm_id": "C3",
+        "representation": "concat",
+        "state_scope": "per_ffn_block",
+        "clipping": {"mode": "per_owner", "norm_type": 2,
+                     "owner_max_norms": {f"O-{q}": 1.0 for q in ("A", "B", "C", "D", "common")},
+                     "stabilization": 1e-6, "topology_hash": "topology"},
+        "initialization": {"seed": 42, "initializer_range": 0.02,
+                           "constructor": "normal", "code_revision": "revision",
+                           "dependencies": {"torch": "2.11.0"}},
+        "model": {"d_model": 64, "layers": 4, "heads": 4,
+                  "context_length": 128, "vocab_size": 2048,
+                  "widths": [64, 128, 192, 256]},
+        "optimizer": {"name": "adamw", "learning_rate": 0.008,
+                      "betas": (0.9, 0.95), "eps": 1e-8, "weight_decay": 0.1},
+        "sampling": {"policy": "random_with_replacement", "interval": 1,
+                     "probabilities": [0.25] * 4, "correction": "none"},
+        "data": {"corpus_hash": "corpus", "tokenizer_hash": "tokenizer",
+                 "role_hashes": {"optimizer_training": "train", "ordinary_validation": "val",
+                                 "controller": "controller", "final_holdout": "sealed"},
+                 "membership_hash": "members", "order_hash": "order", "excluded_tail": 43},
+        "budget": {"updates": 348528, "tokens": 2855141376, "epochs": 4,
+                   "batch_size": 64, "accumulation": 1, "world_size": 1,
+                   "precision": "bf16", "scheduler": "cosine", "warmup": 64},
+        "evaluation": {"role": "ordinary_validation", "interval": 64,
+                       "terminal": True, "aggregation": "target_token_weighted_causal_shift_float64"},
+        "count_convention": "active parameters excluding input embeddings and LM head",
+    }
+
+
+def test_campaign_contract_is_canonical_detached_and_json_serializable():
+    contract = _ownership_contract()
+    original = copy.deepcopy(contract)
+    signature, serialized = build_optimizer_ownership_signature(contract)
+    assert contract == original
+    assert serialized["optimizer"]["betas"] == [0.9, 0.95]
+    reordered = json.loads(json.dumps(contract, sort_keys=True))
+    assert build_optimizer_ownership_signature(reordered) == (signature, serialized)
+    assert build_optimizer_ownership_signature(serialized) == (signature, serialized)
+    serialized["model"]["widths"].append(512)
+    assert contract == original
+
+
+@pytest.mark.parametrize("path,value", [
+    (("representation",), "slicing"), (("state_scope",), "shared"),
+    (("arm_id",), "C1"), (("run_id",), "fresh-C3-other"),
+    (("campaign_id",), "other"), (("clipping", "owner_max_norms", "O-D"), 2.0),
+    (("clipping", "topology_hash"), "changed"),
+    (("initialization", "seed"), 43), (("initialization", "initializer_range"), 0.03),
+    (("initialization", "code_revision"), "new-code"),
+    (("model", "widths"), [64, 128, 256, 192]),
+    (("optimizer", "betas"), [0.9, 0.99]), (("sampling", "correction"), "gmc"),
+    (("data", "corpus_hash"), "changed"), (("data", "tokenizer_hash"), "changed"),
+    (("data", "role_hashes", "final_holdout"), "changed"),
+    (("data", "membership_hash"), "changed"), (("data", "order_hash"), "changed"),
+    (("data", "excluded_tail"), 42), (("budget", "updates"), 87132),
+    (("budget", "tokens"), 713785344), (("budget", "epochs"), 1),
+    (("budget", "precision"), "fp32"), (("budget", "warmup"), 32),
+    (("evaluation", "role"), "final_holdout"), (("evaluation", "terminal"), False),
+    (("count_convention",), "stored parameters"),
+])
+def test_campaign_hash_covers_changed_scientific_controls(path, value):
+    original = _ownership_contract()
+    changed = copy.deepcopy(original)
+    target = changed
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    assert build_optimizer_ownership_signature(original)[0] != build_optimizer_ownership_signature(changed)[0]
+
+
+@pytest.mark.parametrize("field", tuple(_ownership_contract()))
+def test_campaign_contract_requires_explicit_sections(field):
+    contract = _ownership_contract()
+    del contract[field]
+    with pytest.raises(ValueError, match=field):
+        build_optimizer_ownership_signature(contract)
+
+
+@pytest.mark.parametrize("version", [True, 0, 2, "1", 1.0])
+def test_campaign_contract_rejects_unknown_schema(version):
+    contract = _ownership_contract()
+    contract["schema_version"] = version
+    with pytest.raises(ValueError, match="schema_version"):
+        build_optimizer_ownership_signature(contract)
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), object(), {1: "ambiguous key"}])
+def test_campaign_contract_rejects_non_json_scientific_controls(invalid):
+    contract = _ownership_contract()
+    contract["optimizer"]["eps"] = invalid
+    with pytest.raises((ValueError, TypeError)):
+        build_optimizer_ownership_signature(contract)
+
+
+def test_campaign_contract_does_not_change_historical_signatures():
+    config = {"run": {"seed": 42, "reproducibility": {"seed_stream_version": 1}},
+              "training": {}, "model": {}, "dataset": {}, "evaluation": {"validation": {}}}
+    expected_paired = "60bc86407a2ab6cf9d4c76da542be3a88b94aa4f4bdf17bde6b591d8f81165ec"
+    expected_full = "ccb50f4a812d964f0878899525bcd529976b23e90da2e9e3ec886a3b33772e2f"
+    assert build_paired_control_signature(config)[0] == expected_paired
+    assert build_full_run_signature(config)[0] == expected_full
+    _, config["optimizer_ownership_contract"] = build_optimizer_ownership_signature(_ownership_contract())
+    assert build_paired_control_signature(config)[0] == expected_paired
+    assert build_full_run_signature(config)[0] == expected_full
 
 
 def test_named_seed_derivation_is_stable_and_independent():

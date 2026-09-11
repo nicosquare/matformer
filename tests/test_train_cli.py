@@ -331,3 +331,22 @@ def test_invalid_optimizer_ownership_preflight_fails_before_output_mutation(tmp_
     assert result.stderr.startswith("Preflight configuration error:")
     assert "per_granularity requires run.sampling_mode=nested-random" in result.stderr
     assert not output_dir.exists()
+
+
+
+def test_ownership_config_only_preflight(tmp_path, monkeypatch, capsys):
+    import train
+    from tests.test_config import _ownership_config
+    import src.training.modeling as modeling
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("config-only preflight constructed a model")
+
+    monkeypatch.setattr(modeling, "build_model", forbidden)
+    path = _ownership_config(tmp_path)
+    train.main(["--config", str(path), "--output-dir", str(tmp_path / "per-granularity-optimizer-smoke-001"), "--preflight"])
+    result = json.loads(capsys.readouterr().out)
+    assert result["optimizer_state_scope"] == "per_ffn_block"
+    assert result["gradient_clipping"]["mode"] == "per_owner"
+    assert result["preflight_kind"] == "config_only"
+    assert not (tmp_path / "per-granularity-optimizer-smoke-001").exists()

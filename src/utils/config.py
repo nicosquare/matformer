@@ -78,7 +78,7 @@ PANELGRAD_ABSOLUTE_TOLERANCE = 1e-8
 VALID_LEARNING_RATE_SCALE_RULES = {"none", "linear", "sqrt"}
 VALID_OPTIMIZER_NAMES = {"adamw", "sgd"}
 OPTIMIZER_STATE_CONTRACT_SCHEMA_VERSION = 1
-VALID_OPTIMIZER_STATE_SCOPES = {"shared", "per_granularity"}
+VALID_OPTIMIZER_STATE_SCOPES = {"shared", "per_granularity", "per_ffn_block"}
 VALID_OPTIMIZER_SCHEDULER_CLOCKS = {"global_step"}
 VALID_COMPLETION_LABELS = {"debug", "run"}
 VALID_GRANULARITY_SAMPLING = {"all", "random"}
@@ -841,7 +841,15 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
 
     run_id = str(run["run_id"])
     output_dir = Path(str(run["output_dir"]))
-    if output_dir.name != run_id:
+    campaign_arm_output = (
+        isinstance(run.get("campaign_id"), str)
+        and run["campaign_id"].startswith("tinystories-optimizer-ownership-")
+        and run.get("arm_id") in {"ST-g250", "ST-g500", "ST-g750", "ST-g1000", "S1", "S2", "C1", "C2", "C3",
+                                  "C1-GMC", "C1-LMC", "C2-GMC", "C2-LMC", "C3-GMC", "C3-LMC"}
+        and run_id == f"{run['campaign_id']}-{run['arm_id']}-s{run.get('seed')}"
+        and output_dir.name == run["arm_id"]
+    )
+    if output_dir.name != run_id and not campaign_arm_output:
         raise ConfigError(
             f"run.output_dir must end with run.run_id: {output_dir} vs {run_id}"
         )
@@ -1340,6 +1348,10 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
     _validate_derived_training_length(training, model)
     _validate_distributed_and_prepared_corpus_contract(config)
     _validate_portfolio_aligned_epoch_contract(config)
+    if "optimizer_ownership_contract" in config or "optimizer_ownership_contract_hash" in config:
+        from src.evaluation.optimizer_ownership import validate_materialized_config
+
+        validate_materialized_config(config)
 
 
 def _validate_distributed_and_prepared_corpus_contract(
@@ -4291,6 +4303,7 @@ def _resolve_training_schedule_defaults(
         training.get("gradient_clip_norm", 1.0),
         "training.gradient_clip_norm",
     )
+    _resolve_gradient_clipping(training)
 
     scheduler_name = _normalize_scheduler_name(scheduler.get("name", "cosine"))
     scheduler_input_kwargs = copy.deepcopy(scheduler_raw_kwargs)
@@ -4326,6 +4339,55 @@ def _resolve_training_schedule_defaults(
     training["scheduler_kwargs"] = scheduler_kwargs
     training["scheduler_specific_kwargs"] = copy.deepcopy(scheduler_kwargs)
     training["scheduler_contract"] = copy.deepcopy(scheduler_contract)
+
+
+def _resolve_gradient_clipping(training: dict[str, Any]) -> None:
+    """Keep legacy inputs untouched; make explicit L2 owner caps unambiguous."""
+    raw = training.get("gradient_clipping")
+    scope = training["optimizer_state_scope"]
+    if raw is None:
+        if scope == "per_ffn_block":
+            raise ConfigError("per_ffn_block requires gradient_clipping.mode=per_owner")
+        return
+    if not isinstance(raw, Mapping):
+        raise ConfigError("training.gradient_clipping must be a mapping")
+    mode = raw.get("mode")
+    if mode not in {"global", "per_owner"} or raw.get("norm_type", 2) != 2:
+        raise ConfigError("training.gradient_clipping requires global/per_owner L2 norm_type=2")
+    allowed = {"mode", "norm_type", "max_norm", "owner_max_norms", "stabilization_epsilon"}
+    if set(raw) - allowed:
+        raise ConfigError(f"Unknown training.gradient_clipping fields: {sorted(set(raw) - allowed)}")
+    if raw.get("stabilization_epsilon", 1e-6) != 1e-6:
+        raise ConfigError("training.gradient_clipping.stabilization_epsilon must be 1e-6")
+
+    def cap(value: Any, field: str) -> float:
+        value = _positive_float(value, field)
+        if not math.isfinite(value):
+            raise ConfigError(f"{field} must be finite and positive")
+        return value
+
+    global_cap = cap(training["gradient_clip_norm"], "training.gradient_clip_norm")
+    resolved = {"mode": mode, "norm_type": 2, "stabilization_epsilon": 1e-6}
+    if mode == "global":
+        if scope == "per_ffn_block" or "owner_max_norms" in raw:
+            raise ConfigError("per_ffn_block requires per_owner gradient_clipping; global cannot have owners")
+        if cap(raw.get("max_norm", global_cap), "training.gradient_clipping.max_norm") != global_cap:
+            raise ConfigError("Conflicting training.gradient_clipping and gradient_clip_norm thresholds")
+        resolved["max_norm"] = global_cap
+    else:
+        if scope != "per_ffn_block":
+            raise ConfigError("per_owner gradient_clipping requires per_ffn_block ownership")
+        if "max_norm" in raw or global_cap != 1.0:
+            raise ConfigError("Conflicting global and per_owner gradient_clipping thresholds")
+        owners = ("O-A", "O-B", "O-C", "O-D", "O-common")
+        caps = raw.get("owner_max_norms")
+        if not isinstance(caps, Mapping) or set(caps) != set(owners):
+            raise ConfigError("gradient_clipping.owner_max_norms requires exactly O-A/O-B/O-C/O-D/O-common")
+        resolved["owner_max_norms"] = {
+            owner: cap(caps[owner], f"training.gradient_clipping.owner_max_norms.{owner}")
+            for owner in owners
+        }
+    training["gradient_clipping"] = resolved
 
 
 def _normalize_optimizer_state_scope(raw_scope: Any) -> str:
@@ -4381,7 +4443,7 @@ def _resolve_optimizer_state_contract(config: dict[str, Any]) -> None:
         "base_learning_rate": training["base_learning_rate"],
         "resolved_learning_rate": training["resolved_learning_rate"],
         "scheduler_contract": copy.deepcopy(training["scheduler"]),
-        "single_process_required": state_scope == "per_granularity",
+        "single_process_required": state_scope in {"per_granularity", "per_ffn_block"},
     }
 
 
@@ -4417,6 +4479,24 @@ def _validate_optimizer_state_eligibility(
         training.get("effective_world_size"),
         "training.effective_world_size",
     )
+    if state_scope == "per_ffn_block":
+        prefixes = model.get("granularity_prefixes", {})
+        distributed = training.get("distributed", {})
+        required = {
+            "run.model_family=nested": run.get("model_family") == "nested",
+            "run.sampling_mode=nested-random": run.get("sampling_mode") == "nested-random",
+            "model.variant=concat": model.get("variant") == "concat",
+            "model.granularity_sampling_mode=global": model.get("granularity_sampling_mode") == "global",
+            "model.global_sampling_schedule=random_with_replacement": model.get("global_sampling_schedule") == "random_with_replacement",
+            "model.global_sampling_interval_steps=1": model.get("global_sampling_interval_steps") == 1,
+            "four equal FFN quarters": len(ordered_labels) == 4 and [prefixes.get(g) for g in ordered_labels] == [.25, .5, .75, 1.] and int(model["intermediate_size"]) % 4 == 0,
+            "training.optimizer.name=adamw": training.get("optimizer_name") == "adamw",
+            "single process and distributed.strategy=none": effective_world_size == 1 and distributed.get("expected_world_size", 1) == 1 and distributed.get("strategy", "none") == "none",
+            "disabled pre_nested_warmup": not training.get("pre_nested_warmup", {}).get("enabled", False),
+        }
+        failures = [field for field, valid in required.items() if not valid]
+        if failures:
+            raise ConfigError("per_ffn_block requires " + ", ".join(failures))
     if state_scope == "shared":
         return {
             "eligible": True,

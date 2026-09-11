@@ -34,6 +34,7 @@ import src.training.sign_dynamics as training_sign_dynamics
 import src.training.steps as training_steps
 import src.training.warmup as training_warmup
 from src.training.optimizer_state import (
+    BlockOptimizerCollection,
     GlobalSchedulerClock,
     PerGranularityOptimizerCollection,
 )
@@ -115,15 +116,15 @@ def _validate_restored_optimizer_ownership_runtime(
 ) -> None:
     """Recheck the staged checkpoint install before restoring external cursors."""
 
-    if (
-        config.get("training", {}).get("optimizer_state_scope", "shared")
-        != "per_granularity"
-    ):
+    scope = config.get("training", {}).get("optimizer_state_scope", "shared")
+    if scope not in {"per_granularity", "per_ffn_block"}:
         return
-    if not isinstance(optimizer, PerGranularityOptimizerCollection) or not isinstance(
-        scheduler, GlobalSchedulerClock
-    ):
-        raise ConfigError("Per-granularity continuation runtime is incomplete")
+    collection_type = (
+        BlockOptimizerCollection if scope == "per_ffn_block"
+        else PerGranularityOptimizerCollection
+    )
+    if not isinstance(optimizer, collection_type) or not isinstance(scheduler, GlobalSchedulerClock):
+        raise ConfigError("Optimizer ownership continuation runtime is incomplete")
     step = int(run_state.get("last_completed_step", 0))
     counts = run_state.get("optimizer_update_counts")
     sampling_state = run_state.get("global_sampling_state")
@@ -132,10 +133,21 @@ def _validate_restored_optimizer_ownership_runtime(
         if isinstance(sampling_state, Mapping)
         else None
     )
+    if isinstance(optimizer, BlockOptimizerCollection):
+        optimizer.validate_accounting(step=step, width_counts=exposures)
+        if (
+            run_state.get("update_in_flight") or run_state.get("optimizer_poisoned")
+            or scheduler.current_learning_rates != optimizer.current_learning_rates
+            or run_state.get("optimizer_width_selection_counts") != optimizer.width_selection_counts
+        ):
+            raise ConfigError("Restored block optimizer boundary is unsafe or unreconciled")
     exposures_reconcile = (
         exposures is None
         or isinstance(exposures, Mapping)
-        and dict(exposures) == optimizer.successful_update_counts
+        and dict(exposures) == (
+            optimizer.width_selection_counts if isinstance(optimizer, BlockOptimizerCollection)
+            else optimizer.successful_update_counts
+        )
     )
     if (
         not isinstance(counts, Mapping)
@@ -889,6 +901,8 @@ def run_training(
     run_state = training_checkpointing.build_initial_continuation_state(config)
     checkpoint_state: dict[str, Any] = {}
     metrics_journal = None
+    resource_observer = None
+    attempt_finished = False
     continuation_load_succeeded = not bool(run["continuation"]["enabled"])
     optimizer = None
     scheduler = None
@@ -1135,6 +1149,7 @@ def run_training(
                 scheduler,
                 distributed_context=distributed_context,
                 sign_dynamics_runtime=sign_dynamics_runtime,
+                train_dataloader=train_dataloader,
             )
             continuation_load_succeeded = True
         if sign_dynamics_runtime is not None:
@@ -1143,6 +1158,17 @@ def run_training(
                 run_state["sign_dynamics_state"] = (
                     sign_dynamics_runtime.state_dict(copy_tensors=False)
                 )
+        if config.get('optimizer_ownership_contract'):
+            from src.training.packed_corpus import sha256_file
+            source_path = run_state.get('continuation_source_checkpoint_path')
+            source = {'path': source_path, 'step': run_state['last_completed_step'], 'sha256': sha256_file(Path(source_path))} if source_path else None
+            resource_observer = _resource_attempt_observer(config, device, started_at=run_started_at, source_checkpoint=source)
+            optimizer._resource_observer = resource_observer
+            optimizer._ownership_dataloader = train_dataloader
+            from src.utils.metrics import append_optimizer_ownership_observation
+            optimizer._ownership_observer = lambda: append_optimizer_ownership_observation(config, run_state, train_dataloader=train_dataloader)
+            resource_observer(run_state=run_state, boundary='start')
+            training_checkpointing.reconcile_ownership_scientific_rows(output_dir, run_state['last_completed_step'])
         _validate_restored_optimizer_ownership_runtime(
             config,
             run_state,
@@ -1804,7 +1830,8 @@ def run_training(
                     tokens_seen=int(run_state.get("tokens_seen", 0)),
                 )
 
-        if not warmup_budget_exhausted:
+        completion_only = bool(config.get('optimizer_ownership_contract')) and run_state['last_completed_step'] == training['max_steps']
+        if not warmup_budget_exhausted and not completion_only:
             metrics_rows.extend(
                 training_steps.train_for_steps(
                     config,
@@ -1854,6 +1881,15 @@ def run_training(
             sign_dynamics_runtime.validate_completed(
                 expected_step=completed_steps
             )
+        if config.get('optimizer_ownership_contract'):
+            terminal = complete_ownership_terminal(config, model, optimizer, scheduler, run_state, eval_dataloader, device)
+            if not metrics_journal.has_validation_at_step(terminal['global_step']):
+                from src.evaluation.validation import validation_results_to_metric_rows
+                from src.utils.metrics import optimizer_ownership_metric_fields
+                terminal_rows = validation_results_to_metric_rows(terminal['endpoints'], config,
+                    step=terminal['global_step'], tokens_seen=run_state['tokens_seen'],
+                    adaptive_artifacts=optimizer_ownership_metric_fields(config, run_state))
+                metrics_journal.append(terminal_rows, force=True)
         metrics_rows = metrics_journal.summary_rows()
         extraction_metadata_path = None
         metrics_path = None
@@ -1874,16 +1910,23 @@ def run_training(
             completed_run_state["latest_checkpoint_path"] = completed_run_state.get(
                 "latest_checkpoint_path"
             ) or str(output_dir / "checkpoints" / "latest.pt")
-        checkpoint_summary_fields = training_checkpointing.write_checkpoint_if_needed(
-            config,
-            model,
-            optimizer,
-            scheduler,
-            metrics_rows,
-            heartbeat_writer,
-            completed_run_state,
-            distributed_context=distributed_context,
-        )
+        if config.get('optimizer_ownership_contract'):
+            checkpoint_summary_fields.update(
+                terminal_checkpoint_path=terminal['checkpoint_path'],
+                terminal_checkpoint_sha256=terminal['checkpoint_sha256'],
+                terminal_checkpoint_bytes=terminal['checkpoint_bytes'],
+                terminal_checkpoint_purpose='resumable_training')
+        else:
+            checkpoint_summary_fields = training_checkpointing.write_checkpoint_if_needed(
+                config,
+                model,
+                optimizer,
+                scheduler,
+                metrics_rows,
+                heartbeat_writer,
+                completed_run_state,
+                distributed_context=distributed_context,
+            )
 
         if run["continuation"]["enabled"]:
             run_state.update(completed_run_state)
@@ -1963,7 +2006,10 @@ def run_training(
         )
         config["model"]["granularity_pattern_summary"] = runtime_pattern_summary
         config["model"]["correction_context"] = correction_context
+        if resource_observer is not None:
+            resource_observer(run_state=run_state, boundary='committed')
         extra_summary_fields = {
+            **({'resource_summary': run_state.get('resource_summary')} if resource_observer is not None else {}),
             "steps_completed": training_outcome["steps_completed"],
             "stop_reason": training_outcome["stop_reason"],
             "content_tokens_seen": training_outcome["content_tokens_seen"],
@@ -2127,6 +2173,12 @@ def run_training(
                 extraction_metadata_path
             )
 
+        if resource_observer is not None:
+            resource_observer(run_state=run_state, boundary='completed')
+            extra_summary_fields['resource_summary'] = run_state['resource_summary']
+            extra_summary_fields['training_wall_time_seconds'] = run_state['resource_summary']['elapsed_seconds']
+            extra_summary_fields['peak_accelerator_memory_bytes'] = run_state['resource_summary']['peak_allocated_bytes']
+            extra_summary_fields.update(build_ownership_run_summary(config, model, optimizer, run_state))
         summary = build_run_summary(
             config,
             tokens_seen=tokens_seen,
@@ -2153,13 +2205,18 @@ def run_training(
             "parameter_counts_by_granularity": parameter_counts_by_granularity,
             "controller_summary_path": controller_summary_path,
         }
-    except Exception as error:
+    except BaseException as error:
+        if resource_observer is not None:
+            resource_observer(run_state=run_state, boundary='failed')
+            attempt_finished = True
         try:
             if metrics_journal is not None:
                 metrics_journal.flush()
             if (
                 run["continuation"]["enabled"]
                 and continuation_load_succeeded
+                and not run_state.get("update_in_flight")
+                and not run_state.get("optimizer_poisoned")
                 and model is not None
                 and optimizer is not None
                 and scheduler is not None
@@ -2296,6 +2353,9 @@ def run_training(
                         checkpoint_path=run_state.get("latest_checkpoint_path"),
                     ),
                 }
+                if resource_observer is not None:
+                    failure_extra_fields['resource_summary'] = run_state.get('resource_summary')
+                    failure_extra_fields['optimizer_failure'] = run_state.get('optimizer_failure')
                 failure_summary = build_run_summary(
                     config,
                     tokens_seen=int(run_state.get("tokens_seen", 0)),
@@ -2320,5 +2380,295 @@ def run_training(
             )
         raise
     finally:
+        if resource_observer is not None and not attempt_finished:
+            resource_observer(run_state=run_state, boundary='completed')
         monitoring_session.close()
         training_distributed.destroy_distributed_process_group(distributed_context)
+
+
+class ResourceAttemptLedger:
+    """Latest observation per unique process attempt, independent of checkpoints."""
+
+    def __init__(self, output_dir, *, run_id, artifact_io=None):
+        self.path = Path(output_dir) / 'resource_attempts.json'
+        self.run_id = run_id
+        self.artifact_io = artifact_io
+        self.attempts = {}
+        if self.path.exists():
+            payload = json.loads(self.path.read_text())
+            if payload.get('schema_version') != 1 or payload.get('run_id') != run_id or not isinstance(payload.get('attempts'), dict):
+                raise ConfigError('Resource ledger identity/schema mismatch')
+            self.attempts = payload['attempts']
+            for record in self.attempts.values():
+                self._validate_record(record)
+
+    @staticmethod
+    def _validate_record(record):
+        import math
+        if type(record.get('sequence')) is not int or record['sequence'] < 1:
+            raise ConfigError('Resource observation sequence is invalid')
+        duration = record.get('elapsed_seconds')
+        if not isinstance(duration, (int, float)) or isinstance(duration, bool) or not math.isfinite(duration) or duration < 0:
+            raise ConfigError('Resource attempt duration is invalid')
+        for field in ('peak_allocated_bytes', 'peak_reserved_bytes', 'attempted_steps'):
+            value = record.get(field)
+            if value is None and field.startswith('peak_'):
+                continue
+            if type(value) is not int or value < 0:
+                raise ConfigError(f'Resource {field} is invalid')
+        if record.get('status') not in {'running', 'failed', 'completed', 'interrupted'}:
+            raise ConfigError('Resource attempt status is invalid')
+
+    def observe(self, attempt_id, **record):
+        record['measurement_complete'] = record.get('status') != 'running'
+        self._validate_record(record)
+        previous = self.attempts.get(attempt_id)
+        if previous:
+            if record['sequence'] < previous['sequence']:
+                return
+            if record['sequence'] == previous['sequence']:
+                if record != previous:
+                    raise ConfigError('Conflicting resource observation sequence')
+                return
+            for field in ('elapsed_seconds', 'attempted_steps', 'peak_allocated_bytes', 'peak_reserved_bytes'):
+                if previous.get(field) is not None and (record.get(field) is None or record[field] < previous[field]):
+                    raise ConfigError(f'Resource observation regresses: {field}')
+            if record.get('source_checkpoint') != previous.get('source_checkpoint'):
+                raise ConfigError('Resource source checkpoint changed within an attempt')
+        candidate = {**self.attempts, attempt_id: copy.deepcopy(record)}
+        write_json_artifact(self.path, {'schema_version': 1, 'run_id': self.run_id, 'attempts': candidate}, artifact_io=self.artifact_io)
+        self.attempts = candidate
+
+    def validate_watermark(self, watermark):
+        if not isinstance(watermark, Mapping):
+            raise ConfigError('Resource watermark is invalid')
+        for attempt, sequence in watermark.items():
+            if type(sequence) is not int or sequence < 1 or attempt not in self.attempts or sequence > self.attempts[attempt]['sequence']:
+                raise ConfigError('Resource watermark references an unavailable observation')
+
+    def watermark(self):
+        return {key: value['sequence'] for key, value in self.attempts.items()}
+
+    def summary(self):
+        records = list(self.attempts.values())
+        def peak(field):
+            values = [r[field] for r in records if r.get(field) is not None]
+            return max(values) if values else None
+        return {
+            'elapsed_seconds': sum(r['elapsed_seconds'] for r in records),
+            'attempted_steps': sum(r['attempted_steps'] for r in records),
+            'peak_allocated_bytes': peak('peak_allocated_bytes'),
+            'peak_reserved_bytes': peak('peak_reserved_bytes'),
+            'measurement_complete': all(r['status'] != 'running' for r in records),
+            'attempt_count': len(records),
+        }
+
+
+def _resource_attempt_observer(config, device, *, started_at, source_checkpoint):
+    import uuid
+    from datetime import datetime, timezone
+    ledger = ResourceAttemptLedger(config['run']['output_dir'], run_id=config['run']['run_id'], artifact_io=config)
+    attempt_id = uuid.uuid4().hex
+    started = datetime.now(timezone.utc).isoformat()
+    sequence = attempted_steps = 0
+    last_observation = 0.0
+    terminal_status = None
+
+    def observe(*, run_state, boundary):
+        nonlocal sequence, attempted_steps, last_observation, terminal_status
+        if boundary == 'attempt':
+            attempted_steps += 1
+            return
+        now = time.perf_counter()
+        if boundary == 'committed' and now - last_observation < 30 and attempted_steps % max(1, config['outputs']['metrics_flush_interval_steps']):
+            return
+        sequence += 1
+        if boundary in {'completed', 'failed', 'interrupted'}:
+            terminal_status = boundary
+        status = terminal_status or 'running'
+        ledger.observe(attempt_id, sequence=sequence, elapsed_seconds=now - started_at,
+                       peak_allocated_bytes=torch.cuda.max_memory_allocated(device) if device.type == 'cuda' else None,
+                       peak_reserved_bytes=torch.cuda.max_memory_reserved(device) if device.type == 'cuda' else None,
+                       attempted_steps=attempted_steps, status=status, source_checkpoint=source_checkpoint,
+                       started_at=started, failure=copy.deepcopy(run_state.get('optimizer_failure')))
+        last_observation = now
+        run_state['resource_attempt_id'] = attempt_id
+        run_state['resource_ledger_watermark'] = ledger.watermark()
+        run_state['resource_summary'] = ledger.summary()
+    return observe
+
+
+def build_ownership_run_summary(config, model, optimizer, state):
+    """Keep measured allocation, operational costs and scientific exposure distinct."""
+    from src.training.optimizer_state import measure_optimizer_storage
+    from src.models.ffn import CatLlamaMLP
+    from src.evaluation.optimizer_ownership import WIDTH_LABELS
+
+    contract = config['optimizer_ownership_contract']
+    step = int(state['last_completed_step'])
+    resources = dict(state.get('resource_summary') or {
+        'elapsed_seconds': None, 'attempted_steps': None,
+        'peak_allocated_bytes': None, 'peak_reserved_bytes': None,
+        'measurement_complete': False, 'attempt_count': 0,
+    })
+    seconds = resources['elapsed_seconds']
+    resources['useful_committed_tokens_per_second'] = state['tokens_seen'] / seconds if seconds else None
+    attempted = resources.get('attempted_steps')
+    resources['attempted_tokens_per_second'] = attempted * config['training']['expected_tokens_per_step'] / seconds if seconds and attempted is not None else None
+    resources['device_memory_method'] = 'CUDA allocator peaks; unavailable on CPU'
+    concat = [module for module in model.modules() if isinstance(module, CatLlamaMLP)]
+    # Layout storage is an estimate of the concatenated weights, not allocator peaks
+    # or the lifetime/overlap of buffers and backward workspaces.
+    layout_bytes = {width: sum(entry.parameter.numel() * entry.parameter.element_size()
+        for module in concat for entry in module.physical_parameter_metadata()
+        if width in entry.gradient_support and entry.block_index is not None)
+        for width in WIDTH_LABELS} if concat else {}
+    reconciled = build_optimizer_state_summary_fields(config, run_state=state)['optimizer_accounting_reconciled']
+    checkpoint = state.get('latest_checkpoint_path')
+    checkpoint_fields = build_optimizer_state_summary_fields(config, run_state=state, checkpoint_path=checkpoint)
+    elastic = not contract['arm_id'].startswith('ST-')
+    return {
+        'optimizer_ownership_schema_version': 1,
+        'optimizer_ownership': {
+            'schema_version': 1, 'run_id': config['run']['run_id'],
+            'campaign_id': contract['campaign_id'], 'arm_id': contract['arm_id'],
+            'contract_hash': config['optimizer_ownership_contract_hash'],
+            'contract': copy.deepcopy(contract),
+            'state_scope': config['training']['optimizer_state_scope'],
+            'clipping_contract': copy.deepcopy(config['training']['gradient_clipping']),
+            'steps': step, 'tokens_seen': state['tokens_seen'], 'packed_tokens_per_update': config['training']['expected_tokens_per_step'],
+            'epoch': state['epoch'], 'batch_index': state['batch_index'],
+            'sampler_state': state.get('sampler_state'),
+            'scheduler_position': state['global_scheduler_position'],
+            'width_selection_counts': state['optimizer_width_selection_counts'],
+            'quarter_activation_counts': state['optimizer_quarter_activation_counts'],
+            'owner_call_counts': state['optimizer_update_counts'],
+            'accounting_reconciled': reconciled,
+            'expected_exposure': {
+                'label': 'uniform replacement expectation; realized counts are random',
+                'width_selections': dict.fromkeys(WIDTH_LABELS, step / 4) if elastic else {},
+                'quarter_activations': {f'O-{q}': step * (4 - i) / 4 for i, q in enumerate('ABCD')} if elastic else {},
+            },
+            'storage': measure_optimizer_storage(optimizer, step=step),
+            'temporary_concat_storage': {'method': 'active FFN parameter layout bytes; estimate only',
+                'bytes_by_width': layout_bytes, 'includes_backward_temporaries': False,
+                'is_device_peak_measurement': False},
+            'resources': resources,
+            'checkpoint': {k: v for k, v in checkpoint_fields.items() if k.startswith('terminal_checkpoint')},
+            'trace_path': 'optimizer_ownership_trace.jsonl',
+            'clipping_path': 'optimizer_ownership_clipping.jsonl' if config['model']['variant'] == 'concat' and config['training']['optimizer_state_scope'] != 'per_granularity' else None,
+            'terminal_validation_path': 'terminal_validation_results.json',
+        },
+    }
+
+
+def complete_ownership_terminal(config, model, optimizer, scheduler, state, eval_dataloader, device):
+    """Publish or reuse validation bound to the same durable terminal checkpoint."""
+    from src.evaluation import validation
+    from src.evaluation.optimizer_ownership import PARAMETER_COUNT_CONVENTION, VALIDATION_AGGREGATION
+    from src.training.packed_corpus import sha256_file
+    from src.utils.reproducibility import capture_rng_state, restore_rng_state
+
+    training_checkpointing.assert_checkpoint_safe(state)
+    training = config['training']
+    step = state['last_completed_step']
+    if step != training['max_steps'] or state['tokens_seen'] != training['token_budget']:
+        raise ConfigError('Terminal validation requires the exact assigned updates/tokens')
+    training_data.validate_campaign_sampler_boundary(config, state, train_dataloader=getattr(optimizer, '_ownership_dataloader', None))
+    root = Path(config['run']['output_dir'])
+    checkpoint = Path(state.get('latest_checkpoint_path') or root / 'checkpoints/latest.pt')
+    if state.get('latest_checkpoint_step') != step or not checkpoint.is_file():
+        training_checkpointing.maybe_write_latest_checkpoint(config, model, optimizer, scheduler, training_monitoring.NoopHeartbeatWriter(),
+            state, reason='completion', step=step, force=True)
+    if not checkpoint.is_file() or state.get('latest_checkpoint_step') != step:
+        raise ConfigError('Durable terminal checkpoint publication is incomplete')
+    checkpoint_hash = sha256_file(checkpoint)
+    # Terminal-only inspection proves the evaluated live model is the durable
+    # model even when a file was replaced after continuation loaded it.
+    saved = torch.load(checkpoint, map_location='cpu', weights_only=False)
+    expected_identity = {
+        'checkpoint_kind': training_checkpointing.RESUMABLE_CHECKPOINT_KIND,
+        'optimizer_ownership_checkpoint_schema_version': 1,
+        'optimizer_ownership_contract_hash': config['optimizer_ownership_contract_hash'],
+        'step': step, 'tokens_seen': state['tokens_seen'],
+    }
+    for key, value in expected_identity.items():
+        if saved.get(key) != value:
+            raise ConfigError(f'Terminal checkpoint identity mismatch: {key}')
+    live_model = model.state_dict()
+    saved_model = saved.get('model_state_dict', {})
+    if set(saved_model) != set(live_model) or any(
+            saved_model[name].dtype != value.dtype
+            or not torch.equal(saved_model[name], value.detach().cpu())
+            for name, value in live_model.items()):
+        raise ConfigError('Terminal checkpoint does not match the evaluated model')
+    del saved, saved_model, live_model
+    contract = config['optimizer_ownership_contract']
+    budget = contract.get('budget', {})
+    sampler = state.get('sampler_state')
+    actual_epochs = sampler['epoch_index'] if sampler else (state['tokens_seen'] / config.get('dataset', {}).get('optimizer_iteration', {}).get('aligned_epoch_tokens', state['tokens_seen']))
+    identity = {
+        'schema_version': 1, 'campaign_id': contract['campaign_id'], 'arm_id': contract['arm_id'],
+        'run_id': config['run']['run_id'], 'contract_hash': config['optimizer_ownership_contract_hash'],
+        'contract': copy.deepcopy(contract),
+        'checkpoint_path': str(checkpoint.resolve()), 'checkpoint_sha256': checkpoint_hash,
+        'checkpoint_bytes': checkpoint.stat().st_size,
+        'global_step': step, 'actual_updates': step, 'assigned_updates': training['max_steps'],
+        'actual_tokens': state['tokens_seen'], 'assigned_tokens': training['token_budget'],
+        'actual_epochs': actual_epochs, 'assigned_epochs': budget.get('assigned_epochs', actual_epochs),
+        'representation': contract.get('representation', 'dense' if contract['arm_id'].startswith('ST-') else config['model']['variant']),
+        'state_scope': training['optimizer_state_scope'], 'clipping': contract.get('clipping', training['gradient_clipping']),
+        'initialization': contract.get('initialization'),
+        'evaluation_role': 'ordinary_validation', 'validation_manifest_hash': config.get('validation_manifest_hash'),
+        'evaluation_protocol': copy.deepcopy(config.get('evaluation', {}).get('validation', {})),
+        'evaluation_protocol_hash': stable_hash(config.get('evaluation', {}).get('validation', {})),
+        'validation_loss_aggregation': VALIDATION_AGGREGATION, 'count_convention': PARAMETER_COUNT_CONVENTION,
+    }
+    if not identity['validation_manifest_hash']:
+        raise ConfigError('Terminal ordinary-validation manifest identity is missing')
+    sidecar = root / 'terminal_validation_results.json'
+    if sidecar.exists():
+        result = json.loads(sidecar.read_text())
+        if result.get('content_hash') != stable_hash({k: v for k, v in result.items() if k != 'content_hash'}):
+            raise ConfigError('Terminal sidecar content hash mismatch')
+        for key, value in identity.items():
+            if result.get(key) != value:
+                raise ConfigError(f'Terminal sidecar identity mismatch: {key}')
+        _validate_terminal_endpoints(result, config, model)
+        return result
+    rng = capture_rng_state()
+    was_training = model.training
+    try:
+        endpoints = validation.evaluate_ownership_terminal(model, eval_dataloader, config, device)
+    finally:
+        restore_rng_state(rng)
+        model.train(was_training)
+    result = {**identity, 'evaluation_examples': endpoints[0]['evaluation_examples'],
+              'evaluation_target_tokens': endpoints[0]['evaluation_target_tokens'], 'endpoints': endpoints}
+    _validate_terminal_endpoints(result, config, model)
+    if sha256_file(checkpoint) != checkpoint_hash:
+        raise ConfigError('Terminal checkpoint changed during validation')
+    result['content_hash'] = stable_hash(result)
+    write_json_artifact(sidecar, result, artifact_io=config)
+    return result
+
+
+def _validate_terminal_endpoints(result, config, model):
+    import math
+    from src.utils.model_size import model_parameter_counts
+    arm = config['optimizer_ownership_contract']['arm_id']
+    widths = [arm[3:]] if arm.startswith('ST-') else config['model']['granularities']
+    endpoints = result.get('endpoints', [])
+    if [r.get('width') for r in endpoints] != list(widths):
+        raise ConfigError('Terminal sidecar width endpoints mismatch')
+    for row, local_width in zip(endpoints, config['model']['granularities'], strict=True):
+        if (not math.isfinite(row['loss']) or not math.isfinite(row['perplexity'])
+                or not math.isclose(row['perplexity'], math.exp(row['loss']), rel_tol=1e-12)):
+            raise ConfigError('Terminal sidecar loss/perplexity mismatch')
+        for key in ('evaluation_role', 'validation_manifest_hash', 'evaluation_protocol_hash', 'count_convention', 'validation_loss_aggregation', 'evaluation_examples', 'evaluation_target_tokens'):
+            if row.get(key) != result.get(key):
+                raise ConfigError(f'Terminal endpoint mismatch: {key}')
+        if row['evaluation_target_tokens'] <= 0 or row['evaluation_examples'] <= 0:
+            raise ConfigError('Terminal evaluation counts must be positive')
+        if row['non_embedding_parameters'] != model_parameter_counts(model, granularity=local_width)['non_embedding_parameters']:
+            raise ConfigError('Terminal active parameter count mismatch')

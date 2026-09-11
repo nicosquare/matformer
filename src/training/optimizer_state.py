@@ -1,4 +1,4 @@
-"""Per-granularity optimizer ownership with one global scheduler clock."""
+"""Static parameter ownership and per-granularity optimizer runtime."""
 
 from __future__ import annotations
 
@@ -9,11 +9,176 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import torch
 from transformers import get_scheduler
+from transformers.models.llama.modeling_llama import LlamaMLP
 
+from src.models.ffn import CatLlamaMLP, ModifiedLlamaMLP
 from src.utils.config import ConfigError, resolve_optimizer_kwargs
 
 
 OPTIMIZER_COLLECTION_SCHEMA_VERSION = 1
+FFN_QUARTER_IDS = ("A", "B", "C", "D")
+
+
+def build_parameter_descriptors(
+    model: torch.nn.Module,
+    *,
+    ordered_widths: Sequence[str],
+) -> tuple[dict[str, Any], ...]:
+    """Describe each physical parameter once, in model registration order.
+
+    Canonical names are the first registered names, with remaining tied aliases
+    retained for checkpoint identity. Support describes gradient *presence*,
+    not nonzero entries: sliced tails still belong to full-shaped gradients.
+    All non-FFN trainable parameters have common, all-width support in the
+    campaign graph. The caller supplies the dense source label when applicable.
+    """
+
+    widths = tuple(ordered_widths)
+    if not widths or len(set(widths)) != len(widths):
+        raise ConfigError("Parameter descriptors require unique ordered widths")
+    metadata = {}
+    for module_name, module in model.named_modules(remove_duplicate=False):
+        if not isinstance(module, (CatLlamaMLP, ModifiedLlamaMLP)):
+            continue
+        available = tuple(item["name"] for item in module.ffn_prefix_metadata)
+        if any(width not in available for width in widths):
+            raise ConfigError(f"{module_name}: descriptor width is not in FFN metadata")
+        entries = module.physical_parameter_metadata()
+        known_names = {entry.parameter_name for entry in entries}
+        unknown = set(dict(module.named_parameters(remove_duplicate=False))) - known_names
+        if unknown:
+            raise ConfigError(f"{module_name}: unclassified FFN parameters: {sorted(unknown)}")
+        for entry in entries:
+            name = f"{module_name}.{entry.parameter_name}" if module_name else entry.parameter_name
+            # A quarter ID is only meaningful for the four-block topology.
+            quarter = (
+                FFN_QUARTER_IDS[entry.block_index]
+                if entry.block_index is not None
+                and len(module.ffn_concat_block_metadata) == 4
+                and entry.block_index < 4
+                else None
+            )
+            metadata[name] = (
+                entry.component, quarter,
+                tuple(width for width in widths if width in entry.gradient_support),
+            )
+
+    descriptors = []
+    by_identity = {}
+    for name, parameter in model.named_parameters(remove_duplicate=False):
+        component, quarter, support = metadata.get(
+            name, ("common", None, widths if parameter.requires_grad else ()),
+        )
+        existing = by_identity.get(id(parameter))
+        if existing is not None:
+            previous_support = (
+                existing["component"], existing["quarter_id"],
+                tuple(existing["gradient_support"]),
+            )
+            if previous_support != (component, quarter, support):
+                raise ConfigError(
+                    "Parameter ownership/support overlap: "
+                    f"{existing['canonical_name']} and {name}"
+                )
+            existing["tied_aliases"].append(name)
+            continue
+        descriptor = {
+            "canonical_name": name,
+            "tied_aliases": [],
+            "shape": list(parameter.shape),
+            "dtype": str(parameter.dtype),
+            "trainable": bool(parameter.requires_grad),
+            "scalar_count": parameter.numel(),
+            "component": component,
+            "quarter_id": quarter,
+            "gradient_support": list(support),
+        }
+        descriptors.append(descriptor)
+        by_identity[id(parameter)] = descriptor
+    return tuple(descriptors)
+
+
+@dataclass(frozen=True)
+class ParameterOwner:
+    """A static group usable by C3 optimizers and C1 clipping diagnostics."""
+
+    owner_id: str
+    parameters: tuple[torch.nn.Parameter, ...]
+    descriptors: tuple[dict[str, Any], ...]
+    active_widths: tuple[str, ...]
+
+
+def _validate_concat_quarters(module: CatLlamaMLP, widths: tuple[str, ...]) -> None:
+    blocks = module.ffn_concat_block_metadata
+    quarter_size, remainder = divmod(module.intermediate_size, 4)
+    if remainder or quarter_size <= 0 or len(blocks) != 4 or any(
+        block["block_width"] != quarter_size for block in blocks
+    ):
+        raise ConfigError("Concat ownership requires four equal quarters")
+    if tuple(entry["name"] for entry in module.ffn_prefix_metadata) != widths:
+        raise ConfigError("Concat ownership width order must match FFN metadata")
+    for index, width in enumerate(widths):
+        if module.granularity_prefixes[width] != (index + 1) / 4:
+            raise ConfigError("Concat ownership widths must select equal quarter prefixes")
+    hidden_size = module.config.hidden_size
+    for component in ("gate_weight", "up_weight", "down_weight", "gate_bias", "up_bias"):
+        parameters = getattr(module, f"{component}_blocks")
+        optional = component.endswith("bias")
+        if len(parameters) != 4 and not (optional and len(parameters) == 0):
+            raise ConfigError(f"Concat {component} requires four parameter blocks")
+        shape = (
+            (quarter_size,) if optional else
+            (hidden_size, quarter_size) if component == "down_weight" else
+            (quarter_size, hidden_size)
+        )
+        if any(tuple(parameter.shape) != shape for parameter in parameters):
+            raise ConfigError(f"Concat {component} block shape must be {shape}")
+    if module.down_bias is not None and tuple(module.down_bias.shape) != (hidden_size,):
+        raise ConfigError("Concat common down bias shape must match hidden size")
+
+
+def build_concat_parameter_partition(
+    model: torch.nn.Module,
+    *,
+    ordered_widths: Sequence[str],
+) -> tuple[ParameterOwner, ...]:
+    """Validate and partition trainable concat tensors without optimizer state.
+
+    Quarter owners span every FFN layer; the identity-deduplicated remainder
+    belongs to O-common. Frozen parameters stay in model descriptors but are
+    excluded from owners. This helper does not configure subnetworks or step.
+    """
+
+    widths = tuple(ordered_widths)
+    if len(widths) != 4 or len(set(widths)) != 4:
+        raise ConfigError("Concat ownership requires four unique ordered widths")
+    ffns = [module for module in model.modules() if isinstance(module, LlamaMLP)]
+    if not ffns or any(not isinstance(module, CatLlamaMLP) for module in ffns):
+        raise ConfigError("Five-way FFN ownership requires concat FFNs throughout")
+    for module in ffns:
+        _validate_concat_quarters(module, widths)
+    descriptors = build_parameter_descriptors(model, ordered_widths=widths)
+    parameters = dict(model.named_parameters())
+    owners = []
+    for index, quarter in enumerate((*FFN_QUARTER_IDS, None)):
+        members = tuple(
+            d for d in descriptors if d["trainable"] and d["quarter_id"] == quarter
+        )
+        if not members:
+            raise ConfigError(f"Concat owner {quarter or 'common'} has no trainable parameters")
+        owners.append(ParameterOwner(
+            owner_id=f"O-{quarter or 'common'}",
+            parameters=tuple(parameters[d["canonical_name"]] for d in members),
+            descriptors=members,
+            active_widths=widths[index:] if quarter is not None else widths,
+        ))
+    assigned = [id(parameter) for owner in owners for parameter in owner.parameters]
+    expected = {id(parameter) for parameter in model.parameters() if parameter.requires_grad}
+    if len(assigned) != len(set(assigned)):
+        raise ConfigError("Concat owners overlap")
+    if set(assigned) != expected:
+        raise ConfigError("Concat partition is missing trainable parameters")
+    return tuple(owners)
 
 
 def _require_nonnegative_int(value: Any, field: str) -> int:
@@ -431,6 +596,200 @@ class PerGranularityOptimizerCollection:
             raise
 
 
+@dataclass(frozen=True)
+class BlockOptimizerEntry:
+    owner_id: str
+    optimizer: torch.optim.Optimizer
+
+
+class BlockOptimizerCollection:
+    """Five disjoint AdamW owners; counts describe complete logical updates."""
+
+    schema_version = 1
+
+    def __init__(self, owners, training, *, diagnostic_global_clip=False):
+        self.owners = tuple(owners)
+        self.ordered_granularities = tuple(self.owners[-1].active_widths)
+        self.diagnostic_global_clip = bool(diagnostic_global_clip)
+        self.entries = tuple(
+            BlockOptimizerEntry(owner.owner_id, _build_optimizer(owner.parameters, training))
+            for owner in self.owners
+        )
+        self._optimizers = {entry.owner_id: entry.optimizer for entry in self.entries}
+        self.successful_update_counts = dict.fromkeys(self.ordered_owner_ids, 0)
+        self.width_selection_counts = dict.fromkeys(self.ordered_granularities, 0)
+        self.total_successful_updates = 0
+        self.last_active_granularity = None
+
+    @classmethod
+    def from_model(cls, model, training, *, diagnostic_global_clip=False):
+        if training.get('optimizer_name', 'adamw') != 'adamw':
+            raise ConfigError('Block optimizer ownership requires AdamW')
+        clipping = training.get('gradient_clipping', {})
+        if clipping.get('mode') != 'per_owner':
+            raise ConfigError('Block optimizer ownership requires per_owner clipping')
+        owners = build_concat_parameter_partition(
+            model, ordered_widths=training['optimizer_state_contract']['ordered_granularities']
+        )
+        caps = clipping.get('owner_max_norms', {})
+        if set(caps) != {owner.owner_id for owner in owners} or any(
+            not math.isfinite(float(cap)) or float(cap) <= 0 for cap in caps.values()
+        ):
+            raise ConfigError('Block clipping requires a finite positive cap for every owner')
+        return cls(owners, training, diagnostic_global_clip=diagnostic_global_clip)
+
+    @property
+    def ordered_owner_ids(self):
+        return tuple(owner.owner_id for owner in self.owners)
+
+    def active_owner_ids(self, width):
+        if width not in self.ordered_granularities:
+            raise ConfigError(f'Unknown block optimizer width: {width}')
+        return tuple(owner.owner_id for owner in self.owners if width in owner.active_widths)
+
+    def owner_from_action(self, action):
+        selected = action.get('granularities')
+        if action.get('kind') != 'global' or not isinstance(selected, list) or len(selected) != 1:
+            raise ConfigError('Block optimizer updates require exactly one global width')
+        self.active_owner_ids(selected[0])
+        return selected[0]
+
+    def optimizer_for(self, owner_id):
+        if owner_id not in self._optimizers:
+            raise ConfigError(f'Unknown block optimizer owner: {owner_id}')
+        return self._optimizers[owner_id]
+
+    def zero_grad(self, *, set_to_none=True):
+        for entry in self.entries:
+            entry.optimizer.zero_grad(set_to_none=set_to_none)
+
+    @property
+    def current_learning_rates(self):
+        return tuple(float(group['lr']) for group in self.entries[0].optimizer.param_groups)
+
+    def validate_synchronized_learning_rates(self):
+        rates = self.current_learning_rates
+        if not rates or any(not math.isfinite(rate) for rate in rates):
+            raise RuntimeError('Block optimizer learning rates must be finite')
+        for entry in self.entries:
+            if tuple(float(group['lr']) for group in entry.optimizer.param_groups) != rates:
+                raise RuntimeError('All block optimizers must share the global learning rate')
+        return rates
+
+    def synchronize_learning_rates(self, learning_rates):
+        rates = tuple(float(rate) for rate in learning_rates)
+        if not rates or any(not math.isfinite(rate) for rate in rates):
+            raise RuntimeError('Global scheduler learning rates must be finite')
+        for entry in self.entries:
+            for group, rate in zip(entry.optimizer.param_groups, rates, strict=True):
+                group['lr'] = rate
+        self.validate_synchronized_learning_rates()
+
+    def record_successful_update(self, width, *, returned_owners):
+        active = self.active_owner_ids(width)
+        if tuple(returned_owners) != active:
+            raise RuntimeError('Cannot commit an incomplete or unordered block update')
+        for owner in active:
+            self.successful_update_counts[owner] += 1
+        self.width_selection_counts[width] += 1
+        self.total_successful_updates += 1
+        self.last_active_granularity = width
+
+    def validate_accounting(self, *, step, width_counts=None):
+        if sum(self.width_selection_counts.values()) != step or self.total_successful_updates != step:
+            raise ConfigError('Block width selections and committed step do not reconcile')
+        if width_counts is not None and dict(width_counts) != self.width_selection_counts:
+            raise ConfigError('Block width selections and sampling exposures do not reconcile')
+        expected = {
+            owner.owner_id: sum(self.width_selection_counts[w] for w in owner.active_widths)
+            for owner in self.owners
+        }
+        if self.successful_update_counts != expected:
+            raise ConfigError('Block owner calls and quarter activations do not reconcile')
+        self.validate_synchronized_learning_rates()
+
+    def state_dict(self):
+        return {
+            'block_optimizer_collection_schema_version': self.schema_version,
+            'state_scope': 'per_ffn_block',
+            'diagnostic_global_clip': self.diagnostic_global_clip,
+            'ordered_owners': [
+                {
+                    'owner_id': owner.owner_id,
+                    'descriptors': copy.deepcopy(list(owner.descriptors)),
+                    'active_widths': list(owner.active_widths),
+                    'state_dict': self.optimizer_for(owner.owner_id).state_dict(),
+                }
+                for owner in self.owners
+            ],
+            'width_selection_counts': dict(self.width_selection_counts),
+            'successful_update_counts': dict(self.successful_update_counts),
+            'total_successful_updates': self.total_successful_updates,
+            'last_active_granularity': self.last_active_granularity,
+            'current_learning_rates': list(self.current_learning_rates),
+        }
+
+
+    def validate_state_dict(self, state):
+        if not isinstance(state, Mapping) or set(state) != set(self.state_dict()):
+            raise ConfigError('Block collection state is incomplete')
+        for key in ('block_optimizer_collection_schema_version', 'state_scope', 'diagnostic_global_clip'):
+            if state[key] != self.state_dict()[key]:
+                raise ConfigError(f'Block collection mismatch: {key}')
+        owners = state['ordered_owners']
+        if not isinstance(owners, list) or len(owners) != len(self.owners):
+            raise ConfigError('Block owner mapping mismatch')
+        counts = state['width_selection_counts']
+        if not isinstance(counts, Mapping) or set(counts) != set(self.ordered_granularities):
+            raise ConfigError('Block width counts mismatch')
+        for value in counts.values():
+            _require_nonnegative_int(value, 'block width count')
+        total = _require_nonnegative_int(state['total_successful_updates'], 'block total')
+        expected_calls = {o.owner_id: sum(counts[w] for w in o.active_widths) for o in self.owners}
+        if sum(counts.values()) != total or state['successful_update_counts'] != expected_calls:
+            raise ConfigError('Block exposure/call counts do not reconcile')
+        for value in state['successful_update_counts'].values():
+            _require_nonnegative_int(value, 'owner calls')
+        last = state['last_active_granularity']
+        if (total == 0 and last is not None) or (total > 0 and (last not in counts or counts[last] == 0)):
+            raise ConfigError('Block last active width is invalid')
+        rates = state['current_learning_rates']
+        if not isinstance(rates, list) or len(rates) != len(self.current_learning_rates):
+            raise ConfigError('Block learning rates mismatch')
+        for owner, saved in zip(self.owners, owners, strict=True):
+            if not isinstance(saved, Mapping) or set(saved) != {'owner_id', 'descriptors', 'active_widths', 'state_dict'}:
+                raise ConfigError('Block owner state is incomplete')
+            if saved['owner_id'] != owner.owner_id or saved['descriptors'] != list(owner.descriptors) or saved['active_widths'] != list(owner.active_widths):
+                raise ConfigError('Block ordered owner topology mismatch')
+            validate_adamw_history(self.optimizer_for(owner.owner_id), saved['state_dict'], owner.descriptors,
+                                   [expected_calls[owner.owner_id]] * len(owner.parameters), learning_rates=rates)
+        return copy.deepcopy(dict(state))
+
+    def _load_validated_state_dict(self, state):
+        for owner, saved in zip(self.owners, state['ordered_owners'], strict=True):
+            self.optimizer_for(owner.owner_id).load_state_dict(saved['state_dict'])
+        for key in ('width_selection_counts', 'successful_update_counts', 'total_successful_updates', 'last_active_granularity'):
+            setattr(self, key, copy.deepcopy(state[key]))
+
+    def load_state_dict(self, state):
+        staged = self.validate_state_dict(state)
+        snapshot = copy.deepcopy(self.state_dict())
+        try:
+            self._load_validated_state_dict(staged)
+        except BaseException:
+            self._load_validated_state_dict(snapshot)
+            raise
+
+
+def build_block_optimizer_runtime(model, training, *, diagnostic_global_clip=False):
+    collection = BlockOptimizerCollection.from_model(
+        model, training, diagnostic_global_clip=diagnostic_global_clip
+    )
+    clock = GlobalSchedulerClock.from_training(training)
+    clock.synchronize(collection)
+    return collection, clock
+
+
 class GlobalSchedulerClock:
     """One scheduler position whose rates are fanned out to every width."""
 
@@ -482,7 +841,7 @@ class GlobalSchedulerClock:
     def current_learning_rates(self) -> tuple[float, ...]:
         return tuple(float(group["lr"]) for group in self._carrier_optimizer.param_groups)
 
-    def synchronize(self, collection: PerGranularityOptimizerCollection) -> None:
+    def synchronize(self, collection: PerGranularityOptimizerCollection | BlockOptimizerCollection) -> None:
         collection.synchronize_learning_rates(self.current_learning_rates)
 
     def step(self) -> None:
@@ -587,3 +946,120 @@ def build_per_granularity_optimizer_runtime(
     clock = GlobalSchedulerClock.from_training(training)
     clock.synchronize(collection)
     return collection, clock
+
+
+def validate_adamw_history(optimizer, saved, descriptors, expected_steps, *, learning_rates=None):
+    """Check required *and absent* histories without allocating lazy state."""
+    if not isinstance(optimizer, torch.optim.AdamW) or not isinstance(saved, Mapping):
+        raise ConfigError('Campaign resume requires complete AdamW state')
+    runtime = optimizer.state_dict()
+    groups = saved.get('param_groups')
+    states = saved.get('state')
+    if not isinstance(groups, list) or len(groups) != len(runtime['param_groups']) or not isinstance(states, Mapping):
+        raise ConfigError('AdamW parameter groups/state are malformed')
+    ids = []
+    parameters = []
+    for index, (group, expected, live) in enumerate(zip(groups, runtime['param_groups'], optimizer.param_groups, strict=True)):
+        if set(group) != set(expected):
+            raise ConfigError('AdamW group keys do not match')
+        for key, value in expected.items():
+            target = learning_rates[index] if key == 'lr' and learning_rates is not None else value
+            if key != 'lr' and group[key] != target or key == 'lr' and learning_rates is not None and group[key] != target:
+                raise ConfigError(f'AdamW ordered mapping or kwargs mismatch: {key}')
+        if not math.isfinite(float(group['lr'])):
+            raise ConfigError('AdamW learning rate is nonfinite')
+        ids.extend(group['params'])
+        parameters.extend(live['params'])
+    if any(type(pid) is not int or pid < 0 for pid in (*ids, *states)) or len(ids) != len(descriptors) or len(ids) != len(set(ids)) or set(states) - set(ids):
+        raise ConfigError('AdamW parameter identity mapping mismatch')
+    for pid, parameter, descriptor, count in zip(ids, parameters, descriptors, expected_steps, strict=True):
+        _require_nonnegative_int(count, 'expected history exposure')
+        name = descriptor['canonical_name']
+        if count == 0:
+            if pid in states:
+                raise ConfigError(f'Impossible allocated AdamW history: {name}')
+            continue
+        state = states.get(pid)
+        group = next(g for g in groups if pid in g['params'])
+        components = {'step', 'exp_avg', 'exp_avg_sq'}
+        if group.get('amsgrad'):
+            components.add('max_exp_avg_sq')
+        if not isinstance(state, Mapping) or set(state) != components:
+            raise ConfigError(f'Missing required AdamW history/components: {name}')
+        counter = state['step']
+        counter_dtype = torch.float64 if torch.get_default_dtype() == torch.float64 and not group.get('fused') else torch.float32
+        if not torch.is_tensor(counter) or counter.shape != torch.Size([]) or counter.dtype != counter_dtype or counter.item() != count:
+            raise ConfigError(f'AdamW counter differs from exposure: {name}')
+        for component in components - {'step'}:
+            value = state[component]
+            if not torch.is_tensor(value) or value.shape != parameter.shape or value.dtype != parameter.dtype:
+                raise ConfigError(f'AdamW component shape/dtype mismatch: {name}.{component}')
+            if not bool(torch.isfinite(value).all()) or component != 'exp_avg' and bool((value < 0).any()):
+                raise ConfigError(f'AdamW component invalid: {name}.{component}')
+
+
+def validate_campaign_optimizer(model, optimizer, saved, *, widths, width_counts, learning_rates):
+    descriptors = build_parameter_descriptors(model, ordered_widths=widths)
+    if set(width_counts) != set(widths):
+        raise ConfigError('Campaign width exposure mapping mismatch')
+    for count in width_counts.values():
+        _require_nonnegative_int(count, 'width exposure')
+    if isinstance(optimizer, BlockOptimizerCollection):
+        staged = optimizer.validate_state_dict(saved)
+        if staged['width_selection_counts'] != width_counts:
+            raise ConfigError('Block histories and campaign exposures differ')
+        entries = [(optimizer.optimizer_for(o.owner_id), s['state_dict'], o.descriptors,
+                    [sum(width_counts[w] for w in d['gradient_support']) for d in o.descriptors])
+                   for o, s in zip(optimizer.owners, staged['ordered_owners'], strict=True)]
+    elif isinstance(optimizer, PerGranularityOptimizerCollection):
+        staged = optimizer.validate_state_dict(saved)
+        if staged['successful_update_counts'] != width_counts:
+            raise ConfigError('Width histories and campaign exposures differ')
+        entries = [(e.optimizer, s['state_dict'], descriptors,
+                    [width_counts[e.granularity] if e.granularity in d['gradient_support'] else 0 for d in descriptors])
+                   for e, s in zip(optimizer.entries, staged['ordered_entries'], strict=True)]
+    else:
+        entries = [(optimizer, saved, descriptors,
+                    [sum(width_counts[w] for w in d['gradient_support']) for d in descriptors])]
+    for live, state, desc, counts in entries:
+        validate_adamw_history(live, state, desc, counts, learning_rates=learning_rates)
+    return descriptors
+
+
+def measure_optimizer_storage(optimizer, *, step):
+    """Measure allocated tensors without accessing missing defaultdict entries.
+
+    This belongs at report/checkpoint boundaries. Compute precision does not
+    determine AdamW state dtype, and scalar counters are separate from moments.
+    """
+    if isinstance(optimizer, BlockOptimizerCollection):
+        owners = [(entry.owner_id, entry.optimizer) for entry in optimizer.entries]
+    elif isinstance(optimizer, PerGranularityOptimizerCollection):
+        owners = [(entry.granularity, entry.optimizer) for entry in optimizer.entries]
+    else:
+        owners = [('shared', optimizer)]
+    components, owner_rows = [], []
+    for owner_id, item in owners:
+        grouped = {}
+        owner_rows.append({'owner_id': owner_id, 'allocated_histories': sum(bool(v) for v in item.state.values()),
+                           'registered_parameters': sum(len(g['params']) for g in item.param_groups)})
+        for history in item.state.values():
+            for component, value in history.items():
+                if not torch.is_tensor(value):
+                    continue
+                key = (component, str(value.dtype))
+                row = grouped.setdefault(key, {'owner_id': owner_id, 'component': component,
+                    'dtype': str(value.dtype), 'kind': 'counter' if component == 'step' else 'moment',
+                    'elements': 0, 'bytes': 0})
+                row['elements'] += value.numel()
+                row['bytes'] += value.numel() * value.element_size()
+        components.extend(grouped.values())
+    return {
+        'schema_version': 1, 'step': int(step), 'method': 'allocated tensor numel * element_size',
+        'owners': owner_rows, 'components': components,
+        'moment_elements': sum(r['elements'] for r in components if r['kind'] == 'moment'),
+        'moment_bytes': sum(r['bytes'] for r in components if r['kind'] == 'moment'),
+        'counter_elements': sum(r['elements'] for r in components if r['kind'] == 'counter'),
+        'counter_bytes': sum(r['bytes'] for r in components if r['kind'] == 'counter'),
+        'total_bytes': sum(r['bytes'] for r in components),
+    }

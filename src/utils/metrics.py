@@ -183,6 +183,9 @@ METRICS_COLUMNS = [
     "metrics_path",
     "scaling_results_path",
     "extraction_metadata_path",
+    "optimizer_ownership_schema_version", "optimizer_ownership_contract_hash",
+    "campaign_id", "arm_id", "optimizer_quarter_activation_counts",
+    "optimizer_ownership_trace_path", "optimizer_ownership_clipping_path",
 ]
 
 # Schema-1 portfolio references wrote this always-empty field before the LR
@@ -455,10 +458,18 @@ class ArtifactError(ValueError):
 
 
 class StreamingMetricsAccumulator:
-    """Checkpointable bounded summary of an arbitrarily large metrics stream."""
+    """Bounded streaming summary with stricter ordered campaign accounting.
 
-    def __init__(self, state: Mapping[str, Any] | None = None, *, trailing_count: int = 5):
+    Both schema-2 formats use constant-size markers. The campaign marker
+    validates sequential one-width updates; the general marker counts each
+    optimizer step even when an action is held over several steps. Historical
+    campaign schema-1 histories are validated once on restoration.
+    """
+
+    def __init__(self, state: Mapping[str, Any] | None = None, *, trailing_count: int = 5,
+                 ordered_attempts: bool = False):
         state = dict(state or {})
+        self.ordered_attempts = ordered_attempts or "optimizer_last_attempt_id" in state
         self.trailing_count = max(1, int(state.get("trailing_count", trailing_count)))
         self.last_training_step = int(state.get("last_training_step", 0))
         self.tokens_seen = int(state.get("tokens_seen", 0))
@@ -502,7 +513,8 @@ class StreamingMetricsAccumulator:
         # ``last_training_step``, so that step is the exact lower bound when
         # migrating a failure-free historical accumulator.
         if (
-            int(state.get("schema_version", 1)) < 2
+            not self.ordered_attempts
+            and int(state.get("schema_version", 1)) < 2
             and self.failed_optimizer_attempts == 0
         ):
             self.committed_optimizer_steps = max(
@@ -513,20 +525,84 @@ class StreamingMetricsAccumulator:
                 self.attempted_optimizer_steps,
                 self.committed_optimizer_steps,
             )
+        self.optimizer_last_attempt_id = None
+        if self.ordered_attempts:
+            self._restore_ordered_attempts(state)
         self.checkpoint_selection = copy_json_mapping(
             state.get("checkpoint_selection")
         )
+
+    @staticmethod
+    def _attempt_ordinal(key: str) -> int:
+        # The ownership campaign selects one width per update, without held
+        # windows or balancing. Do not silently accept a different ID protocol.
+        fields = key.split(":") if isinstance(key, str) else []
+        if (len(fields) != 5 or fields[0] != "global" or fields[2:4] != ["-", "-"]
+                or fields[4] not in {"g250", "g500", "g750", "g1000"}
+                or not fields[1].isascii() or not fields[1].isdigit()
+                or str(int(fields[1])) != fields[1]):
+            raise ValueError("Ordered campaign attempt ID is invalid")
+        return int(fields[1])
+
+    def _restore_ordered_attempts(self, state):
+        count = self.attempted_optimizer_steps
+        if (min(count, self.committed_optimizer_steps, self.failed_optimizer_attempts) < 0
+                or count != self.committed_optimizer_steps + self.failed_optimizer_attempts):
+            raise ValueError("Ordered campaign attempt counters do not reconcile")
+        if state.get("schema_version", 1) == 1:
+            # One-time conversion only. The old checkpoint may sort IDs
+            # lexicographically; verify the complete numeric prefix before
+            # replacing it with its last member. Never guess across a gap.
+            ids = state.get("optimizer_attempt_ids", [])
+            if not isinstance(ids, list) or len(ids) != count:
+                raise ValueError("Legacy campaign attempt history/count mismatch")
+            seen = set()
+            for key in ids:
+                ordinal = self._attempt_ordinal(key)
+                if ordinal >= count or ordinal in seen:
+                    raise ValueError("Legacy campaign attempt history is not a complete prefix")
+                seen.add(ordinal)
+                if ordinal == count - 1:
+                    self.optimizer_last_attempt_id = key
+        elif state.get("schema_version") == 2:
+            key = state.get("optimizer_last_attempt_id")
+            if ((count == 0 and key is not None)
+                    or (count > 0 and self._attempt_ordinal(key) != count - 1)):
+                raise ValueError("Ordered campaign attempt marker/count mismatch")
+            self.optimizer_last_attempt_id = key
+        else:
+            raise ValueError("Unsupported metrics schema")
+
+    def _is_new_attempt(self, key: str) -> bool:
+        if not self.ordered_attempts:
+            return key != self.optimizer_last_attempt_key
+        if key == self.optimizer_last_attempt_id:
+            # Repeated metric rows, including a failure reported after a
+            # committed update, must not count that same attempt twice.
+            return False
+        if self._attempt_ordinal(key) != self.attempted_optimizer_steps:
+            raise ValueError("Campaign attempts must arrive in order without gaps or conflicts")
+        self.optimizer_last_attempt_id = key
+        return True
 
     def update(self, rows: Iterable[Mapping[str, Any]]) -> None:
         for raw_row in rows:
             row = dict(raw_row)
             split = str(row.get("split") or "")
             if split == "train":
-                attempt_key = _optimizer_attempt_key(row)
-                if attempt_key is not None:
-                    if attempt_key != self.optimizer_last_attempt_key:
-                        attempted = _bool_value(row.get("optimizer_step_attempted"))
-                        committed = _bool_value(row.get("optimizer_step_committed"))
+                attempt_id = row.get("optimizer_action_id")
+                if attempt_id not in (None, ""):
+                    attempt_key = str(attempt_id) if self.ordered_attempts else _optimizer_attempt_key(row)
+                    if self.ordered_attempts and "|optimizer_step=" in attempt_key:
+                        key, _, step_text = attempt_key.partition("|optimizer_step=")
+                        if step_text != str(self._attempt_ordinal(key) + 1):
+                            raise ValueError("Campaign attempt step does not match its ordinal")
+                        attempt_key = key
+                    attempted = _bool_value(row.get("optimizer_step_attempted"))
+                    committed = _bool_value(row.get("optimizer_step_committed"))
+                    if self.ordered_attempts and not attempted:
+                        raise ValueError("Campaign attempt row must record an attempted update")
+                    if self._is_new_attempt(attempt_key):
                         if attempted:
                             self.attempted_optimizer_steps += 1
                         if committed:
@@ -589,7 +665,9 @@ class StreamingMetricsAccumulator:
                 self.trailing_validation_by_granularity
             ),
             "selection_counts": self.selection_counts,
-            "optimizer_last_attempt_key": self.optimizer_last_attempt_key,
+            **({"optimizer_last_attempt_id": self.optimizer_last_attempt_id}
+               if self.ordered_attempts else
+               {"optimizer_last_attempt_key": self.optimizer_last_attempt_key}),
             "attempted_optimizer_steps": self.attempted_optimizer_steps,
             "committed_optimizer_steps": self.committed_optimizer_steps,
             "failed_optimizer_attempts": self.failed_optimizer_attempts,
@@ -656,7 +734,10 @@ class MetricsJournal:
             if isinstance(artifact_state, Mapping)
             else None
         )
-        self.accumulator = StreamingMetricsAccumulator(saved_accumulator)
+        self.accumulator = StreamingMetricsAccumulator(
+            saved_accumulator,
+            ordered_attempts=bool((artifact_io_config or {}).get("optimizer_ownership_contract")),
+        )
         self._retained_row_limit = 100_000
         self._retained_rows: list[dict[str, Any]] = []
         self._retention_overflow = False
@@ -1052,6 +1133,24 @@ def build_optimizer_state_summary_fields(
             == committed
         )
     )
+
+    if config.get('optimizer_ownership_contract'):
+        exposures = dict(state.get('optimizer_width_selection_counts') or {})
+        updates = dict(state.get('optimizer_update_counts') or {})
+        scheduler_position = int(state.get('global_scheduler_position', 0))
+        resources = state.get('resource_summary')
+        if isinstance(resources, Mapping):
+            wall_time_seconds = resources['elapsed_seconds']
+            peak_memory_bytes = resources['peak_allocated_bytes']
+            attempted = resources['attempted_steps']
+            failed = max(attempted - committed, 0)
+        quarters = {f'O-{q}': sum(exposures.get(w, 0) for w in ordered[i:]) for i, q in enumerate('ABCD')} if len(ordered) == 4 else {}
+        expected_calls = ({**quarters, 'O-common': committed} if scope == 'per_ffn_block'
+                          else exposures if scope == 'per_granularity' else {'shared': committed})
+        reconciled = (sum(exposures.values()) == committed and updates == expected_calls
+                      and state.get('optimizer_quarter_activation_counts') == quarters
+                      and scheduler_position == committed
+                      and not state.get('update_in_flight') and not state.get('optimizer_poisoned'))
 
     resolved_checkpoint: Path | None = None
     checkpoint_bytes = None
@@ -3347,6 +3446,11 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         "content_tokens_seen": normalized_row.get("tokens_seen"),
         "optimizer_window_microsteps": None,
         "committed_tokens_this_step": None,
+        "optimizer_ownership_schema_version": None,
+        "optimizer_ownership_contract_hash": None,
+        "campaign_id": None, "arm_id": None,
+        "optimizer_quarter_activation_counts": None,
+        "optimizer_ownership_trace_path": None, "optimizer_ownership_clipping_path": None,
         "optimizer_state_scope": None,
         "selected_optimizer_granularity": None,
         "optimizer_step_attempted": None,
@@ -3408,6 +3512,7 @@ def _with_artifact_defaults(row: Mapping[str, Any]) -> dict[str, Any]:
         normalized_row.setdefault(key, value)
 
     for key in (
+        "optimizer_quarter_activation_counts",
         "granularity_pattern_summary",
         "correction_context",
         "sampler_state",
@@ -3618,3 +3723,69 @@ def _should_write_shared_artifact(distributed_context: Any | None) -> bool:
     from src.training.distributed import should_write_shared_artifact
 
     return should_write_shared_artifact(distributed_context)
+
+
+def optimizer_ownership_metric_fields(config, state):
+    """Small campaign fields shared by scalar rows and trace records."""
+    contract = config.get('optimizer_ownership_contract')
+    if not contract:
+        return {}
+    return {
+        'optimizer_ownership_schema_version': 1,
+        'optimizer_ownership_contract_hash': config['optimizer_ownership_contract_hash'],
+        'campaign_id': contract['campaign_id'], 'arm_id': contract['arm_id'],
+        'optimizer_quarter_activation_counts': dict(state.get('optimizer_quarter_activation_counts', {})),
+        'optimizer_ownership_trace_path': 'optimizer_ownership_trace.jsonl',
+        'optimizer_ownership_clipping_path': 'optimizer_ownership_clipping.jsonl' if contract['arm_id'] in ('C1', 'C3') else None,
+    }
+
+
+def append_optimizer_ownership_observation(config, state, *, train_dataloader):
+    """Durably append only reconciled commits; resume segregates later rows."""
+    from src.training.checkpointing import assert_checkpoint_safe
+    import numpy as np
+
+    assert_checkpoint_safe(state)
+    contract = config['optimizer_ownership_contract']
+    step = state['last_completed_step']
+    width = state['optimizer_last_active_granularity']
+    scope = config['training']['optimizer_state_scope']
+    active = ([f'O-{q}' for q in 'ABCD'[:config['model']['granularities'].index(width) + 1]] + ['O-common']
+              if scope == 'per_ffn_block' else [width] if scope == 'per_granularity' else ['shared'])
+    provenance = state['last_optimizer_batch_provenance']
+    sampler = getattr(train_dataloader, 'batch_sampler', None)
+    sample_ids = None
+    if hasattr(sampler, '_logical_indices'):
+        start = int(provenance['total_cursor'])
+        sample_ids = sampler._logical_indices(start, start + sampler.global_batch_size)
+    row = {
+        'schema_version': 1, 'run_id': config['run']['run_id'],
+        'campaign_id': contract['campaign_id'], 'arm_id': contract['arm_id'],
+        'contract_hash': config['optimizer_ownership_contract_hash'],
+        'attempt_id': state.get('resource_attempt_id'),
+        'step': step, 'action_ordinal': step, 'width': width,
+        'action_sha256': hashlib.sha256((width + '\n').encode('ascii')).hexdigest(),
+        'batch_provenance': provenance, 'sample_ids': sample_ids,
+        'batch_sha256': hashlib.sha256(np.asarray(sample_ids, dtype='<u8').tobytes()).hexdigest() if sample_ids is not None else None,
+        'epoch': state['epoch'], 'batch_index': state['batch_index'],
+        'packed_tokens': config['training']['expected_tokens_per_step'],
+        'tokens_seen': state['tokens_seen'], 'scheduler_position': state['global_scheduler_position'],
+        'active_owners': active,
+        'width_selection_counts': state['optimizer_width_selection_counts'],
+        'quarter_activation_counts': state['optimizer_quarter_activation_counts'],
+        'owner_call_counts': state['optimizer_update_counts'],
+    }
+    root = Path(config['run']['output_dir'])
+    root.mkdir(parents=True, exist_ok=True)
+    records = [('optimizer_ownership_trace.jsonl', row)]
+    if contract['arm_id'] in ('C1', 'C3'):
+        records.append(('optimizer_ownership_clipping.jsonl', {
+            **{key: row[key] for key in ('schema_version', 'run_id', 'campaign_id', 'arm_id', 'contract_hash', 'attempt_id')},
+            **state['last_clipping_observation'],
+        }))
+    for name, record in records:
+        with (root / name).open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps(record, sort_keys=True, allow_nan=False) + '\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+    _fsync_directory(root)

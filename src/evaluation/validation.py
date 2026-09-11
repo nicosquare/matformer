@@ -381,6 +381,9 @@ def validation_results_to_metric_rows(
                 scheduler_position=int(step),
             ),
         }
+        if config.get('optimizer_ownership_contract'):
+            from src.utils.metrics import optimizer_ownership_metric_fields
+            row.update(optimizer_ownership_metric_fields(config, adaptive_artifacts or {}))
         if adaptive_artifacts:
             row.update(adaptive_artifacts)
         rows.append(row)
@@ -600,3 +603,28 @@ def _float_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def evaluate_ownership_terminal(model, dataloader, config, device):
+    """Ordinary validation with the campaign's source-width/count convention."""
+    from src.utils.model_size import model_parameter_counts
+    from src.utils.reproducibility import stable_hash
+    from src.evaluation.optimizer_ownership import PARAMETER_COUNT_CONVENTION
+
+    contract = config['optimizer_ownership_contract']
+    arm = contract['arm_id']
+    local_widths = config['model']['granularities']
+    results = evaluate_validation_per_granularity(model, dataloader, local_widths, device, config=config)
+    endpoints = []
+    for local_width, result in zip(local_widths, results, strict=True):
+        if not math.isfinite(result['loss']) or not math.isfinite(result['perplexity']):
+            raise ValueError('Terminal validation loss/perplexity must be finite')
+        endpoints.append({
+            **result, 'width': arm[3:] if arm.startswith('ST-') else local_width,
+            'non_embedding_parameters': model_parameter_counts(model, granularity=local_width)['non_embedding_parameters'],
+            'count_convention': PARAMETER_COUNT_CONVENTION,
+            'evaluation_role': 'ordinary_validation',
+            'validation_manifest_hash': config['validation_manifest_hash'],
+            'evaluation_protocol_hash': stable_hash(config.get('evaluation', {}).get('validation', {})),
+        })
+    return endpoints
