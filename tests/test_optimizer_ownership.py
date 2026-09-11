@@ -457,7 +457,7 @@ def test_c1_matches_diagnostic_global_c3_parameters_and_every_history_tensor():
                 torch.testing.assert_close(value, state[key], rtol=1e-6, atol=1e-7)
 
 
-def runtime_fixture(tmp_path, *, scope='per_ffn_block', max_steps=8, widths=WIDTHS, device='cpu'):
+def runtime_fixture(tmp_path, *, scope='per_ffn_block', max_steps=8, widths=WIDTHS, device='cpu', correction_mode='none'):
     from src.training.checkpointing import build_initial_continuation_state
     from src.training.modeling import build_model
     from src.utils.config import resolve_run_config
@@ -471,6 +471,7 @@ def runtime_fixture(tmp_path, *, scope='per_ffn_block', max_steps=8, widths=WIDT
         output_dir=tmp_path / 'per-granularity-optimizer-smoke-001',
         overrides={
             'model.variant': 'concat',
+            'model.correction_mode': correction_mode,
             'model.granularities': list(widths),
             'model.granularity_prefixes': {w: (i + 1) / len(widths) for i, w in enumerate(widths)},
             'model.global_sampling_schedule': 'random_with_replacement',

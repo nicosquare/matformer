@@ -21,6 +21,7 @@ configuration.
 
 | Note | Status | Still necessary? | Recommended treatment |
 | --- | --- | --- | --- |
+| [GMC/LMC comparison Spec Kit prompt](tinystories_gmc_lmc_speckit_prompt_2026-09-10.md) | New-chat handoff; not executed | Yes for the six-run correction comparison | Extends feature 013 with C1/C2/C3 GMC and LMC runs, C3 integration, validation, launch requirements, and reporting while preserving completed results. |
 | [Gradient and learning-rate membership corrections with AdamW](gradient_membership_correction_adamw_analysis_2026-09-10.md) | Mathematical and implementation analysis | Yes | Explains GMC cancellation, LMC update and decay scaling, the corrected single-width normalization mismatch, and the combined GMC/LMC configuration. Includes plain-language examples and code traces. |
 | [Optimizer ownership results and largest-standalone gap](tinystories_optimizer_ownership_results_analysis_2026-09-10.md) | Completed seed-42 campaign analysis | Yes | Records terminal results, budget/exposure accounting, implementation audits, the width-interference hypothesis, and proposed follow-up diagnostics. |
 | [Slicing, concatenation, and optimizer ownership experiments](tinystories_optimizer_ownership_experiments.md) | Current experiment design; future Spec Kit input | Yes for the new nine-run series | Defines seed-42 standalone references trained for one pass, S1/S2/C1/C2/C3 trained for four passes with separate block clipping in C3, AdamW semantics, and combined loss/perplexity plots with disconnected standalone points. |

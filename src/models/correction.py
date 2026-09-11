@@ -142,12 +142,19 @@ def summarize_correction_context_from_config(
 ) -> dict[str, Any]:
     """Build a stable correction-context summary from resolved config state."""
 
-    return summarize_correction_context(
+    summary = summarize_correction_context(
         correction_context_from_config(
             config,
             granularity_pattern=granularity_pattern,
         )
     )
+
+    contract = config.get("optimizer_ownership_contract", {}).get("correction")
+    if contract:
+        summary["configured_membership_factors"] = contract["factors"]
+        summary["parameter_change_correction"] = contract["parameter_change_correction"]
+        summary["base_learning_rate_field"] = "learning_rate"
+    return summary
 
 
 def correction_context_from_config(

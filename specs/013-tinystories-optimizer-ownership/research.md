@@ -210,3 +210,16 @@ conventions. Verify the plotted series data and PNG/PDF exports directly.
 
 All technical unknowns are resolved. Implementation verification remains future
 work and is not claimed by this research record.
+
+## Correction extension decisions — 2026-09-10
+
+Decision: retain combined GMC+LMC semantics and configured numerator four.
+Rationale: explicit user protocol and cbcd567 fix; no scientific ambiguity.
+Alternative LR-only ablation is outside the requested experiment.
+Decision: capture affected active parameter values once around C3's owner loop.
+Rationale: makes correction order/once-only behavior visible inside the existing
+unsafe update boundary, without full optimizer snapshots or local clocks.
+Decision: schema-2 fixed recipe, preserving schema-1 original contracts.
+Rationale: original artifacts must remain independently verifiable and unmodified.
+Local evidence: config.py C3 restriction; steps.py C3 bypass; original saved
+configs use none. All-label metadata is checked by real-model regression.

@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.evaluation.optimizer_ownership import preflight_campaign, freeze_campaign, report_campaign
+from src.evaluation.optimizer_ownership import preflight_campaign, freeze_campaign, report_campaign, report_correction_comparison
 
 
 def main(argv=None):
@@ -38,9 +38,14 @@ def main(argv=None):
     for command_parser in (freeze, report_parser):
         command_parser.add_argument('--output-dir', required=True)
         command_parser.add_argument('--allow-partial', action='store_true')
+    correction = subcommands.add_parser('report-corrections', help='Compare six corrected terminals with original references')
+    for option in ('manifest', 'reference-manifest', 'output-dir'):
+        correction.add_argument('--' + option, required=True)
     args = parser.parse_args(argv)
     try:
-        if args.command == 'freeze':
+        if args.command == 'report-corrections':
+            report = report_correction_comparison(manifest=args.manifest, reference_manifest=args.reference_manifest, output_dir=args.output_dir)
+        elif args.command == 'freeze':
             report = freeze_campaign(campaign_manifest=args.campaign_manifest, run_root=args.run_root,
                 run_dirs=args.run_dirs, output_dir=args.output_dir, allow_partial=args.allow_partial)
         elif args.command == 'report':

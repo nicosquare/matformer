@@ -280,3 +280,29 @@ Join before sequential T048–T053 campaign module/CLI work.
 | **Total** | **58** |
 
 All tasks start unchecked. There are 16 `[P]` tasks in eight disjoint-file scheduling pairs, including at least one pair for each story. Implementation has not been performed by task generation.
+
+
+## Phase 9 — US6 correction comparison (2026-09-10)
+
+Preserve T001–T058 and their completed statuses. This extension is authorized
+through six-run execution and reporting; prior future-launch notes are historical.
+
+- [X] T059 [US6] Extend spec.md, clarify supplied scientific decisions, update plan.md and contracts/membership-correction.md; review checklists/requirements.md (FR-029–035).
+- [X] T060 [US6] Record cross-artifact consistency/coverage in correction-analysis.md before implementation (FR-029–035).
+- [X] T061 [US6] Add real-model six-arm/four-width independent AdamW reference and inactive bias/moment/clipping regressions in tests/test_optimizer_ownership_corrections.py (FR-030–031,033).
+- [X] T062 [US6] Extend C3 eligibility in src/utils/config.py and once-only LMC update integration in src/training/steps.py; preserve fatal boundary and compact accounting (FR-030–032).
+- [X] T063 [US6] Add fixed schema-2 YAML and explicit correction contracts/strict expansion in src/evaluation/optimizer_ownership.py; preserve original schema-1 validation (FR-029,032).
+- [X] T064 [US6] Add corrected checkpoint/resume, contract rejection and owner/correction/bookkeeping failure tests in tests/test_optimizer_ownership_corrections.py (FR-031–033).
+- [X] T065 [US6] Extend saved-artifact reporting/CLI for six corrected plus original references and full-range four-panel plots; test original compatibility (FR-035).
+- [X] T066 [US6] Run pinned CPU suites; record exact evidence and source hashes in correction-verification.md under this feature; experiment logs stay under campaign diagnostics (FR-033).
+- [X] T067 [US6] Audit original saved configs/provenance and materialize fresh schema-2 campaign; verify paired expected traces and all-label metadata (FR-029,032,034).
+- [X] T068 [US6] Implement campaign-specific restart-safe locked submission/monitoring helper in scripts/run_optimizer_ownership_corrections.py and document in docs/tinystories-optimizer-ownership-experiment.md (FR-034).
+- [X] T069 [US6] Run sbatch six-arm GPU preflight with save/restore and throughput/overhead evidence; block production on failures (FR-033).
+- [x] T070 [US6] Snapshot source, launch six fresh full-budget runs through sbatch with user-wide limits; monitor/reconcile continuations in campaign submission records (FR-034). All six jobs completed; strict report generation remains blocked by the documented C1/C3 clipping-log omission (T071).
+- [ ] T071 [US6] Validate all six terminal checkpoints/resources and paired trace digests; freeze sources and generate 40-row CSV/JSON plus three PNG/PDF figure stems (FR-035).
+- [ ] T072 [US6] Interpret quality/exposure/clipping/runtime as paired seed-42 observations; reconcile tasks/evidence/runbook with actual completion (FR-035).
+
+Dependencies: T059 -> T060 -> T061 -> T062 -> T063 -> T064 -> T065 -> T066
+-> T067 -> T068 -> T069 -> T070 -> T071 -> T072. Read-only original-artifact
+inspection can overlap CPU checks. Independent test invocations may run in
+parallel; shared source edits and campaign mutations remain sequential.

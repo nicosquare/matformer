@@ -142,6 +142,43 @@ ELASTIC_ARMS: tuple[ArmDefinition, ...] = tuple(
 ARMS = STANDALONE_ARMS + ELASTIC_ARMS
 ARM_IDS = tuple(arm["arm_id"] for arm in ARMS)
 
+CORRECTION_CAMPAIGN_SCHEMA_VERSION = 2
+CORRECTION_ARMS = tuple(
+    {**arm, "arm_id": arm["arm_id"] + "-" + mode.upper(),
+     "reference_arm_id": arm["arm_id"], "correction_mode": mode}
+    for arm in ELASTIC_ARMS if arm["representation"] == "concat"
+    for mode in ("gmc", "lmc")
+)
+CORRECTION_ARM_IDS = tuple(arm["arm_id"] for arm in CORRECTION_ARMS)
+
+
+def campaign_arms(schema_version):
+    from src.utils.config import ConfigError
+    if type(schema_version) is int and schema_version == 1:
+        return ARMS
+    if type(schema_version) is int and schema_version == 2:
+        return CORRECTION_ARMS
+    raise ConfigError(f"Unsupported campaign schema_version: {schema_version}")
+
+
+def membership_correction_contract(mode):
+    """Explicit new-campaign semantics; never added to original contracts."""
+    from src.utils.config import ConfigError
+    if mode not in ("gmc", "lmc"):
+        raise ConfigError("Corrected campaign requires gmc or lmc")
+    return {
+        "schema_version": 1, "mode": mode,
+        "trained_widths": list(WIDTH_LABELS), "membership_counts": [4, 3, 2, 1],
+        "factors": [1., 4/3, 2., 4.], "gradient_correction": True,
+        "parameter_change_correction": mode == "lmc",
+        "scales_weight_decay": mode == "lmc", "common_factor": 1.,
+        "parameter_scope": "FFN block weights and block-local gate/up biases",
+        "moment_scaling": False,
+        "order": ["gradient_correction", "clipping", "adamw"]
+                 + (["parameter_change_correction"] if mode == "lmc" else [])
+                 + ["global_scheduler", "accounting"],
+    }
+
 
 class CampaignContract(TypedDict):
     """Resolved preflight record; expected_data includes all pinned role hashes."""
@@ -384,6 +421,8 @@ def _arm_overrides(arm):
         "token_budget": arm["assigned_tokens"],
         "optimizer": {"state_scope": arm["state_scope"]},
     }
+    if "correction_mode" in arm:
+        model["correction_mode"] = arm["correction_mode"]
     if arm["source_width"]:
         run["granularity"] = arm["source_width"]
     else:
@@ -409,12 +448,12 @@ def _reservation_path(run_output_root):
     return root.parent / f".{root.name}.optimizer-ownership-reservation.json"
 
 
-def _check_unoccupied(run_output_root):
+def _check_unoccupied(run_output_root, arms=ARMS):
     from pathlib import Path
     from src.utils.config import ConfigError
 
     root = Path(run_output_root).expanduser().resolve()
-    for path in [_reservation_path(root), *(root / arm for arm in ARM_IDS)]:
+    for path in [_reservation_path(root), *(root / arm["arm_id"] for arm in arms)]:
         if path.exists() or path.is_symlink():
             raise ConfigError(f"occupied campaign run identity: {path}")
 
@@ -493,7 +532,7 @@ def expand_campaign(recipe, *, prepared_corpus_dir, tokenizer_dir, run_output_ro
         {"schema_version", "campaign_id", "common", "arms", "expected_data"},
         "campaign fields",
     )
-    _require_equal(recipe["schema_version"], CAMPAIGN_SCHEMA_VERSION, "schema_version")
+    arms = campaign_arms(recipe["schema_version"])
     campaign_id = recipe["campaign_id"]
     if not isinstance(campaign_id, str) or not re.fullmatch(
         r"tinystories-optimizer-ownership-[A-Za-z0-9_-]+", campaign_id
@@ -504,12 +543,12 @@ def expand_campaign(recipe, *, prepared_corpus_dir, tokenizer_dir, run_output_ro
     _require_equal(recipe["expected_data"], PINNED_DATA, "expected_data")
     if not isinstance(recipe["arms"], dict) or not isinstance(recipe["common"], dict):
         raise ConfigError("campaign arms and common must be mappings")
-    _require_equal(set(recipe["arms"]), set(ARM_IDS), "arms")
-    _check_unoccupied(run_output_root)
+    _require_equal(set(recipe["arms"]), {a["arm_id"] for a in arms}, "arms")
+    _check_unoccupied(run_output_root, arms)
     provenance = _provenance()
     runs = []
     with tempfile.TemporaryDirectory(prefix="ownership-resolve-") as staging:
-        for arm in ARMS:
+        for arm in arms:
             arm_id = arm["arm_id"]
             if not isinstance(recipe["arms"][arm_id], dict):
                 raise ConfigError(f"arms.{arm_id} must be a mapping")
@@ -577,6 +616,8 @@ def expand_campaign(recipe, *, prepared_corpus_dir, tokenizer_dir, run_output_ro
                 "evaluation": copy.deepcopy(resolved["evaluation"]),
                 "count_convention": PARAMETER_COUNT_CONVENTION,
             }
+            if "correction_mode" in arm:
+                contract["correction"] = membership_correction_contract(arm["correction_mode"])
             contract_hash, contract = build_optimizer_ownership_signature(contract)
             for config in (raw, resolved):
                 config["optimizer_ownership_contract"] = copy.deepcopy(contract)
@@ -739,6 +780,9 @@ def inspect_campaign_models(runs):
                     if run["representation"] == "concat":
                         if not isinstance(mlp, CatLlamaMLP):
                             raise ConfigError(f"{run['arm_id']}: expected concat FFN")
+                        if "correction_mode" in run:
+                            _require_equal(list(mlp.gradient_membership_counts), [4, 3, 2, 1], "membership counts")
+                            _require_equal(list(mlp.gradient_membership_correction_scales), [1., 4/3, 2., 4.], "membership factors")
                     else:
                         if (
                             run["representation"] == "dense"
@@ -871,8 +915,8 @@ def build_expected_traces(runs, corpus_dir, corpus_manifest):
             "epochs": expected_epoch_traces(sampler, epochs=run["assigned_epochs"]),
             "actions": None if run["source_width"] else expected_action_trace(config),
         }
-    first = result[ARM_IDS[0]]["epochs"][0]
-    elastic = result["S1"]
+    first = result[runs[0]["arm_id"]]["epochs"][0]
+    elastic = next(result[r["arm_id"]] for r in runs if not r["source_width"])
     for run in runs:
         trace = result[run["arm_id"]]
         _require_equal(trace["epochs"][0], first, f"{run['arm_id']}.first_epoch")
@@ -903,6 +947,7 @@ def preflight_campaign(
             "Preflight output and run-output-root must be separate directory trees"
         )
     recipe = yaml.safe_load(Path(campaign_path).read_text())
+    arms = campaign_arms(recipe["schema_version"])
     runs = expand_campaign(
         recipe,
         prepared_corpus_dir=prepared_corpus_dir,
@@ -938,11 +983,11 @@ def preflight_campaign(
     corpus_manifest = load_corpus_manifest(prepared_corpus_dir, verify_shards=False)
     traces = build_expected_traces(runs, prepared_corpus_dir, corpus_manifest)
     manifest = {
-        "schema_version": CAMPAIGN_SCHEMA_VERSION,
+        "schema_version": recipe["schema_version"],
         "campaign_id": recipe["campaign_id"],
         "seed": SEED,
         "common": recipe["common"],
-        "allowed_difference_matrix": list(ARMS),
+        "allowed_difference_matrix": list(arms),
         "expected_data": recipe["expected_data"],
         "count_convention": PARAMETER_COUNT_CONVENTION,
         "evaluation_role": EVALUATION_ROLE,
@@ -983,7 +1028,7 @@ def preflight_campaign(
             )
         write_json_artifact(stage / "preflight.json", report)
         write_json_artifact(stage / "campaign_manifest.json", manifest)
-        _check_unoccupied(root)
+        _check_unoccupied(root, arms)
         reservation.parent.mkdir(parents=True, exist_ok=True)
         with reservation.open("x") as handle:
             reserved = True
@@ -1030,9 +1075,15 @@ def validate_materialized_config(config):
         actual_hash,
         "optimizer_ownership_contract_hash",
     )
-    arm = next((a for a in ARMS if a["arm_id"] == config["run"].get("arm_id")), None)
+    arm = next((a for a in (*ARMS, *CORRECTION_ARMS) if a["arm_id"] == config["run"].get("arm_id")), None)
     if arm is None:
         raise ConfigError("optimizer_ownership_contract: unknown arm_id")
+    expected_mode = arm.get("correction_mode", "none")
+    _require_equal(config["model"]["correction_mode"], expected_mode, "model.correction_mode")
+    if "correction_mode" in arm:
+        _require_equal(contract.get("correction"), membership_correction_contract(expected_mode), "correction contract")
+    elif "correction" in contract:
+        raise ConfigError("Original campaign cannot contain a correction extension")
     for key in ("campaign_id", "run_id", "arm_id"):
         _require_equal(config["run"].get(key), contract[key], f"run.{key}")
     _require_equal(config["run"]["seed"], SEED, "run.seed")
@@ -1363,15 +1414,17 @@ def _read_preflight_manifest(path):
 
     manifest = _read_json(path)
     _check_content_hash(manifest, 'manifest_hash', 'preflight')
+    arms = campaign_arms(manifest.get('schema_version'))
+    arm_ids = [a['arm_id'] for a in arms]
     for key, expected in {
-        'schema_version': CAMPAIGN_SCHEMA_VERSION, 'seed': SEED,
+        'schema_version': manifest['schema_version'], 'seed': SEED,
         'common': PINNED_COMMON, 'allowed_difference_matrix': [
-            {**a, 'endpoint_widths': list(a['endpoint_widths'])} for a in ARMS],
+            {**a, 'endpoint_widths': list(a['endpoint_widths'])} for a in arms],
         'expected_data': PINNED_DATA, 'count_convention': PARAMETER_COUNT_CONVENTION,
         'evaluation_role': EVALUATION_ROLE,
     }.items():
         _require_equal(manifest.get(key), expected, f'preflight.{key}')
-    _require_equal([r['arm_id'] for r in manifest['runs']], list(ARM_IDS), 'preflight.arms')
+    _require_equal([r['arm_id'] for r in manifest['runs']], arm_ids, 'preflight.arms')
     run_ids = set()
     def check_resolved_controls(expected, actual, field):
         # Resolution may add defaults, but every explicit scientific input must
@@ -1383,8 +1436,8 @@ def _read_preflight_manifest(path):
                 check_resolved_controls(value, actual[key], field + '.' + key)
             else:
                 _require_equal(actual[key], value, field + '.' + key)
-    first_epoch = manifest['expected_traces'][ARM_IDS[0]]['epochs'][0]
-    for arm, run in zip(ARMS, manifest['runs'], strict=True):
+    first_epoch = manifest['expected_traces'][arm_ids[0]]['epochs'][0]
+    for arm, run in zip(arms, manifest['runs'], strict=True):
         label = arm['arm_id']
         for key, value in arm.items():
             # JSON converts tuple width lists to lists.
@@ -1422,7 +1475,7 @@ def _read_preflight_manifest(path):
         _require_equal(len(traces['epochs']), arm['assigned_epochs'], f'{label}.expected epochs')
         _require_equal(traces['epochs'][0], first_epoch, f'{label}.first epoch')
         if not arm['source_width']:
-            _require_equal(traces, manifest['expected_traces']['S1'], f'{label}.elastic traces')
+            _require_equal(traces, manifest['expected_traces'][next(a['arm_id'] for a in arms if not a['source_width'])], f'{label}.elastic traces')
     return manifest
 
 
@@ -1433,7 +1486,10 @@ def _terminal_endpoints(sidecar, run, *, allow_partial):
     label = run['arm_id']
     contract = run['optimizer_ownership_contract']
     _check_content_hash(sidecar, 'content_hash', f'{label}.terminal')
-    protocol = contract['evaluation']['validation']
+    protocol = dict(contract['evaluation']['validation'])
+    # The runtime binds the pinned manifest when data loaders are constructed.
+    if 'manifest_hash' in sidecar.get('evaluation_protocol', {}):
+        protocol['manifest_hash'] = PINNED_DATA['ordinary_validation_manifest_hash']
     identity = {
         'schema_version': TERMINAL_VALIDATION_SCHEMA_VERSION,
         **{k: run[k] for k in ('campaign_id', 'arm_id', 'run_id', 'contract_hash', 'representation', 'state_scope', 'clipping', 'initialization')},
@@ -1500,7 +1556,7 @@ def _inspect_terminal_run(root, run, expected_traces, *, allow_partial):
         'packed_tokens_per_update': TOKENS_PER_UPDATE,
         'scheduler_position': run['assigned_updates'], 'accounting_reconciled': True,
         'trace_path': 'optimizer_ownership_trace.jsonl',
-        'clipping_path': 'optimizer_ownership_clipping.jsonl' if label in ('C1', 'C3') else None,
+        'clipping_path': 'optimizer_ownership_clipping.jsonl' if run['representation'] == 'concat' and run['state_scope'] != 'per_granularity' else None,
     }.items():
         _require_equal(audit.get(key), value, f'{label}.summary.{key}')
     checkpoint = Path(sidecar['checkpoint_path'])
@@ -1554,9 +1610,9 @@ def _inspect_terminal_run(root, run, expected_traces, *, allow_partial):
             'terminal_content_hash': sidecar['content_hash'], 'endpoints': endpoints, 'observations': observations}
 
 
-def _missing_endpoints(runs):
+def _missing_endpoints(runs, arms=ARMS):
     present = {(r['arm_id'], e['width']) for r in runs for e in r['endpoints']}
-    return [{'arm_id': a['arm_id'], 'width': w} for a in ARMS for w in a['endpoint_widths'] if (a['arm_id'], w) not in present]
+    return [{'arm_id': a['arm_id'], 'width': w} for a in arms for w in a['endpoint_widths'] if (a['arm_id'], w) not in present]
 
 
 def _publish_directory(output_dir, write):
@@ -1592,6 +1648,8 @@ def freeze_campaign(*, campaign_manifest, output_dir, run_root=None, run_dirs=No
     try:
         preflight_source = _source_record(campaign_manifest)
         manifest = _read_preflight_manifest(campaign_manifest)
+        arms = campaign_arms(manifest['schema_version'])
+        arm_ids = [a['arm_id'] for a in arms]
         by_id = {r['run_id']: r for r in manifest['runs']}
         if run_root is not None:
             # Directory names locate candidates only; saved run identity is authoritative.
@@ -1609,15 +1667,15 @@ def freeze_campaign(*, campaign_manifest, output_dir, run_root=None, run_dirs=No
             seen.add(run_id)
             run = by_id[run_id]
             runs.append(_inspect_terminal_run(path, run, manifest['expected_traces'][run['arm_id']], allow_partial=allow_partial))
-        runs.sort(key=lambda r: ARM_IDS.index(r['arm_id']))
-        missing = _missing_endpoints(runs)
+        runs.sort(key=lambda r: arm_ids.index(r['arm_id']))
+        missing = _missing_endpoints(runs, arms)
         if missing and not allow_partial:
             raise ConfigError(f'missing campaign endpoints: {missing}')
         if not any(r['endpoints'] for r in runs):
             raise ConfigError('missing all campaign endpoints')
         frozen = {'schema_version': FROZEN_MANIFEST_SCHEMA_VERSION, 'campaign_id': manifest['campaign_id'],
                   'status': 'partial' if missing else 'complete', 'missing_endpoints': missing,
-                  'missing_arms': [a for a in ARM_IDS if a not in {r['arm_id'] for r in runs}],
+                  'missing_arms': [a for a in arm_ids if a not in {r['arm_id'] for r in runs}],
                   'preflight_source': preflight_source, 'preflight_manifest_hash': manifest['manifest_hash'],
                   'runs': runs, 'evaluation_role': EVALUATION_ROLE, 'holdout_evaluated': False}
         frozen['content_hash'] = stable_hash(frozen)
@@ -1648,6 +1706,8 @@ def _endpoint_table(frozen, preflight):
             row = {'status': frozen['status'], 'campaign_id': frozen['campaign_id'], 'arm_id': run['arm_id'],
                    'run_id': run['run_id'], 'seed': SEED, 'representation': run['representation'],
                    'state_scope': run['state_scope'], 'clipping': run['clipping'],
+                   'correction_mode': run.get('correction_mode', 'none'),
+                   'correction': run['optimizer_ownership_contract'].get('correction'),
                    'width_fraction': width['source_fraction'], 'ffn_dimension': width['active_ffn_dimension'], **endpoint,
                    'contract_hash': run['contract_hash'], 'initialization': run['initialization'],
                    'checkpoint_path': sidecar['checkpoint_path'], 'checkpoint_sha256': sidecar['checkpoint_sha256'],
@@ -1671,17 +1731,20 @@ def endpoint_figure(rows, *, metric, partial):
     ax = figure.subplots()
     colors = dict(zip(('S1', 'S2', 'C1', 'C2', 'C3'), ('#0072B2', '#E69F00', '#009E73', '#CC79A7', '#D55E00')))
     standalone_labeled = False
-    for arm in (*ELASTIC_ARMS, *STANDALONE_ARMS):
+    for arm in (*ELASTIC_ARMS, *CORRECTION_ARMS, *STANDALONE_ARMS):
         values = sorted((r for r in rows if r['arm_id'] == arm['arm_id']), key=lambda r: r['non_embedding_parameters'])
         if not values:
             continue
         elastic = not arm['source_width']
+        mode = arm.get('correction_mode', 'none')
         label = arm['arm_id'] if elastic else ('Standalone' if not standalone_labeled else '_nolegend_')
+        if elastic and any(r['arm_id'] in CORRECTION_ARM_IDS for r in rows):
+            label = f"{arm.get('reference_arm_id', arm['arm_id'])} ({mode.upper() if mode != 'none' else mode})"
         if not elastic:
             standalone_labeled = True
         ax.plot([r['non_embedding_parameters'] for r in values], [r[metric] for r in values],
-                label=label, color=colors.get(arm['arm_id'], '#8B4513'),
-                linestyle='-' if elastic else 'None', marker='o' if elastic else '^',
+                label=label, color=colors.get(arm.get('reference_arm_id', arm['arm_id']), '#8B4513'),
+                linestyle={'none': '-', 'gmc': '--', 'lmc': ':'}[mode] if elastic else 'None', marker='o' if elastic else '^',
                 markersize=5 if elastic else 9, fillstyle='none' if elastic else 'full')
     ax.set(xlabel='Active non-embedding parameters',
            ylabel='Perplexity' if metric == 'perplexity' else 'Loss')
@@ -1748,7 +1811,7 @@ def report_campaign(*, manifest, output_dir, allow_partial=False):
                 _require_equal(Path(path).exists(), present, f'Frozen source presence: {path}')
             actual = _inspect_terminal_run(saved['run_dir'], by_arm[arm], preflight['expected_traces'][arm], allow_partial=allow_partial)
             _require_equal(actual, saved, f'{arm}.frozen terminal sources')
-        missing = _missing_endpoints(frozen['runs'])
+        missing = _missing_endpoints(frozen['runs'], campaign_arms(preflight['schema_version']))
         _require_equal(frozen['missing_endpoints'], missing, 'frozen missing endpoints')
         _require_equal(frozen['status'], 'partial' if missing else 'complete', 'frozen status')
         if missing and not allow_partial:
@@ -1790,3 +1853,122 @@ def report_campaign(*, manifest, output_dir, allow_partial=False):
         return _publish_directory(output_dir, publish)
     except (KeyError, TypeError, IndexError, OverflowError) as error:
         raise ConfigError(f'Malformed frozen comparison evidence: {error}') from error
+
+
+def _validated_comparison_sources(manifest_path, *, correction):
+    """Read both campaigns under their own immutable contracts before combining."""
+    from pathlib import Path
+    frozen = _read_json(manifest_path)
+    _check_content_hash(frozen, 'content_hash', 'frozen')
+    _require_equal(frozen['status'], 'complete', 'comparison requires complete freeze')
+    _require_equal(frozen.get('holdout_evaluated'), False, 'holdout_evaluated')
+    sources = [_source_record(manifest_path), frozen['preflight_source']]
+    sources.extend(s for run in frozen['runs'] for s in run['sources'])
+    _check_sources(sources)
+    preflight = _read_preflight_manifest(frozen['preflight_source']['path'])
+    _require_equal(preflight['schema_version'], 2 if correction else 1, 'comparison campaign schema')
+    _require_equal(frozen['preflight_manifest_hash'], preflight['manifest_hash'], 'frozen preflight hash')
+    _require_equal(frozen['campaign_id'], preflight['campaign_id'], 'frozen campaign identity')
+    definitions = {r['arm_id']: r for r in preflight['runs']}
+    _require_equal([r['arm_id'] for r in frozen['runs']], list(definitions), 'complete frozen arms')
+    for saved in frozen['runs']:
+        for path, present in saved['optional_sources'].items():
+            _require_equal(Path(path).exists(), present, f'Frozen source presence: {path}')
+        arm = saved['arm_id']
+        actual = _inspect_terminal_run(saved['run_dir'], definitions[arm], preflight['expected_traces'][arm], allow_partial=False)
+        _require_equal(actual, saved, f'{arm}.frozen terminal sources')
+    _require_equal(_missing_endpoints(frozen['runs'], campaign_arms(preflight['schema_version'])), [], 'complete endpoints')
+    return frozen, preflight, sources, _endpoint_table(frozen, preflight)
+
+
+def loss_progress_figure(runs):
+    """Stream only ordinary-validation rows; retain every recorded update."""
+    import csv
+    import math
+    from pathlib import Path
+    from matplotlib.figure import Figure
+    from src.utils.config import ConfigError
+
+    figure = Figure(figsize=(14, 10))
+    axes = figure.subplots(2, 2, sharex=True)
+    colors = {'C1': '#009E73', 'C2': '#CC79A7', 'C3': '#D55E00'}
+    data = {}
+    for run in runs:
+        arm = run['arm_id']
+        if arm.startswith('ST-') or arm.startswith('S'):
+            continue
+        curves = {w: ([], []) for w in WIDTH_LABELS}
+        with (Path(run['run_dir']) / 'metrics.csv').open() as handle:
+            for row in csv.DictReader(handle):
+                if row['split'] != 'validation':
+                    continue
+                width = row['granularity']
+                step, loss = int(row['step']), float(row['loss'])
+                if width not in curves or not math.isfinite(loss) or not 0 <= step <= 4 * UPDATES_PER_EPOCH:
+                    raise ConfigError(f'{arm}: invalid ordinary-validation progress')
+                x, y = curves[width]
+                if x and step < x[-1]:
+                    raise ConfigError(f'{arm}: validation progress is not ordered')
+                x.append(step); y.append(loss)
+        data[arm] = curves
+        mode = arm.split('-')[1] if '-' in arm else 'none'
+        for ax, width in zip(axes.flat, WIDTH_LABELS):
+            x, y = curves[width]
+            if not x:
+                raise ConfigError(f'{arm}: missing validation progress for {width}')
+            ax.plot(x, y, color=colors[arm[:2]], linestyle={'none': '-', 'GMC': '--', 'LMC': ':'}[mode],
+                    linewidth=1.1, label=f'{arm[:2]} ({mode})')
+            ax.set(title=width, xlabel='Committed optimizer updates', ylabel='Loss')
+            ax.grid(alpha=.2)
+            ax.set_xlim(0, 4 * UPDATES_PER_EPOCH)
+    handles, labels = axes.flat[0].get_legend_handles_labels()
+    figure.legend(handles, labels, loc='lower center', ncol=3)
+    figure.suptitle('TinyStories-Instruct · seed 42 · ordinary-validation loss progress')
+    figure.tight_layout(rect=(0, .1, 1, .95))
+    return figure, {arm: {w: {'observations': len(x), 'first_update': x[0], 'last_update': x[-1]}
+                         for w, (x, _) in curves.items()} for arm, curves in data.items()}
+
+
+def report_correction_comparison(*, manifest, reference_manifest, output_dir):
+    """40 terminal endpoints plus full progress, without model/holdout evaluation."""
+    import csv
+    corrected, current, sources, rows = _validated_comparison_sources(manifest, correction=True)
+    original, reference, old_sources, baseline = _validated_comparison_sources(reference_manifest, correction=False)
+    sources += old_sources
+    rows += [r for r in baseline if r['arm_id'].startswith(('C', 'ST-'))]
+    _require_equal(len(rows), 40, 'comparison endpoint count')
+    for arm in CORRECTION_ARMS:
+        _require_equal(current['expected_traces'][arm['arm_id']], reference['expected_traces'][arm['reference_arm_id']], 'paired action/batch traces')
+    comparisons = []
+    by_key = {(r['arm_id'], r['width']): r for r in rows}
+    for arm in CORRECTION_ARMS:
+        for width in WIDTH_LABELS:
+            row, baseline_row = by_key[arm['arm_id'], width], by_key[arm['reference_arm_id'], width]
+            comparisons.append({'arm_id': arm['arm_id'], 'reference_arm_id': arm['reference_arm_id'], 'width': width,
+                                'loss_delta': row['loss'] - baseline_row['loss'],
+                                'perplexity_delta': row['perplexity'] - baseline_row['perplexity']})
+    all_runs = corrected['runs'] + [r for r in original['runs'] if r['arm_id'].startswith(('C', 'ST-'))]
+    def publish(stage, output):
+        report = {'schema_version': 1, 'status': 'complete', 'endpoints': rows,
+                  'comparisons': comparisons, 'sources': sources, 'holdout_evaluated': False,
+                  'figures': [], 'paired_traces_verified': True,
+                  'interpretation_scope': 'Paired seed-42 observations only. LMC combines GMC before clipping with whole AdamW change scaling, including decay. No direct moment/counter scaling and no extra data exposure. C3 independently clips each active owner at 1; C1/C2 globally clip at 1. C2 has width-specific histories over shared weights. Runtime/resource totals are measured per attempt and retain replay/completeness caveats; no across-seed significance.'}
+        write_json_artifact(stage / 'optimizer_ownership_endpoints.json', {'status': 'complete', 'endpoints': rows})
+        with (stage / 'optimizer_ownership_endpoints.csv').open('w', newline='') as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(rows[0])); writer.writeheader()
+            writer.writerows({k: endpoint_csv_value(v) for k, v in row.items()} for row in rows)
+        for metric in ('loss', 'perplexity'):
+            figure = endpoint_figure(rows, metric=metric, partial=False)
+            for suffix in ('png', 'pdf'):
+                name = f'optimizer_ownership_{metric}_vs_non_embedding_parameters.{suffix}'
+                figure.savefig(stage / name); report['figures'].append(str(output / name))
+        figure, coverage = loss_progress_figure(all_runs)
+        report['progress_coverage'] = coverage
+        for suffix in ('png', 'pdf'):
+            name = f'optimizer_ownership_validation_loss_progress.{suffix}'
+            figure.savefig(stage / name); report['figures'].append(str(output / name))
+        report['clipping'] = {r['arm_id']: r['observations']['clipping_by_width'] for r in all_runs}
+        _check_sources(sources)
+        write_json_artifact(stage / 'comparison_report.json', report)
+        return report
+    return _publish_directory(output_dir, publish)

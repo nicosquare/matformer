@@ -844,3 +844,104 @@ snapshot and a checkpoint-based restart; editing the main checkout does not chan
 jobs running from an isolated snapshot. Preserve the prior checkpoints, metrics,
 traces, resource ledgers, and submission records before reconciliation. Keep
 original scientific contract hashes and record runtime source hashes separately.
+
+## Authorized concat GMC/LMC extension — 2026-09-10
+
+The continuation request authorizes six fresh runs after CPU and sbatch GPU
+acceptance. Original nine-arm results/contracts remain immutable, and all five
+original elastic arms used `none`. This extension remains feature 013.
+
+New recipe: `configs/controlled_exps/tinystories_instruct_optimizer_ownership_corrections.yaml`
+(schema 2), exactly C1/C2/C3 × GMC/LMC. The original schema-1 recipe is unchanged.
+C3 now accepts correction and applies LMC once around its complete owner update:
+GMC hooks → clipping → active AdamW owners → whole-change LMC → global clock →
+accounting. Factors are [1,4/3,2,4] for all four configured trained labels, even
+when one width is selected. LMC includes GMC and scales decay as well as the
+adaptive update; it never directly rescales moments/counters. Common/down bias
+has factor one. Snapshots contain only active, non-unit FFN parameters. Every
+mutation-stage failure remains fatal and unsafe to checkpoint.
+
+New scientific contracts record correction semantics; checkpoint restore rejects
+mismatches. Metrics correction context records factors beside the base LR.
+Original contract hashes are not rewritten. Saved-reader compatibility includes
+the runtime's pinned ordinary-validation manifest enrichment, previously present
+in the completed campaign's archived reporting reader.
+
+All campaign artifacts, including temporary staging, source snapshots, diagnostics,
+configs, logs, submissions, resources and reports live under:
+
+```text
+/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/campaigns/concat-gmc-lmc-v1
+```
+
+The campaign preflight audits original prepared corpus/tokenizer identities,
+real-model counts/membership and full action/batch digests. A separate read-only
+reference audit validates the original saved configs and frozen terminal sources.
+Expected action SHA256 is
+`275c4fd957d103c609b3cb1ae9e7d1f37635e58e6eca92994261ddb5f0346b26`:
+g250/g500/g750/g1000 counts 86898/87221/87337/87072, with no balancing.
+Each run retains 348528 updates, 2855141376 tokens and its complete original LR
+horizon. The ordinary validation role is the only evaluated role.
+
+`preflight_optimizer_ownership_corrections.py` runs through sbatch at the actual
+model/batch/corpus with bf16. It deliberately stops nine diagnostic bundles
+(three current none references plus six corrections) at step 192 and restores
+their own checkpoints to step 256 without shortening the schedule horizon.
+Diagnostic run identities/directories are separate from production. Expected
+interruptions are recorded as failed process attempts; the gate separately
+identifies intentional boundaries and successful restore. Recent update intervals
+exclude startup/warmup and post-validation intervals. None/GMC/LMC overhead is a
+same-job diagnostic measurement, distinct from original campaign runtime.
+
+`run_optimizer_ownership_corrections.py queue` reads the campaign-local frozen
+source plan and matching CPU/GPU gate records. It keeps up to four user jobs
+submitted (conservatively counting non-GPU jobs too), after verifying the Slurm
+controller enforces this QoS's two-running/four-submitted limits. Pending runs
+are submitted without dependencies so Slurm can schedule them as capacity opens.
+Other active user jobs outside this QoS defer new submissions because they do
+not share its concurrency cap. Every GPU worker uses sbatch, one GPU and
+one trainer process, excludes gpu-[05,50,51], and takes a per-run writer lock.
+Atomic submission intents precede sbatch, with unique-name squeue/sacct recovery
+on helper restart. Ambiguous submissions stop rather than risk duplicate writers.
+Source/config hashes are checked before every submission and worker start.
+
+The helper records job IDs and terminal Slurm elapsed/allocation resources,
+heartbeats, recent update estimates, utilization logs and checkpoint age/size.
+The 2026-09-11 C1 terminal audit found a blocking artifact gap: the metrics writer
+still restricts clipping logs to original arm IDs C1/C3, so corrected C1 logs are
+absent and corrected C3 is affected too. Scheduler completion alone does not
+establish artifact acceptance. See feature 013 `correction-verification.md` and
+campaign `diagnostics/c1-terminal-validation.json` for the separate checkpoint,
+endpoint and trace audit. Preserve the original evidence and strict report gate.
+It stops on unsuccessful scheduler attempts for explicit checkpoint/resource
+reconciliation; the original run's valid checkpoint is the only resume source.
+Preserve abandoned-attempt ledgers and rows beyond the durable boundary before
+continuation, retaining consumed work. Never reactivate old submission helpers.
+
+After six complete attempts the helper strictly freezes terminal checkpoint,
+ordinary-validation, exposure and trace evidence, then invokes:
+
+```bash
+python scripts/analyze_tinystories_optimizer_ownership.py report-corrections \
+  --manifest "$CORRECTION_ROOT/reports/frozen/frozen_manifest.json" \
+  --reference-manifest /nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/reports/complete-20260910T181951Z/frozen/frozen_manifest.json \
+  --output-dir "$CORRECTION_ROOT/reports/comparison"
+```
+
+Set `CORRECTION_ROOT` to the campaign directory above and use unused output
+paths for reruns. This exports 40 CSV/JSON endpoints and PNG/PDF loss/perplexity
+versus active non-embedding parameters plus full-range four-panel validation
+loss progress. Standalones remain brown triangles under one `Standalone` legend
+entry, with the shortened one-sentence budget footnote. Interpret paired seed-42
+quality, exposure, clipping and runtime descriptively, without significance claims.
+Detailed acceptance evidence and current execution status are in
+[correction-verification.md](../specs/013-tinystories-optimizer-ownership/correction-verification.md).
+
+Operational follow-up: the cluster's accounting database was unavailable during
+preflight. The helper reads retained `scontrol` records first and retains raw
+allocation/elapsed/exit evidence. Durable worker completion records provide a
+labeled fallback if scheduler history has expired. `--no-requeue` prevents an
+untracked automatic restart from overwriting same-job logs; interrupted attempts
+are reconciled before deliberate continuation. Diagnostic interruptions occur
+only after normal validation checkpoints, because the successful-step callback
+precedes metric publication.

@@ -40,3 +40,9 @@
 - Exact AdamW/representation/clipping semantics, scientific recipe, artifact formats, and constraints against a second trainer/registry/full-state rollback were explicitly requested. They are preserved as experiment requirements. No new language/framework/API choices or invented supported configuration options are prescribed. Repository implementation evidence is separated into [inspection.md](../inspection.md).
 - Corpus integrity audit passed. EX-002 explicitly distinguishes 713,790,848 available tokens from 713,785,344 designated tokens and discloses the fixed 43-sequence exclusion required by the inherited complete-update alignment. The agreed one-pass/four-pass budgets are preserved.
 - No incomplete items remain. Specification readiness does not imply completed implementation, a frozen terminal-checkpoint manifest, or authorization to launch training.
+
+
+Correction extension review (2026-09-10): the same 16 quality items remain PASS.
+FR-029–035 / SC-009–011 cover the explicit six-arm protocol, ordered correction,
+unchanged controls, failure/resume, validation gates, launch limits and reporting.
+No material ambiguity remains; existing completed tasks/results are preserved.

@@ -3493,7 +3493,7 @@ def test_ownership_config_resolves_five_caps_and_preserves_optimizer_mapping(tmp
 @pytest.mark.parametrize("override", [
     "model.variant=slicing", "run.model_family=standalone", "run.sampling_mode=nested-all",
     "model.granularity_sampling_mode=per_block", "model.global_sampling_interval_steps=2",
-    "model.global_sampling_schedule=balanced_cycle", "model.correction_mode=gmc",
+    "model.global_sampling_schedule=balanced_cycle",
     "training.pre_nested_warmup.enabled=true", "training.distributed.expected_world_size=2",
     "training.distributed.strategy=ddp", "training.optimizer.name=sgd",
     "model.granularity_prefixes.g250=0.20", "training.optimizer.scheduler_clock=owner_step",

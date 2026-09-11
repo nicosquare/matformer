@@ -843,7 +843,8 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
     campaign_arm_output = (
         isinstance(run.get("campaign_id"), str)
         and run["campaign_id"].startswith("tinystories-optimizer-ownership-")
-        and run.get("arm_id") in {"ST-g250", "ST-g500", "ST-g750", "ST-g1000", "S1", "S2", "C1", "C2", "C3"}
+        and run.get("arm_id") in {"ST-g250", "ST-g500", "ST-g750", "ST-g1000", "S1", "S2", "C1", "C2", "C3",
+                                  "C1-GMC", "C1-LMC", "C2-GMC", "C2-LMC", "C3-GMC", "C3-LMC"}
         and run_id == f"{run['campaign_id']}-{run['arm_id']}-s{run.get('seed')}"
         and output_dir.name == run["arm_id"]
     )
@@ -4484,7 +4485,6 @@ def _validate_optimizer_state_eligibility(
             "training.optimizer.name=adamw": training.get("optimizer_name") == "adamw",
             "single process and distributed.strategy=none": effective_world_size == 1 and distributed.get("expected_world_size", 1) == 1 and distributed.get("strategy", "none") == "none",
             "disabled pre_nested_warmup": not training.get("pre_nested_warmup", {}).get("enabled", False),
-            "model.correction_mode=none": model.get("correction_mode") == "none" and not model.get("membership_correction"),
         }
         failures = [field for field, valid in required.items() if not valid]
         if failures:

@@ -142,3 +142,14 @@ while preserving all attempt-cost and failure records.
 Historical non-campaign state remains readable under its historical rules and
 cannot be relabeled as an exact nine-run campaign checkpoint. Test both valid
 lazy absence and lost required state before/at/after epoch boundaries.
+
+## Correction extension lifecycle
+
+Corrected backward hooks execute before the arm's clipping. For LMC capture only
+active non-unit FFN blocks before stepping. C1/C2 use their single selected AdamW;
+C3 steps its active owner prefix and common, then applies each captured correction
+once before the single scheduler advance. Keep mutation-started/unsafe state set
+until correction and all bookkeeping reconcile. A correction failure is fatal,
+like any owner/clock/accounting failure, and cannot publish resumable partial state.
+Full campaign contract validation rejects changed/missing correction metadata;
+original contracts are unchanged. See [membership correction](membership-correction.md).

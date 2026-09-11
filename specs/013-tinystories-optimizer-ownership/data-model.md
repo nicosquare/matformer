@@ -142,3 +142,12 @@ to preflight. `ComparisonReport` contains 24 endpoints, complete/partial status,
 explicit omissions if requested, table/figure paths and descriptive interpretation.
 Completeness is 5 elastic arms × 4 widths + 4 standalones. No mixed roles, trailing
 means, substituted points, across-seed bars or automatic holdout evaluation.
+
+## Correction extension entities
+
+Campaign schema 2 has six corrected concat ArmDefinitions with correction_mode
+and reference_arm_id. A correction contract (schema 1) is an additional field in
+the new scientific contract only. Existing whole-contract hashes bind checkpoint
+compatibility. Submission attempts record campaign/arm/run, source hashes, Slurm
+ID/name/state, resources and durable progress. Six corrected frozen runs plus
+seven original reference runs supply 40 endpoints without altering either source.

@@ -146,3 +146,18 @@ Interpret S1/S2 and C1/C2 as within-representation history comparisons; S1/C1 an
 S2/C2 as representation comparisons with changed tail/counter/allocation
 semantics; C1/C3 as clipping with different combined caps; and all elastic widths
 against their matching standalone. Make descriptive seed-42 claims only.
+
+## Correction extension outputs
+
+All new artifacts live under the distinct concat-gmc-lmc-v1 campaign directory.
+Correction context records configured factors separately from the base scheduled
+LR. LMC means GMC plus whole-AdamW-change scaling, including decay; common
+parameters have no direct multiplier. Record measured correction overhead.
+
+Freeze six corrected terminal identities and validate original references using
+their original contracts. The combined comparison contains 40 rows: six corrected
+four-width curves, three original concat curves, four brown standalone triangles
+with one `Standalone` legend entry. PNG/PDF loss/perplexity plots use `Loss` or
+`Perplexity` and `Active non-embedding parameters`; retain the one-sentence token
+budget footnote. Also export a four-panel full-range ordinary-validation loss
+progress figure by width. No holdout reads/evaluation and no multi-seed claims.

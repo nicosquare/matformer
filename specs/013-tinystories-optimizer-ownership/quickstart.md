@@ -220,3 +220,13 @@ attempts have incomplete measurements; null device metrics are not zero usage.
 Full-budget losses, timings, memory peaks and the six measured scientific
 comparisons remain to be collected by the separately requested campaign. See
 [verification.md](verification.md) for the evidence that validates the tooling.
+
+## Authorized correction comparison (2026-09-10)
+
+Use the separate correction recipe and campaign root
+`/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/campaigns/concat-gmc-lmc-v1`.
+The continuation request authorizes CPU validation, sbatch GPU preflight and then
+six fresh full-budget launches. All historical future-authorization notes above
+refer to the original campaign. Follow the correction section of the
+[runbook](../../docs/tinystories-optimizer-ownership-experiment.md) for evidence and
+commands. Keep holdout sealed and original runs immutable.

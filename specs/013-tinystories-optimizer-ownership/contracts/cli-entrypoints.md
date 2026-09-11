@@ -110,3 +110,12 @@ a partial manifest. Malformed or mismatched supplied inputs still fail.
 No CLI in this workflow evaluates sealed holdout or changes historical analyzer
 semantics. Any future holdout comparison has its own explicit request and freeze
 and evaluation requirements from the specification.
+
+## Correction extension
+
+The existing `preflight` and `freeze` commands accept the explicit schema-2
+six-arm recipe/manifest while preserving strict schema-1 behavior. Correction
+reporting combines validated saved corrected terminals and original references;
+runbook commands identify both manifests and use unused report directories.
+Submission/monitoring tooling operates only on the new manifest and checks CPU/
+GPU evidence before full training. Restart reconciliation precedes resubmission.

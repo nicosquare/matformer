@@ -1,0 +1,246 @@
+# Separate fixed six-arm correction campaign; original references remain immutable.
+schema_version: 2
+campaign_id: tinystories-optimizer-ownership-concat-gmc-lmc-v1
+common:
+  run:
+    phase_id: tinystories_optimizer_ownership
+    model_shape_label: tinystories-instruct-d64-l4
+    seed: 42
+    reproducibility:
+      mode: strict
+      seed_stream_version: 1
+      data_split_version: 1
+    continuation:
+      enabled: true
+      latest_checkpoint_save_interval_steps: 0
+      latest_checkpoint_save_on_validation: true
+      latest_checkpoint_save_on_completion: true
+  model:
+    base_model_name: tinystories-instruct-optimizer-ownership-llama
+    tokenizer_dir: __PREPARED_TOKENIZER_DIR__
+    correction_mode: none
+    granularity_mode: explicit
+    d_model: 64
+    num_layers: 4
+    num_attention_heads: 4
+    context_length: 128
+    vocab_size: 2048
+    initializer_range: 0.02
+    granularities:
+    - g250
+    - g500
+    - g750
+    - g1000
+    granularity_prefixes:
+      g250: 0.25
+      g500: 0.5
+      g750: 0.75
+      g1000: 1.0
+  training:
+    max_steps_cap: null
+    batch_size_per_process: 64
+    gradient_accumulation_steps: 1
+    learning_rate: 0.008
+    learning_rate_scale_rule: none
+    warmup_steps: 64
+    pre_nested_warmup:
+      enabled: false
+      duration: 0
+      unit: steps
+    gradient_clip_norm: 1.0
+    mixed_precision: bf16
+    activation_checkpointing: false
+    dataloader_num_workers: 0
+    optimizer:
+      name: adamw
+      scheduler_clock: global_step
+      kwargs:
+        betas:
+        - 0.9
+        - 0.95
+        eps: 1.0e-08
+        weight_decay: 0.1
+    scheduler:
+      name: cosine
+    distributed:
+      strategy: none
+      expected_world_size: 1
+    gradient_clipping:
+      mode: global
+      norm_type: 2
+  dataset:
+    mode: packed_mmap
+    prepared_corpus_dir: __PREPARED_CORPUS_DIR__
+    optimizer_iteration:
+      mode: repeat_epochs
+      epoch_order: deterministic_per_epoch
+    fixed_four_role_partition: true
+    data_seed: 42
+    dataset_name: roneneldan/TinyStoriesInstruct
+    dataset_config_name: default
+    dataset_split: train+validation
+    dataset_phase: tinystories_instruct_controlled
+    sample_limit: null
+    tokenization_keep_in_memory: false
+    preprocessing_notes: complete_record_lf_join_preserve_fields_and_internal_newlines_v1
+  outputs:
+    save_config: true
+    save_metrics_csv: true
+    save_run_summary_json: true
+    save_checkpoints: true
+    make_plots: false
+    metrics_flush_interval_steps: 32
+    best_eval_retention_count: 1
+    artifact_io:
+      checkpoint_staging: auto
+  monitoring:
+    enabled: false
+    backend: wandb
+    project: tinystories_optimizer_ownership
+    job_type: train
+    tags:
+    - controlled-experiment
+    - optimizer-ownership
+    notes: Seed-42 nine-arm ownership and clipping comparison
+    log_loss_by_granularity: true
+    log_validation_loss: true
+    log_stage_events: true
+  evaluation:
+    validation:
+      enabled: true
+      interval_steps: 64
+      interval_tokens: 0
+      run_at_completion: true
+      holdout:
+        source: configured_dataset_split
+        examples: 128
+      trailing_summary_evaluations: 5
+    adaptive_controller:
+      enabled: true
+      source: configured_dataset_split
+      examples: 128
+      objective_weights: uniform
+      fixed_manifest: true
+    final_holdout:
+      enabled: true
+      source: configured_dataset_split
+      examples: 512
+      fixed_manifest: true
+      evaluate_during_training: false
+    test:
+      enabled: false
+    downstream_suite: []
+    consistency: false
+    speculative: false
+arms:
+  C1-GMC:
+    run:
+      model_family: nested
+      sampling_mode: nested-random
+    model:
+      variant: concat
+      granularity_sampling_mode: global
+      global_sampling_schedule: random_with_replacement
+      global_sampling_interval_steps: 1
+      correction_mode: gmc
+    training:
+      token_budget: 2855141376
+      optimizer:
+        state_scope: shared
+  C1-LMC:
+    run:
+      model_family: nested
+      sampling_mode: nested-random
+    model:
+      variant: concat
+      granularity_sampling_mode: global
+      global_sampling_schedule: random_with_replacement
+      global_sampling_interval_steps: 1
+      correction_mode: lmc
+    training:
+      token_budget: 2855141376
+      optimizer:
+        state_scope: shared
+  C2-GMC:
+    run:
+      model_family: nested
+      sampling_mode: nested-random
+    model:
+      variant: concat
+      granularity_sampling_mode: global
+      global_sampling_schedule: random_with_replacement
+      global_sampling_interval_steps: 1
+      correction_mode: gmc
+    training:
+      token_budget: 2855141376
+      optimizer:
+        state_scope: per_granularity
+  C2-LMC:
+    run:
+      model_family: nested
+      sampling_mode: nested-random
+    model:
+      variant: concat
+      granularity_sampling_mode: global
+      global_sampling_schedule: random_with_replacement
+      global_sampling_interval_steps: 1
+      correction_mode: lmc
+    training:
+      token_budget: 2855141376
+      optimizer:
+        state_scope: per_granularity
+  C3-GMC:
+    run:
+      model_family: nested
+      sampling_mode: nested-random
+    model:
+      variant: concat
+      granularity_sampling_mode: global
+      global_sampling_schedule: random_with_replacement
+      global_sampling_interval_steps: 1
+      correction_mode: gmc
+    training:
+      token_budget: 2855141376
+      optimizer:
+        state_scope: per_ffn_block
+      gradient_clipping:
+        mode: per_owner
+        norm_type: 2
+        owner_max_norms:
+          O-A: 1.0
+          O-B: 1.0
+          O-C: 1.0
+          O-D: 1.0
+          O-common: 1.0
+  C3-LMC:
+    run:
+      model_family: nested
+      sampling_mode: nested-random
+    model:
+      variant: concat
+      granularity_sampling_mode: global
+      global_sampling_schedule: random_with_replacement
+      global_sampling_interval_steps: 1
+      correction_mode: lmc
+    training:
+      token_budget: 2855141376
+      optimizer:
+        state_scope: per_ffn_block
+      gradient_clipping:
+        mode: per_owner
+        norm_type: 2
+        owner_max_norms:
+          O-A: 1.0
+          O-B: 1.0
+          O-C: 1.0
+          O-D: 1.0
+          O-common: 1.0
+expected_data:
+  corpus_hash: e2eff35bc7078f4f4c4d618638988b3b82e96e7c20e40175ec8d272c5370efc9
+  optimizer_training_manifest_hash: c06270adebde4c5456517a5bcf266b2e4520587fb928541333009735ee2e60dd
+  training_order_sha256: d94ed9514a314a404fc420385a4b0f3a317774707ca3a212100aa7d4f35badbc
+  tokenizer_manifest_hash: 93e6bc7a94df82ca043519a71d5178bb645846ecd553f2302244b72c954e3819
+  tokenizer_model_sha256: 6ae42a09bb5dc007267f11bfd7b7b4fefd006c960c5954a4a45ce7b89ace7713
+  ordinary_validation_manifest_hash: 0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856
+  controller_manifest_hash: 69b039d6f6cec565e9efb576080b3e91d652c63290ebdea6f376fd133b6bd987
+  final_holdout_manifest_hash: e20160ab1d7781b4fe7f24a78ed547fce0ef3b7b1f0cd66eaf2f84dd89113076

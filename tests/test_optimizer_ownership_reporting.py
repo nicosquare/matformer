@@ -150,7 +150,7 @@ def terminal_campaign(tmp_path, audited_inputs, monkeypatch):
     source = tmp_path / 'recipe.yaml'
     source.write_text(yaml.safe_dump(recipe))
     expected = {a['arm_id']: {'epochs': [dict(epoch_index=i, sha256=f'epoch-{i}') for i in range(a['assigned_epochs'])],
-                'actions': None if a['source_width'] else {'sha256': 'elastic-actions'}} for a in campaign.ARMS}
+                'actions': None if a['source_width'] else {'sha256': 'elastic-actions'}} for a in campaign.campaign_arms(recipe['schema_version'])}
     monkeypatch.setattr(campaign, 'build_expected_traces', lambda *a: expected)
     campaign.preflight_campaign(campaign_path=source, prepared_corpus_dir=tmp_path / 'corpus',
         tokenizer_dir=tmp_path / 'tokenizer', output_dir=tmp_path / 'preflight', run_output_root=tmp_path / 'runs')
@@ -162,7 +162,7 @@ def terminal_campaign(tmp_path, audited_inputs, monkeypatch):
         contract = run['optimizer_ownership_contract']
         counts = dict.fromkeys(campaign.WIDTH_LABELS, steps // 4) if not run['source_width'] else {'g1000': steps}
         quarters = {f'O-{q}': steps * (4-i)//4 for i,q in enumerate('ABCD')} if not run['source_width'] else {}
-        calls = {**quarters, 'O-common': steps} if arm == 'C3' else counts if run['state_scope'] == 'per_granularity' else {'shared': steps}
+        calls = {**quarters, 'O-common': steps} if run['state_scope'] == 'per_ffn_block' else counts if run['state_scope'] == 'per_granularity' else {'shared': steps}
         checkpoint = root / 'latest.pt'
         payload = dict(checkpoint_kind='resumable_training', checkpoint_schema_version=1,
             optimizer_ownership_checkpoint_schema_version=1, run_id=run['run_id'],
@@ -197,7 +197,7 @@ def terminal_campaign(tmp_path, audited_inputs, monkeypatch):
             steps=steps, tokens_seen=run['assigned_tokens'], packed_tokens_per_update=8192, epoch=run['assigned_epochs'], batch_index=0,
             scheduler_position=steps, width_selection_counts=counts, quarter_activation_counts=quarters, owner_call_counts=calls,
             accounting_reconciled=True, sampler_state={'fixture': True}, trace_path='optimizer_ownership_trace.jsonl',
-            clipping_path='optimizer_ownership_clipping.jsonl' if arm in ('C1','C3') else None,
+            clipping_path='optimizer_ownership_clipping.jsonl' if run['representation'] == 'concat' and run['state_scope'] != 'per_granularity' else None,
             expected_exposure={'label': 'uniform expectation', 'width_selections': counts if quarters else {}, 'quarter_activations': quarters},
             storage={'owners': [], 'components': [], 'moment_elements': 0, 'total_bytes': 0}, temporary_concat_storage={},
             resources={'elapsed_seconds': 10., 'attempted_steps': steps, 'measurement_complete': False,
@@ -207,11 +207,12 @@ def terminal_campaign(tmp_path, audited_inputs, monkeypatch):
         (root / 'run_summary.json').write_text(json.dumps(dict(run_id=run['run_id'], status='completed', optimizer_ownership_schema_version=1, optimizer_ownership=audit)))
         (root / 'optimizer_ownership_trace.jsonl').write_text('{}\n')
         if audit['clipping_path']: (root / audit['clipping_path']).write_text('{}\n')
-        (root / 'metrics.csv').write_text('step,split,granularity,loss,perplexity\n1,validation,g250,2.0,7.38905609893065\n')
+        (root / 'metrics.csv').write_text('step,split,granularity,loss,perplexity\n' + ''.join(
+            f'{step},validation,{width},2.0,7.38905609893065\n' for width in run['endpoint_widths'] for step in (1, steps)))
         # A poisoned holdout file proves that readers never open it.
         (root / 'final_holdout_results.json').write_text('DO NOT READ')
     def observations(root, summary):
-        a = summary['optimizer_ownership']; trace = expected[a['arm_id']]
+        a = summary['optimizer_ownership']; trace = {'epochs': [dict(epoch_index=i, sha256=f'epoch-{i}') for i in range(a['epoch'])]}
         return dict(committed_updates=a['steps'], clipping_by_width={}, action_sha256='elastic-actions',
                     epoch_order_sha256={str(e['epoch_index']): e['sha256'] for e in trace['epochs']})
     monkeypatch.setattr(campaign, 'inspect_run_observations', observations)

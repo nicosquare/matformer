@@ -116,3 +116,13 @@ Feature 12 runs or relabel an earlier short-horizon run.
 Save code revision, dependency versions, constructor and seed provenance. Record
 that initialization is matched by seed, not exact cross-model tensors. The first
 preflight materializes artifacts only and is not authorization to train.
+
+## Correction extension: schema 2
+
+`tinystories_instruct_optimizer_ownership_corrections.yaml` is a distinct recipe:
+schema_version 2, same PINNED_COMMON/PINNED_DATA, exactly C1-GMC/C1-LMC/C2-GMC/
+C2-LMC/C3-GMC/C3-LMC. Overrides copy the corresponding original C arm and set
+model.correction_mode to gmc/lmc. C3 now permits none/gmc/lmc under its other
+eligibility constraints. Schema 1 still requires exactly nine uncorrected arms.
+See [membership correction](membership-correction.md). Unique campaign/run IDs
+and directories must be unused. Full original controls/traces are revalidated.

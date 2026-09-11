@@ -218,3 +218,44 @@ budget arithmetic; runtime implementation tests are future work.
 ## Complexity Tracking
 
 No constitution violations require justification.
+
+## Authorized correction extension — 2026-09-10
+
+FR-029–035 / SC-009–011 extend the completed original campaign. No new feature,
+branch, corpus, dependencies or trainer. The original matrix and hashes remain
+strict schema 1; a separate schema-2 six-arm recipe selects fixed corrected concat
+arms. Reuse expansion/audit/terminal readers with explicit schema-specific arm
+lists, never process-global patching or relabeling historical inputs.
+
+Execution order: update spec and resolve clarification (done from user inputs),
+contract/design, tasks, read-only consistency analysis, CPU implementation tests,
+GPU preflight, source snapshot and six-run launch, monitoring, terminal reporting.
+Remove only C3's correction restriction. Capture active non-unit FFN parameter
+values once before C3's owner loop, apply LMC once after all owners return, then
+advance the global clock. Keep the unsafe flag set through correction/accounting;
+only affected parameter values are copied, never optimizer states or histories.
+C1/C2 retain their helper and selected optimizer. GMC remains backward hooks.
+
+Correction contract v1 records mode, four trained widths, membership counts,
+factors, scope, bias/common treatment, order and decay/moment semantics. Add it
+only to new campaign contracts, preserving legacy hashes. Existing whole-contract
+resume validation binds it. Scalar correction context and base LR remain separate.
+
+Verification uses real resolved full-model C1/C2/C3 paths, explicit per-parameter
+LR reference optimizers, all widths after full-width exposure, bias/decay cases,
+GMC/clipping/moment checks, exact resume and correction failure injection. CPU
+fixtures may shorten budgets; production never does. GPU diagnostics use sbatch,
+all six combinations, own directories, checkpoint/restore and steady-state timing.
+Compare current none/GMC/LMC diagnostic throughput with identical short controls.
+
+Operational tooling: one campaign-local locked submission helper, atomic intent
+and Slurm-name reconciliation, owner writer locks, at most four submitted GPU jobs
+and two running including other user jobs, excluded nodes gpu-[05,50,51]. All
+artifacts including source snapshots/logs/configs/evidence below the requested
+campaign root. Use immutable fresh identities, independent seed/data streams, and
+original terminal references. No old helper is restarted. Produce strict frozen
+terminal evidence and 40-row combined reports with three PNG/PDF figure stems.
+
+Constitution re-check: all six principles PASS. Explicit schema branch and a small
+campaign helper are justified by preserving original scientific validation and
+restart-safe resource limits. No generic service/registry or full-state rollback.

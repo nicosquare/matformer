@@ -2,7 +2,7 @@
 
 **Feature Branch**: `013-tinystories-optimizer-ownership`  
 **Created**: 2026-09-09  
-**Status**: Ready for planning — all protocol decisions resolved  
+**Status**: Original campaign completed; correction extension authorized 2026-09-10
 **Input**: [Feature request](../../notes/tinystories_optimizer_ownership_speckit_prompt.md), beginning at “Feature request”; [companion design](../../notes/tinystories_optimizer_ownership_experiments.md).
 
 This feature enables researchers to distinguish learning effects and resource costs of feed-forward network (FFN) parameter representation, AdamW history ownership, and gradient clipping in TinyStories-Instruct. An optimizer history consists of gradient moments and parameter-local update counters; multiple histories in an elastic model still update the same shared weights. A width specifies the active FFN intermediate dimension, while attention and other common dimensions stay fixed.
@@ -238,3 +238,84 @@ C2's theoretical 37.5% reduction relative to S2 applies only to FFN moments, not
 - The currently prepared corpus and tokenizer remain available for planning and preflight. The read-only audit establishes integrity and alignment, not successful implementation of the nine arms or authorization to train.
 - Existing numerical determinism tolerances and clipping stabilization conventions apply. Learning superiority or a particular speed/memory improvement is not guaranteed by feature acceptance.
 - Excluded scope: additional seeds, adaptive/nonuniform sampling, balanced cycles or forced equal counts, multiple width losses per update, compact slicing moments, per-width model replicas, extra full-budget clipping-equivalence arms, block-local learning-rate schedules, distributed block/per-width execution, unmatched historical FineWeb standalones, and automatically launching the campaign.
+
+
+## Correction comparison extension (2026-09-10)
+
+The [continuation request](../../notes/tinystories_gmc_lmc_speckit_prompt_2026-09-10.md)
+authorizes implementation, validation, six fresh runs and reporting in this same
+feature/branch. The original nine-arm requirements above remain the uncorrected
+protocol; statements about future launch there describe that original workflow.
+No completed artifact is relabeled, overwritten or retrained.
+
+### User Story 6 — Compare concat membership corrections (Priority: P1)
+
+A researcher compares C1/C2/C3 with GMC and LMC against the completed uncorrected
+concat and standalone references, with matched seed, data/actions and budgets.
+
+- **FR-029**: Materialize exactly C1-GMC, C1-LMC, C2-GMC, C2-LMC, C3-GMC,
+  C3-LMC with fresh distinct identities. Each retains its original arm's controls,
+  seed-42 normal fresh initialization, four trained labels, uniform single-width
+  replacement sampling, independent action/data RNG, 348528 updates and
+  2855141376 tokens, full cosine horizon and ordinary-validation policy.
+- **FR-030**: GMC applies trained-width-count/membership-count factors
+  [1, 4/3, 2, 4] to FFN block weights and block-local biases before clipping.
+  LMC retains those hooks and additionally scales the entire completed AdamW
+  parameter change, including decay, by those factors after stepping. Common
+  parameters, including shared down bias, have no direct multiplier. Moments and
+  counters are not directly rescaled. Inactive blocks with absent gradients retain
+  weights/state/counters; active blocks receive each intervention once.
+- **FR-031**: C1/C2 preserve global cap 1.0 and shared/per-width histories;
+  C3 preserves five disjoint owners and cap 1.0 per active owner. Apply correction
+  within the complete-update failure boundary, before the single global clock
+  advance; owner, correction and bookkeeping failures abort without publishing
+  partially corrected resumable state. Record base LR separately from factors.
+- **FR-032**: Bind the explicit versioned correction contract to configuration,
+  checkpoints and provenance. Reject correction mismatches before restore. Preserve
+  original strict nine-arm validation, historical hashes and slicing behavior.
+  Keep compact accounting; measure correction overhead without full optimizer
+  snapshots or growing per-update history work.
+- **FR-033**: Before launch, pass CPU real-model checks in all six arms (each width,
+  independent explicit-LR AdamW reference with decay/biases, hooks/clipping, moments,
+  inactive tails, once-only C3/clock, resume, mismatch and failure injection).
+  Then pass sbatch GPU preflight for all six, including finite losses, factors,
+  save/restore progress and recent steady-state throughput. Failed gates block launch.
+- **FR-034**: Keep every experimental/operational artifact beneath
+  `/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/campaigns/concat-gmc-lmc-v1`
+  after checking for conflicts. Run GPU work only through sbatch, exclude
+  gpu-[05,50,51], respect two running/four submitted GPU jobs across the user,
+  use one writer/process/GPU per run and restart-safe submission records. Resume
+  only each new run's own checkpoint; reconcile rolled-back work and resources.
+  Record source revision/hashes, configs, identities, jobs and attempts; monitor
+  recent progress/utilization/checkpoint health and estimated completion.
+- **FR-035**: Complete all six terminals, validate action/batch digests against
+  original saved artifacts, and export CSV/JSON for 40 endpoints (24 corrected,
+  12 uncorrected concat, four standalone). Produce loss/perplexity versus active
+  non-embedding parameters in PNG/PDF, brown standalone triangles with one
+  `Standalone` legend entry, exact axis labels and the shortened original footnote.
+  Produce a full-range four-panel ordinary-validation loss-progress plot, one
+  width per panel. Interpret quality, exposure, clipping and measured runtime as
+  paired seed-42 observations, without across-seed significance or holdout evaluation.
+
+Acceptance: the six-arm matrix rejects any changed scientific control; actual
+single-width updates match independent corrected AdamW references; interrupted
+runs match uninterrupted runs and reject mismatched contracts; all six full-budget
+terminals yield 40 validated endpoints and all requested figures. These extend
+US1–US5 without replacing their original acceptance cases.
+
+### Clarifications — 2026-09-10
+
+The supplied continuation request resolves all material choices: LMC is combined
+GMC plus full-change scaling (including decay), numerator four even for one sampled
+width, C3 independent clipping, seed-only fresh initialization, original horizon
+and ordinary validation. All four custom labels are trained, so the separately
+noted subset-label issue is outside scope. No scientific question remains open.
+
+### Additional success criteria
+
+- **SC-009**: All six resolved paths pass CPU and GPU numerical/lifecycle gates
+  before any production submission.
+- **SC-010**: Six complete, unique full-budget runs retain paired action/batch
+  digests and valid terminal/resume/resource provenance, with zero holdout evaluation.
+- **SC-011**: Saved-artifact reporting exports 40 endpoints, two endpoint figures
+  and one four-panel full-progress figure, each as PNG/PDF, with measured caveats.

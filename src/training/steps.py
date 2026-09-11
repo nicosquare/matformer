@@ -265,7 +265,7 @@ def _capture_concat_lmc_snapshots(
             for block_index, param in enumerate(blocks):
                 if block_index >= len(scales) or not isinstance(param, torch.nn.Parameter):
                     continue
-                if not param.requires_grad:
+                if not param.requires_grad or param.grad is None:
                     continue
                 scale = scales[block_index]
                 if scale == 1.0:
@@ -1176,10 +1176,20 @@ def train_for_steps(
                         run_state["update_in_flight"] = True
                         run_state["pending_optimizer_step"] = pending_step
                         mutation_started = True
+                        # One capture/application for the entire disjoint owner
+                        # update, inside the fatal boundary and before the clock.
+                        lmc_snapshots = (
+                            _capture_concat_lmc_snapshots(model)
+                            if config["model"].get("correction_mode") == "lmc"
+                            else []
+                        )
                         for owner_id in active_owners:
                             failure_stage = f"optimizer_step:{owner_id}"
                             optimizer.optimizer_for(owner_id).step()
                             returned_owners.append(owner_id)
+                        if lmc_snapshots:
+                            failure_stage = "membership_correction"
+                            _apply_concat_lmc_corrections(lmc_snapshots)
                     else:
                         _maybe_apply_concat_lmc_optimizer_step(
                             config,

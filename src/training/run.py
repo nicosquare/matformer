@@ -2504,7 +2504,7 @@ def build_ownership_run_summary(config, model, optimizer, state):
             'resources': resources,
             'checkpoint': {k: v for k, v in checkpoint_fields.items() if k.startswith('terminal_checkpoint')},
             'trace_path': 'optimizer_ownership_trace.jsonl',
-            'clipping_path': 'optimizer_ownership_clipping.jsonl' if contract['arm_id'] in ('C1', 'C3') else None,
+            'clipping_path': 'optimizer_ownership_clipping.jsonl' if config['model']['variant'] == 'concat' and config['training']['optimizer_state_scope'] != 'per_granularity' else None,
             'terminal_validation_path': 'terminal_validation_results.json',
         },
     }
