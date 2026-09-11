@@ -182,6 +182,7 @@ def main(argv: list[str] | None = None) -> None:
                         "final_holdout"
                     ),
                     "validation": resolved["evaluation"]["validation"],
+                    "sign_dynamics": resolved["evaluation"]["sign_dynamics"],
                     "sampling_policy": {
                         "mode": model.get("resolved_sampling_mode"),
                         "schedule": model.get("global_sampling_schedule"),

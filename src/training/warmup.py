@@ -281,6 +281,7 @@ def run_pre_nested_warmup_phase(
     metrics_journal=None,
     warmup_event_callback=None,
     successful_step_callback=None,
+    sign_dynamics_runtime=None,
 ) -> list[dict[str, Any]]:
     run_state = run_state if run_state is not None else build_initial_continuation_state(config)
     warmup = config["training"].get("pre_nested_warmup", {})
@@ -498,6 +499,7 @@ def run_pre_nested_warmup_phase(
         metrics_journal=metrics_journal,
         forced_global_action=forced_action,
         successful_step_callback=record_successful_warmup_step,
+        sign_dynamics_runtime=sign_dynamics_runtime,
     )
 
     current_step = int(run_state.get("last_completed_step", 0))

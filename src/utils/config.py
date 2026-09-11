@@ -766,7 +766,7 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
     _require_fields(
         evaluation,
         "evaluation",
-        ["validation", "test", "gradient_interference"],
+        ["validation", "test", "gradient_interference", "sign_dynamics"],
     )
     validation = evaluation.get("validation")
     if not isinstance(validation, Mapping):
@@ -796,6 +796,7 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
     )
     _require_fields(test_evaluation, "evaluation.test", ["enabled"])
     _validate_gradient_interference_configuration(config)
+    _validate_sign_dynamics_configuration(config)
     _require_fields(
         monitoring,
         "monitoring",
@@ -999,7 +1000,14 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
                 "balanced-cycle sampling requires resolved training.max_steps"
             )
         cycle_steps = len(granularities) * interval
-        if max_steps <= 0 or max_steps % cycle_steps != 0:
+        sign_dynamics = config.get("evaluation", {}).get("sign_dynamics", {})
+        allows_partial_sign_dynamics_cycle = isinstance(
+            sign_dynamics, Mapping
+        ) and bool(sign_dynamics.get("enabled", False))
+        if max_steps <= 0 or (
+            max_steps % cycle_steps != 0
+            and not allows_partial_sign_dynamics_cycle
+        ):
             raise ConfigError(
                 "training.max_steps must be divisible by the number of "
                 "granularities times model.global_sampling_interval_steps "
@@ -4741,12 +4749,243 @@ def _resolve_evaluation_defaults(config: dict[str, Any]) -> None:
         raise ConfigError("evaluation.test.enabled must be false")
 
     _resolve_gradient_interference_defaults(config)
+    _resolve_sign_dynamics_defaults(config)
 
     training.pop("eval_interval", None)
     training.pop("eval_batches", None)
     evaluation.pop("final_validation", None)
     evaluation["validation"] = validation
     evaluation["test"] = test_evaluation
+
+
+def _resolve_sign_dynamics_defaults(config: dict[str, Any]) -> None:
+    """Resolve the exact all-parameter, every-committed-step diagnostic."""
+
+    evaluation = config.setdefault("evaluation", {})
+    raw = evaluation.get("sign_dynamics", {})
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, Mapping):
+        raise ConfigError("evaluation.sign_dynamics must be a mapping")
+    diagnostic = copy.deepcopy(dict(raw))
+    user_fields = {
+        "enabled",
+        "campaign_id",
+        "arm_id",
+        "measurement_scope",
+        "cadence_steps",
+        "retention",
+        "hysteresis_thresholds",
+        "snapshot_trajectory_fractions",
+        "include_warmup_completion",
+    }
+    resolved_fields = {
+        "schema_version",
+        "event_type",
+        "support_manifest_path",
+        "journal_path",
+        "snapshot_directory",
+        "resolved_snapshot_steps",
+        "resolved_snapshot_milestones",
+        "snapshot_milestone_reasons",
+        "diagnostic_contract_hash",
+        "support_hash",
+    }
+    unknown = sorted(set(diagnostic) - user_fields - resolved_fields)
+    if unknown:
+        raise ConfigError(f"Unknown evaluation.sign_dynamics fields: {unknown}")
+
+    diagnostic["enabled"] = _normalize_bool(
+        diagnostic.get("enabled", False), "evaluation.sign_dynamics.enabled"
+    )
+    campaign_id = diagnostic.get("campaign_id")
+    if campaign_id is not None and (
+        not isinstance(campaign_id, str) or not campaign_id.strip()
+    ):
+        raise ConfigError("evaluation.sign_dynamics.campaign_id must be a non-empty string or null")
+    arm_id = diagnostic.get("arm_id")
+    if arm_id is not None and (not isinstance(arm_id, str) or not arm_id.strip()):
+        raise ConfigError("evaluation.sign_dynamics.arm_id must be a non-empty string or null")
+    diagnostic["campaign_id"] = campaign_id.strip() if isinstance(campaign_id, str) else None
+    diagnostic["arm_id"] = arm_id.strip() if isinstance(arm_id, str) else None
+
+    fixed_values = {
+        "measurement_scope": "all_trainable_parameters",
+        "cadence_steps": 1,
+        "retention": "sufficient_state",
+    }
+    for field, expected in fixed_values.items():
+        value = diagnostic.get(field, expected)
+        if value != expected:
+            raise ConfigError(
+                f"evaluation.sign_dynamics.{field} must be {expected!r}"
+            )
+        diagnostic[field] = expected
+
+    raw_thresholds = diagnostic.get("hysteresis_thresholds", [0.0, 0.001, 0.01])
+    if not isinstance(raw_thresholds, list) or not raw_thresholds:
+        raise ConfigError("evaluation.sign_dynamics.hysteresis_thresholds must be a non-empty list")
+    thresholds = []
+    for index, raw_threshold in enumerate(raw_thresholds):
+        if isinstance(raw_threshold, bool) or not isinstance(raw_threshold, (int, float)):
+            raise ConfigError(
+                f"evaluation.sign_dynamics.hysteresis_thresholds[{index}] must be numeric"
+            )
+        threshold = float(raw_threshold)
+        if not math.isfinite(threshold) or threshold < 0.0:
+            raise ConfigError("evaluation.sign_dynamics.hysteresis_thresholds must be finite and nonnegative")
+        thresholds.append(threshold)
+    if thresholds != sorted(set(thresholds)) or 0.0 not in thresholds:
+        raise ConfigError(
+            "evaluation.sign_dynamics.hysteresis_thresholds must be unique, ordered, and include 0.0"
+        )
+    diagnostic["hysteresis_thresholds"] = thresholds
+
+    raw_fractions = diagnostic.get(
+        "snapshot_trajectory_fractions",
+        [0.0, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 0.75, 1.0],
+    )
+    if not isinstance(raw_fractions, list) or not raw_fractions:
+        raise ConfigError(
+            "evaluation.sign_dynamics.snapshot_trajectory_fractions must be a non-empty list"
+        )
+    fractions = []
+    for index, raw_fraction in enumerate(raw_fractions):
+        if isinstance(raw_fraction, bool) or not isinstance(raw_fraction, (int, float)):
+            raise ConfigError(
+                f"evaluation.sign_dynamics.snapshot_trajectory_fractions[{index}] must be numeric"
+            )
+        fraction = float(raw_fraction)
+        if not math.isfinite(fraction) or not 0.0 <= fraction <= 1.0:
+            raise ConfigError(
+                "evaluation.sign_dynamics.snapshot_trajectory_fractions must contain finite values between zero and one"
+            )
+        fractions.append(fraction)
+    if fractions != sorted(set(fractions)) or fractions[0] != 0.0 or fractions[-1] != 1.0:
+        raise ConfigError(
+            "evaluation.sign_dynamics.snapshot_trajectory_fractions must be unique, ordered, and include 0.0 and 1.0"
+        )
+    diagnostic["snapshot_trajectory_fractions"] = fractions
+    diagnostic["include_warmup_completion"] = _normalize_bool(
+        diagnostic.get("include_warmup_completion", True),
+        "evaluation.sign_dynamics.include_warmup_completion",
+    )
+
+    max_steps = _nonnegative_int(
+        config.get("training", {}).get("max_steps"), "training.max_steps"
+    )
+    reasons_by_step: dict[int, list[str]] = {}
+    for fraction in fractions:
+        step = int(math.ceil(fraction * max_steps))
+        reasons_by_step.setdefault(step, []).append(
+            f"trajectory_fraction:{format(fraction, '.17g')}"
+        )
+    if diagnostic["include_warmup_completion"]:
+        warmup_step = _nonnegative_int(
+            config.get("training", {}).get("resolved_warmup_steps"),
+            "training.resolved_warmup_steps",
+        )
+        reasons_by_step.setdefault(warmup_step, [])
+        if "warmup_completion" not in reasons_by_step[warmup_step]:
+            reasons_by_step[warmup_step].append("warmup_completion")
+    milestones = [
+        {"step": step, "reasons": reasons_by_step[step]}
+        for step in sorted(reasons_by_step)
+    ]
+    diagnostic.update(
+        {
+            "schema_version": 1,
+            "event_type": "sign_dynamics_step",
+            "support_manifest_path": "sign_dynamics_support.json",
+            "journal_path": "sign_dynamics.jsonl",
+            "snapshot_directory": "sign_dynamics_snapshots",
+            "resolved_snapshot_steps": [item["step"] for item in milestones],
+            "resolved_snapshot_milestones": milestones,
+            "snapshot_milestone_reasons": {
+                str(item["step"]): list(item["reasons"]) for item in milestones
+            },
+            "support_hash": diagnostic.get("support_hash", "pending"),
+        }
+    )
+    contract_fields = (
+        "schema_version",
+        "event_type",
+        "campaign_id",
+        "measurement_scope",
+        "cadence_steps",
+        "retention",
+        "hysteresis_thresholds",
+        "snapshot_trajectory_fractions",
+        "include_warmup_completion",
+    )
+    diagnostic["diagnostic_contract_hash"] = stable_hash(
+        {field: diagnostic[field] for field in contract_fields}
+    )
+    evaluation["sign_dynamics"] = diagnostic
+
+
+def _validate_sign_dynamics_configuration(config: Mapping[str, Any]) -> None:
+    diagnostic = config.get("evaluation", {}).get("sign_dynamics")
+    if not isinstance(diagnostic, Mapping):
+        raise ConfigError("evaluation.sign_dynamics must be a mapping")
+    required = {
+        "enabled",
+        "campaign_id",
+        "arm_id",
+        "measurement_scope",
+        "cadence_steps",
+        "retention",
+        "hysteresis_thresholds",
+        "snapshot_trajectory_fractions",
+        "include_warmup_completion",
+        "schema_version",
+        "event_type",
+        "support_manifest_path",
+        "journal_path",
+        "snapshot_directory",
+        "resolved_snapshot_steps",
+        "resolved_snapshot_milestones",
+        "snapshot_milestone_reasons",
+        "diagnostic_contract_hash",
+        "support_hash",
+    }
+    missing = sorted(required - set(diagnostic))
+    if missing:
+        raise ConfigError(f"evaluation.sign_dynamics is missing resolved fields: {missing}")
+    if not diagnostic["enabled"]:
+        return
+    run = config.get("run", {})
+    model = config.get("model", {})
+    training = config.get("training", {})
+    if run.get("model_family") != "nested" or run.get("sampling_mode") != "nested-random":
+        raise ConfigError("sign dynamics requires an elastic nested-random run")
+    if model.get("granularity_sampling_mode") not in {
+        "global",
+        "fixed_global",
+        "adaptive_global",
+    }:
+        raise ConfigError(
+            "sign dynamics supports only global, fixed_global, or adaptive_global actions"
+        )
+    if model.get("variant") not in {"slicing", "concat"}:
+        raise ConfigError("sign dynamics supports only slicing and concat models")
+    if len(model.get("granularities", [])) < 2:
+        raise ConfigError("sign dynamics requires at least two granularities")
+    distributed = training.get("distributed", {})
+    if int(training.get("effective_world_size", 1)) != 1 or (
+        isinstance(distributed, Mapping)
+        and (
+            distributed.get("strategy", "none") != "none"
+            or int(distributed.get("expected_world_size", 1)) != 1
+        )
+    ):
+        raise ConfigError("sign dynamics requires single-process non-distributed execution")
+    if diagnostic.get("measurement_scope") != "all_trainable_parameters" or diagnostic.get("cadence_steps") != 1:
+        raise ConfigError("sign dynamics requires exact all-parameter, every-step measurement")
+    if diagnostic.get("retention") != "sufficient_state":
+        raise ConfigError("sign dynamics retention must be sufficient_state")
+    if not isinstance(diagnostic.get("diagnostic_contract_hash"), str) or len(diagnostic["diagnostic_contract_hash"]) != 64:
+        raise ConfigError("sign dynamics diagnostic contract hash is invalid")
 
 
 def _resolve_gradient_interference_defaults(config: dict[str, Any]) -> None:

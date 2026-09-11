@@ -60,6 +60,7 @@ from src.training.gradient_interference import (
     uses_gradient_interference,
     validate_gradient_interference_state,
 )
+from src.training.sign_dynamics import checkpoint_state_to_cpu, uses_sign_dynamics
 from src.training.portfolio_catchup import (
     PortfolioCatchupError,
     build_portfolio_catchup_state,
@@ -1694,6 +1695,11 @@ def _save_model_checkpoint_rank_zero(
             "probabilistic_controller_state": probabilistic_controller_state,
             "panelgrad_state": panelgrad_state,
             "gradient_interference_state": gradient_interference_state,
+            "sign_dynamics_state": (
+                checkpoint_state_to_cpu(run_state.get("sign_dynamics_state"))
+                if uses_sign_dynamics(config)
+                else None
+            ),
             "global_sampling_state": global_sampling_state,
             **(
                 {"portfolio_catchup_state": portfolio_catchup_state}
@@ -2232,6 +2238,7 @@ def build_initial_continuation_state(config: dict[str, Any]) -> dict[str, Any]:
         ),
         "optimizer_window_microsteps": 0,
         "metrics_accumulator_state": None,
+        "sign_dynamics_state": None,
         "optimizer_update_counts": (
             {label: 0 for label in optimizer_labels} if per_granularity else None
         ),
@@ -2736,16 +2743,30 @@ def validate_balanced_global_sampling_completion(
     normalized = validate_global_sampling_state(state, config=config)
     if normalized is None:
         raise ConfigError("Balanced global sampling state is missing at completion")
-    if (
-        normalized["total_successful_updates"]
-        != int(config.get("training", {}).get("max_steps", -1))
-        or normalized["total_successful_updates"]
-        % (len(normalized["granularities"]) * normalized["interval_steps"])
-        != 0
-        or normalized["successful_updates_in_window"] != 0
-        or normalized["cycle_position"] != 0
-        or len(set(normalized["exposure_counts"].values())) != 1
-    ):
+    sign_dynamics = config.get("evaluation", {}).get("sign_dynamics", {})
+    allows_partial_cycle = isinstance(sign_dynamics, Mapping) and bool(
+        sign_dynamics.get("enabled", False)
+    )
+    exact_total = normalized["total_successful_updates"] == int(
+        config.get("training", {}).get("max_steps", -1)
+    )
+    if allows_partial_cycle:
+        exposures = [int(value) for value in normalized["exposure_counts"].values()]
+        complete = exact_total and (
+            not exposures
+            or max(exposures) - min(exposures) <= normalized["interval_steps"]
+        )
+    else:
+        complete = (
+            exact_total
+            and normalized["total_successful_updates"]
+            % (len(normalized["granularities"]) * normalized["interval_steps"])
+            == 0
+            and normalized["successful_updates_in_window"] == 0
+            and normalized["cycle_position"] == 0
+            and len(set(normalized["exposure_counts"].values())) == 1
+        )
+    if not complete:
         raise ConfigError(
             "Balanced global sampling cannot complete outside an equal-exposure "
             "cycle boundary"
@@ -3006,6 +3027,7 @@ def load_run_continuation_state(
     optimizer,
     scheduler,
     distributed_context=None,
+    sign_dynamics_runtime=None,
 ) -> dict[str, Any]:
     checkpoint_path = Path(config["run"]["output_dir"]) / "checkpoints" / "latest.pt"
     previous_path = checkpoint_path.with_name("latest.prev.pt")
@@ -3017,6 +3039,7 @@ def load_run_continuation_state(
         "distributed_context": distributed_context,
         "output_dir": config["run"]["output_dir"],
         "run_id": config["run"]["run_id"],
+        "sign_dynamics_runtime": sign_dynamics_runtime,
     }
 
     primary_error: Exception | None = None
@@ -3076,6 +3099,7 @@ def load_checkpoint_state(
     distributed_context=None,
     output_dir: str | Path | None = None,
     run_id: str | None = None,
+    sign_dynamics_runtime=None,
 ) -> dict[str, Any]:
     checkpoint_path = Path(checkpoint_path)
     if not checkpoint_path.exists():
@@ -3135,6 +3159,7 @@ def load_checkpoint_state(
             "probabilistic_controller_state": None,
             "panelgrad_state": None,
             "gradient_interference_state": None,
+            "sign_dynamics_state": None,
             "global_sampling_state": (
                 build_initial_global_sampling_state(config)
                 if config is not None
@@ -3205,6 +3230,22 @@ def load_checkpoint_state(
             map_location="cpu",
             weights_only=False,
         )
+    validated_sign_dynamics_state = None
+    if config is not None and uses_sign_dynamics(config):
+        if sign_dynamics_runtime is None:
+            raise ConfigError("sign-dynamics continuation runtime is missing")
+        expected_sign_step = int(
+            checkpoint.get("step", checkpoint.get("last_completed_step", 0))
+        )
+        try:
+            validated_sign_dynamics_state = (
+                sign_dynamics_runtime.validate_checkpoint_state(
+                    checkpoint.get("sign_dynamics_state"),
+                    expected_step=expected_sign_step,
+                )
+            )
+        except Exception as error:
+            raise ConfigError(str(error)) from error
     optimizer_state_scope = _validate_optimizer_resume_contract(
         checkpoint,
         config=config,
@@ -3390,6 +3431,13 @@ def load_checkpoint_state(
             restore_rng_state(rng_states[rank])
         else:
             restore_rng_state(reproducibility_payload["rng_state"])
+    if validated_sign_dynamics_state is not None:
+        try:
+            sign_dynamics_runtime.restore_validated_state(
+                validated_sign_dynamics_state
+            )
+        except Exception as error:
+            raise ConfigError(str(error)) from error
 
     last_completed_step = int(
         checkpoint.get("step", checkpoint.get("last_completed_step", 0))
@@ -3438,6 +3486,11 @@ def load_checkpoint_state(
         "probabilistic_controller_state": probabilistic_controller_state,
         "panelgrad_state": panelgrad_state,
         "gradient_interference_state": gradient_interference_state,
+        "sign_dynamics_state": (
+            sign_dynamics_runtime.state_dict(copy_tensors=False)
+            if validated_sign_dynamics_state is not None
+            else None
+        ),
         "global_sampling_state": global_sampling_state,
         "optimizer_update_counts": (
             copy.deepcopy(optimizer.successful_update_counts)

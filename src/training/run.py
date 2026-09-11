@@ -30,6 +30,7 @@ import src.training.gradient_probe as training_gradient_probe
 import src.training.modeling as training_modeling
 import src.training.monitoring as training_monitoring
 import src.training.panelgrad as training_panelgrad
+import src.training.sign_dynamics as training_sign_dynamics
 import src.training.steps as training_steps
 import src.training.warmup as training_warmup
 from src.training.optimizer_state import (
@@ -913,6 +914,7 @@ def run_training(
     panelgrad_controller = None
     panelgrad_support_identity = None
     gradient_interference_state = None
+    sign_dynamics_runtime = None
     gradient_interference_records: list[dict[str, Any]] = []
     controller_events: list[dict[str, Any]] = []
     controller_summary = None
@@ -980,11 +982,30 @@ def run_training(
                     panelgrad_support_identity["controlled_support_hash"]
                 )
             model = model.to(device)
+            if training_sign_dynamics.uses_sign_dynamics(config):
+                sign_dynamics_runtime = training_sign_dynamics.SignDynamicsRuntime.build(
+                    config,
+                    model,
+                )
+                has_resume_checkpoint = bool(
+                    run["continuation"]["enabled"]
+                    and any(
+                        (output_dir / "checkpoints" / name).is_file()
+                        for name in ("latest.pt", "latest.prev.pt")
+                    )
+                )
+                sign_dynamics_runtime.install_support_contract(
+                    resuming=has_resume_checkpoint
+                )
+                config["evaluation"]["sign_dynamics"]["support_hash"] = str(
+                    sign_dynamics_runtime.support_manifest["support_hash"]
+                )
 
         if (
             parameter_counts_by_granularity
             or training_panelgrad.uses_panelgrad(config)
             or training_gradient_interference.uses_gradient_interference(config)
+            or training_sign_dynamics.uses_sign_dynamics(config)
         ):
             with training_monitoring.heartbeat_stage(
                 heartbeat_writer,
@@ -1113,8 +1134,15 @@ def run_training(
                 optimizer,
                 scheduler,
                 distributed_context=distributed_context,
+                sign_dynamics_runtime=sign_dynamics_runtime,
             )
             continuation_load_succeeded = True
+        if sign_dynamics_runtime is not None:
+            if run_state.get("sign_dynamics_state") is None:
+                sign_dynamics_runtime.initialize_fresh()
+                run_state["sign_dynamics_state"] = (
+                    sign_dynamics_runtime.state_dict(copy_tensors=False)
+                )
         _validate_restored_optimizer_ownership_runtime(
             config,
             run_state,
@@ -1417,6 +1445,7 @@ def run_training(
                     metrics_journal=metrics_journal,
                     warmup_event_callback=commit_warmup_event,
                     successful_step_callback=measure_gradient_interference_if_due,
+                    sign_dynamics_runtime=sign_dynamics_runtime,
                 )
             )
         else:
@@ -1799,6 +1828,7 @@ def run_training(
                     panelgrad_refresh_callback=refresh_panelgrad_if_due,
                     panelgrad_completion_callback=finish_panelgrad_training,
                     successful_step_callback=measure_gradient_interference_if_due,
+                    sign_dynamics_runtime=sign_dynamics_runtime,
                 )
             )
         elif panelgrad_controller is not None:
@@ -1819,6 +1849,11 @@ def run_training(
                     f"expected={expected_diagnostic_steps}, "
                     f"measured={measured_diagnostic_steps}"
                 )
+        if sign_dynamics_runtime is not None:
+            completed_steps = int(run_state.get("last_completed_step", 0))
+            sign_dynamics_runtime.validate_completed(
+                expected_step=completed_steps
+            )
         metrics_rows = metrics_journal.summary_rows()
         extraction_metadata_path = None
         metrics_path = None
@@ -2041,6 +2076,13 @@ def run_training(
                 config,
                 gradient_interference_state,
             ),
+            **(
+                sign_dynamics_runtime.summary_fields(
+                    expected_steps=int(run_state.get("last_completed_step", 0))
+                )
+                if sign_dynamics_runtime is not None
+                else training_sign_dynamics.disabled_summary_fields()
+            ),
             **build_optimizer_state_summary_fields(
                 config,
                 run_state=run_state,
@@ -2121,6 +2163,7 @@ def run_training(
                 and model is not None
                 and optimizer is not None
                 and scheduler is not None
+                and run_state.get("post_commit_failure_stage") is None
             ):
                 training_checkpointing.maybe_write_latest_checkpoint(
                     config,
@@ -2227,6 +2270,15 @@ def run_training(
                     **training_gradient_interference.summary_fields(
                         config,
                         gradient_interference_state,
+                    ),
+                    **(
+                        sign_dynamics_runtime.summary_fields(
+                            expected_steps=int(
+                                run_state.get("last_completed_step", 0)
+                            )
+                        )
+                        if sign_dynamics_runtime is not None
+                        else training_sign_dynamics.disabled_summary_fields()
                     ),
                     **_controller_warmup_run_summary_fields(controller_summary),
                     **build_optimizer_state_summary_fields(

@@ -361,10 +361,20 @@ def _select_optimizer_window_action(
             "panelgrad_probability": selected_action["probability"],
         }
     if model_sampling_mode == "adaptive_global" and probabilistic_controller is not None:
+        controller_state = probabilistic_controller.state_dict()
+        controller_window = controller_state.get("window", {})
         selected = probabilistic_global_layer_granularities(
             config, probabilistic_controller
         )[0]
-        return {"kind": "global", "granularities": [selected]}
+        interval = int(controller_window.get("decision_interval_steps", 1))
+        completed = int(controller_window.get("completed_optimizer_steps", 0))
+        return {
+            "kind": "global",
+            "granularities": [selected],
+            "controller_window_interval_steps": interval,
+            "controller_window_index": (int(optimizer_step) - 1) // interval,
+            "controller_window_progress": completed,
+        }
     if (
         model_sampling_mode == "adaptive_per_block"
         and probabilistic_controller is not None
@@ -715,6 +725,7 @@ def train_for_steps(
     panelgrad_completion_callback=None,
     forced_global_action=None,
     successful_step_callback=None,
+    sign_dynamics_runtime=None,
 ) -> list[dict[str, Any]]:
     training = config["training"]
     run = config["run"]
@@ -844,7 +855,19 @@ def train_for_steps(
             indexed_batches = iter(enumerate(train_dataloader))
             while step < max_steps and tokens_seen < token_budget:
                 window_rng_snapshot = capture_rng_state()
-                window_state_snapshot = copy.deepcopy(run_state)
+                # Sign-dynamics owns a large live per-coordinate state.  It is
+                # not mutated until after the optimizer commits, while this
+                # transaction snapshot is used only for pre-commit rollback.
+                # Preserve that one value by reference so exact measurement
+                # does not copy the full trainable model before every step.
+                window_state_snapshot = {
+                    key: (
+                        value
+                        if key == "sign_dynamics_state"
+                        else copy.deepcopy(value)
+                    )
+                    for key, value in run_state.items()
+                }
                 controller_snapshot = (
                     probabilistic_controller.transaction_snapshot()
                     if probabilistic_controller is not None
@@ -1024,6 +1047,12 @@ def train_for_steps(
                             "Per-row learning_rate requires one shared optimizer rate"
                         )
                     committed_learning_rate = committed_learning_rates[0]
+                    if sign_dynamics_runtime is not None:
+                        failure_stage = "sign_dynamics_pre_update"
+                        sign_dynamics_runtime.capture_pre_update(
+                            step=pending_step,
+                            action=action,
+                        )
                     failure_stage = "optimizer_step"
                     _maybe_apply_concat_lmc_optimizer_step(
                         config,
@@ -1035,6 +1064,15 @@ def train_for_steps(
                     # and accounting failures after this point are fatal and do
                     # not restore the pre-window transactional snapshots.
                     optimizer_committed = True
+                    if sign_dynamics_runtime is not None:
+                        failure_stage = "sign_dynamics_post_commit"
+                        sign_dynamics_runtime.commit_step(
+                            step=pending_step,
+                            action=action,
+                        )
+                        run_state["sign_dynamics_state"] = (
+                            sign_dynamics_runtime.state_dict(copy_tensors=False)
+                        )
                     failure_stage = "post_commit_accounting"
                     scheduler.step()
                     if isinstance(optimizer, PerGranularityOptimizerCollection):
@@ -1386,6 +1424,8 @@ def train_for_steps(
                         distributed_context=distributed_context,
                     )
                 except Exception:
+                    if optimizer_committed and sign_dynamics_runtime is not None:
+                        run_state["post_commit_failure_stage"] = failure_stage
                     if action is not None and optimizer_action_id is not None:
                         failed_label = str(
                             optimizer_owner or action.get("granularities", ["unknown"])[0]
@@ -1428,6 +1468,8 @@ def train_for_steps(
                             force=True,
                         )
                     if not optimizer_committed:
+                        if sign_dynamics_runtime is not None:
+                            sign_dynamics_runtime.abort_pending()
                         restore_rng_state(window_rng_snapshot)
                         if controller_snapshot is not None:
                             probabilistic_controller.restore_transaction_snapshot(
