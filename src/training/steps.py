@@ -474,7 +474,7 @@ def _select_optimizer_window_action(
                 config, granularities, device
             ),
         }
-    if model_sampling_mode == "global" and run_sampling_mode == "nested-random":
+    if training_checkpointing.uses_global_sampling_state(config):
         if run_state is None:
             raise ConfigError("Global sampling requires continuation state")
         state = run_state.get("global_sampling_state")
@@ -511,7 +511,7 @@ def _select_optimizer_window_action(
             state["held_granularity"] = select_training_granularities(
                 config, granularities, device
             )[0]
-        return {
+        action = {
             "kind": "global",
             "granularities": [str(state["held_granularity"])],
             "global_sampling_interval_steps": interval,
@@ -522,6 +522,10 @@ def _select_optimizer_window_action(
                 state["successful_updates_in_window"]
             ),
         }
+        if model_sampling_mode == "fixed_global":
+            action["sampled_probability"] = float(config["model"]["global_sampling_distribution"][state["held_granularity"]])
+        return action
+
     action = {
         "kind": "global",
         "granularities": select_training_granularities(

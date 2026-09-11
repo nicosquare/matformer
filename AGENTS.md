@@ -1,5 +1,5 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read:
-`specs/013-tinystories-optimizer-ownership/plan.md`
+`specs/014-tinystories-inverse-membership/plan.md`
 <!-- SPECKIT END -->

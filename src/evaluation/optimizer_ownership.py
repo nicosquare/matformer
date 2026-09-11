@@ -152,12 +152,47 @@ CORRECTION_ARMS = tuple(
 CORRECTION_ARM_IDS = tuple(arm["arm_id"] for arm in CORRECTION_ARMS)
 
 
+INVERSE_MEMBERSHIP_CAMPAIGN_SCHEMA_VERSION = 3
+IM_PROBABILITIES = (.12, .16, .24, .48)
+INVERSE_MEMBERSHIP_ARMS = tuple(
+    {**arm, "arm_id": arm["arm_id"] + "-IM", "reference_arm_id": arm["arm_id"],
+     "sampling_policy": "fixed_inverse_membership"}
+    for arm in ELASTIC_ARMS
+)
+INVERSE_MEMBERSHIP_ARM_IDS = tuple(a["arm_id"] for a in INVERSE_MEMBERSHIP_ARMS)
+
+
+def inverse_membership_sampling_contract(config):
+    from src.utils.reproducibility import seed_for
+    return {
+        "schema_version": 1, "policy": "fixed_inverse_membership",
+        "mode": "fixed_global", "ordered_widths": list(WIDTH_LABELS),
+        "membership_counts": [4, 3, 2, 1], "probabilities": list(IM_PROBABILITIES),
+        "scope": "global", "replacement": True, "interval_steps": 1,
+        "inverse_probability_loss_weighting": False,
+        "action_seed": seed_for(config, "granularity_selection"),
+    }
+
+
+def _sampling_contract(config, arm):
+    from src.utils.reproducibility import seed_for
+    if arm.get("sampling_policy") == "fixed_inverse_membership":
+        return inverse_membership_sampling_contract(config)
+    return {
+        "mode": config["run"]["sampling_mode"],
+        "probabilities": None if arm["source_width"] else [0.25] * 4,
+        "action_seed": None if arm["source_width"] else seed_for(config, "granularity_selection"),
+    }
+
+
 def campaign_arms(schema_version):
     from src.utils.config import ConfigError
     if type(schema_version) is int and schema_version == 1:
         return ARMS
     if type(schema_version) is int and schema_version == 2:
         return CORRECTION_ARMS
+    if type(schema_version) is int and schema_version == 3:
+        return INVERSE_MEMBERSHIP_ARMS
     raise ConfigError(f"Unsupported campaign schema_version: {schema_version}")
 
 
@@ -432,6 +467,11 @@ def _arm_overrides(arm):
             global_sampling_schedule="random_with_replacement",
             global_sampling_interval_steps=1,
         )
+    if arm.get("sampling_policy") == "fixed_inverse_membership":
+        model["granularity_sampling_mode"] = "fixed_global"
+        model["global_sampling_distribution"] = dict(zip(WIDTH_LABELS, IM_PROBABILITIES))
+        model.pop("global_sampling_schedule")
+        model.pop("global_sampling_interval_steps")
     if arm["clipping_mode"] == "per_owner":
         training["gradient_clipping"] = {
             "mode": "per_owner",
@@ -601,13 +641,7 @@ def expand_campaign(recipe, *, prepared_corpus_dir, tokenizer_dir, run_output_ro
                 "initialization": initialization,
                 "model": model_controls,
                 "optimizer": copy.deepcopy(resolved["training"]),
-                "sampling": {
-                    "mode": resolved["run"]["sampling_mode"],
-                    "probabilities": None if arm["source_width"] else [0.25] * 4,
-                    "action_seed": None
-                    if arm["source_width"]
-                    else seed_for(resolved, "granularity_selection"),
-                },
+                "sampling": _sampling_contract(resolved, arm),
                 "data": data_controls,
                 "budget": {
                     k: arm[k]
@@ -838,7 +872,7 @@ def inspect_campaign_models(runs):
 
 
 def expected_action_trace(config):
-    """Same isolated randrange stream as select_random_granularity_index, H=1."""
+    """Production categorical primitive and isolated action seed, H=1."""
     import hashlib
     import random
     from src.utils.reproducibility import seed_for
@@ -846,8 +880,11 @@ def expected_action_trace(config):
     generator = random.Random(seed_for(config, "granularity_selection"))
     digest = hashlib.sha256()
     counts = dict.fromkeys(WIDTH_LABELS, 0)
+    fixed = config["model"].get("granularity_sampling_mode") == "fixed_global"
+    probabilities = [config["model"]["global_sampling_distribution"][w] for w in WIDTH_LABELS] if fixed else [.25] * 4
     for _ in range(config["training"]["max_steps"]):
-        width = WIDTH_LABELS[generator.randrange(len(WIDTH_LABELS))]
+        width = (generator.choices(WIDTH_LABELS, weights=probabilities, k=1)[0] if fixed
+                 else WIDTH_LABELS[generator.randrange(len(WIDTH_LABELS))])
         digest.update((width + "\n").encode("ascii"))
         counts[width] += 1
     return {
@@ -855,10 +892,8 @@ def expected_action_trace(config):
         "encoding": "ASCII width label plus LF per update",
         "updates": sum(counts.values()),
         "counts": counts,
-        "expected_counts": dict.fromkeys(
-            WIDTH_LABELS, config["training"]["max_steps"] / 4
-        ),
-        "sampling": "uniform_random_with_replacement",
+        "expected_counts": {w: config["training"]["max_steps"] * p for w, p in zip(WIDTH_LABELS, probabilities)},
+        "sampling": "fixed_inverse_membership" if fixed else "uniform_random_with_replacement",
         "forced_balance": False,
     }
 
@@ -1075,9 +1110,14 @@ def validate_materialized_config(config):
         actual_hash,
         "optimizer_ownership_contract_hash",
     )
-    arm = next((a for a in (*ARMS, *CORRECTION_ARMS) if a["arm_id"] == config["run"].get("arm_id")), None)
+    arm = next((a for a in (*ARMS, *CORRECTION_ARMS, *INVERSE_MEMBERSHIP_ARMS) if a["arm_id"] == config["run"].get("arm_id")), None)
     if arm is None:
         raise ConfigError("optimizer_ownership_contract: unknown arm_id")
+    if arm.get("sampling_policy") == "fixed_inverse_membership":
+        _require_equal(config["model"]["granularity_sampling_mode"], "fixed_global", "IM sampling mode")
+        _require_equal(config["model"]["granularities"], list(WIDTH_LABELS), "IM ordered widths")
+        _require_equal(config["model"]["global_sampling_distribution"], dict(zip(WIDTH_LABELS, IM_PROBABILITIES)), "IM probabilities")
+        _require_equal(config["model"]["global_sampling_interval_steps"], 1, "IM cadence")
     expected_mode = arm.get("correction_mode", "none")
     _require_equal(config["model"]["correction_mode"], expected_mode, "model.correction_mode")
     if "correction_mode" in arm:
@@ -1104,13 +1144,7 @@ def validate_materialized_config(config):
         "optimizer": config["training"],
         "clipping": config["training"]["gradient_clipping"],
         "evaluation": config["evaluation"],
-        "sampling": {
-            "mode": config["run"]["sampling_mode"],
-            "probabilities": None if arm["source_width"] else [0.25] * 4,
-            "action_seed": None
-            if arm["source_width"]
-            else seed_for(config, "granularity_selection"),
-        },
+        "sampling": _sampling_contract(config, arm),
         "budget": {
             k: arm[k]
             for k in ("assigned_epochs", "assigned_updates", "assigned_tokens")
@@ -1706,6 +1740,10 @@ def _endpoint_table(frozen, preflight):
             row = {'status': frozen['status'], 'campaign_id': frozen['campaign_id'], 'arm_id': run['arm_id'],
                    'run_id': run['run_id'], 'seed': SEED, 'representation': run['representation'],
                    'state_scope': run['state_scope'], 'clipping': run['clipping'],
+                   'sampling_policy': run.get('sampling_policy', 'standalone' if run['source_width'] else 'uniform'),
+                   'sampling_contract': run['optimizer_ownership_contract']['sampling'],
+                   'historical_reference': False,
+                   'checkpoint_bytes': sidecar['checkpoint_bytes'],
                    'correction_mode': run.get('correction_mode', 'none'),
                    'correction': run['optimizer_ownership_contract'].get('correction'),
                    'width_fraction': width['source_fraction'], 'ffn_dimension': width['active_ffn_dimension'], **endpoint,
@@ -1731,7 +1769,7 @@ def endpoint_figure(rows, *, metric, partial):
     ax = figure.subplots()
     colors = dict(zip(('S1', 'S2', 'C1', 'C2', 'C3'), ('#0072B2', '#E69F00', '#009E73', '#CC79A7', '#D55E00')))
     standalone_labeled = False
-    for arm in (*ELASTIC_ARMS, *CORRECTION_ARMS, *STANDALONE_ARMS):
+    for arm in (*ELASTIC_ARMS, *CORRECTION_ARMS, *INVERSE_MEMBERSHIP_ARMS, *STANDALONE_ARMS):
         values = sorted((r for r in rows if r['arm_id'] == arm['arm_id']), key=lambda r: r['non_embedding_parameters'])
         if not values:
             continue
@@ -1740,11 +1778,14 @@ def endpoint_figure(rows, *, metric, partial):
         label = arm['arm_id'] if elastic else ('Standalone' if not standalone_labeled else '_nolegend_')
         if elastic and any(r['arm_id'] in CORRECTION_ARM_IDS for r in rows):
             label = f"{arm.get('reference_arm_id', arm['arm_id'])} ({mode.upper() if mode != 'none' else mode})"
+        im_view = any(r['arm_id'] in INVERSE_MEMBERSHIP_ARM_IDS for r in rows)
+        if elastic and im_view:
+            label = f"{arm.get('reference_arm_id', arm['arm_id'])} ({'IM' if arm.get('sampling_policy') else 'uniform'})"
         if not elastic:
             standalone_labeled = True
         ax.plot([r['non_embedding_parameters'] for r in values], [r[metric] for r in values],
                 label=label, color=colors.get(arm.get('reference_arm_id', arm['arm_id']), '#8B4513'),
-                linestyle={'none': '-', 'gmc': '--', 'lmc': ':'}[mode] if elastic else 'None', marker='o' if elastic else '^',
+                linestyle=('--' if arm.get('sampling_policy') else {'none': '-', 'gmc': '--', 'lmc': ':'}[mode]) if elastic else 'None', marker='o' if elastic else '^',
                 markersize=5 if elastic else 9, fillstyle='none' if elastic else 'full')
     ax.set(xlabel='Active non-embedding parameters',
            ylabel='Perplexity' if metric == 'perplexity' else 'Loss')
@@ -1766,8 +1807,11 @@ def _comparison_interpretations(rows):
         ('S2/C2', 'S2', 'C2', 'Representation changes inactive-tail behavior, counters and lazy history allocation.'),
         ('C1/C3', 'C1', 'C3', 'Global cap 1 versus independent owner caps 1; combined gradient bounds sqrt(2) through sqrt(5). Bounds do not describe AdamW update norms; block histories are shared across activating widths.'),
     )
+    im_only = bool(rows) and all(r['arm_id'] in INVERSE_MEMBERSHIP_ARM_IDS for r in rows)
     by_key = {(r['arm_id'], r['width']): r for r in rows}
     def comparison(left, right, width):
+        if im_only:
+            left, right = left + "-IM", right + "-IM"
         a, b = by_key.get((left, width)), by_key.get((right, width))
         if a is None or b is None:
             return {'left': left, 'right': right, 'width': width, 'status': 'missing endpoints'}
@@ -1777,8 +1821,9 @@ def _comparison_interpretations(rows):
                 'left_optimizer_storage': a['optimizer_storage'], 'right_optimizer_storage': b['optimizer_storage']}
     result = [{'comparison': name, 'interpretation': explanation,
                'measurements': [comparison(left, right, w) for w in WIDTH_LABELS]} for name, left, right, explanation in explanations]
-    result.append({'comparison': 'elastic/standalone', 'interpretation': 'Each elastic width versus its matching fresh dense standalone at the same active count; per-run token budgets differ.',
-                   'measurements': [comparison(a['arm_id'], 'ST-' + w, w) for a in ELASTIC_ARMS for w in WIDTH_LABELS]})
+    if not im_only:
+        result.append({'comparison': 'elastic/standalone', 'interpretation': 'Each elastic width versus its matching fresh dense standalone at the same active count; per-run token budgets differ.',
+                       'measurements': [comparison(a['arm_id'], 'ST-' + w, w) for a in ELASTIC_ARMS for w in WIDTH_LABELS]})
     return result
 
 
@@ -1855,7 +1900,7 @@ def report_campaign(*, manifest, output_dir, allow_partial=False):
         raise ConfigError(f'Malformed frozen comparison evidence: {error}') from error
 
 
-def _validated_comparison_sources(manifest_path, *, correction):
+def _validated_comparison_sources(manifest_path, *, correction=False, schema_version=None):
     """Read both campaigns under their own immutable contracts before combining."""
     from pathlib import Path
     frozen = _read_json(manifest_path)
@@ -1866,7 +1911,7 @@ def _validated_comparison_sources(manifest_path, *, correction):
     sources.extend(s for run in frozen['runs'] for s in run['sources'])
     _check_sources(sources)
     preflight = _read_preflight_manifest(frozen['preflight_source']['path'])
-    _require_equal(preflight['schema_version'], 2 if correction else 1, 'comparison campaign schema')
+    _require_equal(preflight['schema_version'], schema_version if schema_version is not None else (2 if correction else 1), 'comparison campaign schema')
     _require_equal(frozen['preflight_manifest_hash'], preflight['manifest_hash'], 'frozen preflight hash')
     _require_equal(frozen['campaign_id'], preflight['campaign_id'], 'frozen campaign identity')
     definitions = {r['arm_id']: r for r in preflight['runs']}
@@ -1881,7 +1926,7 @@ def _validated_comparison_sources(manifest_path, *, correction):
     return frozen, preflight, sources, _endpoint_table(frozen, preflight)
 
 
-def loss_progress_figure(runs):
+def loss_progress_figure(runs, *, include_slicing=False):
     """Stream only ordinary-validation rows; retain every recorded update."""
     import csv
     import math
@@ -1891,11 +1936,11 @@ def loss_progress_figure(runs):
 
     figure = Figure(figsize=(14, 10))
     axes = figure.subplots(2, 2, sharex=True)
-    colors = {'C1': '#009E73', 'C2': '#CC79A7', 'C3': '#D55E00'}
+    colors = {'S1': '#0072B2', 'S2': '#E69F00', 'C1': '#009E73', 'C2': '#CC79A7', 'C3': '#D55E00'}
     data = {}
     for run in runs:
         arm = run['arm_id']
-        if arm.startswith('ST-') or arm.startswith('S'):
+        if arm.startswith('ST-') or (arm.startswith('S') and not include_slicing):
             continue
         curves = {w: ([], []) for w in WIDTH_LABELS}
         with (Path(run['run_dir']) / 'metrics.csv').open() as handle:
@@ -1916,8 +1961,8 @@ def loss_progress_figure(runs):
             x, y = curves[width]
             if not x:
                 raise ConfigError(f'{arm}: missing validation progress for {width}')
-            ax.plot(x, y, color=colors[arm[:2]], linestyle={'none': '-', 'GMC': '--', 'LMC': ':'}[mode],
-                    linewidth=1.1, label=f'{arm[:2]} ({mode})')
+            ax.plot(x, y, color=colors[arm[:2]], linestyle={'none': '-', 'GMC': '--', 'LMC': ':', 'IM': '--'}[mode],
+                    linewidth=1.1, label=f'{arm[:2]} ({"uniform" if include_slicing and mode == "none" else mode})')
             ax.set(title=width, xlabel='Committed optimizer updates', ylabel='Loss')
             ax.grid(alpha=.2)
             ax.set_xlim(0, 4 * UPDATES_PER_EPOCH)
@@ -1972,3 +2017,65 @@ def report_correction_comparison(*, manifest, reference_manifest, output_dir):
         write_json_artifact(stage / 'comparison_report.json', report)
         return report
     return _publish_directory(output_dir, publish)
+
+
+def report_inverse_membership_comparison(*, manifest, reference_manifest, output_dir):
+    """Validate 20 fixed-IM + 24 historical endpoints under their own contracts."""
+    import csv
+    current_frozen, current, sources, rows = _validated_comparison_sources(manifest, schema_version=3)
+    old_frozen, reference, old_sources, baseline = _validated_comparison_sources(reference_manifest, schema_version=1)
+    sources += old_sources
+    for row in baseline:
+        row['historical_reference'] = True
+    rows += baseline
+    _require_equal(len(rows), 44, 'IM comparison endpoint count')
+    comparisons, exposures = [], []
+    by_key = {(r['arm_id'], r['width']): r for r in rows}
+    _require_equal(len(by_key), 44, 'IM unique endpoint count')
+    for arm in INVERSE_MEMBERSHIP_ARMS:
+        name, ref = arm['arm_id'], arm['reference_arm_id']
+        _require_equal(current['expected_traces'][name]['epochs'], reference['expected_traces'][ref]['epochs'], 'paired epoch/batch traces')
+        # Action streams intentionally differ between policies; each freeze has
+        # already validated equality against its own expected sequence.
+        for width in WIDTH_LABELS:
+            a, b = by_key[name, width], by_key[ref, width]
+            for field in ('evaluation_role', 'validation_manifest_hash', 'evaluation_protocol_hash',
+                          'validation_loss_aggregation', 'evaluation_target_tokens', 'non_embedding_parameters',
+                          'assigned_updates', 'assigned_tokens', 'actual_updates', 'actual_tokens'):
+                _require_equal(a[field], b[field], f'{name}/{ref}.{field}')
+            comparisons.append({'arm_id': name, 'reference_arm_id': ref, 'width': width,
+                                'loss_delta': a['loss']-b['loss'], 'perplexity_delta': a['perplexity']-b['perplexity']})
+        exposures.append({'arm_id': name, 'reference_arm_id': ref,
+            'fixed_im_width_selections': a['width_selection_counts'], 'uniform_width_selections': b['width_selection_counts'],
+            'fixed_im_block_activations': a['quarter_activation_counts'], 'uniform_block_activations': b['quarter_activation_counts'],
+            'fixed_im_expected_block_probabilities': [1., .88, .72, .48],
+            'uniform_expected_block_probabilities': [1., .75, .5, .25],
+            'fixed_im_resources': a['resources'], 'uniform_resources': b['resources'],
+            'fixed_im_optimizer_storage': a['optimizer_storage'], 'uniform_optimizer_storage': b['optimizer_storage'],
+            'fixed_im_checkpoint_bytes': a['checkpoint_bytes'], 'uniform_checkpoint_bytes': b['checkpoint_bytes']})
+    all_runs = current_frozen['runs'] + old_frozen['runs']
+    def publish(stage, output):
+        report = {'schema_version': 1, 'status': 'complete', 'endpoints': rows, 'comparisons': comparisons,
+                  'exposure_comparisons': exposures, 'sources': sources, 'figures': [],
+                  'paired_epoch_traces_verified': True, 'holdout_evaluated': False,
+                  'interpretation_scope': 'Descriptive seed-42 observations. IM minus uniform isolates the sampling change within each arm. Between arms, representation changes inactive-tail momentum/decay, histories and clipping differ. C3 uses independent owner caps, C1/C2 global clipping. Equal training tokens do not imply equal FLOPs or runtime: IM selects wider models more often. Gradient-support exposure is not actual optimizer mutation count in slicing. Resource totals retain continuation/replay and completeness caveats; no across-seed significance.'}
+        write_json_artifact(stage/'optimizer_ownership_endpoints.json', {'status':'complete','endpoints':rows})
+        for name, values in (('optimizer_ownership_endpoints', rows), ('inverse_membership_deltas', comparisons)):
+            with (stage/(name+'.csv')).open('w', newline='') as handle:
+                writer=csv.DictWriter(handle, fieldnames=list(values[0])); writer.writeheader()
+                writer.writerows({k:endpoint_csv_value(v) for k,v in r.items()} for r in values)
+        write_json_artifact(stage/'inverse_membership_deltas.json', comparisons)
+        for metric in ('loss','perplexity'):
+            figure=endpoint_figure(rows,metric=metric,partial=False)
+            for suffix in ('png','pdf'):
+                name=f'optimizer_ownership_{metric}_vs_non_embedding_parameters.{suffix}'
+                figure.savefig(stage/name); report['figures'].append(str(output/name))
+        figure, report['progress_coverage']=loss_progress_figure(all_runs,include_slicing=True)
+        for suffix in ('png','pdf'):
+            name=f'optimizer_ownership_validation_loss_progress.{suffix}'
+            figure.savefig(stage/name); report['figures'].append(str(output/name))
+        report['clipping']={r['arm_id']:r['observations']['clipping_by_width'] for r in all_runs}
+        _check_sources(sources)
+        write_json_artifact(stage/'comparison_report.json',report)
+        return report
+    return _publish_directory(output_dir,publish)

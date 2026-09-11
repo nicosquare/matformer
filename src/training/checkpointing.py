@@ -1563,7 +1563,7 @@ def _save_model_checkpoint_rank_zero(
     else:
         gradient_interference_state = None
     global_sampling_state = run_state.get("global_sampling_state")
-    if uses_uniform_global_sampling_windows(config):
+    if uses_global_sampling_state(config):
         global_sampling_state = validate_global_sampling_state(
             global_sampling_state,
             config=config,
@@ -2401,6 +2401,26 @@ def uses_uniform_global_sampling_windows(config: Mapping[str, Any]) -> bool:
     )
 
 
+def uses_ownership_fixed_sampling(config: Mapping[str, Any]) -> bool:
+    """New ownership campaigns retain compact exposure state; legacy fixed runs do not."""
+    return bool(config.get("optimizer_ownership_contract")
+                and config.get("model", {}).get("granularity_sampling_mode") == "fixed_global"
+                and config.get("run", {}).get("sampling_mode") == "nested-random")
+
+
+def uses_global_sampling_state(config: Mapping[str, Any]) -> bool:
+    return uses_uniform_global_sampling_windows(config) or uses_ownership_fixed_sampling(config)
+
+
+def _fixed_sampling_state_identity(config):
+    model = config["model"]
+    return {
+        "sampling_policy": "fixed_inverse_membership",
+        "ordered_widths": list(model["granularities"]),
+        "probabilities": [model["global_sampling_distribution"][w] for w in model["granularities"]],
+    }
+
+
 def _balanced_cycle_base_permutation(
     config: Mapping[str, Any],
     *,
@@ -2451,7 +2471,7 @@ def _balanced_cycle_permutation(
 def build_initial_global_sampling_state(
     config: Mapping[str, Any],
 ) -> dict[str, Any] | None:
-    if not uses_uniform_global_sampling_windows(config):
+    if not uses_global_sampling_state(config):
         return None
     model = config["model"]
     granularities = [str(label) for label in model.get("granularities", [])]
@@ -2480,6 +2500,7 @@ def build_initial_global_sampling_state(
             "exposure_counts": {label: 0 for label in granularities},
         }
     return {
+        **(_fixed_sampling_state_identity(config) if uses_ownership_fixed_sampling(config) else {}),
         "schema_version": 1,
         "interval_steps": int(model.get("global_sampling_interval_steps", 1)),
         "held_granularity": None,
@@ -2497,7 +2518,7 @@ def validate_global_sampling_state(
 ) -> dict[str, Any] | None:
     """Validate compact continuation state for IID or balanced global windows."""
 
-    if not uses_uniform_global_sampling_windows(config):
+    if not uses_global_sampling_state(config):
         if state is not None:
             raise ConfigError(
                 "global sampling window state is valid only for nested-random "
@@ -2506,6 +2527,15 @@ def validate_global_sampling_state(
         return None
     if not isinstance(state, Mapping):
         raise ConfigError("Checkpoint global sampling window state is missing")
+
+    if uses_ownership_fixed_sampling(config):
+        for key, expected in _fixed_sampling_state_identity(config).items():
+            if state.get(key) != expected:
+                raise ConfigError(f"Checkpoint fixed sampling {key} does not match config")
+        if config["model"].get("global_sampling_interval_steps", 1) != 1:
+            raise ConfigError("Ownership fixed sampling requires H=1")
+    elif any(key in state for key in ("sampling_policy", "ordered_widths", "probabilities")):
+        raise ConfigError("Fixed sampling state cannot be restored as uniform")
 
     expected_schedule = str(
         config["model"].get(
@@ -3374,7 +3404,7 @@ def load_checkpoint_state(
     elif config is not None:
         gradient_interference_state = None
     global_sampling_state = checkpoint.get("global_sampling_state")
-    if config is not None and uses_uniform_global_sampling_windows(config):
+    if config is not None and uses_global_sampling_state(config):
         global_sampling_state = validate_global_sampling_state(
             global_sampling_state,
             config=config,
@@ -3928,7 +3958,8 @@ def _load_ownership_checkpoint(payload, path, config, model, optimizer, schedule
         counts = dict.fromkeys(widths, 0)
         last = None
         for _ in range(payload['step']):
-            last = widths[generator.randrange(len(widths))]
+            last = (generator.choices(widths, weights=[config['model']['global_sampling_distribution'][w] for w in widths], k=1)[0]
+                    if uses_ownership_fixed_sampling(config) else widths[generator.randrange(len(widths))])
             counts[last] += 1
         if counts != sampling['exposure_counts'] or last != sampling['held_granularity']:
             raise ConfigError('Campaign action trace does not match its seeded ordinal')
