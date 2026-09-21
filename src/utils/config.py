@@ -844,7 +844,7 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
     campaign_arm_output = (
         isinstance(run.get("campaign_id"), str)
         and run["campaign_id"].startswith("tinystories-optimizer-ownership-")
-        and run.get("arm_id") in {"ST-g250", "ST-g500", "ST-g750", "ST-g1000", "S1", "S2", "C1", "C2", "C3",
+        and run.get("arm_id") in {"ST-g125", "ST-g250", "ST-g500", "ST-g750", "ST-g1000", "S1", "S2", "C1", "C2", "C3",
                                   "C1-GMC", "C1-LMC", "C2-GMC", "C2-LMC", "C3-GMC", "C3-LMC",
                                   "S1-IM", "S2-IM", "C1-IM", "C2-IM", "C3-IM"}
         and run_id == f"{run['campaign_id']}-{run['arm_id']}-s{run.get('seed')}"
@@ -919,6 +919,11 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
     if len(set(granularities)) != len(granularities):
         raise ConfigError("model.granularities must contain unique labels")
 
+    topology = _validate_matformer_campaign_topology(config)
+    if topology is not None:
+        training["optimizer_state_topology"] = topology
+    elif "optimizer_state_topology" in training:
+        raise ConfigError("optimizer_state_topology requires a validated campaign")
     optimizer_state_eligibility = _validate_optimizer_state_eligibility(config)
     if isinstance(training, dict):
         training["optimizer_state_eligibility"] = optimizer_state_eligibility
@@ -4448,6 +4453,63 @@ def _resolve_optimizer_state_contract(config: dict[str, Any]) -> None:
     }
 
 
+def _validate_matformer_campaign_topology(config: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Admit only the declared schema-4 layout, never an arbitrary unequal grid."""
+    from src.evaluation.optimizer_ownership import (
+        MATFORMER_CAMPAIGN_ID, campaign_arm, campaign_common, campaign_topology,
+        _require_equal,
+    )
+
+    from src.utils.reproducibility import stable_hash
+
+    run, model, training = config["run"], config["model"], config["training"]
+    marker = run.get("campaign_schema_version")
+    contract = config.get("optimizer_ownership_contract", {})
+    if marker is None:
+        if any(key in contract for key in ("campaign_schema_version", "width_grid", "block_boundaries")) or run.get("campaign_id") == MATFORMER_CAMPAIGN_ID:
+            raise ConfigError("Missing run.campaign_schema_version for MatFormer campaign")
+        return None
+    if type(marker) is not int or marker != 4:
+        raise ConfigError("Unsupported run.campaign_schema_version")
+    _require_equal(run.get("campaign_id"), MATFORMER_CAMPAIGN_ID, "campaign_id")
+    arm = campaign_arm(marker, run.get("arm_id"))
+    common = campaign_common(marker)["model"]
+    for key in ("d_model", "num_layers", "num_attention_heads", "granularity_mode"):
+        _require_equal(model.get(key), common[key], f"model.{key}")
+    _require_equal(model.get("intermediate_size"), arm["physical_ffn_dimension"], "model.intermediate_size")
+    _require_equal(run.get("model_family"), arm["model_family"], "run.model_family")
+    _require_equal(model.get("variant"), "slicing" if arm["source_width"] else arm["representation"], "model.variant")
+    _require_equal(training.get("optimizer_state_scope"), arm["state_scope"], "optimizer_state_scope")
+    _require_equal(model.get("correction_mode"), "none", "model.correction_mode")
+    clipping = training.get("gradient_clipping", {})
+    _require_equal(clipping.get("mode"), arm["clipping_mode"], "gradient_clipping.mode")
+    _require_equal(clipping.get("norm_type"), 2., "gradient_clipping.norm_type")
+    _require_equal(training.get("gradient_clip_norm"), 1., "gradient_clip_norm")
+    if arm["clipping_mode"] == "per_owner":
+        _require_equal(clipping.get("owner_max_norms"), dict.fromkeys(("O-A", "O-B", "O-C", "O-D", "O-common"), 1.), "owner_max_norms")
+    if arm["source_width"]:
+        width = arm["source_width"]
+        _require_equal(run.get("granularity"), width, "run.granularity")
+        _require_equal(model.get("granularities"), [width], "dense granularities")
+        _require_equal(model.get("granularity_prefixes"), {width: 1.}, "dense local fraction")
+        _require_equal(model.get("matformer_source_intermediate_size"), 256, "dense source dimension")
+        _require_equal(model.get("matformer_source_granularity_prefixes"), common["granularity_prefixes"], "dense source fractions")
+    else:
+        _require_equal(model.get("granularities"), common["granularities"], "model.granularities")
+        _require_equal(model.get("granularity_prefixes"), common["granularity_prefixes"], "model.granularity_prefixes")
+        _require_equal(run.get("sampling_mode"), "nested-random", "run.sampling_mode")
+        for key, expected in (("granularity_sampling_mode", "global"), ("global_sampling_schedule", "random_with_replacement"), ("global_sampling_interval_steps", 1)):
+            _require_equal(model.get(key), expected, f"model.{key}")
+    import json
+    topology = json.loads(json.dumps(campaign_topology(marker)))
+    if "optimizer_state_topology" in training:
+        _require_equal(stable_hash(training["optimizer_state_topology"]), stable_hash(topology), "optimizer_state_topology")
+    if contract:
+        for key, expected in topology.items():
+            _require_equal(stable_hash(contract.get(key)), stable_hash(expected), key)
+    return topology
+
+
 def _validate_optimizer_state_eligibility(
     config: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -4490,7 +4552,7 @@ def _validate_optimizer_state_eligibility(
             "model.granularity_sampling_mode=global or fixed_global": model.get("granularity_sampling_mode") in {"global", "fixed_global"},
             "model.global_sampling_schedule=random_with_replacement": model.get("global_sampling_schedule") == "random_with_replacement",
             "model.global_sampling_interval_steps=1": model.get("global_sampling_interval_steps") == 1,
-            "four equal FFN quarters": len(ordered_labels) == 4 and [prefixes.get(g) for g in ordered_labels] == [.25, .5, .75, 1.] and int(model["intermediate_size"]) % 4 == 0,
+            "four equal FFN quarters or validated campaign topology": _validate_matformer_campaign_topology(config) is not None or (len(ordered_labels) == 4 and [prefixes.get(g) for g in ordered_labels] == [.25, .5, .75, 1.] and int(model["intermediate_size"]) % 4 == 0),
             "training.optimizer.name=adamw": training.get("optimizer_name") == "adamw",
             "single process and distributed.strategy=none": effective_world_size == 1 and distributed.get("expected_world_size", 1) == 1 and distributed.get("strategy", "none") == "none",
             "disabled pre_nested_warmup": not training.get("pre_nested_warmup", {}).get("enabled", False),

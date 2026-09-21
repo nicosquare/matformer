@@ -946,14 +946,16 @@ def train_for_steps(
     elif (
         training.get("gradient_clipping")
         and config["model"].get("variant") == "concat"
-        and tuple(
+        and (training.get("optimizer_state_topology") is not None or tuple(
             config["model"].get("granularity_prefixes", {}).get(width)
             for width in granularities
-        ) == (0.25, 0.5, 0.75, 1.0)
+        ) == (0.25, 0.5, 0.75, 1.0))
     ):
         # Quarter observations apply to the campaign topology. Other supported
         # concat layouts still use their ordinary single global clipping vector.
-        clipping_owners = build_concat_parameter_partition(model, ordered_widths=granularities)
+        clipping_owners = build_concat_parameter_partition(
+            model, ordered_widths=granularities, topology=training.get("optimizer_state_topology")
+        )
     if isinstance(optimizer, BlockOptimizerCollection):
         if run_state.get("update_in_flight") or run_state.get("optimizer_poisoned"):
             raise ConfigError("Cannot train with an unsafe block optimizer state")

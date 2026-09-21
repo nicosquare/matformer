@@ -108,39 +108,61 @@ class ParameterOwner:
     active_widths: tuple[str, ...]
 
 
-def _validate_concat_quarters(module: CatLlamaMLP, widths: tuple[str, ...]) -> None:
+def _validate_concat_quarters(module: CatLlamaMLP, widths: tuple[str, ...], topology=None) -> None:
     blocks = module.ffn_concat_block_metadata
-    quarter_size, remainder = divmod(module.intermediate_size, 4)
-    if remainder or quarter_size <= 0 or len(blocks) != 4 or any(
-        block["block_width"] != quarter_size for block in blocks
-    ):
-        raise ConfigError("Concat ownership requires four equal quarters")
+    if topology is None:
+        quarter_size, remainder = divmod(module.intermediate_size, 4)
+        if remainder or quarter_size <= 0 or len(blocks) != 4 or any(
+            block["block_width"] != quarter_size for block in blocks
+        ):
+            raise ConfigError("Concat ownership requires four equal quarters")
+        sizes = [quarter_size] * 4
+        fractions = [(index + 1) / 4 for index in range(4)]
+    else:
+        from src.evaluation.optimizer_ownership import campaign_topology, _require_equal
+        from src.utils.reproducibility import stable_hash
+        _require_equal(stable_hash(topology), stable_hash(campaign_topology(4)), "concat campaign topology")
+        _require_equal(list(widths), [w["label"] for w in topology["width_grid"]], "concat width order")
+        _require_equal(module.intermediate_size, 256, "concat full dimension")
+        sizes = [b["dimension"] for b in topology["block_boundaries"]]
+        fractions = [w["source_fraction"] for w in topology["width_grid"]]
+        _require_equal([b["block_width"] for b in blocks], sizes, "concat block dimensions")
+        ends = [b["end"] for b in topology["block_boundaries"]]
+        _require_equal([b["prefix_width"] for b in blocks], ends, "concat block prefixes")
+        _require_equal([b["cumulative_prefix_width"] for b in blocks], ends, "concat cumulative prefixes")
+        _require_equal([b["prefix_width"] for b in module.ffn_prefix_metadata], ends, "concat active dimensions")
     if tuple(entry["name"] for entry in module.ffn_prefix_metadata) != widths:
         raise ConfigError("Concat ownership width order must match FFN metadata")
-    for index, width in enumerate(widths):
-        if module.granularity_prefixes[width] != (index + 1) / 4:
-            raise ConfigError("Concat ownership widths must select equal quarter prefixes")
+    for width, fraction in zip(widths, fractions):
+        if module.granularity_prefixes[width] != fraction:
+            raise ConfigError("Concat ownership widths must select declared prefixes")
     hidden_size = module.config.hidden_size
+    if topology is not None and hidden_size != 64:
+        raise ConfigError("Concat campaign hidden size must be 64")
     for component in ("gate_weight", "up_weight", "down_weight", "gate_bias", "up_bias"):
         parameters = getattr(module, f"{component}_blocks")
         optional = component.endswith("bias")
         if len(parameters) != 4 and not (optional and len(parameters) == 0):
             raise ConfigError(f"Concat {component} requires four parameter blocks")
-        shape = (
-            (quarter_size,) if optional else
-            (hidden_size, quarter_size) if component == "down_weight" else
-            (quarter_size, hidden_size)
-        )
-        if any(tuple(parameter.shape) != shape for parameter in parameters):
-            raise ConfigError(f"Concat {component} block shape must be {shape}")
+        for parameter, size in zip(parameters, sizes):
+            shape = ((size,) if optional else
+                     (hidden_size, size) if component == "down_weight" else
+                     (size, hidden_size))
+            if tuple(parameter.shape) != shape:
+                raise ConfigError(f"Concat {component} block shape must be {shape}")
     if module.down_bias is not None and tuple(module.down_bias.shape) != (hidden_size,):
         raise ConfigError("Concat common down bias shape must match hidden size")
+    for entry in module.physical_parameter_metadata():
+        expected = widths[entry.block_index:] if entry.block_index is not None else widths
+        if entry.parameter.requires_grad and tuple(entry.gradient_support) != expected:
+            raise ConfigError("Concat parameter support must be a contiguous declared prefix")
 
 
 def build_concat_parameter_partition(
     model: torch.nn.Module,
     *,
     ordered_widths: Sequence[str],
+    topology: Mapping[str, Any] | None = None,
 ) -> tuple[ParameterOwner, ...]:
     """Validate and partition trainable concat tensors without optimizer state.
 
@@ -155,8 +177,10 @@ def build_concat_parameter_partition(
     ffns = [module for module in model.modules() if isinstance(module, LlamaMLP)]
     if not ffns or any(not isinstance(module, CatLlamaMLP) for module in ffns):
         raise ConfigError("Five-way FFN ownership requires concat FFNs throughout")
+    if topology is not None and len(ffns) != 4:
+        raise ConfigError("Concat campaign requires four FFN layers")
     for module in ffns:
-        _validate_concat_quarters(module, widths)
+        _validate_concat_quarters(module, widths, topology)
     descriptors = build_parameter_descriptors(model, ordered_widths=widths)
     parameters = dict(model.named_parameters())
     owners = []
@@ -307,6 +331,11 @@ class PerGranularityOptimizerCollection:
                 "training.optimizer_state_contract.ordered_granularities must be a list"
             )
         canonical_labels = [str(label) for label in labels]
+        if training.get("optimizer_state_topology") is not None and any(
+            isinstance(module, CatLlamaMLP) for module in model.modules()
+        ):
+            build_concat_parameter_partition(model, ordered_widths=canonical_labels,
+                                             topology=training["optimizer_state_topology"])
         parameters = _ordered_model_parameters(model)
         entries = [
             WidthOptimizerEntry(
@@ -629,7 +658,8 @@ class BlockOptimizerCollection:
         if clipping.get('mode') != 'per_owner':
             raise ConfigError('Block optimizer ownership requires per_owner clipping')
         owners = build_concat_parameter_partition(
-            model, ordered_widths=training['optimizer_state_contract']['ordered_granularities']
+            model, ordered_widths=training['optimizer_state_contract']['ordered_granularities'],
+            topology=training.get('optimizer_state_topology'),
         )
         caps = clipping.get('owner_max_norms', {})
         if set(caps) != {owner.owner_id for owner in owners} or any(

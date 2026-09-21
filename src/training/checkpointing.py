@@ -3935,7 +3935,7 @@ def _validate_ownership_payload(payload, config, model, optimizer, scheduler, *,
                 raise ValueError('metrics watermark exceeds or differs from committed work')
             from src.training.optimizer_state import _validate_finite_values
             _validate_finite_values(metrics, 'campaign metrics')
-            StreamingMetricsAccumulator(metrics, ordered_attempts=True)
+            StreamingMetricsAccumulator(metrics, ordered_attempts=True, campaign_contract=config.get("optimizer_ownership_contract"))
         except (ValueError, TypeError, KeyError) as error:
             raise ConfigError(f'Campaign metrics state invalid: {error}') from error
     watermark = payload.get('resource_ledger_watermark')
@@ -3995,7 +3995,7 @@ def _load_ownership_checkpoint(payload, path, config, model, optimizer, schedule
     from src.utils.metrics import StreamingMetricsAccumulator
     metrics = payload.get('metrics_accumulator_state')
     state['metrics_accumulator_state'] = (
-        copy.deepcopy(StreamingMetricsAccumulator(metrics, ordered_attempts=True).state_dict())
+        copy.deepcopy(StreamingMetricsAccumulator(metrics, ordered_attempts=True, campaign_contract=config.get("optimizer_ownership_contract")).state_dict())
         if metrics is not None else None)
     if validated_sign_dynamics_state is not None:
         state['sign_dynamics_state'] = sign_dynamics_runtime.state_dict(copy_tensors=False)

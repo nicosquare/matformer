@@ -2500,11 +2500,13 @@ def _resource_attempt_observer(config, device, *, started_at, source_checkpoint)
 
 def build_ownership_run_summary(config, model, optimizer, state):
     """Keep measured allocation, operational costs and scientific exposure distinct."""
-    from src.training.optimizer_state import measure_optimizer_storage
+    from src.training.optimizer_state import measure_optimizer_storage, build_parameter_descriptors
     from src.models.ffn import CatLlamaMLP
-    from src.evaluation.optimizer_ownership import WIDTH_LABELS
+    from src.evaluation.optimizer_ownership import campaign_widths
 
     contract = config['optimizer_ownership_contract']
+    widths = campaign_widths(contract.get('campaign_schema_version', 1))
+    width_labels = tuple(w['label'] for w in widths)
     step = int(state['last_completed_step'])
     resources = dict(state.get('resource_summary') or {
         'elapsed_seconds': None, 'attempted_steps': None,
@@ -2522,13 +2524,26 @@ def build_ownership_run_summary(config, model, optimizer, state):
     layout_bytes = {width: sum(entry.parameter.numel() * entry.parameter.element_size()
         for module in concat for entry in module.physical_parameter_metadata()
         if width in entry.gradient_support and entry.block_index is not None)
-        for width in WIDTH_LABELS} if concat else {}
+        for width in width_labels} if concat else {}
     reconciled = build_optimizer_state_summary_fields(config, run_state=state)['optimizer_accounting_reconciled']
     checkpoint = state.get('latest_checkpoint_path')
     checkpoint_fields = build_optimizer_state_summary_fields(config, run_state=state, checkpoint_path=checkpoint)
     elastic = not contract['arm_id'].startswith('ST-')
     fixed = config['model'].get('granularity_sampling_mode') == 'fixed_global'
-    probabilities = [config['model']['global_sampling_distribution'][w] for w in WIDTH_LABELS] if fixed else [.25]*4
+    probabilities = [config['model']['global_sampling_distribution'][w] for w in width_labels] if fixed else [.25]*4
+    descriptors = build_parameter_descriptors(model, ordered_widths=config['model']['granularities'])
+    scope = config['training']['optimizer_state_scope']
+    selections = state['optimizer_width_selection_counts']
+    fully_exposed = 2 * sum(d['scalar_count'] * (len(d['gradient_support']) if scope == 'per_granularity' else 1)
+                            for d in descriptors if d['trainable'])
+    observed_expected = 2 * sum(d['scalar_count'] * (
+        sum(selections.get(w, 0) > 0 for w in d['gradient_support']) if scope == 'per_granularity'
+        else int(any(selections.get(w, 0) > 0 for w in d['gradient_support'])))
+        for d in descriptors if d['trainable'])
+    storage = measure_optimizer_storage(optimizer, step=step)
+    storage.update(expected_fully_exposed_moment_elements=fully_exposed,
+                   expected_observed_moment_elements=observed_expected,
+                   expectation_method='twice physical parameter elements times exposed supported histories')
     return {
         'optimizer_ownership_schema_version': 1,
         'optimizer_ownership': {
@@ -2548,10 +2563,12 @@ def build_ownership_run_summary(config, model, optimizer, state):
             'accounting_reconciled': reconciled,
             'expected_exposure': {
                 'label': ('fixed inverse-membership replacement expectation; realized counts are random' if fixed else 'uniform replacement expectation; realized counts are random'),
-                'width_selections': {w: step*p for w,p in zip(WIDTH_LABELS, probabilities)} if elastic else {},
+                'width_selections': {w: step*p for w,p in zip(width_labels, probabilities)} if elastic else {},
                 'quarter_activations': {f'O-{q}': step * sum(probabilities[i:]) for i, q in enumerate('ABCD')} if elastic else {},
             },
-            'storage': measure_optimizer_storage(optimizer, step=step),
+            'storage': storage,
+            **({'source_width': next(w for w in widths if w['label'] == contract['arm_id'][3:])}
+               if not elastic and contract.get('campaign_schema_version') == 4 else {}),
             'temporary_concat_storage': {'method': 'active FFN parameter layout bytes; estimate only',
                 'bytes_by_width': layout_bytes, 'includes_backward_temporaries': False,
                 'is_device_peak_measurement': False},
