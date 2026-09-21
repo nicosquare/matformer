@@ -1,9 +1,11 @@
 # Quickstart: Feature 015
 
-**Planning output only.** The new recipe, scripts, flags and test suites below
-are planned interfaces. Implementation and GPU execution require later conversation
-authorization. No Feature 015 counts, readiness gates, terminal results or Slurm
-jobs are claimed by this document. Next workflow: `/speckit-tasks`.
+**Implementation interfaces available.** Phase 5 and required reporting
+prerequisites are implemented; exact local CPU results are in [verification.md](verification.md).
+Execution preparation, GPU diagnostics and production T034–T037 were explicitly
+authorized on 2026-09-21. Real-input preflight has passed; operational readiness
+and production status are tracked in the verification ledger. No production terminal or
+actual 24/28-point result is claimed by these fixture checks.
 
 ## 1. Implement and verify the scientific changes
 
@@ -70,8 +72,8 @@ MW_REFERENCE=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/re
 Preflight verifies nine definitions, dimensions/counts, pinned corpus/tokenizer and
 role hashes, designated membership/excluded tail, budgets and full deterministic
 traces. The CPU runner snapshots source and executes acceptance checks against
-that snapshot. Preparation verifies existing evidence rather than replacing its
-hashes. All three commands are CPU preparation; none submit training.
+that snapshot through a separate writable diagnostic workspace. Preparation
+verifies existing evidence rather than replacing its hashes. All three commands are CPU preparation; none submit training.
 
 Inspect `campaign/campaign_manifest.json`, `campaign/preflight.json`, nine configs,
 the source snapshot manifest and `diagnostics/cpu-gate.json`. Fresh runs cannot
@@ -80,7 +82,7 @@ the later combined report, not the new campaign's independent validity.
 
 ## 3. Run authorized GPU diagnostics through Slurm
 
-Check live user-wide limits before this submission. The planned launcher/preflight
+Check live user-wide limits before this submission. The launcher/preflight
 contract requires the same check for automated submissions; this manual example
 must also be admitted within two running/four submitted or stricter live limits.
 Use an allowed partition/QoS confirmed at execution time; the inherited candidates
@@ -98,7 +100,9 @@ sbatch --partition=cscc-gpu-p --qos=cscc-gpu-qos \
 
 Retain the submission command and job ID. Resource requests are initial diagnostic
 requests to validate during implementation, not promised runtime requirements.
-The runner checks all nine model definitions at real shape/batch/bf16 plus
+The runner stops each of the nine real-shape batch-64/context-128/bf16 probes
+at four updates and resumes to eight while retaining full scheduler horizons.
+It also runs
 explicit small-epoch uninterrupted/resumed probes, semantic coverage of every
 elastic width, clipping sidecars, invalid restores and partial failures. Distinct
 probe identities and overrides stay under diagnostics. Readiness requires a
@@ -107,7 +111,7 @@ config set and preflight manifest. A job being submitted is not a passed gate.
 
 ## 4. Execute the staged campaign after gates pass
 
-From the verified snapshot, use the planned queue command; `--once` performs one
+From the verified snapshot, use the queue command; `--once` performs one
 admission/reconciliation cycle, while omission continues the campaign monitor:
 
 ```bash

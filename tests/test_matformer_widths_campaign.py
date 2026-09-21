@@ -458,13 +458,13 @@ def test_unequal_partition_and_independent_clipping(bias, tied):
         build_concat_parameter_partition(model, ordered_widths=LABELS, topology=campaign.campaign_topology(4))
 
 
-def mw_runtime(tmp_path, arm):
+def mw_runtime(tmp_path, arm, *, device='cpu'):
     """Real campaign geometry with explicit small CPU diagnostic controls."""
     import torch
     from test_optimizer_ownership import runtime_fixture
     from src.training import steps, checkpointing
     scope = 'per_ffn_block' if arm == 'C3' else 'per_granularity' if arm in ('S2', 'C2') else 'shared'
-    config, _, _, _, batches, _ = runtime_fixture(tmp_path, scope='shared')
+    config, _, _, _, batches, _ = runtime_fixture(tmp_path, scope='shared', device=device)
     config['run'].update(run_id=f'{campaign.MATFORMER_CAMPAIGN_ID}-{arm}-s42',
         campaign_id=campaign.MATFORMER_CAMPAIGN_ID, arm_id=arm, campaign_schema_version=4)
     config['model'].update(d_model=64, num_layers=4, intermediate_size=256,
@@ -472,6 +472,7 @@ def mw_runtime(tmp_path, arm):
     config['training'].update(optimizer_state_scope=scope,
         optimizer_state_topology=campaign.campaign_topology(4),
         gradient_clipping={**mw_training(scope)['gradient_clipping'], 'norm_type': 2.})
+    config['training']['optimizer']['state_scope'] = scope
     config['training']['optimizer_state_contract'].update(state_scope=scope, ordered_granularities=list(LABELS))
     contract = dict(schema_version=1, arm_id=arm, campaign_id=campaign.MATFORMER_CAMPAIGN_ID,
         representation='concat', state_scope=scope, **campaign.campaign_topology(4))
@@ -480,7 +481,7 @@ def mw_runtime(tmp_path, arm):
     config['model']['variant'] = 'slicing' if arm.startswith('S') else 'concat'
     contract['representation'] = config['model']['variant']
     config['optimizer_ownership_contract_hash'] = stable_hash(contract)
-    model = mw_model(config['model']['variant'])
+    model = mw_model(config['model']['variant']).to(device)
     optimizer, clock = steps.build_optimizer_and_scheduler(model, config['training'])
     state = checkpointing.build_initial_continuation_state(config)
     return config, model, optimizer, clock, batches, state
@@ -655,3 +656,262 @@ def test_new_owner_coefficient_is_independent_of_common_gradient():
     assert results[0]['groups']['O-A'] == results[1]['groups']['O-A']
     assert results[0]['groups']['O-common']['coefficient'] == 1.
     assert results[0]['groups']['O-common']['active'] is True
+
+
+def mw_resume_fixture(tmp_path, arm='C3', *, device=None):
+    """Explicit diagnostic identity, real geometry and a two-update epoch."""
+    import torch
+    from transformers import LlamaForCausalLM
+    from src.training import checkpointing as cp, steps
+    from src.training.packed_corpus import RepeatingNoPaddingDistributedBatchSampler, REPEATED_EPOCH_ORDER_VERSION
+    from src.utils.reproducibility import seed_training_randomness
+    import os
+    device = device or os.environ.get('MATFORMER_DIAGNOSTIC_DEVICE', 'cpu')
+    bundle = list(mw_runtime(tmp_path, arm, device=device))
+    config, model = bundle[:2]
+    config['run']['run_id'] = f'mw-diagnostic-{arm}'
+    config['run']['output_dir'] = str(tmp_path / config['run']['run_id'])
+    config['optimizer_ownership_contract']['run_id'] = config['run']['run_id']
+    if arm.startswith('ST-'):
+        width = next(w for w in campaign.campaign_widths(4) if w['label'] == arm[3:])
+        model_config = copy.deepcopy(model.config)
+        model_config.intermediate_size = width['active_ffn_dimension']
+        model = LlamaForCausalLM(model_config)
+        config['run'].update(model_family='standalone', sampling_mode='standalone', source_granularity=arm[3:])
+        config['model'].update(granularities=[arm[3:]], granularity_prefixes={arm[3:]: 1.},
+                               granularity_sampling_mode=None, intermediate_size=model_config.intermediate_size)
+        config['training']['optimizer_state_contract']['ordered_granularities'] = [arm[3:]]
+        config['optimizer_ownership_contract'].update(representation='dense', source_width=arm[3:])
+    config['optimizer_ownership_contract_hash'] = stable_hash(config['optimizer_ownership_contract'])
+    config['dataset'].update(mode='packed_mmap', data_seed=42, optimizer_iteration={
+        'mode': 'repeat_epochs', 'epoch_order': 'deterministic_per_epoch',
+        'ordering_policy_version': REPEATED_EPOCH_ORDER_VERSION,
+        'aligned_epoch_samples': 2, 'aligned_epoch_tokens': 16,
+        'excluded_tail_samples': 1, 'excluded_tail_tokens': 8,
+    })
+    model = model.to(device)
+    bundle[1] = model
+    bundle[2:4] = steps.build_optimizer_and_scheduler(model, config['training'])
+    sampler = RepeatingNoPaddingDistributedBatchSampler(3, 1, 0, 1, planned_sample_count=8,
+        epoch_sample_count=2, corpus_hash='mw-diagnostic-corpus', optimizer_training_manifest_hash='mw-diagnostic-role')
+    dataset = [{'input_ids': torch.arange(1+i, 9+i), 'labels': torch.arange(1+i, 9+i)} for i in range(3)]
+    bundle[4] = torch.utils.data.DataLoader(dataset, batch_sampler=sampler)
+    bundle[5] = cp.build_initial_continuation_state(config)
+    seed_training_randomness(config)
+    return bundle
+
+
+@pytest.mark.parametrize('arm', [a['arm_id'] for a in campaign.campaign_arms(4)])
+@pytest.mark.parametrize('boundary', [1, 2, 3])
+def test_mw_resume_at_epoch_boundaries(tmp_path, monkeypatch, arm, boundary):
+    import test_optimizer_ownership_resume as acceptance
+    monkeypatch.setattr(acceptance, 'packed_fixture', mw_resume_fixture)
+    acceptance.test_repeating_packed_sampler_exact_batches_actions_rng_and_state(tmp_path, arm, boundary, __import__('os').environ.get('MATFORMER_DIAGNOSTIC_DEVICE', 'cpu'))
+
+
+@pytest.mark.parametrize('arm', ['S1', 'S2', 'C1', 'C2', 'C3'])
+@pytest.mark.parametrize('damage', ['missing', 'shape', 'dtype', 'negative', 'counter', 'kwargs', 'mapping', 'model', 'rng', 'clock', 'tokens', 'identity', 'purpose', 'schema', 'metrics'])
+def test_mw_corrupt_bundle_is_atomic(tmp_path, monkeypatch, arm, damage):
+    import test_optimizer_ownership_resume as acceptance
+    monkeypatch.setattr(acceptance, 'fixture', mw_resume_fixture)
+    acceptance.test_rejects_corruption_without_mutating_live_bundle(tmp_path, arm, damage)
+
+
+@pytest.mark.parametrize('damage', ['extra_history', 'owner_order', 'descriptor', 'clock_rate', 'action_rng', 'action_count', 'model_dtype', 'scope', 'representation', 'model_only', 'resource', 'epoch', 'negative_counter'])
+def test_mw_additional_restore_rejections(tmp_path, monkeypatch, damage):
+    import test_optimizer_ownership_resume as acceptance
+    monkeypatch.setattr(acceptance, 'packed_fixture', mw_resume_fixture)
+    acceptance.test_additional_campaign_rejections(tmp_path, damage)
+
+
+@pytest.mark.parametrize('damage', ['grid', 'boundary', 'probability', 'horizon', 'old_campaign', 'cursor'])
+def test_mw_physical_identity_rejection_leaves_whole_bundle_unchanged(tmp_path, damage):
+    import torch
+    from test_optimizer_ownership_resume import train, save, load
+    from test_optimizer_ownership import assert_state_equal
+    from src.utils.reproducibility import capture_rng_state
+    source = mw_resume_fixture(tmp_path)
+    train(source, stop=2)
+    path = tmp_path / 'damaged.pt'
+    save(source, path)
+    payload = torch.load(path, weights_only=False)
+    contract = payload['optimizer_ownership_contract']
+    if damage == 'grid': contract['width_grid'][0]['active_ffn_dimension'] = 64
+    elif damage == 'boundary': contract['block_boundaries'][0]['end'] = 64
+    elif damage == 'old_campaign': contract.pop('campaign_schema_version')
+    elif damage == 'probability': payload['global_sampling_state']['probabilities'] = [.1, .2, .3, .4]
+    elif damage == 'horizon': payload['ownership_budget']['max_steps'] += 1
+    else: payload['sampler_state']['total_cursor'] += 1
+    payload['optimizer_ownership_contract_hash'] = stable_hash(contract)
+    torch.save(payload, path)
+    target = mw_resume_fixture(tmp_path)
+    before = [copy.deepcopy(x.state_dict()) for x in target[1:4]]
+    sampler, state, rng = copy.deepcopy(target[4].batch_sampler.state_dict()), copy.deepcopy(target[-1]), capture_rng_state()
+    with pytest.raises(ConfigError): load(target, path)
+    for actual, expected in zip(target[1:4], before): assert_state_equal(actual.state_dict(), expected)
+    assert target[4].batch_sampler.state_dict() == sampler
+    assert_state_equal(target[-1], state)
+    assert_state_equal(capture_rng_state(), rng)
+
+
+def test_mw_installation_rolls_back(tmp_path, monkeypatch):
+    import test_optimizer_ownership_resume as acceptance
+    monkeypatch.setattr(acceptance, 'fixture', mw_resume_fixture)
+    acceptance.test_install_failure_rolls_back_entire_bundle(tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize('failure', ['checkpoint', 'evaluation', 'sidecar'])
+def test_mw_terminal_recovery_preserves_checkpoint(tmp_path, monkeypatch, failure):
+    import test_optimizer_ownership_resume as acceptance
+    monkeypatch.setattr(acceptance, 'packed_fixture', mw_resume_fixture)
+    acceptance.test_terminal_failure_and_recovery_preserve_checkpoint_and_take_no_steps(tmp_path, monkeypatch, failure)
+
+
+def test_mw_zero_step_trainer_reentry(tmp_path, monkeypatch):
+    import test_optimizer_ownership_resume as acceptance
+    def runtime(path, arm='C3'):
+        from src.training import checkpointing as cp
+        bundle = mw_resume_fixture(path, arm)
+        # The orchestration test uses injected in-memory loaders; packed epoch
+        # semantics are covered independently by the boundary matrix above.
+        bundle[0]['dataset']['mode'] = 'huggingface'
+        bundle[0]['dataset'].pop('optimizer_iteration', None)
+        bundle[4] = list(bundle[4])[:2]
+        bundle[5] = cp.build_initial_continuation_state(bundle[0])
+        return bundle
+    monkeypatch.setattr(acceptance, 'fixture', runtime)
+    acceptance.test_runtime_terminal_sidecar_recovery_costs_and_zero_training_reentry(tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize('failure', ['O-A', 'O-C', 'O-common', 'scheduler', 'accounting'])
+def test_mw_partial_update_never_replaces_durable_checkpoint(tmp_path, monkeypatch, failure):
+    import test_optimizer_ownership as acceptance
+    import test_optimizer_ownership_resume as resume
+    monkeypatch.setattr(resume, 'fixture', mw_resume_fixture)
+    acceptance.test_mutating_failure_poison_and_all_save_paths_preserve_durable_checkpoint(tmp_path, monkeypatch, failure)
+
+
+def test_mw_resource_launch_identity_and_unknown_costs(tmp_path):
+    from src.training.run import ResourceAttemptLedger
+    ledger = ResourceAttemptLedger(tmp_path, run_id='run')
+    common = dict(run_id='run', launch_attempt_id=1, slurm_job_id='123', process_uuid='process',
+        elapsed_seconds=3., attempted_steps=2, peak_allocated_bytes=None, peak_reserved_bytes=None,
+        status='running', source_checkpoint=None)
+    ledger.observe('process', sequence=1, **common)
+    ledger.observe('process', sequence=2, **{**common, 'elapsed_seconds': 4., 'status': 'failed'})
+    with pytest.raises(ConfigError, match='identity'):
+        ledger.observe('process', sequence=3, **{**common, 'launch_attempt_id': 2, 'elapsed_seconds': 5.})
+    ledger.observe('killed', sequence=1, **{**common, 'launch_attempt_id': 2, 'process_uuid': 'killed'})
+    result = ledger.summary()
+    assert result['elapsed_seconds'] == 7 and result['attempted_steps'] == 4
+    assert result['measurement_complete'] is False
+    assert result['scheduler_allocation_seconds'] is None
+    assert result['incomplete_attempts'] == ['killed']
+
+
+@pytest.mark.parametrize('arm', ['S1', 'S2', 'C1', 'C2', 'C3'])
+def test_mw_gpu_semantic_probe(tmp_path, arm):
+    """Separate forced-width bf16 probe; never changes production sampling."""
+    import os
+    import torch
+    if os.environ.get('MATFORMER_DIAGNOSTIC_DEVICE') != 'cuda':
+        pytest.skip('Separately authorized sbatch GPU semantic probe')
+    from src.training import steps
+    from src.training.optimizer_state import build_concat_parameter_partition, validate_campaign_optimizer
+    from test_optimizer_ownership import commit
+    config, model, optimizer, scheduler, _, state = mw_resume_fixture(tmp_path, arm, device='cuda')
+    owners = build_concat_parameter_partition(model, ordered_widths=LABELS, topology=campaign.campaign_topology(4)) if arm.startswith('C') else None
+    counts = dict.fromkeys(LABELS, 0)
+    for width in ('g1000','g125','g250','g500'):
+        optimizer.zero_grad(set_to_none=True)
+        model.configure_subnetwork(width)
+        tokens = torch.arange(1,129,device='cuda').repeat(64,1)
+        with torch.autocast('cuda',dtype=torch.bfloat16):
+            loss = model(input_ids=tokens,labels=tokens).loss
+        assert torch.isfinite(loss)
+        loss.backward()
+        observation = steps.clip_optimizer_gradients(model,config['training'],width,owners=owners)
+        if arm=='C3':
+            for group in observation['groups'].values():
+                if group['active']: assert group['post_norm'] <= 1.001
+        commit(optimizer,scheduler,width); counts[width] += 1
+    rates = scheduler.current_learning_rates if hasattr(scheduler,'current_learning_rates') else scheduler.get_last_lr()
+    validate_campaign_optimizer(model,optimizer,optimizer.state_dict(),widths=LABELS,width_counts=counts,learning_rates=rates)
+
+
+@pytest.mark.parametrize('arm',['C1','C3'])
+def test_mw_clipping_and_trace_resume_reconcile_saved_suffix(tmp_path,arm):
+    from test_optimizer_ownership_resume import save,load
+    from src.training import steps
+    from src.training.data import restore_packed_sampler_state
+    from src.utils.metrics import MetricsJournal
+    def train(bundle, stop=None):
+        config,model,opt,clock,batches,state=bundle
+        if state.get('sampler_state') is not None:
+            restore_packed_sampler_state(batches,state['sampler_state'])
+        journal=MetricsJournal(config['run']['output_dir'],checkpoint_step=state['last_completed_step'],artifact_state=state,artifact_io_config=config)
+        def committed(**kwargs):
+            if kwargs['step']==stop: raise StopIteration
+        try:
+            steps.train_for_steps(config,model,batches,[],opt,clock,next(model.parameters()).device,run_state=state,metrics_journal=journal,successful_step_callback=committed)
+        except StopIteration: pass
+        journal.flush()
+    from src.training import checkpointing as cp
+    from src.training.run import build_ownership_run_summary
+    from src.utils.metrics import append_optimizer_ownership_observation
+    full=mw_resume_fixture(tmp_path/'full',arm)
+    def observe(bundle):
+        config,model,opt,clock,batches,state=bundle
+        opt._ownership_observer=lambda:append_optimizer_ownership_observation(config,state,train_dataloader=batches)
+    observe(full);train(full)
+    split=mw_resume_fixture(tmp_path/'split',arm)
+    observe(split);train(split,stop=3)
+    checkpoint=tmp_path/'resume.pt';save(split,checkpoint)
+    train(split,stop=5)  # These scientific rows are beyond the durable checkpoint.
+    root=Path(split[0]['run']['output_dir'])
+    cp.reconcile_ownership_scientific_rows(root,3)
+    resumed=mw_resume_fixture(tmp_path/'split',arm);load(resumed,checkpoint);observe(resumed);train(resumed)
+    for name in ('optimizer_ownership_trace.jsonl','optimizer_ownership_clipping.jsonl'):
+        actual=[json.loads(line) for line in (root/name).read_text().splitlines()]
+        expected=[json.loads(line) for line in (Path(full[0]['run']['output_dir'])/name).read_text().splitlines()]
+        # batch_indices is the local loader enumeration, which restarts.
+        # sample_ids, absolute cursor, epoch, action and clipping remain exact.
+        for row in actual + expected:
+            if row.get('batch_provenance'):
+                row['batch_provenance'].pop('batch_indices',None)
+        assert actual==expected
+    assert list(root.glob('*.non_durable.*'))
+    summary={'run_id':resumed[0]['run']['run_id'],**build_ownership_run_summary(resumed[0],resumed[1],resumed[2],resumed[-1])}
+    assert campaign.inspect_run_observations(root,summary)['committed_updates']==8
+
+
+@pytest.mark.parametrize('stage',['scalar','observation','resource'])
+def test_mw_accounting_io_failure_blocks_partial_publication(tmp_path,monkeypatch,stage):
+    import hashlib
+    from test_optimizer_ownership_resume import train,save
+    from src.training import steps,checkpointing as cp
+    from src.utils.metrics import MetricsJournal
+    bundle=mw_resume_fixture(tmp_path,'C3')
+    config,model,opt,clock,batches,state=bundle
+    journal=MetricsJournal(config['run']['output_dir'],artifact_state=state,artifact_io_config=config)
+    def stop(**kwargs):
+        if kwargs['step']==1: raise StopIteration
+    with pytest.raises(StopIteration):
+        steps.train_for_steps(config,model,batches,[],opt,clock,next(model.parameters()).device,run_state=state,metrics_journal=journal,successful_step_callback=stop)
+    journal.flush()
+    checkpoint=tmp_path/'durable.pt';save(bundle,checkpoint)
+    digest=hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+    from src.training.data import restore_packed_sampler_state
+    restore_packed_sampler_state(batches,state['sampler_state'])
+    def fail(*args,**kwargs):raise OSError('injected committed accounting IO failure')
+    if stage=='scalar':monkeypatch.setattr(journal,'append',fail)
+    elif stage=='observation':opt._ownership_observer=fail
+    else:
+        def resource(**kwargs):
+            if kwargs['boundary']=='committed':fail()
+        opt._resource_observer=resource
+    with pytest.raises(OSError,match='accounting IO'):
+        steps.train_for_steps(config,model,batches,[],opt,clock,next(model.parameters()).device,run_state=state,metrics_journal=journal)
+    assert state['optimizer_poisoned'] and state['update_in_flight']
+    with pytest.raises(ConfigError,match='unsafe|poison'):save(bundle,checkpoint)
+    assert hashlib.sha256(checkpoint.read_bytes()).hexdigest()==digest

@@ -2399,8 +2399,9 @@ class ResourceAttemptLedger:
             if payload.get('schema_version') != 1 or payload.get('run_id') != run_id or not isinstance(payload.get('attempts'), dict):
                 raise ConfigError('Resource ledger identity/schema mismatch')
             self.attempts = payload['attempts']
-            for record in self.attempts.values():
+            for attempt_id, record in self.attempts.items():
                 self._validate_record(record)
+                self._validate_identity(attempt_id, record)
 
     @staticmethod
     def _validate_record(record):
@@ -2408,18 +2409,31 @@ class ResourceAttemptLedger:
         if type(record.get('sequence')) is not int or record['sequence'] < 1:
             raise ConfigError('Resource observation sequence is invalid')
         duration = record.get('elapsed_seconds')
-        if not isinstance(duration, (int, float)) or isinstance(duration, bool) or not math.isfinite(duration) or duration < 0:
+        if not (duration is None and record.get('status') == 'running') and (not isinstance(duration, (int, float)) or isinstance(duration, bool) or not math.isfinite(duration) or duration < 0):
             raise ConfigError('Resource attempt duration is invalid')
         for field in ('peak_allocated_bytes', 'peak_reserved_bytes', 'attempted_steps'):
             value = record.get(field)
-            if value is None and field.startswith('peak_'):
+            if value is None and (field.startswith('peak_') or record.get('status') == 'running'):
                 continue
             if type(value) is not int or value < 0:
                 raise ConfigError(f'Resource {field} is invalid')
         if record.get('status') not in {'running', 'failed', 'completed', 'interrupted'}:
             raise ConfigError('Resource attempt status is invalid')
 
+    def _validate_identity(self, attempt_id, record):
+        # Old ledgers retain their original shape. Launcher-linked observations
+        # must carry all provenance and cannot change it inside one process.
+        fields = ('run_id', 'launch_attempt_id', 'slurm_job_id', 'process_uuid')
+        if any(field in record for field in fields):
+            if (any(field not in record for field in fields) or record['run_id'] != self.run_id
+                    or record['process_uuid'] != attempt_id
+                    or (record['launch_attempt_id'] is not None and
+                        (type(record['launch_attempt_id']) is not int or record['launch_attempt_id'] < 1))
+                    or (record['slurm_job_id'] is not None and not str(record['slurm_job_id']).isdigit())):
+                raise ConfigError('Resource attempt identity is invalid')
+
     def observe(self, attempt_id, **record):
+        self._validate_identity(attempt_id, record)
         record['measurement_complete'] = record.get('status') != 'running'
         self._validate_record(record)
         previous = self.attempts.get(attempt_id)
@@ -2433,6 +2447,8 @@ class ResourceAttemptLedger:
             for field in ('elapsed_seconds', 'attempted_steps', 'peak_allocated_bytes', 'peak_reserved_bytes'):
                 if previous.get(field) is not None and (record.get(field) is None or record[field] < previous[field]):
                     raise ConfigError(f'Resource observation regresses: {field}')
+            if any(record.get(key) != previous.get(key) for key in ('run_id', 'launch_attempt_id', 'slurm_job_id', 'process_uuid')):
+                raise ConfigError('Resource attempt identity changed')
             if record.get('source_checkpoint') != previous.get('source_checkpoint'):
                 raise ConfigError('Resource source checkpoint changed within an attempt')
         candidate = {**self.attempts, attempt_id: copy.deepcopy(record)}
@@ -2455,22 +2471,32 @@ class ResourceAttemptLedger:
             values = [r[field] for r in records if r.get(field) is not None]
             return max(values) if values else None
         return {
-            'elapsed_seconds': sum(r['elapsed_seconds'] for r in records),
-            'attempted_steps': sum(r['attempted_steps'] for r in records),
+            'elapsed_seconds': sum(r['elapsed_seconds'] for r in records if r['elapsed_seconds'] is not None),
+            'attempted_steps': sum(r['attempted_steps'] for r in records if r['attempted_steps'] is not None),
             'peak_allocated_bytes': peak('peak_allocated_bytes'),
             'peak_reserved_bytes': peak('peak_reserved_bytes'),
             'measurement_complete': all(r['status'] != 'running' for r in records),
             'attempt_count': len(records),
+            'unobserved_attempts': [key for key, value in self.attempts.items() if value['elapsed_seconds'] is None],
+            'elapsed_seconds_is_lower_bound': any(r['status'] == 'running' for r in records),
+            'incomplete_attempts': [key for key, value in self.attempts.items() if value['status'] == 'running'],
+            'scheduler_allocation_seconds': None,
+            'scheduler_allocation_scope': 'Reported separately by launcher; overlaps process time and is never added to it',
         }
 
 
 def _resource_attempt_observer(config, device, *, started_at, source_checkpoint):
     import uuid
+    import os
     from datetime import datetime, timezone
     ledger = ResourceAttemptLedger(config['run']['output_dir'], run_id=config['run']['run_id'], artifact_io=config)
-    attempt_id = uuid.uuid4().hex
+    attempt_id = os.environ.get('MATFORMER_PROCESS_UUID') or uuid.uuid4().hex
+    launch = os.environ.get('MATFORMER_LAUNCH_ATTEMPT_ID')
+    identity = dict(run_id=config['run']['run_id'], process_uuid=attempt_id,
+                    launch_attempt_id=int(launch) if launch is not None else None, slurm_job_id=os.environ.get('SLURM_JOB_ID'))
     started = datetime.now(timezone.utc).isoformat()
-    sequence = attempted_steps = 0
+    sequence = ledger.attempts.get(attempt_id, {}).get('sequence', 0)
+    attempted_steps = 0
     last_observation = 0.0
     terminal_status = None
 
@@ -2486,7 +2512,7 @@ def _resource_attempt_observer(config, device, *, started_at, source_checkpoint)
         if boundary in {'completed', 'failed', 'interrupted'}:
             terminal_status = boundary
         status = terminal_status or 'running'
-        ledger.observe(attempt_id, sequence=sequence, elapsed_seconds=now - started_at,
+        ledger.observe(attempt_id, **identity, sequence=sequence, elapsed_seconds=now - started_at,
                        peak_allocated_bytes=torch.cuda.max_memory_allocated(device) if device.type == 'cuda' else None,
                        peak_reserved_bytes=torch.cuda.max_memory_reserved(device) if device.type == 'cuda' else None,
                        attempted_steps=attempted_steps, status=status, source_checkpoint=source_checkpoint,
@@ -2651,7 +2677,7 @@ def complete_ownership_terminal(config, model, optimizer, scheduler, state, eval
         if result.get('content_hash') != stable_hash({k: v for k, v in result.items() if k != 'content_hash'}):
             raise ConfigError('Terminal sidecar content hash mismatch')
         for key, value in identity.items():
-            if result.get(key) != value:
+            if stable_hash(result.get(key)) != stable_hash(value):
                 raise ConfigError(f'Terminal sidecar identity mismatch: {key}')
         _validate_terminal_endpoints(result, config, model)
         return result

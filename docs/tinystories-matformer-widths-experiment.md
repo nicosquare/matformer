@@ -1,15 +1,17 @@
 # TinyStories MatFormer-width optimizer-ownership experiment
 
 Campaign: `tinystories-optimizer-ownership-matformer-widths-v1`, recipe schema 4.
-The current authorization covers implementation phases 1–4 (T001–T021).
-Operational preparation, GPU diagnostics and production remain pending separate
-authorization. Historical launch approvals do not apply to this campaign.
+The 2026-09-21 continuation explicitly authorizes operational preparation, GPU
+diagnostics and all Slurm submissions/resumptions necessary for T034–T037.
+Implementation and reporting prerequisites are already available. Actual reports
+T045/T052 remain separate pending tasks.
 
 The [feature contracts](../specs/015-tinystories-matformer-widths/contracts/campaign-and-topology.md)
 define the protocol; the [verification record](../specs/015-tinystories-matformer-widths/verification.md)
 records actual evidence. Schema-4 expansion/preflight and optimizer semantics
-are implemented and verified with CPU fixtures. Launcher, readiness-gate and
-reporting commands below remain planned interfaces for later phases.
+are implemented and verified with CPU fixtures. The launcher, diagnostic modes and
+24/28-endpoint reporting interfaces are implemented; their current CPU verification
+is recorded separately from operational readiness below.
 
 ## Matrix and scientific controls
 
@@ -47,7 +49,7 @@ Retain all `PINNED_COMMON` controls except the declared width grid and all
 - Tokenizer: `/nfs-stor/ivo.navarrete/matformer-tokenizers/tinystories-instruct-sentencepiece-bpe-2k-v1`.
 - Historical reference: `/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/reports/complete-20260910T181951Z/frozen/frozen_manifest.json`.
 
-These inputs require fresh audits. An epoch has 5,576,448 designated sequences,
+The real-input preflight audit passed on 2026-09-21; see the verification ledger. An epoch has 5,576,448 designated sequences,
 87,132 updates and 713,785,344 tokens; the same 43 excluded sequences never rotate
 in. Each elastic receives 348,528 updates/2,855,141,376 tokens. All nine runs total
 17,130,848,256 assigned tokens, excluding diagnostics/replay. Ordinary validation
@@ -55,11 +57,12 @@ runs every 64 updates and at completion, with target-token-weighted causal loss
 and exp(loss) perplexity (expected 285 sequences/36,195 targets). Controller data
 never guides training/selection, and final holdout remains sealed.
 
-## Planned operations and artifact layout
+## Operations and artifact layout
 
 The proposed fresh root is
 `/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-matformer-widths-v1`.
-Its availability has not been audited or reserved. Future layout:
+It was verified unused and reserved by the successful real-input preflight on
+2026-09-21. Campaign layout:
 
 ```text
 source/       immutable tested snapshot and source hashes
@@ -73,7 +76,7 @@ reports/      frozen/, new/, combined/ and per-run diagnostics
 
 Use `/home/ivo.navarrete/.conda/envs/elasticnn/bin/python` and
 `OMP_NUM_THREADS=1` for CPU verification. See the
-[quickstart](../specs/015-tinystories-matformer-widths/quickstart.md) for planned
+[quickstart](../specs/015-tinystories-matformer-widths/quickstart.md) for implemented
 commands and the complete regression suite. The required order is:
 
 1. Analyzer `preflight --campaign --prepared-corpus-dir --tokenizer-dir
@@ -99,7 +102,7 @@ commands and the complete regression suite. The required order is:
    --manifest --output-dir`, publish 24 new endpoints. `report-matformer-widths
    --manifest --reference-manifest --output-dir` adds only four revalidated
    historical standalones for 28 endpoints. Launcher `report --campaign-root
-   [--reference-manifest]` will perform restart-safe finalization without GPU jobs.
+   [--reference-manifest]` performs restart-safe finalization without GPU jobs.
 
 All GPU work uses sbatch, excludes `gpu-[05,50,51]` and obeys live user-wide
 two-running/four-submitted ceilings or stricter association/QoS limits. Count
@@ -119,6 +122,38 @@ Source/config changes invalidate affected readiness evidence. Preparation cannot
 relabel old evidence with current hashes. Diagnostics cannot initialize or satisfy
 production terminals. Fresh IDs are `<campaign_id>-<arm>-s42`.
 
+
+The CPU diagnostic freezes runtime modules, scripts, recipes and tests before
+running the complete acceptance/regression command from `source/`. Its gate binds
+source, config-set, campaign manifest, preflight, environment, command, JUnit and
+log hashes. The read-only snapshot includes provenance for operation outside Git.
+Preparation adopts the exact preflight reservation and never changes tested hashes.
+
+The GPU command must run from that snapshot in an sbatch allocation. It checks
+live limits and retains scheduler allocation evidence. All nine real-corpus probes
+use batch 64/context 128/bf16 and their full assigned scheduler horizons, stopping
+at four updates and resuming to eight. Only diagnostic run identity and output
+path differ; the local diagnostic adapter validates every original scientific
+control. Separate forced-width semantic probes and synthetic two-update epochs
+exercise numerical resume at steps 1/2/3, malformed bundles and partial failures.
+These are diagnostic overrides, never production terminals or full-budget evidence.
+
+On restart, unknown scheduler states or uncertain submissions block admission;
+`squeue`, `sacct` and durable worker evidence must identify a unique attempt.
+A confirmed ended attempt with its valid own checkpoint can receive the next
+monotonic attempt ID. An occupied output without a checkpoint cannot start fresh.
+`launchers/admission-error.json` records blocked reconciliation. Per-attempt worker
+records and the resource ledger retain process UUID, job and launch identity.
+A process killed before its first measurement has null observations and explicit
+incomplete costs; recorded totals are lower bounds. Scheduler allocation seconds
+remain in submission accounting, separate from overlapping process measurements.
+
+`report` revalidates frozen inputs and published output hashes before reuse.
+It persists independent `production`, `new_report` and `combined_report` statuses
+in `launchers/completion.json`. Missing history returns nonzero after preserving
+the valid new report. A changed prior publication fails explicitly; it is never
+silently overwritten or accepted from directory existence.
+
 ## Deliverables and current status
 
 | Stage | Status | Required evidence |
@@ -127,9 +162,10 @@ production terminals. Fresh IDs are `<campaign_id>-<arm>-s42`.
 | Phase 2 foundations | Complete | Selectors, topology identity and all 20 legacy signatures verified; 269 passed, 6 CUDA-only skips across focused/regression checks |
 | Phase 3 protocol/preflight | Complete on CPU | Nine actual models/counts, full expected traces and rejection/publication fixtures |
 | Phase 4 ownership/accounting | Complete on CPU | All-width updates, C1/C3 sidecars, physical allocations and bounded g125 accounting; final regression 1,062 passed |
-| Full CPU readiness | Pending | All new acceptance/regression suites, actual models and audited inputs |
-| GPU diagnostics | Pending | Authorized sbatch results and valid bound GPU gate |
-| Nine-run production | Pending | Four validated standalone terminals followed by five elastic terminals |
+| Phase 5 and reporting implementation | Complete on CPU | Restore/failure, gate/barrier/queue/worker fixtures and 24/28 exports; final regression 1,302 passed, 39 GPU-only skips, 1 existing expected failure |
+| Full snapshot-bound CPU readiness | T034 complete | Audited inputs; immutable source CPU gate: 1,307 passed, 39 GPU skips, 1 existing xfail; prepared reservation |
+| GPU diagnostics | T035 complete | Job 271285 COMPLETED/0:0 on A100 gpu-52; nine real-shape probes + 118 GPU tests, no skips; all gate/result hashes validated |
+| Nine-run production | T036 submitted; T036/T037 incomplete | ST-g125 271319 and ST-g250 271320 running; ST-g500 271321 and ST-g1000 271322 pending; no elastic admission |
 | New report | Pending | Nine validated runs, matching 24-row endpoints.csv/json and diagnostics |
 | Combined report | Pending | Four valid historical standalones, matching 28-row combined_endpoints.csv/json |
 
@@ -145,3 +181,38 @@ result. Validate saved manifests/hashes before reusing outputs. Interpret only
 saved seed-42 results, primarily against fresh baselines; distinguish C3 clipping
 and changed block sizes from representation/history effects. Equal tokens do not
 establish equal compute, runtime or direct width exposure.
+
+Operational correction: CPU/GPU pytest checks use a writable diagnostic workspace
+whose source/config/test entries link to the immutable snapshot. Default fixture
+outputs stay outside the snapshot. On hosts lacking `sacctmgr` or an idle user's
+QoS usage row, the launcher compiles the small read-only
+`scripts/matformer_slurm_limits.c` query with installed GCC/Slurm headers and
+reads configured QoS and user/ancestor association limits directly from the
+controller. Missing query support fails admission. No limits are inferred from
+another user's usage. The initial failed snapshot/checks are preserved under
+`diagnostics/superseded-before-operational-fixes` and their `cpu-*` directories.
+
+Diagnostic job **271285** (`mw-v1-gpu-diagnostic-a1`) completed successfully;
+T036 standalone admission follows its fully validated GPU gate. Its command, bindings and scheduler evidence
+are in `launchers/diagnostic-submission-1.json`; logs are
+`logs/diagnostic-a1-271285.{out,err}`. Set
+`SLURM_CONF=$MW_ROOT/launchers/slurm-client.conf` when continuing on this host:
+the campaign-local file corrects only the accounting endpoint from controller-
+local `localhost` to `ciai-head`. The original export and both hashes are saved;
+server policy is unchanged. The verification record contains exact scheduler,
+gate-validation and next queue commands. T035 passed actual GPU validation;
+T036 still requires four validated standalones/barrier and T037 the five elastics
+and reconciled traces/costs. T045/T052 actual reports remain independently pending.
+
+Current production handoff: **271319 (ST-g125)** and **271320 (ST-g250)** are
+RUNNING on gpu-52; **271321 (ST-g500)** and **271322 (ST-g1000)** are PENDING.
+All four are attempt 1, fresh own identities, 87,132 assigned updates, one GPU/task,
+24-hour allocation limits, with the required exclusions. Live user-wide count:
+two running/four submitted. See `launchers/submissions.json`,
+`launchers/handoff-standalones.json`, `logs/<arm>-a1-<jobid>.{out,err}` and
+`runs/<arm>/`. The barrier is absent and no elastic was admitted. After completion
+notification, query actual scheduler status/artifacts and run the snapshot queue
+with `--once`; it handles valid own-checkpoint continuations and strictly validates
+all four terminals before barrier publication/elastic admission. Existing
+execution authorization persists. T036/T037 and actual report T045/T052 remain
+incomplete; holdout evaluation count remains zero.
