@@ -1,5 +1,6 @@
 """Fixed IM policy through real campaign, optimizer and continuation paths."""
 import copy
+import json
 import random
 from pathlib import Path
 
@@ -30,6 +31,43 @@ def bundle(tmp_path, arm='C3'):
     config['optimizer_ownership_contract_hash'] = stable_hash(config['optimizer_ownership_contract'])
     result[-1]['global_sampling_state'] = cp.build_initial_global_sampling_state(config)
     return result
+
+
+@pytest.mark.parametrize('arm', ARMS)
+def test_real_committed_clipping_logs_match_summary_across_resume(tmp_path, arm):
+    from src.utils.metrics import append_optimizer_ownership_observation, optimizer_ownership_metric_fields
+    from src.training.run import build_ownership_run_summary
+
+    current = bundle(tmp_path, arm)
+    for stop in (3, 8):
+        config, model, optimizer, scheduler, batches, state = current
+        optimizer._ownership_observer = lambda: append_optimizer_ownership_observation(
+            config, state, train_dataloader=batches)
+        train(current, stop=stop)
+        if stop == 3:
+            path = tmp_path / 'resume.pt'
+            save(current, path)
+            current = bundle(tmp_path, arm)
+            load(current, path)
+    root = Path(config['run']['output_dir'])
+    trace = [json.loads(line) for line in (root / 'optimizer_ownership_trace.jsonl').read_text().splitlines()]
+    assert [row['step'] for row in trace] == list(range(1, 9))
+    clipping = root / 'optimizer_ownership_clipping.jsonl'
+    expected = arm in ('C1', 'C3')
+    assert clipping.exists() == expected
+    fields = optimizer_ownership_metric_fields(config, state)
+    assert bool(fields['optimizer_ownership_clipping_path']) == expected
+    summary = build_ownership_run_summary(config, model, optimizer, state)
+    assert bool(summary['optimizer_ownership']['clipping_path']) == expected
+    campaign.inspect_run_observations(root, {'run_id': config['run']['run_id'], **summary})
+    if expected:
+        rows = [json.loads(line) for line in clipping.read_text().splitlines()]
+        assert [row['step'] for row in rows] == list(range(1, 9))
+        for row, action in zip(rows, trace):
+            assert row['arm_id'] == arm + '-IM'
+            assert row['width'] == action['width']
+            active = {'O-common', *(f'O-{q}' for q in 'ABCD'[:campaign.WIDTH_LABELS.index(row['width']) + 1])}
+            assert {owner for owner, group in row['groups'].items() if group['active']} == active
 
 
 def test_five_arm_preflight_counts_and_traces(tmp_path, audited_inputs):

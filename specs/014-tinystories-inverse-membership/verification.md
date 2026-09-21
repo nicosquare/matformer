@@ -113,3 +113,120 @@ checkpoints/utilization/costs, freezes completed terminals, produces the validat
 comparison outstanding. Failed attempts stop admission for checkpoint/resource
 reconciliation rather than silently restarting from scratch. T016–T018 remain
 open until actual production completion, interpretation and final reconciliation.
+
+## Logging audit and pre-start correction — 2026-09-11
+
+The user requested verification of the historical logging slowdown. Both the
+repository and the originally queued source contained commit 3459890's compact
+optimizer-attempt accounting. The logging, rollback and checkpoint modules matched
+the pinned snapshot byte for byte. All 43 focused compact-accounting/history tests
+passed against that snapshot. The five actual GPU diagnostic checkpoints also
+contained schema-2 counters and a single last-attempt marker, with no attempt-ID
+history.
+
+A CPU benchmark retained the actual diagnostic validation summaries and advanced
+the accumulator through the full 348,528-update horizon. It measured accumulator
+update, journal state publication and the metrics portion of rollback copying:
+
+| Through update | Samples | Median milliseconds | Serialized state bytes |
+| --- | --- | --- | --- |
+| 2,256 | 2,000 | 3.621 | 171,367 |
+| 100,000 | 2,000 | 3.612 | 171,379 |
+| 348,528 | 2,000 | 3.620 | 171,383 |
+
+This demonstrates bounded history-related work, not zero logging overhead. The
+benchmark excludes filesystem I/O, model compute and other rollback fields; it
+keeps the diagnostic's validation summaries fixed. Scripts and machine-readable
+measurements are saved in campaign-root/diagnostics/logging-audit.
+
+The audit also found a separate missing-artifact bug: clipping sidecars and metric
+paths were gated on literal C1/C3 arm IDs, so C1-IM/C3-IM did not write them even
+though the final reader requires them. Both gates now use concat representation
+and optimizer scope, matching the run summary and audit contract. Five real-model
+tests cover sidecars, active quarters, exact committed steps and strict saved-trace
+auditing across checkpoint resume. The GPU diagnostic now requires 256 clipping
+observations for both relevant arms and verifies compact metrics checkpoint state.
+Final regression: 199 passed, two existing dependency warnings, 59.25 seconds.
+
+All production jobs were PENDING with zero runtime when the correction began.
+Stopped the old monitor and held the jobs before replacing any runtime artifact.
+Archived the previous snapshot, campaign, reservation, gates and launch records
+under diagnostics/before-logging-audit, then reran preflight and prepare. Updated
+snapshot hash: `e355e8c4174aa3dcb55764cb5adedf7831caf741da146939685d4495752ca335`.
+The snapshot includes the tested working changes; provenance records the working
+tree diff and source hashes relative to commit a77d3c2.
+
+Replacement GPU diagnostic: job 229101, ten-minute limit, same required resources
+and exclusions. To respect four submitted jobs, cancelled only the never-started
+C2 job 229061; its pre/post scheduler records are saved in logging-audit/deferred-c2.json.
+S1/S2/C1 retain IDs 229058/229059/229060 and remain held until the new GPU gate
+passes. C2 and C3 will then be admitted within the same user-wide limits.
+Detached monitor PID 3120525 waits for successful diagnostic completion, checks
+both gates against the new source hash, records before/after timing, releases the
+held jobs and resumes the original five-arm queue/report workflow. Its process
+and heartbeat were verified. Diagnostic failure leaves production held and records
+logging-audit/release-error.json. At this audit entry the diagnostic was still
+pending; fresh GPU timing and production throughput are not yet claimed.
+
+## User-requested fresh resubmission — 2026-09-11
+
+The user subsequently requested cancellation of all Slurm submissions and a fresh
+launch. Stopped monitor 3120525 and verified cancellation of every then-current
+job: 229058, 229059, 229060 and 229101. All were still pending with zero runtime;
+the production output directory did not exist. Prior launch records and scheduler
+cancellation evidence are preserved in
+diagnostics/fresh-resubmission-20260911T104825Z. The earlier cancelled C2 job
+229061 remains documented in the logging audit.
+
+Reused the unchanged, hash-verified corrected source and passed CPU evidence.
+Submitted fresh diagnostic 229115 with the required exclusions and ten-minute
+limit. New detached monitor 3222762, launchers/fresh_campaign_monitor.py, waits for
+this exact diagnostic's successful scheduler completion and matching GPU gate,
+then invokes the original queue to submit all five production runs from step zero.
+There are no retained or held production submissions in this fresh launch. The
+two-running/four-submitted limits still apply; production submission follows GPU
+validation. Current evidence is in launchers/diagnostic-submission.json,
+launchers/monitor-process.json and launchers/status.json; monitor output is in
+logs/fresh-queue.log. Failure is recorded in launchers/fresh-monitor-error.json.
+
+## Diagnostic config-default correction — 2026-09-11
+
+Job 229115 ran on gpu-03 from 15:22:41 to 15:23:26 cluster local time and failed
+with ExitCode 1:0. The new diagnostic clipping predicate incorrectly indexed
+optimizer_state_scope in the raw executable config, where that resolved setting
+is absent. It now reads the resolved config. S1-IM, S2-IM and C1-IM had each
+reached checkpoint step 256 before the diagnostic check failed; C2/C3 were not
+reached. No production jobs were submitted.
+
+CPU inspection verified all five resolved configurations, all three saved
+checkpoints and traces, compact metrics state, and all 256 C1 clipping records
+including active-quarter identity and finite norms. Only the diagnostic script
+changed relative to the previous pinned snapshot; production source is identical.
+Previous source and launch evidence were archived under
+diagnostics/diagnostic-config-fix-20260911T112757Z. Updated snapshot hash:
+`80bccba4340f063b9b00dcb7522e8e54ecfdf0b762ef38bfec9f93bdf2d0b3ff`.
+
+Submitted replacement diagnostic 229177 and restarted the detached monitor as
+PID 4068500. Fresh production remains gated on successful completion of this
+exact diagnostic and matching source hashes. The monitor now publishes a failed
+status as well as an error artifact if it exits on an error, avoiding a stale
+RUNNING diagnostic status. GPU success for 229177 is not yet claimed here.
+
+### Replacement diagnostic passed and production admitted
+
+Job 229177 subsequently COMPLETED with ExitCode 0:0, 67 seconds, gpu-03,
+NVIDIA A100-SXM4-40GB (15:28:12–15:29:19 cluster local time). All five arms
+passed the 192-to-256 interruption/resume diagnostic and compact accounting checks.
+C1-IM and C3-IM each saved and validated exactly 256 clipping records.
+Recent update median seconds: S1 .029928; S2 .030161; C1 .033497; C2 .032990;
+C3 .035415. Compared with the original same-device diagnostic, the largest
+increase is approximately 2.0% for C1; C3 is approximately 2.1% faster. These
+short-run measurements show no substantial slowdown and are not a guarantee
+against future filesystem or scheduler variability.
+
+The restarted monitor verified the completed job and matching CPU/GPU source
+hashes, then submitted fresh production: S1-IM 229183, S2-IM 229184, C1-IM
+229185, C2-IM 229186. All four were pending Priority at the admission check.
+C3-IM awaits the four-submitted limit and is admitted automatically when a slot
+opens. Durable success: launchers/fresh-gate-passed.json and diagnostics/gpu-gate.json;
+production IDs: launchers/submissions.json. No production terminal results yet.

@@ -110,6 +110,19 @@ def main():
         assert losses and all(math.isfinite(v) for v in losses)
         trace=[json.loads(line) for line in (root/'optimizer_ownership_trace.jsonl').read_text().splitlines()]
         assert len(trace)==256
+        clipping_path=root/'optimizer_ownership_clipping.jsonl'
+        needs_clipping=config['model']['variant']=='concat' and config['training']['optimizer_state_scope']!='per_granularity'
+        assert clipping_path.exists()==needs_clipping
+        clipping=[json.loads(line) for line in clipping_path.read_text().splitlines()] if needs_clipping else []
+        if needs_clipping:
+            assert [r['step'] for r in clipping]==list(range(1,257))
+            for observation,action in zip(clipping,trace):
+                assert observation['arm_id']==name and observation['width']==action['width']
+                active={'O-common',*(f'O-{q}' for q in 'ABCD'[:config['model']['granularities'].index(action['width'])+1])}
+                assert {owner for owner,group in observation['groups'].items() if group['active']}==active
+        compact=payload['metrics_accumulator_state']
+        assert compact['schema_version']==2 and 'optimizer_attempt_ids' not in compact
+        assert compact['attempted_optimizer_steps']==256
         # Hash actual production selections after restore against the seeded policy.
         selected=[r['width'] if 'width' in r else r['selected_width'] for r in trace]
         expected_config=copy.deepcopy(config); expected_config['training']['max_steps']=256
@@ -119,6 +132,7 @@ def main():
         assert payload['optimizer_width_selection_counts']==expected['counts']
         assert len(timing)>=100
         result={'arm_id':name,'status':'passed','progress':progress,'action_sha256':actual_hash,
+                'clipping_observations':len(clipping),'metrics_accumulator_bytes':len(json.dumps(compact)),
                 'width_selection_counts':expected['counts'],'owner_counts':payload['optimizer_update_counts'],
                 'recent_update_seconds_median':statistics.median(timing[-40:]),
                 'steady_update_seconds_median':statistics.median(timing),'timed_updates':len(timing),
