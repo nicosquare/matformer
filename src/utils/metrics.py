@@ -3736,7 +3736,7 @@ def optimizer_ownership_metric_fields(config, state):
         'campaign_id': contract['campaign_id'], 'arm_id': contract['arm_id'],
         'optimizer_quarter_activation_counts': dict(state.get('optimizer_quarter_activation_counts', {})),
         'optimizer_ownership_trace_path': 'optimizer_ownership_trace.jsonl',
-        'optimizer_ownership_clipping_path': 'optimizer_ownership_clipping.jsonl' if contract['arm_id'] in ('C1', 'C3') else None,
+        'optimizer_ownership_clipping_path': 'optimizer_ownership_clipping.jsonl' if config['model']['variant'] == 'concat' and config['training']['optimizer_state_scope'] != 'per_granularity' else None,
     }
 
 
@@ -3778,7 +3778,7 @@ def append_optimizer_ownership_observation(config, state, *, train_dataloader):
     root = Path(config['run']['output_dir'])
     root.mkdir(parents=True, exist_ok=True)
     records = [('optimizer_ownership_trace.jsonl', row)]
-    if contract['arm_id'] in ('C1', 'C3'):
+    if config['model']['variant'] == 'concat' and scope != 'per_granularity':
         records.append(('optimizer_ownership_clipping.jsonl', {
             **{key: row[key] for key in ('schema_version', 'run_id', 'campaign_id', 'arm_id', 'contract_hash', 'attempt_id')},
             **state['last_clipping_observation'],

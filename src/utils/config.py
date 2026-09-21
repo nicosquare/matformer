@@ -845,7 +845,8 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         isinstance(run.get("campaign_id"), str)
         and run["campaign_id"].startswith("tinystories-optimizer-ownership-")
         and run.get("arm_id") in {"ST-g250", "ST-g500", "ST-g750", "ST-g1000", "S1", "S2", "C1", "C2", "C3",
-                                  "C1-GMC", "C1-LMC", "C2-GMC", "C2-LMC", "C3-GMC", "C3-LMC"}
+                                  "C1-GMC", "C1-LMC", "C2-GMC", "C2-LMC", "C3-GMC", "C3-LMC",
+                                  "S1-IM", "S2-IM", "C1-IM", "C2-IM", "C3-IM"}
         and run_id == f"{run['campaign_id']}-{run['arm_id']}-s{run.get('seed')}"
         and output_dir.name == run["arm_id"]
     )
@@ -4486,7 +4487,7 @@ def _validate_optimizer_state_eligibility(
             "run.model_family=nested": run.get("model_family") == "nested",
             "run.sampling_mode=nested-random": run.get("sampling_mode") == "nested-random",
             "model.variant=concat": model.get("variant") == "concat",
-            "model.granularity_sampling_mode=global": model.get("granularity_sampling_mode") == "global",
+            "model.granularity_sampling_mode=global or fixed_global": model.get("granularity_sampling_mode") in {"global", "fixed_global"},
             "model.global_sampling_schedule=random_with_replacement": model.get("global_sampling_schedule") == "random_with_replacement",
             "model.global_sampling_interval_steps=1": model.get("global_sampling_interval_steps") == 1,
             "four equal FFN quarters": len(ordered_labels) == 4 and [prefixes.get(g) for g in ordered_labels] == [.25, .5, .75, 1.] and int(model["intermediate_size"]) % 4 == 0,

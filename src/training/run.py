@@ -2527,6 +2527,8 @@ def build_ownership_run_summary(config, model, optimizer, state):
     checkpoint = state.get('latest_checkpoint_path')
     checkpoint_fields = build_optimizer_state_summary_fields(config, run_state=state, checkpoint_path=checkpoint)
     elastic = not contract['arm_id'].startswith('ST-')
+    fixed = config['model'].get('granularity_sampling_mode') == 'fixed_global'
+    probabilities = [config['model']['global_sampling_distribution'][w] for w in WIDTH_LABELS] if fixed else [.25]*4
     return {
         'optimizer_ownership_schema_version': 1,
         'optimizer_ownership': {
@@ -2545,9 +2547,9 @@ def build_ownership_run_summary(config, model, optimizer, state):
             'owner_call_counts': state['optimizer_update_counts'],
             'accounting_reconciled': reconciled,
             'expected_exposure': {
-                'label': 'uniform replacement expectation; realized counts are random',
-                'width_selections': dict.fromkeys(WIDTH_LABELS, step / 4) if elastic else {},
-                'quarter_activations': {f'O-{q}': step * (4 - i) / 4 for i, q in enumerate('ABCD')} if elastic else {},
+                'label': ('fixed inverse-membership replacement expectation; realized counts are random' if fixed else 'uniform replacement expectation; realized counts are random'),
+                'width_selections': {w: step*p for w,p in zip(WIDTH_LABELS, probabilities)} if elastic else {},
+                'quarter_activations': {f'O-{q}': step * sum(probabilities[i:]) for i, q in enumerate('ABCD')} if elastic else {},
             },
             'storage': measure_optimizer_storage(optimizer, step=step),
             'temporary_concat_storage': {'method': 'active FFN parameter layout bytes; estimate only',
