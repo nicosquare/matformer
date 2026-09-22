@@ -946,14 +946,16 @@ def train_for_steps(
     elif (
         training.get("gradient_clipping")
         and config["model"].get("variant") == "concat"
-        and tuple(
+        and (training.get("optimizer_state_topology") is not None or tuple(
             config["model"].get("granularity_prefixes", {}).get(width)
             for width in granularities
-        ) == (0.25, 0.5, 0.75, 1.0)
+        ) == (0.25, 0.5, 0.75, 1.0))
     ):
         # Quarter observations apply to the campaign topology. Other supported
         # concat layouts still use their ordinary single global clipping vector.
-        clipping_owners = build_concat_parameter_partition(model, ordered_widths=granularities)
+        clipping_owners = build_concat_parameter_partition(
+            model, ordered_widths=granularities, topology=training.get("optimizer_state_topology")
+        )
     if isinstance(optimizer, BlockOptimizerCollection):
         if run_state.get("update_in_flight") or run_state.get("optimizer_poisoned"):
             raise ConfigError("Cannot train with an unsafe block optimizer state")
@@ -1019,6 +1021,7 @@ def train_for_steps(
                 if resource_observer is not None:
                     resource_observer(run_state=run_state, boundary='attempt')
                 optimizer_committed = False
+                campaign_observations_committed = False
                 mutation_started = False
                 returned_owners = []
                 active_owners = ()
@@ -1386,7 +1389,7 @@ def train_for_steps(
                         ownership_observer()
                     if resource_observer is not None:
                         resource_observer(run_state=run_state, boundary='committed')
-                    if successful_step_callback is not None:
+                    if successful_step_callback is not None and not campaign:
                         successful_step_callback(step=step, tokens_seen=tokens_seen)
                     if probabilistic_boundary_callback is not None:
                         probabilistic_boundary_callback(
@@ -1499,6 +1502,12 @@ def train_for_steps(
                         step_metric_rows,
                         metrics_journal=metrics_journal,
                     )
+                    campaign_observations_committed = campaign
+                    # Campaign interruption hooks may publish the committed
+                    # checkpoint. Include its scalar accounting before invoking
+                    # them so completion-only/resume has no missing metric row.
+                    if campaign and successful_step_callback is not None:
+                        successful_step_callback(step=step, tokens_seen=tokens_seen)
                     if monitoring_session is not None:
                         monitoring_session.log_rows(step_metric_rows)
                     maybe_emit_training_heartbeat(
@@ -1650,8 +1659,9 @@ def train_for_steps(
                 except BaseException:
                     if (optimizer_committed or mutation_started) and sign_dynamics_runtime is not None:
                         run_state["post_commit_failure_stage"] = failure_stage
-                    if mutation_started and not optimizer_committed:
+                    if mutation_started and (not optimizer_committed or (campaign and not campaign_observations_committed)):
                         run_state["optimizer_poisoned"] = True
+                        run_state["update_in_flight"] = True
                         run_state["optimizer_failure"] = {
                             "pending_step": pending_step,
                             "stage": failure_stage,
@@ -1660,7 +1670,7 @@ def train_for_steps(
                             "last_durable_checkpoint_path": run_state.get('continuation_source_checkpoint_path'),
                             "last_durable_checkpoint_step": run_state.get('last_durable_checkpoint_step', 0),
                         }
-                    if action is not None and optimizer_action_id is not None:
+                    if action is not None and optimizer_action_id is not None and not (campaign and optimizer_committed):
                         failed_label = str(
                             optimizer_owner or action.get("granularities", ["unknown"])[0]
                         )

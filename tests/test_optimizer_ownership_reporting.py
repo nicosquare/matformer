@@ -160,7 +160,7 @@ def terminal_campaign(tmp_path, audited_inputs, monkeypatch):
         root = Path(run['output_path']); root.mkdir(parents=True)
         arm, steps = run['arm_id'], run['assigned_updates']
         contract = run['optimizer_ownership_contract']
-        counts = dict.fromkeys(campaign.WIDTH_LABELS, steps // 4) if not run['source_width'] else {'g1000': steps}
+        counts = dict.fromkeys([w['label'] for w in campaign.campaign_widths(recipe['schema_version'])], steps // 4) if not run['source_width'] else {'g1000': steps}
         quarters = {f'O-{q}': steps * (4-i)//4 for i,q in enumerate('ABCD')} if not run['source_width'] else {}
         calls = {**quarters, 'O-common': steps} if run['state_scope'] == 'per_ffn_block' else counts if run['state_scope'] == 'per_granularity' else {'shared': steps}
         checkpoint = root / 'latest.pt'
@@ -189,7 +189,7 @@ def terminal_campaign(tmp_path, audited_inputs, monkeypatch):
         for unit in ('updates', 'tokens', 'epochs'):
             sidecar['assigned_'+unit] = sidecar['actual_'+unit] = run['assigned_'+unit]
         sidecar['endpoints'] = [dict(width=w['label'], loss=2.0, perplexity=math.exp(2),
-            non_embedding_parameters=w['non_embedding_parameters'], **common) for w in campaign.WIDTHS if w['label'] in run['endpoint_widths']]
+            non_embedding_parameters=w['non_embedding_parameters'], **common) for w in campaign.campaign_widths(recipe['schema_version']) if w['label'] in run['endpoint_widths']]
         sidecar['content_hash'] = campaign.stable_hash(sidecar)
         (root / 'terminal_validation_results.json').write_text(json.dumps(sidecar))
         audit = dict(schema_version=1, run_id=run['run_id'], campaign_id=run['campaign_id'], arm_id=arm,

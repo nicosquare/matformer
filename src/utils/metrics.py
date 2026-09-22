@@ -467,8 +467,16 @@ class StreamingMetricsAccumulator:
     """
 
     def __init__(self, state: Mapping[str, Any] | None = None, *, trailing_count: int = 5,
-                 ordered_attempts: bool = False):
+                 ordered_attempts: bool = False, campaign_contract: Mapping[str, Any] | None = None):
         state = dict(state or {})
+        self.attempt_widths = ("g250", "g500", "g750", "g1000")
+        if campaign_contract and any(k in campaign_contract for k in ("campaign_schema_version", "width_grid", "block_boundaries")):
+            from src.evaluation.optimizer_ownership import campaign_topology
+            from src.utils.reproducibility import stable_hash
+            expected = campaign_topology(campaign_contract.get("campaign_schema_version"))
+            if not expected or any(stable_hash(campaign_contract.get(k)) != stable_hash(v) for k, v in expected.items()):
+                raise ValueError("Invalid campaign topology for metrics attempts")
+            self.attempt_widths = tuple(w["label"] for w in expected["width_grid"])
         self.ordered_attempts = ordered_attempts or "optimizer_last_attempt_id" in state
         self.trailing_count = max(1, int(state.get("trailing_count", trailing_count)))
         self.last_training_step = int(state.get("last_training_step", 0))
@@ -532,13 +540,12 @@ class StreamingMetricsAccumulator:
             state.get("checkpoint_selection")
         )
 
-    @staticmethod
-    def _attempt_ordinal(key: str) -> int:
+    def _attempt_ordinal(self, key: str) -> int:
         # The ownership campaign selects one width per update, without held
         # windows or balancing. Do not silently accept a different ID protocol.
         fields = key.split(":") if isinstance(key, str) else []
         if (len(fields) != 5 or fields[0] != "global" or fields[2:4] != ["-", "-"]
-                or fields[4] not in {"g250", "g500", "g750", "g1000"}
+                or fields[4] not in self.attempt_widths
                 or not fields[1].isascii() or not fields[1].isdigit()
                 or str(int(fields[1])) != fields[1]):
             raise ValueError("Ordered campaign attempt ID is invalid")
@@ -737,6 +744,7 @@ class MetricsJournal:
         self.accumulator = StreamingMetricsAccumulator(
             saved_accumulator,
             ordered_attempts=bool((artifact_io_config or {}).get("optimizer_ownership_contract")),
+            campaign_contract=(artifact_io_config or {}).get("optimizer_ownership_contract"),
         )
         self._retained_row_limit = 100_000
         self._retained_rows: list[dict[str, Any]] = []

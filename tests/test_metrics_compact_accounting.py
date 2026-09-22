@@ -216,3 +216,26 @@ def test_step_scoped_campaign_ids_preserve_historical_marker_on_resume():
     with pytest.raises(ValueError, match='ordinal'):
         restored.update([invalid])
     assert restored.state_dict() == before
+
+
+def test_declared_matformer_attempts_restore_without_growing_history():
+    from src.evaluation.optimizer_ownership import campaign_topology
+    contract = campaign_topology(4)
+    accumulator = StreamingMetricsAccumulator(ordered_attempts=True, campaign_contract=contract)
+    for i in range(20000):
+        accumulator.update([row(i, width=('g125', 'g250', 'g500', 'g1000')[i % 4])])
+    state = accumulator.state_dict()
+    assert len(json.dumps(state)) < 1200
+    assert 'optimizer_attempt_ids' not in state
+    restored = StreamingMetricsAccumulator(state, campaign_contract=contract)
+    restored.update([row(20000, width='g125')])
+    assert restored.committed_optimizer_steps == 20001
+    with pytest.raises(ValueError):
+        restored.update([row(20001, width='g750')])
+    with pytest.raises(ValueError):
+        StreamingMetricsAccumulator(ordered_attempts=True).update([row(0, width='g125')])
+    with pytest.raises(ValueError):
+        StreamingMetricsAccumulator(restored.state_dict())
+    contract['width_grid'][0]['label'] = 'invented'
+    with pytest.raises(ValueError):
+        StreamingMetricsAccumulator(ordered_attempts=True, campaign_contract=contract)

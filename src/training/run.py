@@ -2399,8 +2399,9 @@ class ResourceAttemptLedger:
             if payload.get('schema_version') != 1 or payload.get('run_id') != run_id or not isinstance(payload.get('attempts'), dict):
                 raise ConfigError('Resource ledger identity/schema mismatch')
             self.attempts = payload['attempts']
-            for record in self.attempts.values():
+            for attempt_id, record in self.attempts.items():
                 self._validate_record(record)
+                self._validate_identity(attempt_id, record)
 
     @staticmethod
     def _validate_record(record):
@@ -2408,18 +2409,31 @@ class ResourceAttemptLedger:
         if type(record.get('sequence')) is not int or record['sequence'] < 1:
             raise ConfigError('Resource observation sequence is invalid')
         duration = record.get('elapsed_seconds')
-        if not isinstance(duration, (int, float)) or isinstance(duration, bool) or not math.isfinite(duration) or duration < 0:
+        if not (duration is None and record.get('status') == 'running') and (not isinstance(duration, (int, float)) or isinstance(duration, bool) or not math.isfinite(duration) or duration < 0):
             raise ConfigError('Resource attempt duration is invalid')
         for field in ('peak_allocated_bytes', 'peak_reserved_bytes', 'attempted_steps'):
             value = record.get(field)
-            if value is None and field.startswith('peak_'):
+            if value is None and (field.startswith('peak_') or record.get('status') == 'running'):
                 continue
             if type(value) is not int or value < 0:
                 raise ConfigError(f'Resource {field} is invalid')
         if record.get('status') not in {'running', 'failed', 'completed', 'interrupted'}:
             raise ConfigError('Resource attempt status is invalid')
 
+    def _validate_identity(self, attempt_id, record):
+        # Old ledgers retain their original shape. Launcher-linked observations
+        # must carry all provenance and cannot change it inside one process.
+        fields = ('run_id', 'launch_attempt_id', 'slurm_job_id', 'process_uuid')
+        if any(field in record for field in fields):
+            if (any(field not in record for field in fields) or record['run_id'] != self.run_id
+                    or record['process_uuid'] != attempt_id
+                    or (record['launch_attempt_id'] is not None and
+                        (type(record['launch_attempt_id']) is not int or record['launch_attempt_id'] < 1))
+                    or (record['slurm_job_id'] is not None and not str(record['slurm_job_id']).isdigit())):
+                raise ConfigError('Resource attempt identity is invalid')
+
     def observe(self, attempt_id, **record):
+        self._validate_identity(attempt_id, record)
         record['measurement_complete'] = record.get('status') != 'running'
         self._validate_record(record)
         previous = self.attempts.get(attempt_id)
@@ -2433,6 +2447,8 @@ class ResourceAttemptLedger:
             for field in ('elapsed_seconds', 'attempted_steps', 'peak_allocated_bytes', 'peak_reserved_bytes'):
                 if previous.get(field) is not None and (record.get(field) is None or record[field] < previous[field]):
                     raise ConfigError(f'Resource observation regresses: {field}')
+            if any(record.get(key) != previous.get(key) for key in ('run_id', 'launch_attempt_id', 'slurm_job_id', 'process_uuid')):
+                raise ConfigError('Resource attempt identity changed')
             if record.get('source_checkpoint') != previous.get('source_checkpoint'):
                 raise ConfigError('Resource source checkpoint changed within an attempt')
         candidate = {**self.attempts, attempt_id: copy.deepcopy(record)}
@@ -2455,22 +2471,32 @@ class ResourceAttemptLedger:
             values = [r[field] for r in records if r.get(field) is not None]
             return max(values) if values else None
         return {
-            'elapsed_seconds': sum(r['elapsed_seconds'] for r in records),
-            'attempted_steps': sum(r['attempted_steps'] for r in records),
+            'elapsed_seconds': sum(r['elapsed_seconds'] for r in records if r['elapsed_seconds'] is not None),
+            'attempted_steps': sum(r['attempted_steps'] for r in records if r['attempted_steps'] is not None),
             'peak_allocated_bytes': peak('peak_allocated_bytes'),
             'peak_reserved_bytes': peak('peak_reserved_bytes'),
             'measurement_complete': all(r['status'] != 'running' for r in records),
             'attempt_count': len(records),
+            'unobserved_attempts': [key for key, value in self.attempts.items() if value['elapsed_seconds'] is None],
+            'elapsed_seconds_is_lower_bound': any(r['status'] == 'running' for r in records),
+            'incomplete_attempts': [key for key, value in self.attempts.items() if value['status'] == 'running'],
+            'scheduler_allocation_seconds': None,
+            'scheduler_allocation_scope': 'Reported separately by launcher; overlaps process time and is never added to it',
         }
 
 
 def _resource_attempt_observer(config, device, *, started_at, source_checkpoint):
     import uuid
+    import os
     from datetime import datetime, timezone
     ledger = ResourceAttemptLedger(config['run']['output_dir'], run_id=config['run']['run_id'], artifact_io=config)
-    attempt_id = uuid.uuid4().hex
+    attempt_id = os.environ.get('MATFORMER_PROCESS_UUID') or uuid.uuid4().hex
+    launch = os.environ.get('MATFORMER_LAUNCH_ATTEMPT_ID')
+    identity = dict(run_id=config['run']['run_id'], process_uuid=attempt_id,
+                    launch_attempt_id=int(launch) if launch is not None else None, slurm_job_id=os.environ.get('SLURM_JOB_ID'))
     started = datetime.now(timezone.utc).isoformat()
-    sequence = attempted_steps = 0
+    sequence = ledger.attempts.get(attempt_id, {}).get('sequence', 0)
+    attempted_steps = 0
     last_observation = 0.0
     terminal_status = None
 
@@ -2486,7 +2512,7 @@ def _resource_attempt_observer(config, device, *, started_at, source_checkpoint)
         if boundary in {'completed', 'failed', 'interrupted'}:
             terminal_status = boundary
         status = terminal_status or 'running'
-        ledger.observe(attempt_id, sequence=sequence, elapsed_seconds=now - started_at,
+        ledger.observe(attempt_id, **identity, sequence=sequence, elapsed_seconds=now - started_at,
                        peak_allocated_bytes=torch.cuda.max_memory_allocated(device) if device.type == 'cuda' else None,
                        peak_reserved_bytes=torch.cuda.max_memory_reserved(device) if device.type == 'cuda' else None,
                        attempted_steps=attempted_steps, status=status, source_checkpoint=source_checkpoint,
@@ -2500,11 +2526,13 @@ def _resource_attempt_observer(config, device, *, started_at, source_checkpoint)
 
 def build_ownership_run_summary(config, model, optimizer, state):
     """Keep measured allocation, operational costs and scientific exposure distinct."""
-    from src.training.optimizer_state import measure_optimizer_storage
+    from src.training.optimizer_state import measure_optimizer_storage, build_parameter_descriptors
     from src.models.ffn import CatLlamaMLP
-    from src.evaluation.optimizer_ownership import WIDTH_LABELS
+    from src.evaluation.optimizer_ownership import campaign_widths
 
     contract = config['optimizer_ownership_contract']
+    widths = campaign_widths(contract.get('campaign_schema_version', 1))
+    width_labels = tuple(w['label'] for w in widths)
     step = int(state['last_completed_step'])
     resources = dict(state.get('resource_summary') or {
         'elapsed_seconds': None, 'attempted_steps': None,
@@ -2522,13 +2550,26 @@ def build_ownership_run_summary(config, model, optimizer, state):
     layout_bytes = {width: sum(entry.parameter.numel() * entry.parameter.element_size()
         for module in concat for entry in module.physical_parameter_metadata()
         if width in entry.gradient_support and entry.block_index is not None)
-        for width in WIDTH_LABELS} if concat else {}
+        for width in width_labels} if concat else {}
     reconciled = build_optimizer_state_summary_fields(config, run_state=state)['optimizer_accounting_reconciled']
     checkpoint = state.get('latest_checkpoint_path')
     checkpoint_fields = build_optimizer_state_summary_fields(config, run_state=state, checkpoint_path=checkpoint)
     elastic = not contract['arm_id'].startswith('ST-')
     fixed = config['model'].get('granularity_sampling_mode') == 'fixed_global'
-    probabilities = [config['model']['global_sampling_distribution'][w] for w in WIDTH_LABELS] if fixed else [.25]*4
+    probabilities = [config['model']['global_sampling_distribution'][w] for w in width_labels] if fixed else [.25]*4
+    descriptors = build_parameter_descriptors(model, ordered_widths=config['model']['granularities'])
+    scope = config['training']['optimizer_state_scope']
+    selections = state['optimizer_width_selection_counts']
+    fully_exposed = 2 * sum(d['scalar_count'] * (len(d['gradient_support']) if scope == 'per_granularity' else 1)
+                            for d in descriptors if d['trainable'])
+    observed_expected = 2 * sum(d['scalar_count'] * (
+        sum(selections.get(w, 0) > 0 for w in d['gradient_support']) if scope == 'per_granularity'
+        else int(any(selections.get(w, 0) > 0 for w in d['gradient_support'])))
+        for d in descriptors if d['trainable'])
+    storage = measure_optimizer_storage(optimizer, step=step)
+    storage.update(expected_fully_exposed_moment_elements=fully_exposed,
+                   expected_observed_moment_elements=observed_expected,
+                   expectation_method='twice physical parameter elements times exposed supported histories')
     return {
         'optimizer_ownership_schema_version': 1,
         'optimizer_ownership': {
@@ -2548,10 +2589,12 @@ def build_ownership_run_summary(config, model, optimizer, state):
             'accounting_reconciled': reconciled,
             'expected_exposure': {
                 'label': ('fixed inverse-membership replacement expectation; realized counts are random' if fixed else 'uniform replacement expectation; realized counts are random'),
-                'width_selections': {w: step*p for w,p in zip(WIDTH_LABELS, probabilities)} if elastic else {},
+                'width_selections': {w: step*p for w,p in zip(width_labels, probabilities)} if elastic else {},
                 'quarter_activations': {f'O-{q}': step * sum(probabilities[i:]) for i, q in enumerate('ABCD')} if elastic else {},
             },
-            'storage': measure_optimizer_storage(optimizer, step=step),
+            'storage': storage,
+            **({'source_width': next(w for w in widths if w['label'] == contract['arm_id'][3:])}
+               if not elastic and contract.get('campaign_schema_version') == 4 else {}),
             'temporary_concat_storage': {'method': 'active FFN parameter layout bytes; estimate only',
                 'bytes_by_width': layout_bytes, 'includes_backward_temporaries': False,
                 'is_device_peak_measurement': False},
@@ -2634,7 +2677,7 @@ def complete_ownership_terminal(config, model, optimizer, scheduler, state, eval
         if result.get('content_hash') != stable_hash({k: v for k, v in result.items() if k != 'content_hash'}):
             raise ConfigError('Terminal sidecar content hash mismatch')
         for key, value in identity.items():
-            if result.get(key) != value:
+            if stable_hash(result.get(key)) != stable_hash(value):
                 raise ConfigError(f'Terminal sidecar identity mismatch: {key}')
         _validate_terminal_endpoints(result, config, model)
         return result

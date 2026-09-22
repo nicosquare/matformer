@@ -162,6 +162,53 @@ INVERSE_MEMBERSHIP_ARMS = tuple(
 INVERSE_MEMBERSHIP_ARM_IDS = tuple(a["arm_id"] for a in INVERSE_MEMBERSHIP_ARMS)
 
 
+MATFORMER_CAMPAIGN_SCHEMA_VERSION = 4
+MATFORMER_CAMPAIGN_ID = "tinystories-optimizer-ownership-matformer-widths-v1"
+MATFORMER_WIDTHS: tuple[Width, ...] = tuple(
+    {
+        "label": label,
+        "source_fraction": fraction,
+        "active_ffn_dimension": dimension,
+        "non_embedding_parameters": count,
+        # Legacy field names denote incremental blocks, not equal-size quarters.
+        "active_quarters": QUARTER_IDS[:index + 1],
+    }
+    for index, (label, fraction, dimension, count) in enumerate((
+        ("g125", 0.125, 32, 90_688),
+        ("g250", 0.25, 64, 115_264),
+        ("g500", 0.5, 128, 164_416),
+        ("g1000", 1.0, 256, 262_720),
+    ))
+)
+MATFORMER_WIDTH_LABELS = tuple(width["label"] for width in MATFORMER_WIDTHS)
+MATFORMER_STANDALONE_ARMS: tuple[ArmDefinition, ...] = tuple(
+    {
+        **arm,
+        "arm_id": f"ST-{width['label']}",
+        "physical_ffn_dimension": width["active_ffn_dimension"],
+        "source_width": width["label"],
+        "endpoint_widths": (width["label"],),
+    }
+    for arm, width in zip(STANDALONE_ARMS, MATFORMER_WIDTHS)
+)
+MATFORMER_ELASTIC_ARMS: tuple[ArmDefinition, ...] = tuple(
+    {**arm, "endpoint_widths": MATFORMER_WIDTH_LABELS} for arm in ELASTIC_ARMS
+)
+MATFORMER_ARMS = MATFORMER_STANDALONE_ARMS + MATFORMER_ELASTIC_ARMS
+MATFORMER_BLOCK_BOUNDARIES = tuple(
+    {
+        "id": block_id,
+        "start": start,
+        "end": end,
+        "dimension": end - start,
+        "supported_widths": MATFORMER_WIDTH_LABELS[index:],
+    }
+    for index, (block_id, start, end) in enumerate((
+        ("A", 0, 32), ("B", 32, 64), ("C", 64, 128), ("D", 128, 256),
+    ))
+)
+
+
 def inverse_membership_sampling_contract(config):
     from src.utils.reproducibility import seed_for
     return {
@@ -185,7 +232,7 @@ def _sampling_contract(config, arm):
     }
 
 
-def campaign_arms(schema_version):
+def campaign_arms(schema_version=CAMPAIGN_SCHEMA_VERSION):
     from src.utils.config import ConfigError
     if type(schema_version) is int and schema_version == 1:
         return ARMS
@@ -193,7 +240,52 @@ def campaign_arms(schema_version):
         return CORRECTION_ARMS
     if type(schema_version) is int and schema_version == 3:
         return INVERSE_MEMBERSHIP_ARMS
+    if type(schema_version) is int and schema_version == MATFORMER_CAMPAIGN_SCHEMA_VERSION:
+        return MATFORMER_ARMS
     raise ConfigError(f"Unsupported campaign schema_version: {schema_version}")
+
+
+def campaign_arm(schema_version, arm_id):
+    """Short labels are meaningful only within their campaign schema."""
+    from src.utils.config import ConfigError
+
+    for arm in campaign_arms(schema_version):
+        if arm["arm_id"] == arm_id:
+            return arm
+    raise ConfigError(f"Unknown arm_id {arm_id!r} for campaign schema_version {schema_version}")
+
+
+def campaign_widths(schema_version=CAMPAIGN_SCHEMA_VERSION):
+    campaign_arms(schema_version)  # Reject unknown versions before choosing a grid.
+    return MATFORMER_WIDTHS if schema_version == MATFORMER_CAMPAIGN_SCHEMA_VERSION else WIDTHS
+
+
+def campaign_common(schema_version=CAMPAIGN_SCHEMA_VERSION):
+    """Return detached controls; historical inputs receive no new defaults."""
+    import copy
+
+    widths = campaign_widths(schema_version)
+    common = copy.deepcopy(PINNED_COMMON)
+    if schema_version == MATFORMER_CAMPAIGN_SCHEMA_VERSION:
+        common["model"]["granularities"] = [width["label"] for width in widths]
+        common["model"]["granularity_prefixes"] = {
+            width["label"]: width["source_fraction"] for width in widths
+        }
+    return common
+
+
+def campaign_topology(schema_version=CAMPAIGN_SCHEMA_VERSION):
+    """New-only identity fields shared by campaign and run contracts."""
+    import copy
+
+    campaign_arms(schema_version)
+    if schema_version != MATFORMER_CAMPAIGN_SCHEMA_VERSION:
+        return {}
+    return copy.deepcopy({
+        "campaign_schema_version": MATFORMER_CAMPAIGN_SCHEMA_VERSION,
+        "width_grid": list(MATFORMER_WIDTHS),
+        "block_boundaries": list(MATFORMER_BLOCK_BOUNDARIES),
+    })
 
 
 def membership_correction_contract(mode):
@@ -227,6 +319,9 @@ class CampaignContract(TypedDict):
     evaluation_protocol: dict[str, Any]
     count_convention: str
     run_contract_hashes: dict[str, str]
+    campaign_schema_version: NotRequired[int]
+    width_grid: NotRequired[list[Width]]
+    block_boundaries: NotRequired[list[dict[str, Any]]]
 
 
 class CampaignRun(TypedDict):
@@ -504,6 +599,16 @@ def _provenance():
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[2]
+    snapshot_provenance = root / 'source-provenance.json'
+    if snapshot_provenance.exists():
+        import json
+        import hashlib
+        from src.utils.config import ConfigError
+        provenance = json.loads(snapshot_provenance.read_text())
+        for relative, expected in provenance['source_files_sha256'].items():
+            if hashlib.sha256((root / relative).read_bytes()).hexdigest() != expected:
+                raise ConfigError(f'Snapshot provenance changed: {relative}')
+        return provenance
     revision = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=root,
@@ -555,6 +660,46 @@ def _provenance():
     }
 
 
+def build_run_scientific_contract(
+    config, initialization, *, campaign_schema_version=CAMPAIGN_SCHEMA_VERSION
+):
+    """Bind resolved controls to a schema-qualified arm using the existing serializer.
+
+    Resolution and topology eligibility remain the caller's responsibility. This
+    constructor keeps the historical signature inputs exactly as they were.
+    """
+    import copy
+    from src.utils.reproducibility import build_optimizer_ownership_signature
+
+    arm = campaign_arm(campaign_schema_version, config["run"]["arm_id"])
+    if campaign_schema_version == MATFORMER_CAMPAIGN_SCHEMA_VERSION:
+        _require_equal(config["run"]["campaign_id"], MATFORMER_CAMPAIGN_ID, "campaign_id")
+    contract = {
+        "schema_version": SCIENTIFIC_CONTRACT_SCHEMA_VERSION,
+        "campaign_id": config["run"]["campaign_id"],
+        "run_id": config["run"]["run_id"],
+        "arm_id": arm["arm_id"],
+        "representation": arm["representation"],
+        "state_scope": arm["state_scope"],
+        "clipping": copy.deepcopy(config["training"]["gradient_clipping"]),
+        "initialization": initialization,
+        "model": {k: v for k, v in config["model"].items() if k != "tokenizer_dir"},
+        "optimizer": copy.deepcopy(config["training"]),
+        "sampling": _sampling_contract(config, arm),
+        "data": {k: v for k, v in config["dataset"].items() if k != "prepared_corpus_dir"},
+        "budget": {
+            k: arm[k]
+            for k in ("assigned_epochs", "assigned_updates", "assigned_tokens")
+        },
+        "evaluation": copy.deepcopy(config["evaluation"]),
+        "count_convention": PARAMETER_COUNT_CONVENTION,
+        **campaign_topology(campaign_schema_version),
+    }
+    if "correction_mode" in arm:
+        contract["correction"] = membership_correction_contract(arm["correction_mode"])
+    return build_optimizer_ownership_signature(contract)
+
+
 def expand_campaign(recipe, *, prepared_corpus_dir, tokenizer_dir, run_output_root):
     """Resolve exactly nine fresh normal trainer configs, without run-directory IO."""
     import copy
@@ -563,7 +708,7 @@ def expand_campaign(recipe, *, prepared_corpus_dir, tokenizer_dir, run_output_ro
     from pathlib import Path
     import yaml
     from src.utils.config import ConfigError, resolve_run_config
-    from src.utils.reproducibility import build_optimizer_ownership_signature, seed_for
+    from src.utils.reproducibility import seed_for
 
     if not isinstance(recipe, dict):
         raise ConfigError("campaign must be a mapping")
@@ -593,12 +738,14 @@ def expand_campaign(recipe, *, prepared_corpus_dir, tokenizer_dir, run_output_ro
             if not isinstance(recipe["arms"][arm_id], dict):
                 raise ConfigError(f"arms.{arm_id} must be a mapping")
             raw = _merge(recipe["common"], recipe["arms"][arm_id])
-            _require_equal(raw, _merge(PINNED_COMMON, _arm_overrides(arm)), arm_id)
+            _require_equal(raw, _merge(campaign_common(recipe["schema_version"]), _arm_overrides(arm)), arm_id)
             run_id = f"{campaign_id}-{arm_id}-s{SEED}"
             output = str(Path(run_output_root).expanduser().resolve() / arm_id)
             raw["run"].update(
                 run_id=run_id, campaign_id=campaign_id, arm_id=arm_id, output_dir=output
             )
+            if recipe["schema_version"] == MATFORMER_CAMPAIGN_SCHEMA_VERSION:
+                raw["run"]["campaign_schema_version"] = MATFORMER_CAMPAIGN_SCHEMA_VERSION
             raw["model"]["tokenizer_dir"] = str(
                 Path(tokenizer_dir).expanduser().resolve()
             )
@@ -622,37 +769,9 @@ def expand_campaign(recipe, *, prepared_corpus_dir, tokenizer_dir, run_output_ro
                 **provenance,
             }
             clipping = copy.deepcopy(resolved["training"]["gradient_clipping"])
-            model_controls = {
-                k: v for k, v in resolved["model"].items() if k != "tokenizer_dir"
-            }
-            data_controls = {
-                k: v
-                for k, v in resolved["dataset"].items()
-                if k != "prepared_corpus_dir"
-            }
-            contract = {
-                "schema_version": SCIENTIFIC_CONTRACT_SCHEMA_VERSION,
-                "campaign_id": campaign_id,
-                "run_id": run_id,
-                "arm_id": arm_id,
-                "representation": arm["representation"],
-                "state_scope": arm["state_scope"],
-                "clipping": clipping,
-                "initialization": initialization,
-                "model": model_controls,
-                "optimizer": copy.deepcopy(resolved["training"]),
-                "sampling": _sampling_contract(resolved, arm),
-                "data": data_controls,
-                "budget": {
-                    k: arm[k]
-                    for k in ("assigned_epochs", "assigned_updates", "assigned_tokens")
-                },
-                "evaluation": copy.deepcopy(resolved["evaluation"]),
-                "count_convention": PARAMETER_COUNT_CONVENTION,
-            }
-            if "correction_mode" in arm:
-                contract["correction"] = membership_correction_contract(arm["correction_mode"])
-            contract_hash, contract = build_optimizer_ownership_signature(contract)
+            contract_hash, contract = build_run_scientific_contract(
+                resolved, initialization, campaign_schema_version=recipe["schema_version"]
+            )
             for config in (raw, resolved):
                 config["optimizer_ownership_contract"] = copy.deepcopy(contract)
                 config["optimizer_ownership_contract_hash"] = contract_hash
@@ -797,7 +916,7 @@ def inspect_campaign_models(runs):
                     )
                 all_parameter_ids.update(ids)
                 counts = {}
-                for width in WIDTHS:
+                for width in campaign_widths(config["run"].get("campaign_schema_version", 1)):
                     if width["label"] not in run["endpoint_widths"]:
                         continue
                     counts[width["label"]] = model_parameter_counts(
@@ -841,7 +960,8 @@ def inspect_campaign_models(runs):
                             )
                 if run["representation"] == "concat":
                     for owner in build_concat_parameter_partition(
-                        model, ordered_widths=WIDTH_LABELS
+                        model, ordered_widths=config["model"]["granularities"],
+                        topology=config["training"].get("optimizer_state_topology"),
                     ):
                         owners.append(
                             {
@@ -877,14 +997,15 @@ def expected_action_trace(config):
     import random
     from src.utils.reproducibility import seed_for
 
+    widths = tuple(config["model"]["granularities"])
     generator = random.Random(seed_for(config, "granularity_selection"))
     digest = hashlib.sha256()
-    counts = dict.fromkeys(WIDTH_LABELS, 0)
+    counts = dict.fromkeys(widths, 0)
     fixed = config["model"].get("granularity_sampling_mode") == "fixed_global"
-    probabilities = [config["model"]["global_sampling_distribution"][w] for w in WIDTH_LABELS] if fixed else [.25] * 4
+    probabilities = [config["model"]["global_sampling_distribution"][w] for w in widths] if fixed else [.25] * 4
     for _ in range(config["training"]["max_steps"]):
-        width = (generator.choices(WIDTH_LABELS, weights=probabilities, k=1)[0] if fixed
-                 else WIDTH_LABELS[generator.randrange(len(WIDTH_LABELS))])
+        width = (generator.choices(widths, weights=probabilities, k=1)[0] if fixed
+                 else widths[generator.randrange(len(widths))])
         digest.update((width + "\n").encode("ascii"))
         counts[width] += 1
     return {
@@ -892,7 +1013,7 @@ def expected_action_trace(config):
         "encoding": "ASCII width label plus LF per update",
         "updates": sum(counts.values()),
         "counts": counts,
-        "expected_counts": {w: config["training"]["max_steps"] * p for w, p in zip(WIDTH_LABELS, probabilities)},
+        "expected_counts": {w: config["training"]["max_steps"] * p for w, p in zip(widths, probabilities)},
         "sampling": "fixed_inverse_membership" if fixed else "uniform_random_with_replacement",
         "forced_balance": False,
     }
@@ -1034,6 +1155,7 @@ def preflight_campaign(
         "runtime_ownership_verified": False,
         "training_started": False,
         "holdout_evaluated": False,
+        **campaign_topology(recipe["schema_version"]),
     }
     manifest["manifest_hash"] = stable_hash(manifest)
     report = {
@@ -1110,7 +1232,17 @@ def validate_materialized_config(config):
         actual_hash,
         "optimizer_ownership_contract_hash",
     )
-    arm = next((a for a in (*ARMS, *CORRECTION_ARMS, *INVERSE_MEMBERSHIP_ARMS) if a["arm_id"] == config["run"].get("arm_id")), None)
+    schema = config["run"].get("campaign_schema_version")
+    if schema is not None or "campaign_schema_version" in contract:
+        _require_equal(schema, MATFORMER_CAMPAIGN_SCHEMA_VERSION, "run.campaign_schema_version")
+        _require_equal(config["run"].get("campaign_id"), MATFORMER_CAMPAIGN_ID, "campaign_id")
+        for key, expected in campaign_topology(schema).items():
+            _require_equal(stable_hash(contract.get(key)), stable_hash(expected), key)
+        arm = campaign_arm(schema, config["run"].get("arm_id"))
+        _require_equal(contract["initialization"].get("method"), "fresh_normal_constructor", "initialization.method")
+        _require_equal(config["run"].get("run_id"), f"{MATFORMER_CAMPAIGN_ID}-{arm['arm_id']}-s{SEED}", "run_id")
+    else:
+        arm = next((a for a in (*ARMS, *CORRECTION_ARMS, *INVERSE_MEMBERSHIP_ARMS) if a["arm_id"] == config["run"].get("arm_id")), None)
     if arm is None:
         raise ConfigError("optimizer_ownership_contract: unknown arm_id")
     if arm.get("sampling_policy") == "fixed_inverse_membership":
@@ -1177,12 +1309,25 @@ def inspect_run_observations(run_dir, summary):
             or stable_hash(audit['contract']) != audit['contract_hash']
             or summary.get('run_id') != audit['run_id']):
         raise ConfigError('Run summary schema/contract identity mismatch')
+    widths = tuple(w['label'] for w in campaign_widths(audit['contract'].get('campaign_schema_version', 1)))
     scope = audit['state_scope']
     counts = dict.fromkeys(audit['width_selection_counts'], 0)
+    if audit['contract'].get('campaign_schema_version') == 4:
+        arm = campaign_arm(4, audit['contract']['arm_id'])
+        for key, expected in campaign_topology(4).items():
+            _require_equal(stable_hash(audit['contract'].get(key)), stable_hash(expected), key)
+        _require_equal(audit['contract'].get('representation'), arm['representation'], 'observation representation')
+        _require_equal(scope, arm['state_scope'], 'observation state_scope')
+        _require_equal(set(counts), set(arm['endpoint_widths']), 'observation physical widths')
     action_digest = hashlib.sha256()
     epoch_digests = {}
     clipping_summary = {}
+    semantic_clipping = (audit['contract'].get('representation') == 'concat' and scope != 'per_granularity')
+    if semantic_clipping and not audit.get('clipping_path'):
+        raise ConfigError('Missing required committed clipping sidecar reference')
     clip_path = root / audit['clipping_path'] if audit.get('clipping_path') else None
+    if clip_path is not None and not clip_path.is_file():
+        raise ConfigError('Missing committed clipping sidecar')
     clip_stream = clip_path.open() if clip_path else None
     last = None
     try:
@@ -1198,9 +1343,9 @@ def inspect_run_observations(run_dir, summary):
                 if width not in counts:
                     raise ConfigError('Trace selected width mismatch')
                 counts[width] += 1
-                quarters = {f'O-{q}': sum(counts.get(w, 0) for w in WIDTH_LABELS[i:]) for i, q in enumerate('ABCD')} if len(counts) == 4 else {}
+                quarters = {f'O-{q}': sum(counts.get(w, 0) for w in widths[i:]) for i, q in enumerate('ABCD')} if len(counts) == 4 else {}
                 calls = {**quarters, 'O-common': ordinal} if scope == 'per_ffn_block' else counts if scope == 'per_granularity' else {'shared': ordinal}
-                active = list(OWNER_IDS[:WIDTH_LABELS.index(width) + 1]) + ['O-common'] if scope == 'per_ffn_block' else [width] if scope == 'per_granularity' else ['shared']
+                active = list(OWNER_IDS[:widths.index(width) + 1]) + ['O-common'] if scope == 'per_ffn_block' else [width] if scope == 'per_granularity' else ['shared']
                 if row['width_selection_counts'] != counts or row['quarter_activation_counts'] != quarters or row['owner_call_counts'] != calls or row['active_owners'] != active:
                     raise ConfigError('Trace exposure/owner accounting mismatch')
                 if row['packed_tokens'] != audit['packed_tokens_per_update'] or row['tokens_seen'] != ordinal * audit['packed_tokens_per_update']:
@@ -1237,7 +1382,7 @@ def inspect_run_observations(run_dir, summary):
                     if (clip.get('schema_version') != 1 or clip['step'] != ordinal or clip['width'] != width
                             or any(clip.get(k) != row[k] for k in ('run_id', 'contract_hash', 'campaign_id', 'arm_id', 'attempt_id'))):
                         raise ConfigError('Clipping provenance/trace mismatch')
-                    _accumulate_clipping(clipping_summary, clip, audit['clipping_contract'])
+                    _accumulate_clipping(clipping_summary, clip, audit['clipping_contract'], widths=widths)
                 last = row
         if clip_stream is not None and clip_stream.read().strip():
             raise ConfigError('Extra non-committed clipping observations')
@@ -1251,6 +1396,25 @@ def inspect_run_observations(run_dir, summary):
             raise ConfigError(f'Trace/summary mismatch: {key}')
     if not audit['accounting_reconciled']:
         raise ConfigError('Summary accounting is not reconciled')
+    if audit['contract'].get('campaign_schema_version') == 4:
+        import csv
+        metrics_path = root / 'metrics.csv'
+        if not metrics_path.is_file():
+            raise ConfigError('Missing campaign scalar metrics')
+        committed = 0
+        with metrics_path.open() as stream:
+            for metric in csv.DictReader(stream):
+                if metric.get('split') != 'train' or metric.get('optimizer_step_committed') not in ('True', 'true', '1'):
+                    continue
+                committed += 1
+                if (metric.get('run_id') != audit['run_id']
+                        or metric.get('optimizer_ownership_contract_hash') != audit['contract_hash']
+                        or metric.get('optimizer_ownership_trace_path') != audit['trace_path']
+                        or metric.get('optimizer_ownership_clipping_path', '') != (audit.get('clipping_path') or '')
+                        or int(metric['step']) != committed):
+                    raise ConfigError('Scalar metrics identity/sidecar reference mismatch')
+        if committed != audit['steps']:
+            raise ConfigError('Scalar metrics committed count mismatch')
     for groups in clipping_summary.values():
         for row in groups.values():
             n = row['active_observations']
@@ -1263,7 +1427,7 @@ def inspect_run_observations(run_dir, summary):
             'committed_updates': last['step']}
 
 
-def _accumulate_clipping(summary, clip, contract):
+def _accumulate_clipping(summary, clip, contract, *, widths=WIDTH_LABELS):
     import math
     from src.utils.config import ConfigError
 
@@ -1271,7 +1435,7 @@ def _accumulate_clipping(summary, clip, contract):
     if clip['mode'] != contract['mode'] or set(clip['groups']) != set(OWNER_IDS):
         raise ConfigError('Clipping mode/group topology mismatch')
     groups = summary.setdefault(width, {})
-    active_owners = (*OWNER_IDS[:WIDTH_LABELS.index(width) + 1], 'O-common')
+    active_owners = (*OWNER_IDS[:widths.index(width) + 1], 'O-common')
     for name in OWNER_IDS:
         item = clip['groups'][name]
         active = name in active_owners
@@ -1362,7 +1526,7 @@ def report_run_artifacts(run_dir, output_dir, *, partial=False):
     axes[0].bar([r['owner_id'] for r in owners], owner_bytes)
     axes[0].set(title='Allocated persistent optimizer tensors', ylabel='Bytes')
     axes[0].tick_params(axis='x', labelrotation=25)
-    widths = [w for w in WIDTH_LABELS if w in audit['width_selection_counts']]
+    widths = [w['label'] for w in campaign_widths(audit['contract'].get('campaign_schema_version', 1)) if w['label'] in audit['width_selection_counts']]
     axes[1].bar(widths, [audit['width_selection_counts'][w] for w in widths], label='Realized selections')
     expectations = audit['expected_exposure']['width_selections']
     if expectations: axes[1].scatter(widths, [expectations[w] for w in widths], marker='_', color='black', label='Uniform expectation')
@@ -1452,7 +1616,7 @@ def _read_preflight_manifest(path):
     arm_ids = [a['arm_id'] for a in arms]
     for key, expected in {
         'schema_version': manifest['schema_version'], 'seed': SEED,
-        'common': PINNED_COMMON, 'allowed_difference_matrix': [
+        'common': campaign_common(manifest['schema_version']), 'allowed_difference_matrix': [
             {**a, 'endpoint_widths': list(a['endpoint_widths'])} for a in arms],
         'expected_data': PINNED_DATA, 'count_convention': PARAMETER_COUNT_CONVENTION,
         'evaluation_role': EVALUATION_ROLE,
@@ -1495,9 +1659,14 @@ def _read_preflight_manifest(path):
         for key in ('run_id', 'campaign_id', 'arm_id'):
             _require_equal(raw['run'].pop(key), run[key], f'{label}.{key}')
         _require_equal(raw['run'].pop('output_dir'), run['output_path'], f'{label}.output_path')
-        raw['model']['tokenizer_dir'] = PINNED_COMMON['model']['tokenizer_dir']
-        raw['dataset']['prepared_corpus_dir'] = PINNED_COMMON['dataset']['prepared_corpus_dir']
-        _require_equal(raw, _merge(PINNED_COMMON, _arm_overrides(arm)), f'{label}.scientific controls')
+        common = campaign_common(manifest['schema_version'])
+        if manifest['schema_version'] == 4:
+            _require_equal(raw['run'].pop('campaign_schema_version'), 4, f'{label}.schema')
+            for field, value in campaign_topology(4).items():
+                _require_equal(stable_hash(manifest.get(field)), stable_hash(value), f'preflight.{field}')
+        raw['model']['tokenizer_dir'] = common['model']['tokenizer_dir']
+        raw['dataset']['prepared_corpus_dir'] = common['dataset']['prepared_corpus_dir']
+        _require_equal(raw, _merge(common, _arm_overrides(arm)), f'{label}.scientific controls')
         scientific = copy.deepcopy(run['executable_config'])
         scientific['training']['optimizer'].pop('state_scope')
         scientific['training']['optimizer'].pop('scheduler_clock')
@@ -1519,6 +1688,8 @@ def _terminal_endpoints(sidecar, run, *, allow_partial):
 
     label = run['arm_id']
     contract = run['optimizer_ownership_contract']
+    widths = campaign_widths(contract.get('campaign_schema_version', 1))
+    labels = [w['label'] for w in widths]
     _check_content_hash(sidecar, 'content_hash', f'{label}.terminal')
     protocol = dict(contract['evaluation']['validation'])
     # The runtime binds the pinned manifest when data loaders are constructed.
@@ -1553,7 +1724,12 @@ def _terminal_endpoints(sidecar, run, *, allow_partial):
         for key in ('evaluation_role', 'validation_manifest_hash', 'evaluation_protocol_hash', 'validation_loss_aggregation',
                     'count_convention', 'evaluation_examples', 'evaluation_target_tokens'):
             _require_equal(row.get(key), identity[key], f'{label}.{width}.{key}')
-        count = next(w['non_embedding_parameters'] for w in WIDTHS if w['label'] == width)
+        physical = next(w for w in widths if w['label'] == width)
+        count = physical['non_embedding_parameters']
+        if contract.get('campaign_schema_version') == 4:
+            for key, value in {'width_fraction': physical['source_fraction'], 'ffn_dimension': physical['active_ffn_dimension']}.items():
+                if key in row:
+                    _require_equal(row[key], value, f'{label}.{width}.{key}')
         _require_equal(row.get('non_embedding_parameters'), count, f'{label}.{width}.non_embedding_parameters')
         loss, perplexity = row['loss'], row['perplexity']
         if (isinstance(loss, bool) or isinstance(perplexity, bool) or not math.isfinite(loss)
@@ -1562,7 +1738,7 @@ def _terminal_endpoints(sidecar, run, *, allow_partial):
             raise ConfigError(f'{label}.{width}.nonfinite or inconsistent loss/perplexity')
     if not allow_partial and seen != set(run['endpoint_widths']):
         raise ConfigError(f'{label}.missing endpoints: {sorted(set(run["endpoint_widths"]) - seen)}')
-    return sorted(rows, key=lambda r: WIDTH_LABELS.index(r['width']))
+    return sorted(rows, key=lambda r: labels.index(r['width']))
 
 
 def _inspect_terminal_run(root, run, expected_traces, *, allow_partial):
@@ -1593,6 +1769,26 @@ def _inspect_terminal_run(root, run, expected_traces, *, allow_partial):
         'clipping_path': 'optimizer_ownership_clipping.jsonl' if run['representation'] == 'concat' and run['state_scope'] != 'per_granularity' else None,
     }.items():
         _require_equal(audit.get(key), value, f'{label}.summary.{key}')
+    if run['optimizer_ownership_contract'].get('campaign_schema_version') == 4:
+        import math
+        from src.training.run import ResourceAttemptLedger
+        resources = audit.get('resources')
+        if not isinstance(resources, dict) or type(resources.get('measurement_complete')) is not bool:
+            raise ConfigError(f'{label}.missing resource completeness disclosure')
+        for field in ('elapsed_seconds', 'attempted_steps', 'peak_allocated_bytes', 'peak_reserved_bytes'):
+            value = resources.get(field)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value) or value < 0 or (field != 'elapsed_seconds' and type(value) is not int)):
+                raise ConfigError(f'{label}.invalid resource measurement: {field}')
+        ledger_path = root / 'resource_attempts.json'
+        if ledger_path.exists():
+            measured = ResourceAttemptLedger(root, run_id=run['run_id']).summary()
+            for field in ('elapsed_seconds', 'attempted_steps', 'peak_allocated_bytes', 'peak_reserved_bytes', 'measurement_complete'):
+                _require_equal(resources.get(field), measured[field], f'{label}.resources.{field}')
+        if resources['measurement_complete'] and (
+                not ledger_path.exists() or resources.get('elapsed_seconds') is None
+                or resources.get('attempted_steps') is None or resources['attempted_steps'] < run['assigned_updates']):
+            raise ConfigError(f'{label}.complete resource claim lacks measured attempts')
     checkpoint = Path(sidecar['checkpoint_path'])
     if not checkpoint.is_absolute():
         raise ConfigError(f'{label}.checkpoint_path must be absolute')
@@ -1730,14 +1926,15 @@ def endpoint_csv_value(value):
 
 def _endpoint_table(frozen, preflight):
     rows = []
+    widths = campaign_widths(preflight['schema_version'])
     definitions = {r['arm_id']: r for r in preflight['runs']}
     for saved in frozen['runs']:
         run = definitions[saved['arm_id']]
         summary = _read_json(saved['run_dir'] + '/run_summary.json')['optimizer_ownership']
         sidecar = _read_json(saved['run_dir'] + '/terminal_validation_results.json')
         for endpoint in saved['endpoints']:
-            width = next(w for w in WIDTHS if w['label'] == endpoint['width'])
-            row = {'status': frozen['status'], 'campaign_id': frozen['campaign_id'], 'arm_id': run['arm_id'],
+            width = next(w for w in widths if w['label'] == endpoint['width'])
+            row = {**endpoint, 'status': frozen['status'], 'campaign_id': frozen['campaign_id'], 'arm_id': run['arm_id'],
                    'run_id': run['run_id'], 'seed': SEED, 'representation': run['representation'],
                    'state_scope': run['state_scope'], 'clipping': run['clipping'],
                    'sampling_policy': run.get('sampling_policy', 'standalone' if run['source_width'] else 'uniform'),
@@ -1746,7 +1943,7 @@ def _endpoint_table(frozen, preflight):
                    'checkpoint_bytes': sidecar['checkpoint_bytes'],
                    'correction_mode': run.get('correction_mode', 'none'),
                    'correction': run['optimizer_ownership_contract'].get('correction'),
-                   'width_fraction': width['source_fraction'], 'ffn_dimension': width['active_ffn_dimension'], **endpoint,
+                   'width_fraction': width['source_fraction'], 'ffn_dimension': width['active_ffn_dimension'],
                    'contract_hash': run['contract_hash'], 'initialization': run['initialization'],
                    'checkpoint_path': sidecar['checkpoint_path'], 'checkpoint_sha256': sidecar['checkpoint_sha256'],
                    'terminal_content_hash': sidecar['content_hash'],
@@ -1757,6 +1954,10 @@ def _endpoint_table(frozen, preflight):
             for unit in ('updates', 'tokens', 'epochs'):
                 for kind in ('actual', 'assigned'):
                     row[kind + '_' + unit] = sidecar[kind + '_' + unit]
+            if preflight['schema_version'] == 4:
+                row.update(group='matformer', canonical_arm=run['arm_id'],
+                    endpoint_identity=[run['campaign_id'], run['run_id'], width['source_fraction'], width['active_ffn_dimension']],
+                    source_records=saved['sources'], clipping_observations=saved['observations'].get('clipping_by_width') or None)
             rows.append(row)
     return rows
 
@@ -1807,6 +2008,7 @@ def _comparison_interpretations(rows):
         ('S2/C2', 'S2', 'C2', 'Representation changes inactive-tail behavior, counters and lazy history allocation.'),
         ('C1/C3', 'C1', 'C3', 'Global cap 1 versus independent owner caps 1; combined gradient bounds sqrt(2) through sqrt(5). Bounds do not describe AdamW update norms; block histories are shared across activating widths.'),
     )
+    selected_widths = tuple(dict.fromkeys(r['width'] for r in rows))
     im_only = bool(rows) and all(r['arm_id'] in INVERSE_MEMBERSHIP_ARM_IDS for r in rows)
     by_key = {(r['arm_id'], r['width']): r for r in rows}
     def comparison(left, right, width):
@@ -1820,10 +2022,10 @@ def _comparison_interpretations(rows):
                 'left_resources': a['resources'], 'right_resources': b['resources'],
                 'left_optimizer_storage': a['optimizer_storage'], 'right_optimizer_storage': b['optimizer_storage']}
     result = [{'comparison': name, 'interpretation': explanation,
-               'measurements': [comparison(left, right, w) for w in WIDTH_LABELS]} for name, left, right, explanation in explanations]
+               'measurements': [comparison(left, right, w) for w in selected_widths]} for name, left, right, explanation in explanations]
     if not im_only:
         result.append({'comparison': 'elastic/standalone', 'interpretation': 'Each elastic width versus its matching fresh dense standalone at the same active count; per-run token budgets differ.',
-                       'measurements': [comparison(a['arm_id'], 'ST-' + w, w) for a in ELASTIC_ARMS for w in WIDTH_LABELS]})
+                       'measurements': [comparison(a['arm_id'], 'ST-' + w, w) for a in ELASTIC_ARMS for w in selected_widths]})
     return result
 
 
@@ -1883,16 +2085,22 @@ def report_campaign(*, manifest, output_dir, allow_partial=False):
                 write_json_artifact(stage / relative / 'run_diagnostics.json', diagnostic)
                 report['individual_reports'].append(str(output / relative / 'run_diagnostics.json'))
             report['comparisons'] = _comparison_interpretations(rows)
-            write_json_artifact(stage / 'optimizer_ownership_endpoints.json', {'schema_version': 1, 'status': frozen['status'], 'missing_endpoints': missing, 'endpoints': rows})
-            with (stage / 'optimizer_ownership_endpoints.csv').open('w', newline='') as stream:
+            stem = 'endpoints' if preflight['schema_version'] == 4 else 'optimizer_ownership_endpoints'
+            write_json_artifact(stage / (stem + '.json'), {'schema_version': 1, 'status': frozen['status'], 'missing_endpoints': missing, 'endpoints': rows})
+            with (stage / (stem + '.csv')).open('w', newline='') as stream:
                 writer = csv.DictWriter(stream, fieldnames=list(rows[0])); writer.writeheader()
                 writer.writerows({k: endpoint_csv_value(v) for k, v in r.items()} for r in rows)
             for metric in ('perplexity', 'loss'):
-                figure = endpoint_figure(rows, metric=metric, partial=bool(missing))
+                figure = (matformer_endpoint_figure(rows, metric=metric, partial=bool(missing)) if preflight['schema_version'] == 4 else endpoint_figure(rows, metric=metric, partial=bool(missing)))
                 for suffix in ('png', 'pdf'):
                     name = f'optimizer_ownership_{metric}_vs_non_embedding_parameters.{suffix}'
                     figure.savefig(stage / name); report['figures'].append(str(output / name))
             _check_sources(sources)
+            if preflight['schema_version'] == 4:
+                report['endpoint_count'] = len(rows)
+                report['input_sources'] = sources
+                report['output_sha256'] = {str(p.relative_to(stage)): _source_record(p)['sha256'] for p in sorted(stage.rglob('*')) if p.is_file()}
+                report['content_hash'] = stable_hash(report)
             write_json_artifact(stage / 'comparison_report.json', report)
             return report
         return _publish_directory(output_dir, publish)
@@ -2079,3 +2287,101 @@ def report_inverse_membership_comparison(*, manifest, reference_manifest, output
         write_json_artifact(stage/'comparison_report.json',report)
         return report
     return _publish_directory(output_dir,publish)
+
+
+def inspect_selected_terminals(campaign_manifest, arm_ids, *, run_root=None):
+    """The same strict saved-terminal reader serves the barrier and full freeze."""
+    from pathlib import Path
+    from src.utils.config import ConfigError
+    manifest = _read_preflight_manifest(campaign_manifest)
+    definitions = {r['arm_id']: r for r in manifest['runs']}
+    if len(set(arm_ids)) != len(arm_ids) or not set(arm_ids) <= set(definitions):
+        raise ConfigError('Duplicate or unknown selected terminal arms')
+    return [_inspect_terminal_run(
+        Path(run_root) / Path(definitions[arm]['output_path']).name if run_root else definitions[arm]['output_path'],
+        definitions[arm], manifest['expected_traces'][arm], allow_partial=False) for arm in arm_ids]
+
+
+def matformer_endpoint_figure(rows, *, metric, partial=False):
+    """Keep repeated baseline measurements at their exact physical coordinates."""
+    from matplotlib.figure import Figure
+    figure = Figure(figsize=(11, 7)); ax = figure.subplots()
+    colors = ('#0072B2', '#E69F00', '#009E73', '#CC79A7', '#D55E00')
+    for arm, color in zip(('S1', 'S2', 'C1', 'C2', 'C3'), colors):
+        values = sorted((r for r in rows if r['arm_id'] == arm and not r['historical_reference']), key=lambda r: r['ffn_dimension'])
+        ax.plot([r['non_embedding_parameters'] for r in values], [r[metric] for r in values], label=arm, color=color, marker='o')
+    for historical, label, size, fill in ((True, 'Standalone — historical grid', 13, 'none'), (False, 'Standalone — MatFormer grid', 7, 'full')):
+        values = [r for r in rows if r['arm_id'].startswith('ST-') and r['historical_reference'] == historical]
+        for index, row in enumerate(values):
+            ax.plot([row['non_embedding_parameters']], [row[metric]], linestyle='None', marker='o',
+                markersize=size, fillstyle=fill, color='#654321', label=label if index == 0 else '_nolegend_', zorder=5)
+    ax.set(xlabel='Active non-embedding parameters (embeddings and LM head excluded)', ylabel=metric.capitalize())
+    ax.set_xticks(sorted({r['non_embedding_parameters'] for r in rows}))
+    ax.ticklabel_format(axis='x', style='plain'); ax.grid(alpha=.2); ax.legend(ncol=2)
+    figure.suptitle(('PARTIAL diagnostic — ' if partial else '') + 'TinyStories-Instruct · seed 42 · ordinary validation\nExact terminal checkpoint endpoints')
+    figure.text(.5, .025, 'Standalone: 1 epoch / 713,785,344 tokens; elastic: 4 epochs / 2,855,141,376 tokens per run.', ha='center', fontsize=9)
+    figure.tight_layout(rect=(0, .09, 1, .9))
+    return figure
+
+
+def report_matformer_widths_comparison(*, manifest, reference_manifest, output_dir):
+    """Validate all new runs but only the four selected original standalones."""
+    import copy
+    import csv
+    from pathlib import Path
+    frozen, preflight, sources, rows = _validated_comparison_sources(manifest, schema_version=4)
+    old = _read_json(reference_manifest)
+    _check_content_hash(old, 'content_hash', 'historical frozen')
+    _require_equal(old.get('schema_version'), FROZEN_MANIFEST_SCHEMA_VERSION, 'historical frozen schema')
+    _require_equal(old.get('status'), 'complete', 'historical status')
+    _require_equal(old.get('holdout_evaluated'), False, 'historical holdout')
+    selected_sources = [_source_record(reference_manifest), old['preflight_source']]
+    _check_sources(selected_sources)
+    old_preflight = _read_preflight_manifest(old['preflight_source']['path'])
+    _require_equal(old_preflight['schema_version'], 1, 'historical schema')
+    _require_equal(old['campaign_id'], old_preflight['campaign_id'], 'historical campaign')
+    _require_equal(old['preflight_manifest_hash'], old_preflight['manifest_hash'], 'historical preflight')
+    labels = [a['arm_id'] for a in STANDALONE_ARMS]
+    _require_equal([r['arm_id'] for r in old['runs']], [a['arm_id'] for a in ARMS], 'historical frozen arms')
+    definitions = {r['arm_id']: r for r in old_preflight['runs']}
+    selected = [r for r in old['runs'] if r['arm_id'] in labels]
+    _require_equal([r['arm_id'] for r in selected], labels, 'historical selected standalones')
+    for saved in selected:
+        arm = saved['arm_id']
+        _check_sources(saved['sources'])
+        for path, present in saved['optional_sources'].items():
+            _require_equal(Path(path).exists(), present, f'Historical source presence: {path}')
+        actual = _inspect_terminal_run(saved['run_dir'], definitions[arm], old_preflight['expected_traces'][arm], allow_partial=False)
+        _require_equal(actual, saved, f'{arm}.historical terminal')
+        selected_sources.extend(saved['sources'])
+    history = _endpoint_table({**old, 'runs': selected}, old_preflight)
+    for row in history:
+        row.update(historical_reference=True, group='historical', canonical_arm=row['arm_id'],
+            endpoint_identity=[row['campaign_id'], row['run_id'], row['width_fraction'], row['ffn_dimension']],
+            source_records=next(r['sources'] for r in selected if r['arm_id'] == row['arm_id']), clipping_observations=None)
+    _require_equal(len(rows), 24, 'new endpoint count')
+    _require_equal(len(history), 4, 'historical endpoint count')
+    rows = copy.deepcopy(rows + history)
+    _require_equal(len({tuple(r['endpoint_identity']) for r in rows}), 28, 'combined endpoint identities')
+    sources += selected_sources
+    def publish(stage, output):
+        write_json_artifact(stage / 'combined_endpoints.json', {'schema_version': 1, 'status': 'complete', 'endpoints': rows})
+        with (stage / 'combined_endpoints.csv').open('w', newline='') as stream:
+            writer = csv.DictWriter(stream, fieldnames=list(rows[0])); writer.writeheader()
+            writer.writerows({k: endpoint_csv_value(v) for k, v in r.items()} for r in rows)
+        figures = []
+        for metric in ('loss', 'perplexity'):
+            figure = matformer_endpoint_figure(rows, metric=metric)
+            for suffix in ('png', 'pdf'):
+                name = f'{metric}_vs_parameters.{suffix}'
+                figure.savefig(stage / name); figures.append(str(output / name))
+        report = dict(schema_version=1, status='complete', endpoint_count=28, run_count=13,
+            input_sources=sources, figures=figures, holdout_evaluated=False,
+            interpretation_scope='Descriptive seed-42 comparison primarily against fresh dense baselines. Historical standalones are repeat measurements, not replacements. Representation/history effects differ from independent C3 clipping over changed block sizes. Equal assigned tokens do not imply equal compute or direct width exposure; no across-seed inference.',
+            comparisons=_comparison_interpretations(rows[:24]),
+            output_sha256={str(p.relative_to(stage)): _source_record(p)['sha256'] for p in sorted(stage.iterdir())})
+        report['content_hash'] = stable_hash(report)
+        _check_sources(sources)
+        write_json_artifact(stage / 'comparison_report.json', report)
+        return report
+    return _publish_directory(output_dir, publish)

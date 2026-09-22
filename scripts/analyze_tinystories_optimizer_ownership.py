@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.evaluation.optimizer_ownership import preflight_campaign, freeze_campaign, report_campaign, report_correction_comparison, report_inverse_membership_comparison
+from src.evaluation.optimizer_ownership import preflight_campaign, freeze_campaign, report_campaign, report_correction_comparison, report_inverse_membership_comparison, report_matformer_widths_comparison
 
 
 def main(argv=None):
@@ -44,9 +44,14 @@ def main(argv=None):
     inverse = subcommands.add_parser('report-inverse-membership', help='Compare five fixed IM terminals with original uniform references')
     for option in ('manifest', 'reference-manifest', 'output-dir'):
         inverse.add_argument('--' + option, required=True)
+    matformer = subcommands.add_parser('report-matformer-widths', help='Compare new widths with four original standalones')
+    for option in ('manifest', 'reference-manifest', 'output-dir'):
+        matformer.add_argument('--' + option, required=True)
     args = parser.parse_args(argv)
     try:
-        if args.command == 'report-inverse-membership':
+        if args.command == 'report-matformer-widths':
+            report = report_matformer_widths_comparison(manifest=args.manifest, reference_manifest=args.reference_manifest, output_dir=args.output_dir)
+        elif args.command == 'report-inverse-membership':
             report = report_inverse_membership_comparison(manifest=args.manifest, reference_manifest=args.reference_manifest, output_dir=args.output_dir)
         elif args.command == 'report-corrections':
             report = report_correction_comparison(manifest=args.manifest, reference_manifest=args.reference_manifest, output_dir=args.output_dir)

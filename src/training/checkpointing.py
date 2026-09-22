@@ -3806,7 +3806,7 @@ def _ownership_identity(config, model):
     }
 
 
-def _validate_rng_locally(state):
+def _validate_rng_locally(state, *, inspect_only=False):
     import numpy as np
     if not isinstance(state, Mapping) or set(state) != {'python', 'numpy', 'torch_cpu', 'torch_cuda', 'dedicated'}:
         raise ConfigError('Campaign RNG state is incomplete')
@@ -3815,10 +3815,16 @@ def _validate_rng_locally(state):
         ns = state['numpy']
         np.random.RandomState().set_state((ns['bit_generator'], np.asarray(ns['keys'], dtype=np.uint32), ns['position'], ns['has_gauss'], ns['cached_gaussian']))
         torch.Generator(device='cpu').set_state(state['torch_cpu'])
-        if len(state['torch_cuda']) != (torch.cuda.device_count() if torch.cuda.is_available() else 0):
+        if not isinstance(state['torch_cuda'], list):
+            raise ValueError('CUDA RNG state must be a list')
+        if not inspect_only and len(state['torch_cuda']) != (torch.cuda.device_count() if torch.cuda.is_available() else 0):
             raise ValueError('CUDA RNG topology mismatch')
         for i, value in enumerate(state['torch_cuda']):
-            torch.Generator(device=f'cuda:{i}').set_state(value)
+            if inspect_only:
+                if not torch.is_tensor(value) or value.dtype != torch.uint8 or value.ndim != 1 or value.numel() == 0:
+                    raise ValueError('Malformed saved CUDA RNG bytes')
+            else:
+                torch.Generator(device=f'cuda:{i}').set_state(value)
         for name, value in state['dedicated'].items():
             if not isinstance(name, str):
                 raise ValueError('Invalid dedicated RNG name')
@@ -3827,7 +3833,7 @@ def _validate_rng_locally(state):
         raise ConfigError(f'Campaign RNG state is malformed: {error}') from error
 
 
-def _validate_ownership_payload(payload, config, model, optimizer, scheduler, *, train_dataloader=None):
+def _validate_ownership_payload(payload, config, model, optimizer, scheduler, *, train_dataloader=None, inspect_only=False):
     from src.training.optimizer_state import validate_campaign_optimizer, _require_nonnegative_int
     from src.utils.metrics import StreamingMetricsAccumulator
     from src.utils.reproducibility import stable_hash
@@ -3911,8 +3917,8 @@ def _validate_ownership_payload(payload, config, model, optimizer, scheduler, *,
     repro = payload.get('reproducibility')
     if not isinstance(repro, Mapping) or not isinstance(repro.get('rng_states_by_rank'), list) or len(repro['rng_states_by_rank']) != 1:
         raise ConfigError('Campaign per-rank RNG payload mismatch')
-    _validate_rng_locally(repro['rng_states_by_rank'][0])
-    _validate_rng_locally(repro.get('rng_state'))
+    _validate_rng_locally(repro['rng_states_by_rank'][0], inspect_only=inspect_only)
+    _validate_rng_locally(repro.get('rng_state'), inspect_only=inspect_only)
     # Both compatibility views of RNG state must agree.
     if _controller_state_hash(repro['rng_state']) != _controller_state_hash(repro['rng_states_by_rank'][0]):
         raise ConfigError('Campaign RNG payload copies disagree')
@@ -3935,7 +3941,7 @@ def _validate_ownership_payload(payload, config, model, optimizer, scheduler, *,
                 raise ValueError('metrics watermark exceeds or differs from committed work')
             from src.training.optimizer_state import _validate_finite_values
             _validate_finite_values(metrics, 'campaign metrics')
-            StreamingMetricsAccumulator(metrics, ordered_attempts=True)
+            StreamingMetricsAccumulator(metrics, ordered_attempts=True, campaign_contract=config.get("optimizer_ownership_contract"))
         except (ValueError, TypeError, KeyError) as error:
             raise ConfigError(f'Campaign metrics state invalid: {error}') from error
     watermark = payload.get('resource_ledger_watermark')
@@ -3947,10 +3953,7 @@ def _validate_ownership_payload(payload, config, model, optimizer, scheduler, *,
     return saved_optimizer, repro['rng_states_by_rank'][0]
 
 
-def _load_ownership_checkpoint(payload, path, config, model, optimizer, scheduler, *, train_dataloader=None,
-                              sign_dynamics_runtime=None, validated_sign_dynamics_state=None):
-    from src.training.data import packed_sampler_state, restore_packed_sampler_state
-    saved_optimizer, rng = _validate_ownership_payload(payload, config, model, optimizer, scheduler, train_dataloader=train_dataloader)
+def _validate_ownership_action_rng(payload, config, rng):
     sampling = payload.get('global_sampling_state')
     if sampling is not None:
         generator = random.Random(seed_for(config, 'granularity_selection'))
@@ -3966,6 +3969,13 @@ def _load_ownership_checkpoint(payload, path, config, model, optimizer, schedule
         saved_action_rng = rng['dedicated'].get('granularity_selection')
         if saved_action_rng != generator.getstate():
             raise ConfigError('Campaign action RNG differs from committed ordinal')
+
+
+def _load_ownership_checkpoint(payload, path, config, model, optimizer, scheduler, *, train_dataloader=None,
+                              sign_dynamics_runtime=None, validated_sign_dynamics_state=None):
+    from src.training.data import packed_sampler_state, restore_packed_sampler_state
+    saved_optimizer, rng = _validate_ownership_payload(payload, config, model, optimizer, scheduler, train_dataloader=train_dataloader)
+    _validate_ownership_action_rng(payload, config, rng)
     # Resume-only snapshot: the training hot loop never copies model/history tensors.
     snapshot = (copy.deepcopy(model.state_dict()), copy.deepcopy(optimizer.state_dict()),
                 copy.deepcopy(scheduler.state_dict()), capture_rng_state(),
@@ -3995,7 +4005,7 @@ def _load_ownership_checkpoint(payload, path, config, model, optimizer, schedule
     from src.utils.metrics import StreamingMetricsAccumulator
     metrics = payload.get('metrics_accumulator_state')
     state['metrics_accumulator_state'] = (
-        copy.deepcopy(StreamingMetricsAccumulator(metrics, ordered_attempts=True).state_dict())
+        copy.deepcopy(StreamingMetricsAccumulator(metrics, ordered_attempts=True, campaign_contract=config.get("optimizer_ownership_contract")).state_dict())
         if metrics is not None else None)
     if validated_sign_dynamics_state is not None:
         state['sign_dynamics_state'] = sign_dynamics_runtime.state_dict(copy_tensors=False)
