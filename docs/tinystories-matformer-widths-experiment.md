@@ -6,6 +6,16 @@ diagnostics and all Slurm submissions/resumptions necessary for T034–T037.
 Implementation and reporting prerequisites are already available. Actual reports
 T045/T052 remain separate pending tasks.
 
+The requested interim comparison of both standalone grids is available in
+`reports/standalone-comparison-20260922-v2/` under the production campaign root:
+separate `loss_vs_parameters.{png,pdf}` and `perplexity_vs_parameters.{png,pdf}`,
+endpoint JSON/CSV and a provenance manifest.
+All eight terminal endpoints were strictly revalidated. Shared sizes have
+identical saved loss/perplexity. The legends use Linear (blue triangles) and
+Geometric (orange triangles); coincident points use one split-color triangle. This
+standalone-only plot leaves the full T045/T052 reports pending; reproduction and
+hash evidence are in the verification record.
+
 The [feature contracts](../specs/015-tinystories-matformer-widths/contracts/campaign-and-topology.md)
 define the protocol; the [verification record](../specs/015-tinystories-matformer-widths/verification.md)
 records actual evidence. Schema-4 expansion/preflight and optimizer semantics
@@ -165,7 +175,7 @@ silently overwritten or accepted from directory existence.
 | Phase 5 and reporting implementation | Complete on CPU | Restore/failure, gate/barrier/queue/worker fixtures and 24/28 exports; final regression 1,302 passed, 39 GPU-only skips, 1 existing expected failure |
 | Full snapshot-bound CPU readiness | T034 complete | Audited inputs; immutable source CPU gate: 1,307 passed, 39 GPU skips, 1 existing xfail; prepared reservation |
 | GPU diagnostics | T035 complete | Job 271285 COMPLETED/0:0 on A100 gpu-52; nine real-shape probes + 118 GPU tests, no skips; all gate/result hashes validated |
-| Nine-run production | T036 submitted; T036/T037 incomplete | ST-g125 271319 and ST-g250 271320 running; ST-g500 271321 and ST-g1000 271322 pending; no elastic admission |
+| Nine-run production | T036 complete; T037 elastic admission underway | Four standalones COMPLETED/0:0 and strictly validated; barrier published/revalidated; five elastic terminals pending |
 | New report | Pending | Nine validated runs, matching 24-row endpoints.csv/json and diagnostics |
 | Combined report | Pending | Four valid historical standalones, matching 28-row combined_endpoints.csv/json |
 
@@ -204,7 +214,7 @@ gate-validation and next queue commands. T035 passed actual GPU validation;
 T036 still requires four validated standalones/barrier and T037 the five elastics
 and reconciled traces/costs. T045/T052 actual reports remain independently pending.
 
-Current production handoff: **271319 (ST-g125)** and **271320 (ST-g250)** are
+Initial production handoff (superseded by the 2026-09-22 recovery below): **271319 (ST-g125)** and **271320 (ST-g250)** are
 RUNNING on gpu-52; **271321 (ST-g500)** and **271322 (ST-g1000)** are PENDING.
 All four are attempt 1, fresh own identities, 87,132 assigned updates, one GPU/task,
 24-hour allocation limits, with the required exclusions. Live user-wide count:
@@ -216,3 +226,55 @@ with `--once`; it handles valid own-checkpoint continuations and strictly valida
 all four terminals before barrier publication/elastic admission. Existing
 execution authorization persists. T036/T037 and actual report T045/T052 remain
 incomplete; holdout evaluation count remains zero.
+
+On the user's subsequent request, an automatic background checker is now running
+on **ciai-login-1**, PID **1407294**. It invokes the verified snapshot's continuous
+queue and checks again 30 seconds after each completed cycle. The first live cycle
+passed without duplicate submissions. It automatically admits remaining elastic
+jobs as capacity opens **after all four standalones pass the strict barrier**,
+and resumes only valid own-run checkpoints. Invalid/uncertain evidence stops it
+with a logged error. It exits when the queue has validated all nine terminals;
+actual reports and final evidence/task reconciliation remain separate.
+
+Monitor `launchers/background-checker.json`, `launchers/status.json`,
+`launchers/submissions.json` and `logs/background-checker.log`. The wrapper is
+`launchers/background-checker.py`, outside the immutable source snapshot. It is
+detached from the chat session, but is not a reboot service. The verification
+record documents its exact provenance and safe stop/manual-takeover instructions.
+Do not start a competing queue while this checker holds the queue lock.
+
+## 2026-09-22 validation and recovery
+
+All four standalone jobs 271319–271322 completed with ExitCode 0:0 and their full
+87,132-update/713,785,344-token budgets. The first checker stopped when the strict
+terminal reader detected stale elapsed-time summaries: the trainer's `finally`
+block recorded another completion observation after summary publication.
+Final ledger durations exceeded the summaries by 12–18 ms; counts and peaks
+agreed. No elastic had been admitted at that failure.
+
+Original summaries and full checker failure records are preserved. A constrained
+CPU artifact helper now reconciles only elapsed time and derived throughput from
+the authoritative final ledger after successful scheduler/worker outcomes; it
+requires staged and post-publication acceptance by the unchanged strict terminal
+reader. Four actual terminals passed. The helper's 14 regression tests passed.
+No checkpoint, evaluation, trace, training source/config or readiness gate changed;
+no training/evaluation rerun occurred. See the verification record for hashes,
+measurements and `launchers/resource-reconciliations/` for sealed receipts.
+
+**T036 is complete:** `launchers/standalone-barrier.json` is published and
+revalidated, content hash
+`f30938b189747b1672fac07335ca2ab4b01d71317be34854e48527fe6da8d378`.
+A detached checker, PID **1212882** on ciai-login-1, reconciles completed resource
+records before each verified snapshot queue cycle and admits T037 elastics within
+live user-wide limits. It still stops on invalid/uncertain evidence and never
+relaxes strict validation. Current jobs are in `launchers/submissions.json` and
+`launchers/status.json`; its log is `logs/background-checker.log`. The first
+checker is archived at `launchers/background-checker-failure-20260922/`.
+T037 and actual reports T045/T052 remain incomplete; holdout remains sealed.
+
+Current T037 jobs: **S1 272204** and **S2 272205** RUNNING on gpu-54;
+**C1 272207** and **C2 272208** PENDING. **C3** awaits a submitted-job slot and
+will be admitted automatically. The first restarted checker cycle completed
+successfully, with two running/four submitted user jobs. Full details are in
+`launchers/handoff-elastics-20260922.json` and the verification record. T036 is
+checked complete; T037 and actual reporting T045/T052 remain unchecked.

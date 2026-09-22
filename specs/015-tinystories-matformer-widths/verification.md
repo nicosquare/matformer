@@ -9,25 +9,27 @@ preserved. The current operational ledger below supersedes earlier pending-
 authorization statements, which remain historical evidence. The real-input
 preflight and corrected snapshot CPU checks passed, and preparation completed
 (T034). GPU diagnostic job 271285 completed successfully on gpu-52; all 50 bound result
-artifacts and the gate revalidated (T035 complete). Four T036 standalones are
-submitted: 271319/271320 running, 271321/271322 pending at handoff. T036/T037
-completion remains pending. The holdout remains sealed.
+artifacts and the gate revalidated (T035 complete). On 2026-09-22, all four
+standalones passed strict terminal validation after documented resource-summary
+reconciliation, and the standalone barrier was published/revalidated (T036
+complete). T037 elastic production is being admitted by the restarted checker.
+Full nine-run completion and actual reporting remain pending. Holdout sealed.
 
 | Evidence stage | Status | Outstanding work |
 | --- | --- | --- |
 | Setup documents T001–T002 | Complete | Reconcile as later evidence arrives |
 | Foundations T003–T005 | Complete | Focused CPU evidence below; end-to-end schema-4 resolution verified in phase 3 |
-| Actual nine-model counts | CPU verified | Real-input campaign preflight remains T034 |
-| Phase 3 protocol/preflight T006–T013 | Complete on CPU | Real-input audit remains T034 |
-| Phase 4 ownership/accounting T014–T021 | Complete on CPU | GPU diagnostics pending; terminal-reader integration now has CPU fixtures |
-| Phase 5 implementation T022–T033 | Complete on CPU | Real execution remains T034–T037 |
+| Actual nine-model counts | Verified | T034 real-input preflight complete |
+| Phase 3 protocol/preflight T006–T013 | Complete | T034 real-input audit also passed |
+| Phase 4 ownership/accounting T014–T021 | CPU/GPU diagnostics passed | T037 full elastic evidence pending |
+| Phase 5 implementation T022–T033 | Complete | T034–T036 complete; T037 production pending |
 | Reporting prerequisites T038–T044/T046–T051 | Complete on CPU | Actual reports remain T045/T052 |
 | Real corpus/tokenizer/role audit | Passed | T034 complete; real preflight ledger below |
 | Historical four-terminal audit | Pending | T052 |
 | Full snapshot-bound CPU gate | Passed; T034 complete | 1,307 passed, 39 GPU-only skips, 1 existing xfail; preparation validated |
 | GPU gate | Passed; T035 complete | Job 271285 COMPLETED/0:0; nine real-shape probes and 118 GPU tests, zero skips; all hashes revalidated |
-| Standalone barrier | Pending | Four validated production terminals |
-| Nine-run production | T036 standalones submitted; T036/T037 incomplete | Jobs 271319–271322; no barrier or elastic admission |
+| Standalone barrier | Passed; T036 complete | Four full-budget terminals strictly validated; saved barrier revalidated before elastic admission |
+| Nine-run production | Four standalones complete; T037 elastics admitted | Five full-budget elastic terminals and final reconciliation remain pending |
 | 24-endpoint new report | Pending | T045 |
 | 28-endpoint combined report | Pending | T052 |
 
@@ -792,3 +794,282 @@ uncommitted work and historical artifacts are preserved. Zero holdout evaluation
 Final startup observation: both running standalone logs reached committed step
 1,580/87,132 (12,943,360 assigned tokens) with empty stderr. This confirms actual
 training began, not terminal completion. No elastic admission occurred.
+
+### Background admission checker enabled (2026-09-21)
+
+The user explicitly requested automatic background submission of remaining jobs
+when capacity becomes available. This supersedes the need to wait for a user
+notification before each new admission cycle. T036/T037 remain incomplete until
+their actual evidence validates; T045/T052 remain separate reporting tasks.
+
+The detached checker is running on **ciai-login-1**, PID **1407294**, started at
+**2026-09-21T15:06:29.053170+00:00**.
+It is a session leader with parent PID 1 and does not depend on this chat staying
+open. A real first cycle completed at
+`2026-09-21T15:07:00.495692+00:00`.
+That cycle preserved the four existing job identities and made no duplicate
+submissions. Scheduler state before startup: 271319/271320 RUNNING,
+271321/271322 PENDING, all cscc-gpu-qos; no other queue checker was running.
+
+The thin wrapper `launchers/background-checker.py` invokes the existing verified
+snapshot's continuous `queue` function. It performs no training or independent
+admission decisions, and does not change the immutable snapshot or gate bindings.
+Its SHA-256 is `d398df43c7f722d56b4b153b45398a5db64e707e551b170c9b05f76e3e7f6ea4`. Syntax was validated and the live detached
+process, first successful reconciliation, session/parent IDs and absence of startup
+errors were verified. No new scientific or scheduling implementation was added.
+
+- Cadence: 30 seconds after each completed validation/admission cycle; checks may
+  take additional time when validating terminal/checkpoint hashes.
+- Limits: live user-wide two running/four submitted, or stricter applicable limits;
+  one GPU/task and exclusions gpu-[05,50,51] remain enforced by the snapshot queue.
+- Stage order: validate all four full-budget standalone terminals and publish /
+  revalidate their barrier before submitting any of the five elastics. Admit the
+  fifth elastic when a submitted-job slot becomes available.
+- Resumption: valid own-run checkpoints only, with monotonic attempts and retained
+  failed/replayed costs. Uncertain submissions, ambiguous/invalid state, gate
+  failures and scheduler errors block admission and stop the checker for review;
+  there is no blind restart or resubmission loop.
+- Completion: exit after the existing strict queue validates all nine production
+  terminals. This does not create actual reports or automatically check off
+  T036/T037; final trace/exposure/clipping/cost reconciliation is still required.
+- Process lifetime: detached from this session, but not installed as a host-reboot
+  service. Its dedicated lock and the queue lock prevent competing checkers.
+
+Artifact paths, all under `$MW_ROOT`:
+
+| Artifact | Purpose |
+| --- | --- |
+| `launchers/background-checker.py` | Saved wrapper using verified snapshot queue |
+| `launchers/background-checker-start.json` | Exact command, detached PID and log |
+| `launchers/background-checker.json` | Host/PID, start, wrapper/config hashes and running/blocked/stopped/final status |
+| `logs/background-checker.log` | Monitor output and failure traceback |
+| `launchers/status.json` | Live cycle timestamp, arm progress and completion |
+| `launchers/submissions.json` | Durable job IDs, attempts and commands |
+| `launchers/admission-error.json` | Blocking reconciliation error, if any |
+
+Inspect progress with `cat "$MW_ROOT/launchers/status.json"` and monitor errors
+with `tail -n 50 "$MW_ROOT/logs/background-checker.log"`. While the checker owns
+`queue.lock`, do not invoke a competing `queue --once`. For manual takeover, first
+verify the saved PID/host still identifies this checker and send SIGTERM on
+ciai-login-1 (`kill -TERM 1407294`), then confirm it stopped and released the lock.
+Stopping the checker leaves all submitted Slurm jobs untouched. Before restarting
+a stopped/blocked checker, inspect its log and reconcile existing jobs/intents;
+never treat an old PID or stale running status as proof of a live process.
+
+## Validation and operational recovery (2026-09-22)
+
+The user returned with an empty queue and requested validation. Direct live
+`squeue` confirmed no jobs, and `sacct` confirmed all four standalones COMPLETED
+with ExitCode 0:0. The old checker PID 1407294 was absent. Its durable status was
+`blocked`, not successful: strict validation rejected ST-g125's elapsed time.
+No elastic job had been submitted, and no standalone barrier existed.
+
+| Arm | Job | Scheduler outcome | Allocation seconds | Node |
+| --- | --- | --- | ---: | --- |
+| ST-g125 | 271319 | COMPLETED / 0:0 | 2591 | gpu-52 |
+| ST-g250 | 271320 | COMPLETED / 0:0 | 2582 | gpu-52 |
+| ST-g500 | 271321 | COMPLETED / 0:0 | 2561 | gpu-06 |
+| ST-g1000 | 271322 | COMPLETED / 0:0 | 2454 | gpu-52 |
+
+### Saved resource summary reconciliation
+
+Root cause in the unchanged training snapshot: `run_training` observes completed
+resources before writing `run_summary.json`, but its `finally` block observes
+completed resources again because `attempt_finished` was not set on the success
+path. The final ledger therefore includes another 12–18 milliseconds of measured
+publication time. All other resource fields, including attempted steps and peaks,
+agreed. The strict validator correctly blocked the stale elapsed-time summary.
+
+The operational helper `scripts/reconcile_matformer_terminal_resources.py` was
+added to the working repository and copied to the campaign's `launchers/`.
+It reads the **unchanged, authoritative final attempt ledger** and updates only
+five summary cells: top-level elapsed time, resource-summary elapsed time, nested
+resource elapsed time, and its two derived throughput rates. It does not round
+away the discrepancy or relax any validator. It requires an ended successful
+Slurm job, successful matching worker/process identity, unchanged non-timing
+resource values and increasing finite duration. Published barrier/freeze inputs
+cannot be repaired in place.
+
+Before any publication, a staged view of the proposed summary must pass the
+original snapshot's complete strict terminal reader, including checkpoint,
+ordinary evaluation, budget, trace and any clipping checks. The same reader
+runs again on the canonical output after publication. Originals and sealed
+receipts containing original/corrected/ledger/worker/checkpoint hashes and actual
+accounting rows are retained at
+`launchers/resource-reconciliations/<arm>-<original-summary-sha256>/`.
+No checkpoint, terminal evaluation, trace, ledger, training source, recipe,
+config, scientific contract or readiness binding was changed. No training
+update or evaluation was rerun. The operational helper is outside the immutable
+training snapshot, like the background driver.
+
+Test command (repository cwd, pinned interpreter):
+
+```bash
+OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest tests/test_matformer_resource_reconciliation.py -q --tb=short
+```
+
+Result: **14 passed in 0.04s**, exit 0. Coverage includes exact changed cells,
+input immutability/idempotence, and rejection of different counts/peaks/attempts,
+incomplete or decreasing/nonfinite timing, inconsistent nested/wall/rate fields,
+failed status and changed schema. The real four-run staged and post-publication
+strict validations then all passed with no mocked inputs.
+
+Helper SHA-256:
+`ff4661ffed9c79922e766b7264485ee2b4f1aa1803b6097236951681ac501fad`.
+Test SHA-256:
+`9162d99e7ca516b5cc21af8478ae39dd1b1dce7f8b8eecebe7d09770b40809ec`.
+
+| Arm | Original process seconds | Final measured process seconds | Delta seconds |
+| --- | ---: | ---: | ---: |
+| ST-g125 | 2569.920077366754 | 2569.931999422610 | 0.011922055855 |
+| ST-g250 | 2564.337185683660 | 2564.355106671341 | 0.017920987681 |
+| ST-g500 | 2526.698174914345 | 2526.710809716955 | 0.012634802610 |
+| ST-g1000 | 2437.174922120757 | 2437.188143943436 | 0.013221822679 |
+
+The four runs consumed **2,855,141,376 assigned tokens** in **348,528 total
+updates**, with one measured attempt per run and no replayed optimizer updates.
+Summed process time is **10,098.186059754342 seconds**. Scheduler allocations sum
+to **10,188 seconds**; these overlap process time and must not be added to it.
+Each ordinary evaluation used 285 packed sequences and 36,195 target tokens,
+with zero skipped evaluation batches. The holdout remains sealed.
+
+### Corrected background operation
+
+The first checker's script/status/start record, admission error and complete log
+are preserved in `launchers/background-checker-failure-20260922/`. The restarted
+checker PID is **1212882** on ciai-login-1. It runs the constrained saved-resource
+reconciler before each snapshot `queue --once` cycle, then waits 30 seconds.
+It validates the helper hash on each iteration and records cycle timestamps.
+A dedicated checker lock remains held throughout; queue and writer locks protect
+each reconciliation/admission operation. There is no blind retry after errors.
+Training still runs the exact previously tested source/config snapshot; only the
+external orchestration wrapper and saved-resource finalization step changed.
+The original strict stage barrier and every live Slurm constraint remain in use.
+
+The latest standalone barrier and elastic submission evidence follow below;
+T037 and actual reporting T045/T052 remain pending.
+
+### Standalone barrier acceptance (T036 complete)
+
+The restarted snapshot queue marked all four original standalone attempts
+completed after strict validation. It published
+`launchers/standalone-barrier.json` and revalidated the same four terminal source
+sets before the first elastic submission. The four arms are ST-g125, ST-g250,
+ST-g500 and ST-g1000, all seed 42 and exactly one assigned epoch. All four
+first-epoch trace hashes match preflight
+`b12bb2e42d4f6625f48c68dd39a872a962ffa01cbbfc87c0edbe47368d387f27`.
+
+Barrier content hash: `f30938b189747b1672fac07335ca2ab4b01d71317be34854e48527fe6da8d378`.
+Barrier file SHA-256: `ef15b5b65d6e26160e2556ce9b8294c44a2b436ff2f99b8fc5a4aa84d278d4db`.
+Source binding remains `146282e8ed36a4799b7a583731649d6c3d6a2585e699e902d18733aa10a0f1a8`.
+
+| Arm | Active non-embedding parameters | Terminal ordinary loss | Perplexity |
+| --- | ---: | ---: | ---: |
+| ST-g125 | 90,688 | 2.1059634237958673 | 8.215013738010501 |
+| ST-g250 | 115,264 | 2.062977141246461 | 7.8693631760575835 |
+| ST-g500 | 164,416 | 1.9919419690182334 | 7.329754105491725 |
+| ST-g1000 | 262,720 | 1.9090565852951584 | 6.746720839541034 |
+
+These are actual saved terminal ordinary-validation measurements, not a complete
+24/28-endpoint report or an across-seed comparison. All nine-run/elastic success
+criteria and T037 remain pending.
+
+### Current handoff: elastic production active (2026-09-22)
+
+The restarted checker completed its first real admission cycle and remains
+running as PID **1212882** on ciai-login-1. The snapshot queue's status now lists
+all four standalones completed; the barrier was repeatedly revalidated before
+elastic submission and at worker entry. Actual scheduler state was checked:
+
+| Arm | Job ID | Attempt | State | Node |
+| --- | --- | --- | --- | --- |
+| S1 | 272204 | 1 | RUNNING | gpu-54 |
+| S2 | 272205 | 1 | RUNNING | gpu-54 |
+| C1 | 272207 | 1 | PENDING | Unassigned |
+| C2 | 272208 | 1 | PENDING | Unassigned |
+| C3 | Not submitted yet | — | Waiting for submitted-job capacity | — |
+
+Each elastic retains 348,528 assigned updates / 2,855,141,376 assigned tokens,
+four epochs, seed 42, one GPU/task, 24-hour request and the required exclusions.
+The user-wide count is two running/four submitted; C3 must wait for capacity and
+will be admitted by the same checker. The running S1/S2 stderr files were empty.
+No elastic terminal success is claimed. The first-cycle status is evidence of
+actual background operation, not merely a launch request.
+
+Saved handoff: `launchers/handoff-elastics-20260922.json` binds the actual queue,
+scheduler accounting, live limits, job intents, checker metadata, barrier and
+resource-reconciliation receipts. Current checker wrapper SHA-256:
+`1de05bf33bdce591fd473811fb6c99a63766aeaa127cb7e8aa925693515d8ab9`.
+The helper is unchanged from its passing 14-test verification. Logs are
+`logs/<arm>-a1-<jobid>.{out,err}` and `logs/background-checker.log`; progress and
+new job IDs are in `launchers/status.json` and `launchers/submissions.json`.
+
+On the next validation request, set
+`SLURM_CONF=$MW_ROOT/launchers/slurm-client.conf`, inspect the current checker
+status/process and latest submission IDs (including C3 and any valid resumes),
+then query actual `squeue` and `sacct` outcomes. Do not launch a competing queue
+while this checker is active. If blocked, inspect the saved admission error and
+worker/log/checkpoint evidence before manual takeover. The helper preserves
+original summaries and refuses every non-timing discrepancy; it is not a general
+repair or relaxed-validation path.
+
+After all five elastics terminate, independently verify all nine strict terminal
+sets, the nine first-epoch and five full elastic traces, physical exposure, all
+C1/C3 clipping records, and unique attempt/resource/replay totals before checking
+T037. Keep diagnostic costs and overlapping scheduler allocations separate from
+17,130,848,256 assigned production tokens. T045/T052 actual reporting remains
+pending and distinct from phase-5 completion. No holdout evaluation is authorized
+or performed by any operation above. The original execution authorization and
+request for automatic background admission remain in force.
+
+### Requested standalone comparison plot (2026-09-22)
+
+Published the two standalone grids under
+`/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-matformer-widths-v1/reports/standalone-comparison-20260922/`.
+Artifacts: `standalone_grid_comparison.png`, `standalone_grid_comparison.pdf`,
+`standalone_endpoints.json`, `standalone_endpoints.csv`, and `plot_manifest.json`.
+The PNG/PDF contain terminal ordinary-validation loss and perplexity panels.
+The JSON retains complete endpoint provenance; the CSV provides scalar columns.
+
+Executed `scripts/plot_tinystories_standalones.py` with `--campaign-root` set to
+the production root and `--output-dir` set to the directory above, using the
+documented Python environment, `OMP_NUM_THREADS=1`, `PYTHONDONTWRITEBYTECODE=1`,
+`MPLBACKEND=Agg`, and `MPLCONFIGDIR=/tmp/matformer-standalone-mpl`.
+Script SHA-256: `4cd0d16b091399b63a234efc0068462d1f45e9b6e73cab3d48b9ba5942bdddd0`.
+
+All eight endpoints passed the immutable snapshot's strict terminal reader.
+The fresh four exactly matched the saved standalone barrier; the historical
+four exactly matched their original frozen records after source-hash and optional
+source-presence checks. Every plotted run has seed 42 and exactly one epoch /
+713,785,344 tokens. All eight endpoint identities remain distinct. Shared FFN
+sizes 64/128/256 have exactly matching saved loss/perplexity across campaigns;
+concentric open orange and filled blue markers retain both measurements without
+jitter. FFN 32 is fresh-only; FFN 192 is historical-only (loss
+1.9433632578766138, perplexity 6.9821944457784655).
+
+Publication was atomic and rechecked input hashes before exposing the directory.
+After publication, all output hashes and CSV/JSON shared fields passed checks;
+the figure was visually inspected. Plot manifest content hash:
+`dbe890af31193134f06eba89b7158ee18126b6f85680e938b5a77f38d508261d`.
+Status is explicitly `standalone_only`. No holdout was evaluated. This requested
+interim plot does not complete T037, T045 or T052; the background elastic queue
+and immutable training snapshot were unchanged.
+
+### Standalone plot presentation revision (2026-09-22)
+
+The user requested Linear/Geometric names, blue/orange triangles, no repeated
+dimensions in the legend, and separate figures. Published the revision in
+`reports/standalone-comparison-20260922-v2/` under the same production root,
+preserving the earlier report directory. Outputs are `loss_vs_parameters.png`,
+`loss_vs_parameters.pdf`, `perplexity_vs_parameters.png`, and
+`perplexity_vs_parameters.pdf`, alongside endpoint JSON/CSV and `plot_manifest.json`.
+Dimensions appear on the top axis. Coincident measurements share one triangle
+with a blue left half and orange right half; coordinates remain unchanged.
+
+The revised script reran the same strict eight-terminal validation and atomic
+publication. Both figures were visually inspected; all output hashes passed
+checks, and endpoint JSON/CSV are byte-identical to the earlier report.
+Script SHA-256: `da5b87ee6c6faa6d6fdbc5cf1754e3abfac3088ffea857d9c54ed2483f36cb3a`.
+Plot manifest content hash:
+`88e452551e839a8f2327f9ee57864b932063fc926409f2f3c150470be46e45ec`.
+Only presentation changed; T037/T045/T052 remain pending.
