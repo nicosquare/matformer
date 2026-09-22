@@ -1,6 +1,6 @@
 # Quickstart: S1 Warmup Extension
 
-Phases 3–5 and cross-cutting T049–T050 are complete: 1179 CPU tests passed, with 39 expected GPU skips; CLI and temporary-fixture commands passed (see [verification.md](verification.md)). Real preflight T051 was attempted but stopped at historical Slurm accounting (`localhost:6819`, connection refused), without creating the fresh root. Restore access to the cluster accounting service and rerun the preflight below before CPU snapshot/gating or prepare. GPU diagnostics, production, and real reports remain pending under their stated authorization requirements; earlier campaigns' approvals do not apply.
+T001–T053 complete. Final CPU gate: 1191 passed, 39 expected GPU skips; reporting fixtures passed. Final GPU diagnostic 273708: both real-shape bf16 grids and 60 CUDA tests passed, zero skips. Both production jobs are running and have begun bf16 updates: Linear 273714 on gpu-53; Geometric 273716 on gpu-08. T054 is in progress; full-budget terminals, reports and final acceptance (T055–T056) remain outstanding. The user authorized continuing through both jobs running; see [verification.md](verification.md).
 
 ## 1. Implement and verify locally
 
@@ -21,6 +21,7 @@ WARMUP_ROOT=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-war
 WARMUP_LINEAR_REF=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1
 WARMUP_GEOMETRIC_REF=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-matformer-widths-v1
 WARMUP_PYTHON=/home/ivo.navarrete/.conda/envs/elasticnn/bin/python
+export SLURM_CONF="$WARMUP_GEOMETRIC_REF/launchers/slurm-client.conf"
 
 "$WARMUP_PYTHON" scripts/analyze_tinystories_optimizer_ownership.py preflight \
   --campaign configs/controlled_exps/tinystories_instruct_s1_warmup.yaml \
@@ -34,6 +35,8 @@ WARMUP_PYTHON=/home/ivo.navarrete/.conda/envs/elasticnn/bin/python
 "$WARMUP_PYTHON" "$WARMUP_ROOT/source/scripts/run_tinystories_s1_warmup.py" prepare \
   --campaign-root "$WARMUP_ROOT" --cpu-evidence "$WARMUP_ROOT/diagnostics/cpu-gate.json"
 ```
+
+On `ciai-login-1`, the default Slurm config incorrectly directs client accounting to `localhost`. The existing read-only client config above changes only `AccountingStorageHost` from the controller export to `ciai-head`. Retain this environment setting for CPU preparation and later authorized diagnostic, queue and reporting commands. The launcher also reasserts this setting inside the batch command because Slurm replaces the inherited value on compute nodes. It changes no server policy or historical files; admission still queries live limits.
 
 Review the exact two configs and warmup-only differences, real parameter counts, data/role hashes, 43 excluded sequences, full expected schedules/traces, selected historical controls/terminals and source snapshot. In particular, position 256 is peak, applied first at update 257; final stored position 348528 is zero. Validating each historical S1 means its own grid and valid GPU attempt, not stale campaign-level status.
 

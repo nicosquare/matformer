@@ -1,0 +1,12 @@
+{
+  "cpu_gate": "passed",
+  "early_report": "pending",
+  "endpoint_comparison": "pending",
+  "gpu_readiness": "pending",
+  "new_report": "pending",
+  "production": "pending",
+  "terminals": {
+    "S1-geometric-w256": "pending",
+    "S1-linear-w256": "pending"
+  }
+}

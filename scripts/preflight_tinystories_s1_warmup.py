@@ -126,21 +126,33 @@ def diagnostic_identity(definition, output, run_id):
     validates a canonical copy before the shared trainer sees the distinct ID.
     """
     original = ops.campaign.validate_materialized_config
-    def validate(config):
+    original_budget = ops.campaign.validate_run_budget
+    def canonical(config):
         if config['run']['run_id'] != run_id or Path(config['run']['output_dir']) != output:
-            return original(config)
+            return config
+        contract = config['optimizer_ownership_contract']
+        if contract.get('run_id') != run_id or ops.stable_hash(contract) != config['optimizer_ownership_contract_hash']:
+            raise ops.ConfigError('Diagnostic contract identity/hash changed')
         normalized = copy.deepcopy(config)
         normalized['run']['run_id'] = definition['run_id']
         normalized['optimizer_ownership_contract']['run_id'] = definition['run_id']
         normalized['optimizer_ownership_contract_hash'] = ops.stable_hash(normalized['optimizer_ownership_contract'])
         if normalized['optimizer_ownership_contract_hash'] != definition['contract_hash']:
             raise ops.ConfigError('Diagnostic changed more than run identity')
-        original(normalized)
+        return normalized
+    def validate(config):
+        return original(canonical(config))
+    def validate_budget(config, arm):
+        # Resolution validates the budget before the materialized contract.
+        # Both paths must use the same narrowly scoped identity substitution.
+        return original_budget(canonical(config), arm)
     ops.campaign.validate_materialized_config = validate
+    ops.campaign.validate_run_budget = validate_budget
     try:
         yield
     finally:
         ops.campaign.validate_materialized_config = original
+        ops.campaign.validate_run_budget = original_budget
 
 
 def gpu_real_shapes(root, output):
@@ -321,7 +333,9 @@ def submit_gpu(root):
             else:intent['status']='uncertain'
         ops.save(path,record)
         if any(j['status'] not in ('completed','failed') for j in record['jobs']):return dict(status='pending',jobs=record['jobs'])
-        if record['jobs'] and record['jobs'][-1]['status']=='completed':
+        if (record['jobs'] and record['jobs'][-1]['status']=='completed'
+                and record['jobs'][-1]['bindings']==expected
+                and record['jobs'][-1]['cpu_gate_hash']==cpu['content_hash']):
             gate=ops.verify_gate(root,'gpu',expected)
             return dict(status='passed',gate_hash=gate['content_hash'],jobs=record['jobs'])
         production=root/'launchers/submissions.json'

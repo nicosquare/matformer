@@ -1,0 +1,92 @@
+[
+  {
+    "actual_cuda_bf16_forwards": 8,
+    "arm_id": "S1-linear-w256",
+    "artifacts": [
+      {
+        "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/S1-linear-w256.yaml",
+        "sha256": "37e1499a07a7607a3d1700af7e910d81ee08abae33980a8f1b5aa7cccddbcc56"
+      },
+      {
+        "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-linear-w256/checkpoints/latest.pt",
+        "sha256": "e742fc07f261729aed2f7b079aa03c6002a2028967ef2ca70c4cfc9242fe624a"
+      },
+      {
+        "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-linear-w256/optimizer_ownership_trace.jsonl",
+        "sha256": "d6cb741bb809f6125a2f4b7db39acb961d45ce8cf799f7ce610ec81596323cbd"
+      },
+      {
+        "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-linear-w256/heartbeats.jsonl",
+        "sha256": "79c52afdd70d2cf81b33d4c17cff9f5573b895e3500b50e77a852e0a79f30906"
+      },
+      {
+        "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-linear-w256/resource_attempts.json",
+        "sha256": "c0469620320f362b7d8dd695d9a5a442b37c1e9d1d5fbc4fb9404c735381c227"
+      },
+      {
+        "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-linear-w256/config.json",
+        "sha256": "732c670d5ea4450c8f8a28cb172ffa1a3138af87d15d6742625871479e364fbe"
+      }
+    ],
+    "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-linear-w256/checkpoints/latest.pt",
+    "checkpoint_sha256": "e742fc07f261729aed2f7b079aa03c6002a2028967ef2ca70c4cfc9242fe624a",
+    "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/S1-linear-w256.yaml",
+    "config_sha256": "37e1499a07a7607a3d1700af7e910d81ee08abae33980a8f1b5aa7cccddbcc56",
+    "horizon": 348528,
+    "overrides": {
+      "output_dir": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-linear-w256",
+      "run_id": "s1w-gpu-diagnostic-273655-S1-linear-w256",
+      "stops": [
+        4,
+        8
+      ]
+    },
+    "status": "passed",
+    "steps": 8
+  },
+  {
+    "actual_cuda_bf16_forwards": 8,
+    "arm_id": "S1-geometric-w256",
+    "artifacts": [
+      {
+        "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/S1-geometric-w256.yaml",
+        "sha256": "e1ae3793a092890871103da9db9e4b123737572afd6f9d01f852c827eebf8cb0"
+      },
+      {
+        "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-geometric-w256/checkpoints/latest.pt",
+        "sha256": "f23a1315302973626c0a58641edc5b6d820cf8a4f110ea4ca250c96ba953dc76"
+      },
+      {
+        "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-geometric-w256/optimizer_ownership_trace.jsonl",
+        "sha256": "98431dda039ef61c85995a572cb51ee43ebaf8f1c9e2dc0081b46e8c962fb1ba"
+      },
+      {
+        "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-geometric-w256/heartbeats.jsonl",
+        "sha256": "fad865b118d7e2f607e7c2e593b4b6a25a15623cb038e29d1803041bc12e10ab"
+      },
+      {
+        "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-geometric-w256/resource_attempts.json",
+        "sha256": "1fcf7d0f8191d0390b63bdbaba02d8862d5324be5eaf0bce934ff1061e04cedf"
+      },
+      {
+        "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-geometric-w256/config.json",
+        "sha256": "b851da8246194e73a57691057df417dae4a8e7da49804ca718891c01e3edfb1f"
+      }
+    ],
+    "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-geometric-w256/checkpoints/latest.pt",
+    "checkpoint_sha256": "f23a1315302973626c0a58641edc5b6d820cf8a4f110ea4ca250c96ba953dc76",
+    "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/S1-geometric-w256.yaml",
+    "config_sha256": "e1ae3793a092890871103da9db9e4b123737572afd6f9d01f852c827eebf8cb0",
+    "horizon": 348528,
+    "overrides": {
+      "output_dir": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-geometric-w256",
+      "run_id": "s1w-gpu-diagnostic-273655-S1-geometric-w256",
+      "stops": [
+        4,
+        8
+      ]
+    },
+    "status": "passed",
+    "steps": 8
+  }
+]

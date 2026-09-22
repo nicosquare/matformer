@@ -4,7 +4,7 @@
 
 **Input**: Feature 016 and [source request](../../notes/tinystories_s1_warmup_speckit_prompt_2026-09-22.md).
 
-**Status**: Planning, phases 1–5 implementation, and phase-6 cross-cutting CPU/CLI verification (T049–T050) are complete. The 14-suite run passed 1179 tests with 39 expected GPU skips. Real preflight T051 is blocked by unavailable historical Slurm accounting; no fresh result root or reservation was published. Snapshot-bound readiness, production, real comparison, and final acceptance remain pending. See [verification.md](verification.md).
+**Status**: T001–T053 complete. Final CPU gate: 1191 passed, 39 expected GPU skips; reporting fixtures passed. Final GPU diagnostic 273708: both real-shape bf16 grids and 60 CUDA tests passed, zero skips. Both production jobs are running and have begun bf16 updates: Linear 273714 on gpu-53; Geometric 273716 on gpu-08. T054 is in progress; full-budget terminals, reports and final acceptance (T055–T056) remain outstanding.
 
 ## Summary
 

@@ -2,16 +2,7 @@
 
 ## Current scope
 
-Phases 3–5 implement schema-5 preparation, grid-aware runtime accounting and
-terminal metadata, immutable source/CPU/GPU diagnostics, and the two-arm launcher.
-CPU fixtures verify protocol, continuation, failure durability and admission.
-Phase 5 adds strict saved-artifact reporting and fixture verification. Phase-6
-T049–T050 passed 1179 CPU tests with 39 expected GPU skips and verified the CLI
-and fixture commands. Real preflight T051 stopped at historical Slurm accounting
-because its database connection was refused; it published no fresh root or
-reservation. Source-bound readiness, production, and real comparison remain
-pending. See independent stage
-statuses and test evidence in [verification.md](../specs/016-tinystories-s1-warmup/verification.md).
+T001–T053 complete. Final CPU gate: 1191 passed, 39 expected GPU skips; reporting fixtures passed. Final GPU diagnostic 273708: both real-shape bf16 grids and 60 CUDA tests passed, zero skips. Both production jobs are running and have begun bf16 updates: Linear 273714 on gpu-53; Geometric 273716 on gpu-08. T054 is in progress; full-budget terminals, reports and final acceptance (T055–T056) remain outstanding. The grid definitions and scientific settings are unchanged. See [verification.md](../specs/016-tinystories-s1-warmup/verification.md) for saved evidence.
 
 ## Fixed experiment
 
@@ -68,7 +59,7 @@ one epoch each; both historical and new S1 runs have four.
 
 ## Artifacts and CLI
 
-Proposed fresh root (not reserved):
+Audited campaign root (two identities reserved; no production runs started):
 `/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1`.
 
 ```text
@@ -106,6 +97,13 @@ Recipe: `configs/controlled_exps/tinystories_instruct_s1_warmup.yaml`.
 Corpus: `/nfs-stor/ivo.navarrete/matformer-corpora/tinystories-instruct-packed-full-v1`.
 Tokenizer: `/nfs-stor/ivo.navarrete/matformer-tokenizers/tinystories-instruct-sentencepiece-bpe-2k-v1`.
 The quickstart provides the implemented command sequence with these paths.
+On `ciai-login-1`, export
+`SLURM_CONF=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-matformer-widths-v1/launchers/slurm-client.conf`
+before preflight and subsequent commands. This existing read-only client config
+changes only the controller export's accounting endpoint from `localhost` to
+`ciai-head`; the default otherwise produces a connection-refused error. Its
+SHA-256 is `bd097fb57bafe6cffc4c11e687d7f65aa2997b5ce8f5f060324de0088934e076`.
+No system settings, historical files, or live admission policies are changed.
 After preparation, use the frozen `ROOT/source/scripts/` entry points. Changed
 source/config/reference bindings invalidate gates. Missing required evidence
 returns an explicit nonzero failure; queue capacity records a pending wait.
@@ -113,11 +111,12 @@ returns an explicit nonzero failure; queue capacity records a pending wait.
 ## Authorization, execution and recovery
 
 The phase-6 request covered cross-cutting verification and real-input
-preparation. T049–T050 are complete; T051 is blocked by accounting access and
-T052 has not run. GPU
-readiness T053 requires subsequent diagnostic authorization; production T054
-requires subsequent production authorization and passed CPU/GPU gates. Earlier
-campaign approvals and successful tests do not authorize these stages.
+preparation. T049–T053 are complete, including the final snapshot CPU/GPU gates and
+prepared two-arm plan. The user subsequently authorized T053 GPU diagnostics and T054 production
+launch through both real jobs running. Passed CPU/GPU gates remain prerequisites.
+The first diagnostic failed before training; its helper fix requires renewed
+source-bound readiness. Full terminal completion and real reporting remain later
+work, and T054 stays unchecked until its full-budget acceptance is satisfied.
 
 All GPU work uses checked sbatch admission, one process/GPU, excluded nodes
 `gpu-[05,50,51,54]`, and user-wide ceilings of two running/four submitted jobs
@@ -183,7 +182,7 @@ These commands are implemented and checked with CPU fixtures. They are not
 records of running the real experiment. Set `WARMUP_ROOT` and `WARMUP_PYTHON`
 as in the [quickstart](../specs/016-tinystories-s1-warmup/quickstart.md).
 
-After real preflight T051 passes (currently blocked by Slurm accounting access):
+After real preflight T051 passes (completed using the client config above):
 
 ```bash
 "$WARMUP_PYTHON" scripts/preflight_tinystories_s1_warmup.py cpu --campaign-root "$WARMUP_ROOT"

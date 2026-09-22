@@ -197,6 +197,11 @@ def diagnostic_reservations(root):
 
 def sbatch_command(root, name, entry, *, log_label):
     root = Path(root)
+    # Slurm replaces SLURM_CONF in the allocation environment. Reassert the
+    # submitting client's accounting endpoint before worker-side gate checks.
+    client_config = os.environ.get('SLURM_CONF')
+    if client_config:
+        entry = ['env', 'SLURM_CONF='+client_config, *entry]
     return ['sbatch', '--parsable', '--job-name='+name, '--partition=cscc-gpu-p', '--qos='+QOS,
         '--nodes=1', '--ntasks=1', '--cpus-per-task=4', '--gres=gpu:1', '--mem=16G', '--time=24:00:00',
         '--exclude='+EXCLUDED_NODES, '--no-requeue', '--chdir='+str(root/'source'),
@@ -267,7 +272,13 @@ def reconcile(root, record, active, plan):
             intent['execution_evidence']=execution_evidence(root,intent,plan); intent['status']='completed'
         else:
             own=continuation(root,intent['arm_id'])
-            if own['mode']=='fresh': raise ConfigError('Ended attempt without durable own checkpoint; reconcile before retry')
+            if own['mode']=='fresh':
+                entry = Path(root)/'launchers'/f"cuda-entry-{intent['arm_id']}-{intent['attempt_id']}.json"
+                if state != 'FAILED' or worker.exists() or entry.exists() or output.exists():
+                    raise ConfigError('Ended attempt without durable own checkpoint; reconcile before retry')
+                # The worker writes its identity before creating run state or
+                # invoking training. This failed admission never started a run.
+                intent['failure_stage'] = 'before_worker_admission'
             intent.update(status='retryable',continuation=own)
 
 

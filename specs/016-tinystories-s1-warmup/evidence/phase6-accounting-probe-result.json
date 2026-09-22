@@ -1,0 +1,24 @@
+{
+  "host": "gpu-53",
+  "environment": {
+    "SLURM_CONF": "/etc/qlustar/common/slurm-llnl/slurm.conf",
+    "SLURM_CONF_SERVER": null,
+    "SLURM_JOB_ID": "273678",
+    "PATH": "/nfs-stor/ivo.navarrete/.codex/packages/standalone/releases/0.155.1-x86_64-unknown-linux-musl/codex-path:/home/ivo.navarrete/.codex/tmp/arg0/codex-arg0pcjwqs:/nfs-stor/ivo.navarrete/.codex/packages/standalone/releases/0.155.1-x86_64-unknown-linux-musl/codex-path:/home/ivo.navarrete/.local/bin:/apps/local/anaconda3.10/bin:/usr/bin:/bin:/usr/sbin:/sbin:/snap/bin"
+  },
+  "sacct_executable": "/usr/bin/sacct",
+  "checks": [
+    {
+      "mode": "inherited",
+      "returncode": 1,
+      "stdout": "",
+      "stderr": "sacct: error: _open_persist_conn: failed to open persistent connection to host:localhost:6819: Connection refused\nsacct: error: Sending PersistInit msg: Connection refused\nsacct: error: Problem talking to the database: Connection refused\n"
+    },
+    {
+      "mode": "explicit_client",
+      "returncode": 0,
+      "stdout": "273655|s1w-diagnostic-a2-450634f8|COMPLETED|113|0:0\n",
+      "stderr": ""
+    }
+  ]
+}

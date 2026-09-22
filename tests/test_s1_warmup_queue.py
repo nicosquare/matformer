@@ -94,6 +94,40 @@ def test_failed_attempt_own_checkpoint_retries_monotonically(queue_setup, monkey
     assert jobs[-1]['arm_id']==ops.ARMS[0] and jobs[0]['scheduler_accounting']['allocation_seconds']==12
 
 
+@pytest.mark.parametrize('evidence', [None, 'worker', 'run', 'cuda_entry', 'cancelled'])
+def test_failed_before_worker_retries_only_proven_unstarted(queue_setup, monkeypatch, evidence):
+    root, _, active, submitted = queue_setup
+    ops.queue(root, once=True); active.pop(0)
+    monkeypatch.setattr(ops, 'scheduler_history', lambda root, j: dict(job_id=j['job_id'], name=j['name'],
+        state='CANCELLED' if evidence == 'cancelled' else 'FAILED', exit_code='1:0', allocation_seconds=13))
+    if evidence == 'worker': ops.save(root/'launchers'/f'worker-{ops.ARMS[0]}-1.json', {'status':'running'})
+    if evidence == 'cuda_entry': ops.save(root/'launchers'/f'cuda-entry-{ops.ARMS[0]}-1.json', {'status':'starting'})
+    if evidence == 'run': (root/'runs'/ops.ARMS[0]).mkdir()
+    if evidence:
+        with pytest.raises(ConfigError, match='reconcile before retry'):
+            ops.queue(root, once=True)
+        assert len(submitted) == 2
+    else:
+        ops.queue(root, once=True)
+        jobs = ops.read(root/'launchers/submissions.json')['jobs']
+        assert len(submitted) == 3 and jobs[-1]['attempt_id'] == 2
+        assert jobs[-1]['continuation']['mode'] == 'fresh'
+        assert jobs[0]['failure_stage'] == 'before_worker_admission'
+        assert jobs[0]['scheduler_accounting']['allocation_seconds'] == 13
+
+
+@pytest.mark.parametrize('client', [None, '/shared/client config.conf'])
+def test_sbatch_reasserts_client_config_inside_allocation(tmp_path, monkeypatch, client):
+    import shlex
+    if client is None: monkeypatch.delenv('SLURM_CONF', raising=False)
+    else: monkeypatch.setenv('SLURM_CONF', client)
+    entry = [ops.PYTHON, str(tmp_path/'source/scripts/run_tinystories_s1_warmup.py'), 'worker']
+    cmd = ops.sbatch_command(tmp_path, 'job', entry, log_label='worker')
+    wrapped = shlex.split(next(arg.split('=', 1)[1] for arg in cmd if arg.startswith('--wrap=')))
+    assert wrapped == (['env', 'SLURM_CONF='+client] if client else []) + entry
+    assert '--exclude=gpu-[05,50,51,54]' in cmd and '--gres=gpu:1' in cmd
+
+
 def test_terminal_recovery_submits_completion_only(queue_setup, monkeypatch):
     root, _, active, submitted = queue_setup
     ops.queue(root, once=True); active.pop(0)
@@ -378,6 +412,24 @@ def test_diagnostic_submission_capacity_waits(queue_setup,monkeypatch):
     monkeypatch.setattr(ops,'verify_gate',lambda *a,**k:{'content_hash':'cpu'})
     active.extend(dict(job_id=str(i),name='foreign',state='PENDING') for i in range(2))
     assert diagnostics.submit_gpu(root)['status']=='pending_capacity' and not submitted
+
+
+@pytest.mark.parametrize('changed', [None, 'source', 'cpu'])
+def test_diagnostic_retests_changed_bindings_without_relabeling_prior_success(queue_setup, monkeypatch, changed):
+    root, plan, _, submitted = queue_setup
+    monkeypatch.setattr(ops, 'bindings', lambda root: plan['bindings'])
+    monkeypatch.setattr(ops, 'verify_gate', lambda root, mode, *a: {'content_hash': mode})
+    previous = dict(name='prior-diagnostic', job_id='99', attempt_id=2, status='completed',
+        bindings={'old':'source'} if changed == 'source' else plan['bindings'],
+        cpu_gate_hash='old-cpu' if changed == 'cpu' else 'cpu')
+    ops.save(root/'diagnostics/submissions.json', dict(jobs=[previous]))
+    result = diagnostics.submit_gpu(root)
+    assert result['status'] == ('submitted' if changed else 'passed')
+    jobs = ops.read(root/'diagnostics/submissions.json')['jobs']
+    assert jobs[0] == previous
+    assert len(submitted) == (1 if changed else 0)
+    if changed:
+        assert jobs[-1]['attempt_id'] == 3 and jobs[-1]['bindings'] == plan['bindings']
 
 
 @pytest.mark.parametrize('passed',[True,False])

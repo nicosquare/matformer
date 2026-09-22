@@ -1,0 +1,40 @@
+{
+  "bindings": {
+    "artifacts_sha256": "eb3fbd811c455635c57ce0ee5302dc2614cc6bf577fc09dbe6808c22229369ac",
+    "campaign_id": "tinystories-optimizer-ownership-s1-warmup-v1",
+    "campaign_manifest_sha256": "237188139e7ca8110d62651f6e364ac25e3c26c5bc308e6b0c449fa5f0c8a3b1",
+    "config_set_sha256": "3db81e1e2238a57b35ca2aa1583e968c4405edf0383904ebcb4ecc5af8151204",
+    "config_sha256": {
+      "S1-geometric-w256": "5622556cdb91bc0c9643510df8c968cc26c264b056975a16b4cfe14305b07caa",
+      "S1-linear-w256": "6423c3531d758a3f4b57c3f888cf00a7b96fb2b5976e70035f056fd20869d318"
+    },
+    "contracts": {
+      "S1-geometric-w256": "693f54d5760fea8be724888b90c83c0078c4cb005a5a4418589a22cd857361ec",
+      "S1-linear-w256": "bb0f38d6c287be3a66b17b0e1c353ded8fe97be062ec7bcad15596da367e5916"
+    },
+    "manifest_hash": "cfc2dd9c83ace4b621a9e90befd6edbb79028d7b4909023cf980988009b2d4ed",
+    "preflight_sha256": "52e5c536e036f3488b69deb7c3d2d69ca6dc8a42eaa3103a3a479499a3ef6f26",
+    "recipe_sha256": "133ba407d683e803c023a301680e78e9675bb4e269f436a77b38fbf82d858b6b",
+    "references_sha256": "1f545c565c68ca86fb6b9509fd0ef67eb481e0dcabdfb28a53a3409c7a0cfe90",
+    "source_sha256": "7d1e1e45c2c4fde418a39cb27cc8ff65ef4c9a98b8951dbfb98c303915cf75a2"
+  },
+  "checks": [],
+  "content_hash": "9457646e15cde787d61c2db9529809740d479ffb41524dc14a65403514142874",
+  "environment": {
+    "executable": "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+    "packages": {
+      "PyYAML": "6.0.3",
+      "numpy": "2.4.3",
+      "pytest": "9.0.3",
+      "torch": "2.11.0+cu128",
+      "transformers": "5.8.0"
+    },
+    "platform": "Linux-6.12.95-ql-generic-14-12-x86_64-with-glibc2.39",
+    "python": "3.12.13 | packaged by conda-forge | (main, Aug 11 2026, 10:27:28) [GCC 14.4.0]"
+  },
+  "error": "run.run_id: expected 'tinystories-optimizer-ownership-s1-warmup-v1-S1-linear-w256-s42', found 's1w-gpu-diagnostic-273610-S1-linear-w256'",
+  "holdout_evaluated": false,
+  "mode": "gpu",
+  "schema_version": 1,
+  "status": "failed"
+}

@@ -1,0 +1,121 @@
+{
+  "jobs": [
+    {
+      "job_id": "273610",
+      "status": "FAILED",
+      "exit_code": "1:0",
+      "allocation_seconds": 28,
+      "node": "gpu-55"
+    },
+    {
+      "job_id": "273655",
+      "status": "COMPLETED",
+      "exit_code": "0:0",
+      "allocation_seconds": 113,
+      "node": "gpu-53"
+    }
+  ],
+  "allocation_seconds_total": 141,
+  "resources_per_job": {
+    "gpus": 1,
+    "cpus": 4,
+    "memory": "16G"
+  },
+  "probe_process_ledgers": [
+    {
+      "arm_id": "S1-linear-w256",
+      "source": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-linear-w256/resource_attempts.json",
+      "sha256": "c0469620320f362b7d8dd695d9a5a442b37c1e9d1d5fbc4fb9404c735381c227",
+      "ledger": {
+        "attempts": {
+          "440b1fa2d8d84943b381d0970d4c2f78": {
+            "attempted_steps": 4,
+            "elapsed_seconds": 2.382856871932745,
+            "failure": null,
+            "launch_attempt_id": null,
+            "measurement_complete": true,
+            "peak_allocated_bytes": 453779968,
+            "peak_reserved_bytes": 511705088,
+            "process_uuid": "440b1fa2d8d84943b381d0970d4c2f78",
+            "run_id": "s1w-gpu-diagnostic-273655-S1-linear-w256",
+            "sequence": 4,
+            "slurm_job_id": "273655",
+            "source_checkpoint": null,
+            "started_at": "2026-09-22T16:58:51.605007+00:00",
+            "status": "failed"
+          },
+          "6c0a25d9c42341f1b042f6e36f5bf9a9": {
+            "attempted_steps": 4,
+            "elapsed_seconds": 0.8245532726868987,
+            "failure": null,
+            "launch_attempt_id": null,
+            "measurement_complete": true,
+            "peak_allocated_bytes": 453779968,
+            "peak_reserved_bytes": 511705088,
+            "process_uuid": "6c0a25d9c42341f1b042f6e36f5bf9a9",
+            "run_id": "s1w-gpu-diagnostic-273655-S1-linear-w256",
+            "sequence": 4,
+            "slurm_job_id": "273655",
+            "source_checkpoint": {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-linear-w256/checkpoints/latest.pt",
+              "sha256": "83271ec6983b15d921533fc46aaf2b793017da16b689e8b6ce8da8182589297e",
+              "step": 4
+            },
+            "started_at": "2026-09-22T16:58:53.867043+00:00",
+            "status": "failed"
+          }
+        },
+        "run_id": "s1w-gpu-diagnostic-273655-S1-linear-w256",
+        "schema_version": 1
+      }
+    },
+    {
+      "arm_id": "S1-geometric-w256",
+      "source": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-geometric-w256/resource_attempts.json",
+      "sha256": "1fcf7d0f8191d0390b63bdbaba02d8862d5324be5eaf0bce934ff1061e04cedf",
+      "ledger": {
+        "attempts": {
+          "c38e819d3ec749f495569c745f17de05": {
+            "attempted_steps": 4,
+            "elapsed_seconds": 0.32954595517367125,
+            "failure": null,
+            "launch_attempt_id": null,
+            "measurement_complete": true,
+            "peak_allocated_bytes": 453779968,
+            "peak_reserved_bytes": 528482304,
+            "process_uuid": "c38e819d3ec749f495569c745f17de05",
+            "run_id": "s1w-gpu-diagnostic-273655-S1-geometric-w256",
+            "sequence": 4,
+            "slurm_job_id": "273655",
+            "source_checkpoint": null,
+            "started_at": "2026-09-22T16:58:54.811135+00:00",
+            "status": "failed"
+          },
+          "def36f7987ea443d845fc8eee261855e": {
+            "attempted_steps": 4,
+            "elapsed_seconds": 0.36465456895530224,
+            "failure": null,
+            "launch_attempt_id": null,
+            "measurement_complete": true,
+            "peak_allocated_bytes": 453779968,
+            "peak_reserved_bytes": 528482304,
+            "process_uuid": "def36f7987ea443d845fc8eee261855e",
+            "run_id": "s1w-gpu-diagnostic-273655-S1-geometric-w256",
+            "sequence": 4,
+            "slurm_job_id": "273655",
+            "source_checkpoint": {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-geometric-w256/checkpoints/latest.pt",
+              "sha256": "5867bd79bb9e86ac224c505161306fe77b500878968cda1d2062703179bd5edc",
+              "step": 4
+            },
+            "started_at": "2026-09-22T16:58:55.305796+00:00",
+            "status": "failed"
+          }
+        },
+        "run_id": "s1w-gpu-diagnostic-273655-S1-geometric-w256",
+        "schema_version": 1
+      }
+    }
+  ],
+  "scope": "Allocation includes gate verification and GPU pytest; process ledgers cover real-corpus probes only. These times overlap and must not be added."
+}

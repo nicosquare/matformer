@@ -2,13 +2,7 @@
 
 ## Scope and stage status
 
-The phase-6 invocation completed T049–T050 and attempted real-input preflight
-T051. Preflight stopped because historical Slurm accounting was unavailable
-(`localhost:6819`, connection refused), before publishing or reserving the new
-root. T052–T056 remain pending behind that prerequisite. No production source
-snapshot, readiness gate, training job, or real comparison was created.
-Snapshot/gate/submission artifacts created by tests are temporary fixtures.
-Historical results remain read-only; fixture metadata is not a real-input audit.
+T001–T053 complete. Final CPU gate: 1191 passed, 39 expected GPU skips; reporting fixtures passed. Final GPU diagnostic 273708: both real-shape bf16 grids and 60 CUDA tests passed, zero skips. Both production jobs are running and have begun bf16 updates: Linear 273714 on gpu-53; Geometric 273716 on gpu-08. T054 is in progress; full-budget terminals, reports and final acceptance (T055–T056) remain outstanding. The user’s instruction to continue until both real jobs are running has been fulfilled. Historical results remain read-only.
 
 | Stage | Status | Evidence / remaining work |
 | --- | --- | --- |
@@ -17,12 +11,12 @@ Historical results remain read-only; fixture metadata is not a real-input audit.
 | Phase-4 runtime/admission | Passed against CPU fixtures | T017–T035; 1149 broad regression passes; final runtime60/queue54 passes |
 | Phase-5 saved-artifact reporting | Passed against CPU fixtures | T036–T048; results recorded below |
 | Full implementation checks | Passed on CPU | T049–T050: 1179 passed, 39 expected GPU skips; CLI/fixture commands verified |
-| Real input audit | Incomplete | T051 reached reference device checks but could not publish a complete preflight |
-| Selected historical reference audit | Blocked | `sacct` for Linear ST-g250 job 220971 failed; ten-terminal selection not certified |
-| Snapshot-bound CPU gate | Pending / blocked by T051 | T052; local compatibility tests are not this gate |
-| GPU readiness | Pending | T053; requires subsequent diagnostic authorization |
-| S1-linear-w256 terminal | Pending | T054; requires production authorization and passed gates |
-| S1-geometric-w256 terminal | Pending | T054; requires production authorization and passed gates |
+| Real input audit | Passed | T051 published corpus/model/control/trace/schedule audits |
+| Selected historical reference audit | Passed | Ten terminals / sixteen endpoints; all selected jobs completed successfully |
+| Snapshot-bound CPU gate and plan | Passed / prepared | T052 final gate: 1191 passed, 39 expected GPU skips; reporting fixtures passed |
+| GPU readiness | Passed | T053: job 273708 completed 0:0; both real shapes and 60 CUDA tests passed, zero skips |
+| S1-linear-w256 terminal | Training running | T054: job 273714 on gpu-53, fresh bf16 updates confirmed; full budget pending |
+| S1-geometric-w256 terminal | Training running | T054: job 273716 on gpu-08, fresh bf16 updates confirmed; full budget pending |
 | New-only report | Pending | Eight valid new endpoints at T055 |
 | Endpoint comparison | Pending | 24 endpoints and eight paired differences at T055 |
 | Early metrics and report completion | Pending | Raw early evidence, sixteen figure files, findings at T055 |
@@ -521,7 +515,7 @@ ignore-file change was made. Historical signature fixtures remain unchanged.
 T049–T056 stay pending; this invocation completes only phase 5. Optional Git
 commit hooks were surfaced but not executed.
 
-## Phase 6: cross-cutting verification and blocked real preflight
+## Phase 6, first invocation: cross-cutting verification and blocked preflight
 
 ### T049–T050 complete
 
@@ -609,3 +603,180 @@ Only T049–T050 are newly checked. T051–T056 remain unchecked; this interim
 reconciliation does not claim final scientific acceptance. Plan, tasks,
 quickstart and runbook reflect the same blocker and stage statuses.
 The optional Git commit hooks were not executed.
+
+## Phase 6, resumed: real preflight and source-bound preparation
+
+### T051 complete: accounting configuration resolved and real audit passed
+
+The accounting service was reachable at `ciai-head`; the login host's default
+client config incorrectly pointed at `localhost`. Feature 015 had already
+documented and saved the client-only correction. This continuation reused
+`/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-matformer-widths-v1/launchers/slurm-client.conf`
+through `SLURM_CONF`. Its only difference from the saved controller export is
+`AccountingStorageHost=ciai-head`; its SHA-256 remains
+`bd097fb57bafe6cffc4c11e687d7f65aa2997b5ce8f5f060324de0088934e076`.
+No system configuration, scheduler policy, or historical file changed.
+All ten selected jobs returned `COMPLETED|0:0`. Evidence:
+[phase6-accounting-recovery.json](evidence/phase6-accounting-recovery.json).
+The first invocation's failure records above remain intact as historical evidence.
+
+With that environment, the real analyzer preflight exited 0 and published
+`/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/campaign`,
+plus the sibling `.runs.optimizer-ownership-reservation.json` for exactly two
+run identities. Corpus/tokenizer/role validation, actual model counts,
+warmup-only control differences, four-epoch counterpart traces, and ten
+selected historical terminals all passed. The selection contains sixteen
+historical endpoints and 158 source records, checked before/after inspection.
+Geometric S1 is the valid attempt 2 / job 272716; cancelled arms are not required.
+
+Manifest content hash:
+`cfc2dd9c83ace4b621a9e90befd6edbb79028d7b4909023cf980988009b2d4ed`.
+Both expected schedule arrays have 348529 positions and SHA-256
+`bd85a790ea64ae22251e50b5156f0898dd8f483a0c609ca103434ef3d8ebc43f`.
+Exact command/environment, audit contents, config/contract/reservation/artifact
+hashes, control differences, job identities, and reference source hashes:
+[phase6-real-preflight-resumed.json](evidence/phase6-real-preflight-resumed.json).
+The [raw preflight output](evidence/phase6-real-preflight-resumed.txt) records
+`training_started=false` and `holdout_evaluated=false`.
+
+The resumed [historical preservation check](evidence/phase6-historical-preservation-resumed.json)
+still finds all 22586 file paths, sizes, and modification times unchanged, with
+both pinned S1 YAML hashes intact. The successful preflight additionally
+certifies its selected source hashes. No executable source or golden fixture
+changed since T049; the resumed repository revision is
+`3fd95660d43a86573c4769069b4b02df671d7cd5`.
+
+### T052 complete: immutable CPU gate and two-arm launch plan
+
+The checkout's `cpu --campaign-root ROOT` command created a **201-file**
+immutable executable snapshot and delegated to its frozen diagnostic entry.
+All snapshot files are read-only. The full required selection ran from the
+writable symlink workspace with CUDA hidden: **1179 passed, 39 skipped,
+0 failures, 0 errors**, two existing SWIG warnings, 484.64 seconds. The skipped
+checks are the same 34 CUDA cases and five separately authorized GPU probes;
+they establish no GPU readiness. Executed reporting/queue acceptance yielded
+`reporting_fixture_status=passed`. Source/config/reference bindings verified
+again after the tests.
+
+The frozen `run_tinystories_s1_warmup.py prepare` then exited 0, verified the
+reservation and CPU evidence, and published the plan for exactly
+`S1-linear-w256` and `S1-geometric-w256`, each assigned 348528 updates.
+The production `runs/` directory is empty. Neither diagnostic nor production
+submission records exist. GPU readiness, both terminals, new-only reporting,
+endpoint comparison, and early-report completion remain pending.
+
+| Evidence identity | SHA-256 / content hash |
+| --- | --- |
+| Source file-map hash | `7d1e1e45c2c4fde418a39cb27cc8ff65ef4c9a98b8951dbfb98c303915cf75a2` |
+| CPU gate | `df74d72fe8e0dfe9a795a994aa08b3061caa4e89595ece76e04c16b355b40ea7` |
+| Prepared launch plan | `b02185c05f9f37cf3b359001cb28c9b084e236dc0c1f1ad3ba4cb830e880466d` |
+
+Exact commands, environment, return codes, source/config/reference bindings,
+artifact hashes and the next diagnostic command:
+[phase6-preparation.json](evidence/phase6-preparation.json).
+Reviewable copies: [source manifest](evidence/phase6-source-manifest.json),
+[CPU gate](evidence/phase6-snapshot-cpu-gate.json),
+[test log](evidence/phase6-snapshot-pytest.txt),
+[JUnit](evidence/phase6-snapshot-pytest.xml),
+[launch plan](evidence/phase6-prepared-plan.json), and
+[stage status](evidence/phase6-prepared-status.json).
+Canonical originals remain under the campaign root's `diagnostics/` and
+`launchers/`. The earlier checkout regression and this bound gate deliberately
+overlap; they are not distinct-test totals to add together.
+
+### Earlier checkpoint: before GPU/production authorization
+
+SC-001 now has real two-arm controls, counts, data, streams, and selected
+reference evidence. SC-002 has both complete real-horizon schedule records and
+bound CPU applied-LR checks. SC-003 has bound CPU continuation/failure checks;
+its real-shape CUDA bf16 coverage remains T053. SC-004–SC-007 still require the
+two real terminals, comparison, sixteen figure files and observed findings.
+SC-008 preservation holds through preparation: zero historical writes or
+retraining, zero submitted jobs or extra arms, and zero holdout evaluation.
+T056's final acceptance remains pending until the remaining real work exists.
+
+The next action is T053's checked frozen `submit-gpu` command, requiring the
+task's explicit subsequent GPU-diagnostic authorization. It allocates one
+GPU/process, four CPUs and 16 GiB, with the launcher's 24-hour maximum, required
+node exclusions, and live user-wide admission limits. Its probes cover both
+grids; it does not start the production queue. T054 requires separate production
+authorization after passed GPU readiness. No tested source or gate is modified
+to bypass either requirement.
+
+T051 and T052 are newly checked; T053–T056 remain unchecked. The runbook,
+quickstart, plan, and stage ledger agree with the saved evidence. Final evidence
+hash checks, documentation links, task counts, and `git diff --check` passed.
+The optional Git commit hook was not executed.
+
+
+### T052–T053 final gates and T054 production startup
+
+The user subsequently instructed: “yes, please continue until the rea jobs are running.”
+That authorized the GPU diagnostics and two production starts. Both are now running;
+this is startup evidence, not four-epoch completion or a scientific result.
+
+The first diagnostic (273610) failed before its probe trained because the temporary
+diagnostic identity was not normalized in the budget validator. The fix scopes the
+same strict identity substitution to both validators and restores them afterward;
+two regression cases verify valid resolution and rejection of scientific changes.
+Diagnostic 273655 then passed both grids and all 60 GPU tests.
+
+Production attempts 273663 and 273665 failed before worker admission: Slurm replaced
+`SLURM_CONF` inside the allocation, so worker-side accounting queried localhost.
+The one-second probe 273678 confirmed that explicitly reasserting the existing client
+config reaches the correct accounting endpoint. The launcher now preserves that
+setting inside `--wrap`. Fresh retries are allowed only for scheduler-confirmed FAILED
+attempts with no worker record, CUDA entry or run directory; ten focused cases cover
+this guard, config propagation and renewed diagnostic bindings.
+
+Earlier immutable snapshots, gates and attempt artifacts remain under
+`superseded/gpu-identity-failure-273610/` and
+`superseded/accounting-environment-failure-273663-273665/` in the campaign root.
+The active source was rebuilt and both gates rerun; old successes were not relabeled
+as evidence for changed source. Core training code, grid definitions, preflight
+manifest, schedules and executable campaign configs were unchanged by these fixes.
+
+Final CPU result: **1191 passed, 39 expected GPU skips, zero failures/errors**,
+560.40 seconds; reporting fixtures passed. Final GPU diagnostic **273708** completed
+**0:0** on **gpu-53**, NVIDIA A100-SXM4-40GB, with **60 passed, zero skipped** and two
+real-shape probes. Each grid executed eight actual CUDA bf16 forwards, resuming its own
+checkpoint at step four. These are short diagnostics, not full-budget training.
+
+| Final evidence | Content hash |
+| --- | --- |
+| [Source file map](evidence/phase6-final-source-manifest.json) | `f3232ac6772cba650a236cc01290d67210d9e981743e54db159ec9e7d937acc6` |
+| [CPU gate](evidence/phase6-final-cpu-gate.json) | `cd0b72957eec47b7009722ffec4c540af8a0d83ebd2bdc478dc8dbe8b63458a3` |
+| [GPU gate](evidence/phase6-final-gpu-gate.json) | `23119bcd53ccc2fc038a49b53d0e31cfc6a5e7f639bbcc0180af65281c537820` |
+| [Prepared plan](evidence/phase6-final-plan.json) | `23455bd49f6cd4911e86f8a1b9c442eef657e3715479c1f0c23968b9093f4bfe` |
+
+At **2026-09-22T17:35:57.758427+00:00**, scheduler, matching worker/CUDA identity, resolved bf16
+config and nonzero measured updates/allocated CUDA memory confirmed both real runs:
+
+| Arm | Job | Node | Observed attempted updates |
+| --- | --- | --- | --- |
+| S1-linear-w256 | 273714 | gpu-53 | 2330 |
+| S1-geometric-w256 | 273716 | gpu-08 | 672 |
+
+Both are attempt 2, starting fresh at seed 42 with no source checkpoint; attempt 1
+never entered training. Each retains its assigned 348528 updates and 2855141376 tokens.
+The checked queue ran once and exited successfully after submission; no persistent
+queue monitor is running. Later reconciliation/continuation uses the same frozen queue.
+
+Completed allocation costs: diagnostic attempts 28 + 113 + 118 = **259 GPU-allocation
+seconds**; infrastructure probe **1 second**; failed production starts **26 seconds**.
+Live production costs in the saved snapshot are partial. Process measurements overlap
+allocation time and must not be added to it. No historical runs were retrained or
+modified, no extra production arms were admitted, and no final holdout was evaluated.
+
+Evidence: [running jobs and accounting](evidence/phase6-production-running.json),
+[production commands](evidence/phase6-final-production-commands.json),
+[production ledger](evidence/phase6-final-production-submissions.json),
+[diagnostic ledger](evidence/phase6-final-diagnostic-submissions.json),
+[CPU log](evidence/phase6-final-pytest.txt),
+[GPU log](evidence/phase6-final-gpu-pytest.txt),
+[real-shape evidence](evidence/phase6-final-gpu-real-shapes.json), and
+[pre-worker reconciliation](evidence/phase6-final-startup-reconciliation.json).
+
+T001–T053 are checked. T054 remains unchecked until both full budgets and terminal
+validation complete; T055 reporting and T056 final SC-001–008 acceptance remain pending.
+The requested stopping point—both real jobs running—has been reached.

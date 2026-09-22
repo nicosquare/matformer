@@ -1,0 +1,28 @@
+{
+  "status": "passed",
+  "default_endpoint": "localhost:6819",
+  "working_endpoint": "ciai-head:6819",
+  "host": "ciai-login-1",
+  "environment": {
+    "SLURM_CONF": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-matformer-widths-v1/launchers/slurm-client.conf"
+  },
+  "source_documentation": "specs/015-tinystories-matformer-widths/verification.md:615",
+  "client_only_difference_verified": true,
+  "source_files": {
+    "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-matformer-widths-v1/launchers/slurm-controller-export.conf": "2ce5a61936d4109939fa6d90a40d419b7223f78abdc295d38c1a83d9c4a91153",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-matformer-widths-v1/launchers/slurm-client.conf": "bd097fb57bafe6cffc4c11e687d7f65aa2997b5ce8f5f060324de0088934e076",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-matformer-widths-v1/launchers/slurm-client-config.json": "80f03a09173ec1d6fa48783ffff6ce0204a53cca95da381c1b4f4f0d25083bf1"
+  },
+  "command": [
+    "sacct",
+    "-X",
+    "--noheader",
+    "--parsable2",
+    "--jobs=220971,220972,220973,220974,224966,271319,271320,271321,271322,272716",
+    "--format=JobIDRaw,State,ExitCode"
+  ],
+  "returncode": 0,
+  "stdout": "220971|COMPLETED|0:0\n220972|COMPLETED|0:0\n220973|COMPLETED|0:0\n220974|COMPLETED|0:0\n224966|COMPLETED|0:0\n271319|COMPLETED|0:0\n271320|COMPLETED|0:0\n271321|COMPLETED|0:0\n271322|COMPLETED|0:0\n272716|COMPLETED|0:0\n",
+  "system_configuration_changed": false,
+  "historical_files_changed": false
+}

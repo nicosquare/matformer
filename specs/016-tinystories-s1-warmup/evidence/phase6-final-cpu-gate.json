@@ -1,0 +1,89 @@
+{
+  "bindings": {
+    "artifacts_sha256": "eb3fbd811c455635c57ce0ee5302dc2614cc6bf577fc09dbe6808c22229369ac",
+    "campaign_id": "tinystories-optimizer-ownership-s1-warmup-v1",
+    "campaign_manifest_sha256": "237188139e7ca8110d62651f6e364ac25e3c26c5bc308e6b0c449fa5f0c8a3b1",
+    "config_set_sha256": "3db81e1e2238a57b35ca2aa1583e968c4405edf0383904ebcb4ecc5af8151204",
+    "config_sha256": {
+      "S1-geometric-w256": "5622556cdb91bc0c9643510df8c968cc26c264b056975a16b4cfe14305b07caa",
+      "S1-linear-w256": "6423c3531d758a3f4b57c3f888cf00a7b96fb2b5976e70035f056fd20869d318"
+    },
+    "contracts": {
+      "S1-geometric-w256": "693f54d5760fea8be724888b90c83c0078c4cb005a5a4418589a22cd857361ec",
+      "S1-linear-w256": "bb0f38d6c287be3a66b17b0e1c353ded8fe97be062ec7bcad15596da367e5916"
+    },
+    "manifest_hash": "cfc2dd9c83ace4b621a9e90befd6edbb79028d7b4909023cf980988009b2d4ed",
+    "preflight_sha256": "52e5c536e036f3488b69deb7c3d2d69ca6dc8a42eaa3103a3a479499a3ef6f26",
+    "recipe_sha256": "133ba407d683e803c023a301680e78e9675bb4e269f436a77b38fbf82d858b6b",
+    "references_sha256": "1f545c565c68ca86fb6b9509fd0ef67eb481e0dcabdfb28a53a3409c7a0cfe90",
+    "source_sha256": "f3232ac6772cba650a236cc01290d67210d9e981743e54db159ec9e7d937acc6"
+  },
+  "checks": [
+    {
+      "artifacts": [
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/cpu-29db5141ce6b4294bb56e9294cea90d4/pytest.xml",
+          "sha256": "1204a9602bd3f4345edb140285926db8c07f6f0af86e6b41e6c7129249a101f1"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/cpu-29db5141ce6b4294bb56e9294cea90d4/pytest.log",
+          "sha256": "2f5fb5dca80248589737dcdaa414587ac91d0049378ea86653d0bc3c06e9dbd9"
+        }
+      ],
+      "command": [
+        "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-rs",
+        "--tb=short",
+        "-p",
+        "no:cacheprovider",
+        "--junitxml=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/cpu-29db5141ce6b4294bb56e9294cea90d4/pytest.xml",
+        "tests/test_s1_warmup_campaign.py",
+        "tests/test_s1_warmup_reporting.py",
+        "tests/test_s1_warmup_queue.py",
+        "tests/test_config.py",
+        "tests/test_optimizer_ownership.py",
+        "tests/test_optimizer_ownership_campaign.py",
+        "tests/test_optimizer_ownership_resume.py",
+        "tests/test_optimizer_ownership_reporting.py",
+        "tests/test_optimizer_ownership_corrections.py",
+        "tests/test_matformer_widths_campaign.py",
+        "tests/test_matformer_widths_reporting.py",
+        "tests/test_matformer_widths_queue.py",
+        "tests/test_matformer_resource_reconciliation.py",
+        "tests/test_metrics_compact_accounting.py"
+      ],
+      "cwd": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/cpu-29db5141ce6b4294bb56e9294cea90d4/pytest-workspace",
+      "errors": 0,
+      "execution": "subprocess",
+      "failures": 0,
+      "finished_at": 1790097907.4156446,
+      "reporting_fixture_status": "passed",
+      "returncode": 0,
+      "skipped": 39,
+      "source": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source",
+      "started_at": 1790097343.1257043,
+      "tests": 1230
+    }
+  ],
+  "content_hash": "cd0b72957eec47b7009722ffec4c540af8a0d83ebd2bdc478dc8dbe8b63458a3",
+  "environment": {
+    "executable": "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+    "packages": {
+      "PyYAML": "6.0.3",
+      "numpy": "2.4.3",
+      "pytest": "9.0.3",
+      "torch": "2.11.0+cu128",
+      "transformers": "5.8.0"
+    },
+    "platform": "Linux-6.12.95-ql-generic-14-12-x86_64-with-glibc2.39",
+    "python": "3.12.13 | packaged by conda-forge | (main, Aug 11 2026, 10:27:28) [GCC 14.4.0]"
+  },
+  "holdout_evaluated": false,
+  "mode": "cpu",
+  "reporting_fixture_status": "passed",
+  "schema_version": 1,
+  "status": "passed"
+}

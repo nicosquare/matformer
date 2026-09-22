@@ -175,6 +175,49 @@ def test_two_fixed_protocols_and_physical_models(warmup_runs):
     assert warmup_runs[0]['initialization']['derived_seed'] == warmup_runs[1]['initialization']['derived_seed']
 
 
+@pytest.mark.parametrize('arm', NEW_ARMS)
+def test_gpu_diagnostic_identity_resolves_without_relaxing_protocol(tmp_path, warmup_runs, arm):
+    from scripts.preflight_tinystories_s1_warmup import diagnostic_identity
+    definition = next(run for run in warmup_runs if run['arm_id'] == arm)
+    run_id = 's1w-gpu-diagnostic-test-' + arm
+    output = tmp_path/'diagnostics'/run_id
+    raw = copy.deepcopy(definition['executable_config'])
+    raw['run'].update(run_id=run_id, output_dir=str(output))
+    raw['optimizer_ownership_contract']['run_id'] = run_id
+    raw['optimizer_ownership_contract_hash'] = stable_hash(raw['optimizer_ownership_contract'])
+    path = tmp_path/'diagnostic.yaml'
+    path.write_text(yaml.safe_dump(raw))
+    original_budget = campaign.validate_run_budget
+    original_materialized = campaign.validate_materialized_config
+    with pytest.raises(ConfigError):
+        resolve_run_config(path, create_output_dirs=False)
+    with diagnostic_identity(definition, output, run_id):
+        resolved = resolve_run_config(path, create_output_dirs=False)
+        assert resolved['run']['run_id'] == run_id
+        assert Path(resolved['run']['output_dir']) == output
+        campaign.validate_run_budget(resolved, campaign.campaign_arm(5, arm))
+        campaign.validate_materialized_config(resolved)
+        for field, value in [('warmup_steps', 64), ('learning_rate', .004)]:
+            changed = copy.deepcopy(raw); changed['training'][field] = value
+            path.write_text(yaml.safe_dump(changed))
+            with pytest.raises(ConfigError):
+                resolve_run_config(path, create_output_dirs=False)
+        for field, value in [('run_id', 'unrelated'), ('output_dir', str(tmp_path/'unrelated'))]:
+            changed = copy.deepcopy(raw); changed['run'][field] = value
+            path.write_text(yaml.safe_dump(changed))
+            with pytest.raises(ConfigError):
+                resolve_run_config(path, create_output_dirs=False)
+        changed = copy.deepcopy(raw); changed['optimizer_ownership_contract_hash'] = 'stale'
+        path.write_text(yaml.safe_dump(changed))
+        with pytest.raises(ConfigError):
+            resolve_run_config(path, create_output_dirs=False)
+    assert campaign.validate_run_budget is original_budget
+    assert campaign.validate_materialized_config is original_materialized
+    path.write_text(yaml.safe_dump(raw))
+    with pytest.raises(ConfigError):
+        resolve_run_config(path, create_output_dirs=False)
+
+
 @pytest.mark.parametrize('selector', ['campaign_widths', 'campaign_common', 'campaign_topology'])
 @pytest.mark.parametrize('arm', [None, 'S1', 'unknown'])
 def test_schema5_requires_qualified_grid(selector, arm):
