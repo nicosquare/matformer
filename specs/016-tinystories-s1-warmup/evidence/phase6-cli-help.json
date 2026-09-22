@@ -1,0 +1,55 @@
+[
+  {
+    "command": [
+      "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+      "scripts/analyze_tinystories_optimizer_ownership.py",
+      "preflight",
+      "--help"
+    ],
+    "returncode": 0,
+    "stdout": "usage: analyze_tinystories_optimizer_ownership.py preflight\n       [-h] --campaign CAMPAIGN --prepared-corpus-dir PREPARED_CORPUS_DIR\n       --tokenizer-dir TOKENIZER_DIR --output-dir OUTPUT_DIR --run-output-root\n       RUN_OUTPUT_ROOT [--linear-reference-root LINEAR_REFERENCE_ROOT]\n       [--geometric-reference-root GEOMETRIC_REFERENCE_ROOT]\n\noptions:\n  -h, --help            show this help message and exit\n  --campaign CAMPAIGN\n  --prepared-corpus-dir PREPARED_CORPUS_DIR\n  --tokenizer-dir TOKENIZER_DIR\n  --output-dir OUTPUT_DIR\n  --run-output-root RUN_OUTPUT_ROOT\n  --linear-reference-root LINEAR_REFERENCE_ROOT\n  --geometric-reference-root GEOMETRIC_REFERENCE_ROOT\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+      "scripts/analyze_tinystories_optimizer_ownership.py",
+      "freeze",
+      "--help"
+    ],
+    "returncode": 0,
+    "stdout": "usage: analyze_tinystories_optimizer_ownership.py freeze [-h]\n                                                         --campaign-manifest\n                                                         CAMPAIGN_MANIFEST\n                                                         (--run-root RUN_ROOT | --run-dir RUN_DIRS)\n                                                         --output-dir\n                                                         OUTPUT_DIR\n                                                         [--allow-partial]\n\noptions:\n  -h, --help            show this help message and exit\n  --campaign-manifest CAMPAIGN_MANIFEST\n  --run-root RUN_ROOT\n  --run-dir RUN_DIRS\n  --output-dir OUTPUT_DIR\n  --allow-partial\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+      "scripts/analyze_tinystories_optimizer_ownership.py",
+      "report-s1-warmup",
+      "--help"
+    ],
+    "returncode": 0,
+    "stdout": "usage: analyze_tinystories_optimizer_ownership.py report-s1-warmup\n       [-h] --manifest MANIFEST --linear-reference-root LINEAR_REFERENCE_ROOT\n       --geometric-reference-root GEOMETRIC_REFERENCE_ROOT --output-dir\n       OUTPUT_DIR [--early-end-step EARLY_END_STEP]\n\noptions:\n  -h, --help            show this help message and exit\n  --manifest MANIFEST\n  --linear-reference-root LINEAR_REFERENCE_ROOT\n  --geometric-reference-root GEOMETRIC_REFERENCE_ROOT\n  --output-dir OUTPUT_DIR\n  --early-end-step EARLY_END_STEP\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+      "scripts/preflight_tinystories_s1_warmup.py",
+      "--help"
+    ],
+    "returncode": 0,
+    "stdout": "usage: preflight_tinystories_s1_warmup.py [-h] --campaign-root CAMPAIGN_ROOT\n                                          {cpu,gpu,submit-gpu}\n\nRun snapshot-bound CPU checks or separately authorized sbatch GPU probes.\n\npositional arguments:\n  {cpu,gpu,submit-gpu}\n\noptions:\n  -h, --help            show this help message and exit\n  --campaign-root CAMPAIGN_ROOT\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+      "scripts/run_tinystories_s1_warmup.py",
+      "--help"
+    ],
+    "returncode": 0,
+    "stdout": "usage: run_tinystories_s1_warmup.py [-h] --campaign-root CAMPAIGN_ROOT\n                                    [--cpu-evidence CPU_EVIDENCE]\n                                    [--arm {S1-linear-w256,S1-geometric-w256}]\n                                    [--attempt-id ATTEMPT_ID] [--once]\n                                    {prepare,queue,worker,report}\n\nPrepare and reconcile exactly two S1 warmup runs from a tested snapshot.\n\npositional arguments:\n  {prepare,queue,worker,report}\n\noptions:\n  -h, --help            show this help message and exit\n  --campaign-root CAMPAIGN_ROOT\n  --cpu-evidence CPU_EVIDENCE\n  --arm {S1-linear-w256,S1-geometric-w256}\n  --attempt-id ATTEMPT_ID\n  --once\n",
+    "stderr": ""
+  }
+]

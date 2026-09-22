@@ -4,7 +4,7 @@
 
 **Input**: Feature 016 and [source request](../../notes/tinystories_s1_warmup_speckit_prompt_2026-09-22.md).
 
-**Status**: Planning and phases 1–5 implementation complete; CPU preparation/runtime/admission/reporting and compatibility verification is recorded in [verification.md](verification.md). Final cross-cutting verification, real input audits, readiness, production, and real comparison remain pending.
+**Status**: Planning, phases 1–5 implementation, and phase-6 cross-cutting CPU/CLI verification (T049–T050) are complete. The 14-suite run passed 1179 tests with 39 expected GPU skips. Real preflight T051 is blocked by unavailable historical Slurm accounting; no fresh result root or reservation was published. Snapshot-bound readiness, production, real comparison, and final acceptance remain pending. See [verification.md](verification.md).
 
 ## Summary
 

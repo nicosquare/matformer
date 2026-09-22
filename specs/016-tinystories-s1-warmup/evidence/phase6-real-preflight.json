@@ -1,0 +1,75 @@
+{
+  "observed_at": "2026-09-22T16:19:48.834950+00:00",
+  "task": "T051",
+  "status": "blocked",
+  "command": [
+    "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+    "scripts/analyze_tinystories_optimizer_ownership.py",
+    "preflight",
+    "--campaign",
+    "configs/controlled_exps/tinystories_instruct_s1_warmup.yaml",
+    "--prepared-corpus-dir",
+    "/nfs-stor/ivo.navarrete/matformer-corpora/tinystories-instruct-packed-full-v1",
+    "--tokenizer-dir",
+    "/nfs-stor/ivo.navarrete/matformer-tokenizers/tinystories-instruct-sentencepiece-bpe-2k-v1",
+    "--output-dir",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/campaign",
+    "--run-output-root",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/runs",
+    "--linear-reference-root",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1",
+    "--geometric-reference-root",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-matformer-widths-v1"
+  ],
+  "environment": {
+    "OMP_NUM_THREADS": "1",
+    "CUDA_VISIBLE_DEVICES": "",
+    "PYTHONDONTWRITEBYTECODE": "1"
+  },
+  "returncode": 1,
+  "blocking_command": [
+    "sacct",
+    "-X",
+    "--noheader",
+    "--parsable2",
+    "--jobs=220971",
+    "--format=JobIDRaw,State,ExitCode"
+  ],
+  "blocking_reason": "Slurm accounting service localhost:6819 refused the connection; independent ten-job sacct probe confirms it outside the sandbox.",
+  "accounting_probe": {
+    "command": [
+      "sacct",
+      "-X",
+      "--noheader",
+      "--parsable2",
+      "--jobs=220971,220972,220973,220974,224966,271319,271320,271321,271322,272716",
+      "--format=JobIDRaw,State,ExitCode"
+    ],
+    "returncode": 1
+  },
+  "campaign_root": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1",
+  "campaign_root_exists": false,
+  "reservation_exists": false,
+  "published_audit_hashes": null,
+  "cpu_gate": null,
+  "gpu_gate": null,
+  "launch_plan": null,
+  "production_jobs_submitted": 0,
+  "gpu_diagnostic_jobs_submitted": 0,
+  "historical_training_or_writes": false,
+  "final_holdout_evaluations": 0,
+  "blocked_tasks": [
+    "T051",
+    "T052",
+    "T053",
+    "T054",
+    "T055",
+    "T056"
+  ],
+  "evidence": {
+    "phase6-real-preflight.txt": "fc57451aba07c5f0773c579a0c1e670e1718c387949b689a1100e3ced8e933c6",
+    "phase6-historical-accounting.txt": "8c6aa7d6d43e761b1489910bea2e0d119dfd8b30a76075e92e5a9a4b7d7607da",
+    "phase6-historical-preservation.json": "96c56af11caa5cabcc163a7ba17095bb4f6dc1a1099f477bfb2b2327dd9cef65"
+  },
+  "next_step": "Restore access to the existing Slurm accounting service, then rerun the exact preflight. Do not bypass historical device evidence or prepare an uncertified root."
+}

@@ -1,0 +1,192 @@
+{
+  "source_revision": "147ceea689d6d9925e3f38b2e647635bbdfcebb6",
+  "sha256": {
+    "src/evaluation/optimizer_ownership.py": "60abeaf2af4de80ba678b625a69f6c7b185c55ed7ecb8e5abff9076a6588afbc",
+    "src/utils/config.py": "1b3390d5c5d2817fc041341bbb6babcaf970b33d831a10b5485a86d7166f5707",
+    "src/utils/reproducibility.py": "b54771768da5a9ba7d093d73828e71bdfa943c2fbad55fd3f1613b1be094ecc1",
+    "src/utils/metrics.py": "971343047f71e7d8dbecb9368e0ab017944ca20df1a2752a2c1c63774e7dc484",
+    "src/training/run.py": "60a957cbe740f7336b474574bcf6b02320af38f39535cdcfb227a2f5fd19112c",
+    "src/training/steps.py": "22029cc8cd604f7b209cd2c8d4bad2b9f89b08b39c3426f39bf0d59fdc11dab4",
+    "src/training/checkpointing.py": "ab9c8a7f3753edae0acd83ca390def5a0c7c626a17c986c86473f0b8707e26d4",
+    "scripts/analyze_tinystories_optimizer_ownership.py": "140479c282953901644ecbb6b00b7e8c9fd62d28c2855d2f23f5cfa3677c11e7",
+    "scripts/run_tinystories_s1_warmup.py": "abdce85bbbdf6163db33a3fb6c0b8f6914801d7622586582c255603038fa6ab3",
+    "scripts/preflight_tinystories_s1_warmup.py": "47ebd828ad23d14bfa9a1096889387a1ee07d72fff1366b9d7b9795e2657472a",
+    "scripts/train_cuda_required.py": "61e8617668b333148824beb6d78390cf9b4680a3976dfddcaabfd6b48bb92c4f",
+    "configs/controlled_exps/tinystories_instruct_s1_warmup.yaml": "133ba407d683e803c023a301680e78e9675bb4e269f436a77b38fbf82d858b6b",
+    "tests/fixtures/optimizer_ownership_legacy_signatures.json": "8a3d67fac6f7bc266866bc24b597de71dadb7b5dc1d0af0f54c914ce74201252",
+    "tests/fixtures/s1_warmup_schema4_signatures.json": "657031baaf15b720605259799b6ba9b89fcb7e2d721e4fd6b7df3030b1100b19",
+    "tests/test_s1_warmup_campaign.py": "91555ef0915a85ba1df922be0b240b5942f200b290d90282c0161b3f49b81322",
+    "tests/test_s1_warmup_queue.py": "99871ae800b7177654ea4a118e2a089e7d55e4da5516fa1caf4bac023b598ccb",
+    "tests/test_s1_warmup_reporting.py": "7d375dfbedf1b8a06aa9942f8491625cb7375b95b4a43e6d7eb996a4dcdccf66"
+  },
+  "environment": {
+    "OMP_NUM_THREADS": "1",
+    "CUDA_VISIBLE_DEVICES": "",
+    "MPLBACKEND": "Agg"
+  },
+  "command": [
+    "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+    "-m",
+    "pytest",
+    "tests/test_s1_warmup_campaign.py",
+    "tests/test_s1_warmup_reporting.py",
+    "tests/test_s1_warmup_queue.py",
+    "tests/test_config.py",
+    "tests/test_optimizer_ownership.py",
+    "tests/test_optimizer_ownership_campaign.py",
+    "tests/test_optimizer_ownership_resume.py",
+    "tests/test_optimizer_ownership_reporting.py",
+    "tests/test_optimizer_ownership_corrections.py",
+    "tests/test_matformer_widths_campaign.py",
+    "tests/test_matformer_widths_reporting.py",
+    "tests/test_matformer_widths_queue.py",
+    "tests/test_matformer_resource_reconciliation.py",
+    "tests/test_metrics_compact_accounting.py",
+    "-q",
+    "-rs",
+    "--tb=short",
+    "--junitxml=/tmp/s1-warmup-phase6-regressions.xml"
+  ],
+  "stdout_stderr": "/tmp/s1-warmup-phase6-regressions.txt",
+  "returncode": 0,
+  "counts": {
+    "tests": 1218,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 39,
+    "passed": 1179
+  },
+  "per_suite": {
+    "tests.test_s1_warmup_campaign": {
+      "passed": 113,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "tests.test_s1_warmup_reporting": {
+      "passed": 37,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "tests.test_s1_warmup_queue": {
+      "passed": 65,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "tests.test_config": {
+      "passed": 230,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "tests.test_optimizer_ownership": {
+      "passed": 45,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 1
+    },
+    "tests.test_optimizer_ownership_campaign": {
+      "passed": 33,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "tests.test_optimizer_ownership_resume": {
+      "passed": 178,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 27
+    },
+    "tests.test_optimizer_ownership_reporting": {
+      "passed": 68,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "tests.test_optimizer_ownership_corrections": {
+      "passed": 73,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 6
+    },
+    "tests.test_matformer_widths_campaign": {
+      "passed": 204,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 5
+    },
+    "tests.test_matformer_widths_reporting": {
+      "passed": 34,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "tests.test_matformer_widths_queue": {
+      "passed": 52,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "tests.test_matformer_resource_reconciliation": {
+      "passed": 14,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "tests.test_metrics_compact_accounting": {
+      "passed": 33,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  "junit_time_seconds": 488.278,
+  "source_unchanged_during_run": true,
+  "historical_golden_signatures_unchanged": true,
+  "artifacts": {
+    "phase6-regressions.txt": "d65a5aa955e0665b81c0cfd5a87675359390c3238d490d40f243dcf0e21bf11a",
+    "phase6-regressions.xml": "53018e39ee1fcd604cb7be8f4bb07a4b0d5307fc2e71a0226ca17547f08604b8",
+    "phase6-cli-help.json": "ac395ef2dab7470ce249f84353c6725190bbaff98869225e821a36a565e152c9",
+    "phase6-historical-accounting.txt": "8c6aa7d6d43e761b1489910bea2e0d119dfd8b30a76075e92e5a9a4b7d7607da"
+  },
+  "limitations": [
+    "CPU-only run; 34 CUDA-unavailable cases and five separately authorized GPU probes skipped.",
+    "Temporary-fixture acceptance does not certify real references or CPU/GPU readiness."
+  ],
+  "cli_fixture_cases": [
+    "tests.test_s1_warmup_reporting::test_preflight_atomic_publication_and_identical_verification",
+    "tests.test_s1_warmup_reporting::test_preflight_failure_publishes_nothing[reference]",
+    "tests.test_s1_warmup_reporting::test_preflight_failure_publishes_nothing[trace]",
+    "tests.test_s1_warmup_reporting::test_preflight_failure_publishes_nothing[publication]",
+    "tests.test_s1_warmup_reporting::test_preflight_failure_publishes_nothing[missing_flag]",
+    "tests.test_s1_warmup_reporting::test_preflight_failure_publishes_nothing[unrelated_root]",
+    "tests.test_s1_warmup_reporting::test_cli_requires_both_reference_flags",
+    "tests.test_s1_warmup_queue::test_cpu_snapshot_test_command_uses_frozen_sources",
+    "tests.test_s1_warmup_queue::test_prepare_is_exact_and_idempotent",
+    "tests.test_s1_warmup_queue::test_snapshot_is_immutable_and_refuses_tampering",
+    "tests.test_s1_warmup_queue::test_diagnostic_submission_uses_shared_limits_and_durable_identity",
+    "tests.test_s1_warmup_queue::test_diagnostic_submission_capacity_waits",
+    "tests.test_s1_warmup_queue::test_cpu_gate_publishes_executed_result_and_never_claims_readiness[True]",
+    "tests.test_s1_warmup_queue::test_cpu_gate_publishes_executed_result_and_never_claims_readiness[False]",
+    "tests.test_s1_warmup_queue::test_report_only_cli_recovery[None]",
+    "tests.test_s1_warmup_queue::test_report_only_cli_recovery[reference]",
+    "tests.test_s1_warmup_queue::test_report_only_cli_recovery[early]",
+    "tests.test_s1_warmup_queue::test_analyzer_rejects_short_early_window",
+    "tests.test_optimizer_ownership_campaign::test_cli_requires_five_options_and_names_bad_control",
+    "tests.test_matformer_widths_queue::test_operational_cli_requires_tested_snapshot"
+  ],
+  "observed_environment": {
+    "python": "3.12.13 | packaged by conda-forge | (main, Aug 11 2026, 10:27:28) [GCC 14.4.0]",
+    "executable": "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+    "packages": {
+      "torch": "2.11.0+cu128",
+      "transformers": "5.8.0",
+      "numpy": "2.4.3",
+      "PyYAML": "6.0.3",
+      "matplotlib": "3.10.9",
+      "pytest": "9.0.3"
+    }
+  }
+}

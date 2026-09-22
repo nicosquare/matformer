@@ -2,11 +2,13 @@
 
 ## Scope and stage status
 
-The current authorization covers phase 5 (T036–T048), building on phases 1–4
-and their historical compatibility and CPU preparation baseline. It creates no production
-root, reservation, production source snapshot, real-input readiness gate, or
-training job. Snapshot/gate/submission artifacts created by tests are temporary fixtures. Historical
-results remain read-only. Fixture metadata is not an audit of real inputs.
+The phase-6 invocation completed T049–T050 and attempted real-input preflight
+T051. Preflight stopped because historical Slurm accounting was unavailable
+(`localhost:6819`, connection refused), before publishing or reserving the new
+root. T052–T056 remain pending behind that prerequisite. No production source
+snapshot, readiness gate, training job, or real comparison was created.
+Snapshot/gate/submission artifacts created by tests are temporary fixtures.
+Historical results remain read-only; fixture metadata is not a real-input audit.
 
 | Stage | Status | Evidence / remaining work |
 | --- | --- | --- |
@@ -14,10 +16,10 @@ results remain read-only. Fixture metadata is not an audit of real inputs.
 | Phase-3 CPU preparation | Passed against fixtures | T005–T016; 72 distinct focused cases validated |
 | Phase-4 runtime/admission | Passed against CPU fixtures | T017–T035; 1149 broad regression passes; final runtime60/queue54 passes |
 | Phase-5 saved-artifact reporting | Passed against CPU fixtures | T036–T048; results recorded below |
-| Full implementation checks | Pending | Final cross-cutting T049–T050 remain |
-| Real input audit | Pending | Corpus/tokenizer/role and trace checks at T051 |
-| Selected historical reference audit | Pending | Ten terminals at T051; planning observations are not certification |
-| Snapshot-bound CPU gate | Pending | T052; local compatibility tests are not this gate |
+| Full implementation checks | Passed on CPU | T049–T050: 1179 passed, 39 expected GPU skips; CLI/fixture commands verified |
+| Real input audit | Incomplete | T051 reached reference device checks but could not publish a complete preflight |
+| Selected historical reference audit | Blocked | `sacct` for Linear ST-g250 job 220971 failed; ten-terminal selection not certified |
+| Snapshot-bound CPU gate | Pending / blocked by T051 | T052; local compatibility tests are not this gate |
 | GPU readiness | Pending | T053; requires subsequent diagnostic authorization |
 | S1-linear-w256 terminal | Pending | T054; requires production authorization and passed gates |
 | S1-geometric-w256 terminal | Pending | T054; requires production authorization and passed gates |
@@ -518,3 +520,92 @@ No external result root, real job, historical modification, new dependency or
 ignore-file change was made. Historical signature fixtures remain unchanged.
 T049–T056 stay pending; this invocation completes only phase 5. Optional Git
 commit hooks were surfaced but not executed.
+
+## Phase 6: cross-cutting verification and blocked real preflight
+
+### T049–T050 complete
+
+The final 14-suite CPU selection passed **1179 tests, 0 failures, 0 errors,
+39 skips**, with two existing SWIG deprecation warnings (488.30 seconds).
+All three warmup suites passed without skips: campaign 113, reporting 37,
+queue 65. The other eleven suites cover config, ownership runtime/campaign/
+resume/reporting/corrections, MatFormer campaign/reporting/queue, resource
+reconciliation, and compact metrics. The 39 skips comprise 34 CUDA-unavailable
+cases and five separately authorized GPU semantic probes; none establishes
+GPU readiness.
+
+Exact command, environment, per-suite counts, CLI fixture case names,
+dependency versions, source/config/golden SHA-256 values, and log/JUnit hashes:
+[phase6-cpu-tests.json](evidence/phase6-cpu-tests.json).
+Raw evidence: [pytest log](evidence/phase6-regressions.txt),
+[JUnit](evidence/phase6-regressions.xml), and
+[five CLI help invocations](evidence/phase6-cli-help.json).
+Source revision: `147ceea689d6d9925e3f38b2e647635bbdfcebb6`.
+No executable source, recipe, test, or golden fixture changed during this
+invocation. Schema-1–4 signature and strict historical warmup assertions passed;
+both golden fixture hashes remain the values recorded in earlier phases.
+
+CLI help exited 0 for analyzer `preflight`, `freeze`, `report-s1-warmup`,
+and both warmup scripts. The same regression selection executes temporary
+preflight publication/idempotence/failure, snapshot/CPU gate, prepare,
+diagnostic admission, analyzer freeze, and launcher report/recovery cases.
+Those fixtures stub external corpus, terminal, device, or Slurm evidence as
+documented in their tests; they do not launch real jobs. Quickstart now invokes
+the frozen launcher explicitly for prepare. The lifecycle layout now locates
+reference selection under `campaign/references/`, matching atomic publication.
+The existing Python/universal ignore patterns cover the project; no new ignore
+file or dependency was needed. Final `git diff --check` passed.
+
+### T051 attempted; T052–T055 not executed
+
+The exact real preflight command and result are recorded in
+[phase6-real-preflight.json](evidence/phase6-real-preflight.json), with its
+[traceback](evidence/phase6-real-preflight.txt). It used the pinned corpus,
+tokenizer, both historical roots, and proposed fresh warmup root. It exited 1
+at `inspect_historical_device` for Linear ST-g250 job **220971** because
+`sacct` failed. A separate read-only query for all ten selected job IDs also
+exited 1: the accounting service at **localhost:6819 refused the connection**
+([accounting output](evidence/phase6-historical-accounting.txt)). The first
+sandboxed query was blocked from opening a socket; the permitted retry outside
+the sandbox established the connection-refused error. This is an unavailable
+service, not an approval rejection or a failed scientific-control assertion.
+
+From the recorded failure location and preflight call order, the corpus audit,
+model checks, expected-trace construction, and Linear saved-terminal reads
+returned before that device-evidence check. No complete audit record was
+published, and the Geometric selection was not reached. These partial reads
+do not certify all ten references or satisfy T051. No audit, reservation,
+snapshot, CPU gate, or launch-plan hashes exist for this real campaign.
+The proposed result root remains absent.
+
+Restore access to the existing cluster accounting service, then rerun the
+recorded preflight command. Only after it passes should T052 freeze/test the
+source and prepare the two-arm plan. T053 still requires diagnostic
+authorization; T054 requires production authorization and passed gates.
+No accounting requirement was bypassed, historical source rewritten, reference
+retrained, extra production arm launched, or final holdout evaluated.
+
+Historical preservation evidence:
+[phase6-historical-preservation.json](evidence/phase6-historical-preservation.json).
+All **22586** historical file paths, sizes, and modification times match the
+pre-audit snapshot, and both pinned S1 YAML byte hashes are unchanged. This is
+metadata comparison plus the two config hashes, not a complete historical
+content-hash certification.
+
+### Interim SC-001–008 reconciliation (T056 remains pending)
+
+| Criterion | Current evidence | Outstanding acceptance |
+| --- | --- | --- |
+| SC-001 | Two-arm/control/identity acceptance and historical signatures pass | Published real control/reference audit at T051 |
+| SC-002 | Full schedules and measured applied LR pass CPU tests for both grids | Bound CPU/GPU readiness evidence at T052–T053 |
+| SC-003 | Both-grid continuation, exact streams, rejection and failure tests pass | Real-shape CUDA bf16 diagnostics at T053 |
+| SC-004 | Terminal-only recovery and execution validation pass fixtures | Two real full-budget terminals at T054 |
+| SC-005 | 8/24-row exports, eight differences, and rejection cases pass fixtures | Real saved-artifact comparison at T055 |
+| SC-006 | Exact figure/scalar structure passes fixtures | Sixteen real PNG/PDF files and scalar provenance at T055 |
+| SC-007 | Findings generation passes fixtures | Eight observed real effects and interpretation at T055 |
+| SC-008 | Historical signatures preserved; no historical writes/retraining, jobs, extra arms, or holdout evaluation | Maintain these invariants through later authorized execution |
+
+Only T049–T050 are newly checked. T051–T056 remain unchecked; this interim
+reconciliation does not claim final scientific acceptance. Plan, tasks,
+quickstart and runbook reflect the same blocker and stage statuses.
+The optional Git commit hooks were not executed.

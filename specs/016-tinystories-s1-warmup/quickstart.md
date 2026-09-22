@@ -1,10 +1,10 @@
 # Quickstart: S1 Warmup Extension
 
-Phases 3–5 implement schema-5 preflight, runtime/continuation checks, snapshot-bound diagnostics and prepare/queue/worker, verified against fixtures (see [verification.md](verification.md)). Phase-5 freeze/comparison/report recovery is implemented; production requires the snapshot-bound reporting fixture gate to pass. Real corpus/terminal audits, GPU diagnostics and production have not been performed. Subsequent user instructions authorize those stages; earlier campaigns' approvals do not apply.
+Phases 3–5 and cross-cutting T049–T050 are complete: 1179 CPU tests passed, with 39 expected GPU skips; CLI and temporary-fixture commands passed (see [verification.md](verification.md)). Real preflight T051 was attempted but stopped at historical Slurm accounting (`localhost:6819`, connection refused), without creating the fresh root. Restore access to the cluster accounting service and rerun the preflight below before CPU snapshot/gating or prepare. GPU diagnostics, production, and real reports remain pending under their stated authorization requirements; earlier campaigns' approvals do not apply.
 
 ## 1. Implement and verify locally
 
-Generate tasks from [plan.md](plan.md), then implement the fixed protocol and focused checks. Use the pinned interpreter from the repository root. Planned focused command:
+The fixed protocol and focused checks are implemented. Use the pinned interpreter from the repository root. Verified focused command:
 
 ```bash
 OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest tests/test_s1_warmup_campaign.py tests/test_s1_warmup_reporting.py tests/test_s1_warmup_queue.py -q -rs --tb=short
@@ -14,7 +14,7 @@ Also run relevant existing ownership/matformer campaign, resume, config, compact
 
 ## 2. Audit real inputs and references
 
-Proposed commands below use the real paths already saved in reference configs; revalidate them. Shell variables have task-specific names. The preflight checks/creates only the fresh result root after validation and never modifies references.
+The commands below match the implemented CLI and temporary-fixture checks. They use the real paths saved in reference configs; preflight revalidates them. Shell variables have task-specific names. Preflight publishes only under the fresh result root after validation and never modifies references.
 
 ```bash
 WARMUP_ROOT=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1
@@ -31,7 +31,7 @@ WARMUP_PYTHON=/home/ivo.navarrete/.conda/envs/elasticnn/bin/python
   --geometric-reference-root "$WARMUP_GEOMETRIC_REF"
 
 "$WARMUP_PYTHON" scripts/preflight_tinystories_s1_warmup.py cpu --campaign-root "$WARMUP_ROOT"
-"$WARMUP_PYTHON" scripts/run_tinystories_s1_warmup.py prepare \
+"$WARMUP_PYTHON" "$WARMUP_ROOT/source/scripts/run_tinystories_s1_warmup.py" prepare \
   --campaign-root "$WARMUP_ROOT" --cpu-evidence "$WARMUP_ROOT/diagnostics/cpu-gate.json"
 ```
 

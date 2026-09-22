@@ -9,7 +9,7 @@ Proposed result root: `/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-owner
 ```text
 <root>/
 ├── campaign/                 # manifest, preflight, configs, control differences, schedules/traces
-├── references/               # new read-only selection records pointing to original files
+│   └── references/           # selection records pointing to original files; atomic with campaign
 ├── source/                   # immutable tested executable snapshot
 ├── diagnostics/              # source manifest, CPU/GPU gates, probe artifacts
 ├── launchers/                # prepared plan, intents, attempts, worker/device/status records

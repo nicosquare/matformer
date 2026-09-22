@@ -5,8 +5,12 @@
 Phases 3–5 implement schema-5 preparation, grid-aware runtime accounting and
 terminal metadata, immutable source/CPU/GPU diagnostics, and the two-arm launcher.
 CPU fixtures verify protocol, continuation, failure durability and admission.
-Phase 5 adds strict saved-artifact reporting and fixture verification. Real
-input/reference audits, source-bound readiness and production remain pending. See independent stage
+Phase 5 adds strict saved-artifact reporting and fixture verification. Phase-6
+T049–T050 passed 1179 CPU tests with 39 expected GPU skips and verified the CLI
+and fixture commands. Real preflight T051 stopped at historical Slurm accounting
+because its database connection was refused; it published no fresh root or
+reservation. Source-bound readiness, production, and real comparison remain
+pending. See independent stage
 statuses and test evidence in [verification.md](../specs/016-tinystories-s1-warmup/verification.md).
 
 ## Fixed experiment
@@ -101,15 +105,16 @@ implemented and exercised against temporary fixtures:
 Recipe: `configs/controlled_exps/tinystories_instruct_s1_warmup.yaml`.
 Corpus: `/nfs-stor/ivo.navarrete/matformer-corpora/tinystories-instruct-packed-full-v1`.
 Tokenizer: `/nfs-stor/ivo.navarrete/matformer-tokenizers/tinystories-instruct-sentencepiece-bpe-2k-v1`.
-The quickstart provides the proposed full command sequence with these paths.
+The quickstart provides the implemented command sequence with these paths.
 After preparation, use the frozen `ROOT/source/scripts/` entry points. Changed
 source/config/reference bindings invalidate gates. Missing required evidence
 returns an explicit nonzero failure; queue capacity records a pending wait.
 
 ## Authorization, execution and recovery
 
-The current request authorizes phase 5 (T036–T048) software and fixture checks,
-building on phases 1–4. Real-input preparation remains T051–T052. GPU
+The phase-6 request covered cross-cutting verification and real-input
+preparation. T049–T050 are complete; T051 is blocked by accounting access and
+T052 has not run. GPU
 readiness T053 requires subsequent diagnostic authorization; production T054
 requires subsequent production authorization and passed CPU/GPU gates. Earlier
 campaign approvals and successful tests do not authorize these stages.
@@ -178,7 +183,7 @@ These commands are implemented and checked with CPU fixtures. They are not
 records of running the real experiment. Set `WARMUP_ROOT` and `WARMUP_PYTHON`
 as in the [quickstart](../specs/016-tinystories-s1-warmup/quickstart.md).
 
-After the separately scheduled real preflight at T051:
+After real preflight T051 passes (currently blocked by Slurm accounting access):
 
 ```bash
 "$WARMUP_PYTHON" scripts/preflight_tinystories_s1_warmup.py cpu --campaign-root "$WARMUP_ROOT"
