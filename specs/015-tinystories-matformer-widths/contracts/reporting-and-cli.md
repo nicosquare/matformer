@@ -1,5 +1,11 @@
 # Terminal Reporting and CLI Contract
 
+**Campaign closed by user on 2026-09-22.** This contract retains the original
+implemented protocol. C1–C3 execution and complete 24/28-endpoint publication
+were cancelled; the 16-endpoint selected report is the retained closeout output.
+No completion threshold is relaxed and no further execution is authorized.
+See [verification.md](../verification.md).
+
 ## Terminal input and endpoint validation
 
 Extend existing `preflight`, `freeze` and `report` to dispatch schema 4 explicitly.

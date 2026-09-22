@@ -1,5 +1,11 @@
 # Optimizer Lifecycle, Readiness and Operations Contract
 
+**Campaign closed by user on 2026-09-22.** This contract retains the original
+implemented protocol. C1–C3 execution and complete 24/28-endpoint publication
+were cancelled; the 16-endpoint selected report is the retained closeout output.
+No completion threshold is relaxed and no further execution is authorized.
+See [verification.md](../verification.md).
+
 ## Complete updates and observations
 
 Reuse the existing trainer, optimizer collections and global scheduler. For each
@@ -121,7 +127,7 @@ silently certify completion from a cached boolean.
 ## Admission, reconciliation and cost accounting
 
 All GPU work, diagnostics included, uses sbatch, one GPU/process, exclusions
-`gpu-[05,50,51]`, and live user-wide limits bounded by two running/four submitted.
+`gpu-[05,50,51,54]`, and live user-wide limits bounded by two running/four submitted.
 Query enforced association/QoS limits before admission and honor stricter positive
 limits. Count unrelated user jobs; preserve their jobs and helper processes.
 If shared scheduler enforcement cannot guarantee the running ceiling, defer new

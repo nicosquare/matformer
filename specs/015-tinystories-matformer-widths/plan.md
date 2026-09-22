@@ -2,7 +2,7 @@
 
 **Branch**: `015-tinystories-matformer-widths` | **Date**: 2026-09-21 | **Spec**: [spec.md](spec.md)
 **Input**: Feature 015 specification and [source request](../../notes/tinystories_matformer_widths_speckit_prompt_2026-09-21.md).
-**Status**: Planning complete. Implementation, diagnostics, and production execution remain future work requiring their respective conversation authorization.
+**Status**: Closed by user with partial results on 2026-09-22. Implementation/readiness and six production runs are complete; C1–C3 and full-campaign reporting are cancelled. The original plan below is retained as protocol history; see [verification.md](verification.md) for the final disposition.
 
 ## Summary
 
@@ -34,7 +34,7 @@ both standalone measurements at shared sizes.
 **Experiment Outputs**: Resolved controls, expected/committed traces, exposure/clipping/resources, nine terminal checkpoints, per-run diagnostics, 24/28-row CSV/JSON tables, combined loss/perplexity figures in PNG/PDF  
 **Reproducibility Notes**: Seed 42 normal fresh construction; independent action/data streams; exact action/batch continuation and inherited numerical tolerances; frozen terminal ordinary-validation identities; no cross-model initial-tensor equality assumption  
 **Performance Goals**: Measure steady-state throughput, attempt costs, actual state storage and device peaks; keep compact accounting bounded; no promised accuracy, memory or speed improvement  
-**Constraints**: Validated standalones before elastic admission; all GPU work via sbatch excluding gpu-[05,50,51]; user-wide two-running/four-submitted ceilings or stricter live limits; distinct artifact root; preserve prior campaigns  
+**Constraints**: Validated standalones before elastic admission; all GPU work via sbatch excluding gpu-[05,50,51,54]; user-wide two-running/four-submitted ceilings or stricter live limits; distinct artifact root; preserve prior campaigns
 **Scale/Scope**: d64/l4/h4, context 128, vocabulary 2048, full elastic FFN 256; four × 87,132 updates plus five × 348,528 updates; 17,130,848,256 assigned tokens excluding diagnostics/replay
 
 Environment versions were inspected through package metadata during planning.

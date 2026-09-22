@@ -1,10 +1,34 @@
 # TinyStories MatFormer-width optimizer-ownership experiment
 
 Campaign: `tinystories-optimizer-ownership-matformer-widths-v1`, recipe schema 4.
-The 2026-09-21 continuation explicitly authorizes operational preparation, GPU
-diagnostics and all Slurm submissions/resumptions necessary for T034–T037.
-Implementation and reporting prerequisites are already available. Actual reports
-T045/T052 remain separate pending tasks.
+**Final status: closed by user with partial results on 2026-09-22.**
+The implementation and CPU/GPU readiness work are complete. The user cancelled
+the remaining experiments and requested finalization as-is. No further jobs,
+resumptions or background monitoring are authorized.
+
+Four fresh standalones and S1/S2 completed and passed strict full-budget terminal
+validation. C1 **272718** and C2 **272719** were cancelled partway through; C3
+**273070** was cancelled before starting. Checker PID **400582** is stopped.
+Cancellation evidence is in `launchers/cancel-C1-C3-20260922T130113Z.json`;
+final report-integrity, scheduler and resource evidence is in
+`launchers/feature-closeout.json`, under the campaign root.
+
+The retained output is `reports/standalone-S1-S2-20260922/`: **16 endpoints**
+(12 new and four historical), with separate loss/perplexity PNG/PDF figures,
+CSV/JSON tables and strict terminal provenance. T037's full five-elastic
+execution and T045/T052's complete 24/28-endpoint reports are cancelled, not
+successful. T056/T057 are completed against this reduced closeout scope.
+Original protocol and historical entries below remain for reproducibility.
+
+**Slowdown diagnosis:** cancelled S1/S2 were allocated one GPU each on gpu-54
+(the exclusions were respected), but silently trained on CPU with resolved
+precision `none`. Saved configs, null CUDA peaks and empty checkpoint CUDA RNG
+states confirm this. The old metrics-history fix was present; both checkpoints
+use compact schema-2 accounting. The reason CUDA was unavailable on gpu-54 is
+not captured. These CPU-trained checkpoints are not valid BF16 production
+resumptions. The accepted replacement launcher now enforces CUDA/BF16 at worker
+startup, captures actual device evidence and records per-attempt GPU use.
+See the latest verification entry for scheduler records and timings.
 
 The requested interim comparison of both standalone grids is available in
 `reports/standalone-comparison-20260922-v2/` under the production campaign root:
@@ -15,6 +39,15 @@ identical saved loss/perplexity. The legends use Linear (blue triangles) and
 Geometric (orange triangles); coincident points use one split-color triangle. This
 standalone-only plot leaves the full T045/T052 reports pending; reproduction and
 hash evidence are in the verification record.
+
+The completed S1/S2 comparison is in `reports/standalone-S1-S2-20260922/`:
+separate `loss_vs_parameters.{png,pdf}` and `perplexity_vs_parameters.{png,pdf}`,
+16 endpoint rows in JSON/CSV, and strict validation/scheduler evidence.
+It retains blue Linear and orange Geometric standalone triangles and adds
+S1/S2 curves. Both elastic runs completed 348,528 updates / 2,855,141,376 tokens
+(four epochs); standalones have one epoch. The saved seed-42 S1/S2 results are
+close, with higher loss than the matching standalone at all four widths.
+This selected-run report does not complete the full T037/T045/T052 tasks.
 
 The [feature contracts](../specs/015-tinystories-matformer-widths/contracts/campaign-and-topology.md)
 define the protocol; the [verification record](../specs/015-tinystories-matformer-widths/verification.md)
@@ -114,7 +147,7 @@ commands and the complete regression suite. The required order is:
    historical standalones for 28 endpoints. Launcher `report --campaign-root
    [--reference-manifest]` performs restart-safe finalization without GPU jobs.
 
-All GPU work uses sbatch, excludes `gpu-[05,50,51]` and obeys live user-wide
+All GPU work uses sbatch, excludes `gpu-[05,50,51,54]` and obeys live user-wide
 two-running/four-submitted ceilings or stricter association/QoS limits. Count
 unrelated jobs and preserve them. Defer admission if the running ceiling cannot
 be guaranteed. Persist monotonic attempt intents before sbatch; uncertain
@@ -175,9 +208,10 @@ silently overwritten or accepted from directory existence.
 | Phase 5 and reporting implementation | Complete on CPU | Restore/failure, gate/barrier/queue/worker fixtures and 24/28 exports; final regression 1,302 passed, 39 GPU-only skips, 1 existing expected failure |
 | Full snapshot-bound CPU readiness | T034 complete | Audited inputs; immutable source CPU gate: 1,307 passed, 39 GPU skips, 1 existing xfail; prepared reservation |
 | GPU diagnostics | T035 complete | Job 271285 COMPLETED/0:0 on A100 gpu-52; nine real-shape probes + 118 GPU tests, no skips; all gate/result hashes validated |
-| Nine-run production | T036 complete; T037 elastic admission underway | Four standalones COMPLETED/0:0 and strictly validated; barrier published/revalidated; five elastic terminals pending |
-| New report | Pending | Nine validated runs, matching 24-row endpoints.csv/json and diagnostics |
-| Combined report | Pending | Four valid historical standalones, matching 28-row combined_endpoints.csv/json |
+| Nine-run production | Closed incomplete; T037 cancelled | Four standalones and S1/S2 validated; C1–C3 cancelled |
+| New report | Cancelled, not produced | Original nine-run / 24-endpoint threshold remains unmet |
+| Combined report | Cancelled, not produced | Original 28-endpoint threshold remains unmet |
+| Selected closeout report | Complete | 16 endpoints: four fresh and four historical standalones plus S1/S2 at four widths |
 
 Combined figures are `loss_vs_parameters.{png,pdf}` and
 `perplexity_vs_parameters.{png,pdf}`. Each has five connected four-point elastic
@@ -243,7 +277,7 @@ detached from the chat session, but is not a reboot service. The verification
 record documents its exact provenance and safe stop/manual-takeover instructions.
 Do not start a competing queue while this checker holds the queue lock.
 
-## 2026-09-22 validation and recovery
+## Historical 2026-09-22 validation and recovery (superseded by closeout)
 
 All four standalone jobs 271319–271322 completed with ExitCode 0:0 and their full
 87,132-update/713,785,344-token budgets. The first checker stopped when the strict
@@ -278,3 +312,90 @@ will be admitted automatically. The first restarted checker cycle completed
 successfully, with two running/four submitted user jobs. Full details are in
 `launchers/handoff-elastics-20260922.json` and the verification record. T036 is
 checked complete; T037 and actual reporting T045/T052 remain unchecked.
+
+## Final results and interpretation — 2026-09-22
+
+The feature is closed at the user's request. The completed production subset is
+six runs, **1,045,584 updates / 8,565,424,128 tokens**. These totals exclude
+cancelled partial work, invalid CPU attempts, diagnostics and historical runs;
+they do not claim the original 17,130,848,256-token nine-run budget was achieved.
+
+The retained [selected report](/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-matformer-widths-v1/reports/standalone-S1-S2-20260922/plot_manifest.json) contains
+12 new endpoints (four standalones and eight S1/S2 width points) plus four
+historical Linear standalone endpoints. The primary comparison is against the
+fresh Geometric standalones. All values below are terminal ordinary-validation
+loss, seed 42, with 285 sequences / 36,195 causal target tokens:
+
+| FFN dimension | Fresh standalone | S1 | S2 |
+| ---: | ---: | ---: | ---: |
+| 32 | 2.105963 | 2.128560 | 2.126497 |
+| 64 | 2.062977 | 2.074250 | 2.071297 |
+| 128 | 1.991942 | 2.031311 | 2.029452 |
+| 256 | 1.909057 | 1.996195 | 1.996280 |
+
+Both elastic arms underperform fresh standalones at every width. At FFN 256,
+perplexity is 6.746721 for standalone, 7.360991 for S1 and 7.361618 for S2,
+about 9.1% higher for each elastic arm. Separate per-width Adam histories in S2
+do not close the gap in this comparison. This is descriptive evidence from one
+seed; it does not identify learning-rate scheduling or any other mechanism as
+the cause, or establish that other arms or settings fail. No scheduler ablation
+was run. C1/C2 have no accepted terminal endpoints and C3 never trained.
+
+Saved validation trajectories contain 5,446 observations per width for each of
+S1/S2. From the first recorded validation at update 64 to terminal update
+348,528, full-width loss decreases from 4.560798 to 1.996195 for S1 and from
+4.862737 to 1.996280 for S2. These are trajectory endpoints, not evidence of
+monotonic convergence or an alternative terminal selection rule.
+
+Both completed elastics have identical committed action/data traces and selected
+width counts: 86,898 / 87,221 / 87,337 / 87,072 for FFN 32 / 64 / 128 / 256.
+Corresponding incremental-block activations are 348,528 / 261,630 / 174,409 /
+87,072. S1 has one shared history; S2's selected histories follow those width
+counts. Four elastic epochs therefore do not imply four epochs of direct
+exposure at every width, or equal compute versus one-epoch standalones.
+S1/S2 use global cap-1 clipping. Changed concat block sizes and C3's independent
+owner clipping have diagnostic coverage only, with no completed C-arm comparison.
+
+The four historical Linear baselines were revalidated. FFN 64/128/256 reproduce
+the fresh standalone endpoint values exactly; both campaign identities remain
+separate records. Historical FFN 192 has loss 1.943363 / perplexity 6.982194.
+No across-seed significance or cross-model initial-tensor equality is inferred.
+
+Retained figures: [loss](/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-matformer-widths-v1/reports/standalone-S1-S2-20260922/loss_vs_parameters.png),
+[perplexity](/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-matformer-widths-v1/reports/standalone-S1-S2-20260922/perplexity_vs_parameters.png), and matching PDFs in the
+same directory. Linear uses blue triangles, Geometric orange triangles; exact
+coincidences use a single split-color triangle. FFN dimensions appear on the top
+axis. S1/S2 are separate connected curves. The figures and tables are a selected
+16-endpoint comparison, not the original 24/28-endpoint full reports.
+
+## Final cost and evidence accounting
+
+| Attempt category | Measured process seconds | Scheduler allocation seconds | Completeness |
+| --- | ---: | ---: | --- |
+| Six completed production runs | 34,788.929 | 34,982 | Complete process observations |
+| Cancelled C1/C2 production | 16,404.641 | 16,486 | Process lower bound; cancellation interrupted final measurement |
+| Invalid CPU S1/S2 attempts | 63,948.507 | 64,024 | Process lower bound; not valid production results |
+| C3 and original queued C1/C2 | No process observed | 0 | Cancelled before allocation |
+
+Each process UUID is counted once. Process and scheduler times overlap and must
+not be added. These are production-attempt costs, not a total including diagnostic
+and preparation costs; those remain separately recorded in `diagnostics/`.
+C1/C2's last resource observations are at 239,440 / 189,110 attempted updates;
+these are not validated terminal budgets or a claim about durable checkpoint
+positions. Their stale ledger `running` values are last process observations;
+Slurm's final state is CANCELLED. Raw ledgers are preserved without relabelling.
+
+Measured peak allocated/reserved CUDA bytes are 453,779,968 / 528,482,304 for
+S1 and 466,390,528 / 541,065,216 for S2. The difference is an observed device
+peak, not a pure optimizer-moment storage estimate or an equal-compute claim.
+
+[Final closeout record](/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-matformer-widths-v1/launchers/feature-closeout.json) binds all ten
+observed production process records, final accounting for thirteen submitted
+production jobs, the empty live queue, stopped checker, and successful recheck
+of 70 selected-report input hashes plus seven output hashes. Its content hash is
+`87200556501c1f2ba9b45df32da5370ff55a71afce9138eb42c1c266ff58b6b7`.
+Earlier `launchers/status.json` and submission/worker observations are retained
+as historical state; this closeout record supersedes them for final disposition.
+No runtime snapshot, scientific control, checkpoint or historical result was
+rewritten. The holdout remains sealed. T037/T045/T052 are cancelled; T056/T057
+are complete under the user's reduced scope, and no active task remains.

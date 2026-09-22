@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Plot the two standalone grids using strict readers from the campaign snapshot."""
+"""Plot validated standalone grids and optional completed elastic endpoints."""
 import argparse
 import csv
 from pathlib import Path
 import sys
+import subprocess
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--campaign-root', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path, required=True)
+    parser.add_argument('--elastic-arms', nargs='+', choices=('S1', 'S2', 'C1', 'C2', 'C3'), default=[])
     args = parser.parse_args()
     root = args.campaign_root.resolve()
     sys.path.insert(0, str(root / 'source'))
@@ -74,19 +76,66 @@ def main():
                    clipping_observations=None)
     rows += history
     c._require_equal(len(rows), 8, 'standalone endpoint count')
-    c._require_equal(len({tuple(r['endpoint_identity']) for r in rows}), 8, 'unique endpoint identities')
+    selected_terminals = []
+    scheduler_evidence = []
+    if args.elastic_arms:
+        c._require_equal(len(set(args.elastic_arms)), len(args.elastic_arms), 'unique selected arms')
+        submissions = c._read_json(root / 'launchers/submissions.json')['jobs']
+        for arm in args.elastic_arms:
+            intent = max((j for j in submissions if j['arm_id'] == arm), key=lambda j: j['attempt_id'])
+            job, attempt = intent['job_id'], intent['attempt_id']
+            accounting = subprocess.run(['sacct', '-X', '--noheader', '--parsable2', '--jobs=' + job,
+                '--format=JobIDRaw,State,ExitCode,ElapsedRaw,NodeList'], check=True, capture_output=True,
+                text=True, timeout=45).stdout.strip()
+            c._require_equal(len(accounting.splitlines()), 1, f'{arm}.scheduler rows')
+            c._require_equal(accounting.split('|')[:3], [job, 'COMPLETED', '0:0'], f'{arm}.scheduler success')
+            worker_path = root / 'launchers' / f'worker-{arm}-{attempt}.json'
+            entry_path = root / 'launchers' / f'cuda-entry-{arm}-{attempt}.json'
+            worker, entry = c._read_json(worker_path), c._read_json(entry_path)
+            c._require_equal(worker['job_id'], job, f'{arm}.worker job')
+            c._require_equal(worker['status'], 'completed', f'{arm}.worker status')
+            c._require_equal(worker['returncode'], 0, f'{arm}.worker exit')
+            c._require_equal(entry['job_id'], job, f'{arm}.CUDA entry job')
+            config = c._read_json(root / 'runs' / arm / 'config.json')
+            c._require_equal(config['training']['resolved_mixed_precision'], 'bf16', f'{arm}.actual precision')
+            print(f'Strictly validating completed {arm} (job {job})...', flush=True)
+            terminal = c.inspect_selected_terminals(manifest_path, [arm])[0]
+            ledger = c._read_json(root / 'runs' / arm / 'resource_attempts.json')['attempts']
+            measured = ledger[worker['process_uuid']]
+            c._require_equal(measured['slurm_job_id'], job, f'{arm}.resource job')
+            c._require_equal(measured['status'], 'completed', f'{arm}.resource status')
+            c._require_equal(measured['measurement_complete'], True, f'{arm}.complete measurement')
+            if not measured['peak_allocated_bytes'] or not measured['peak_reserved_bytes']:
+                raise ValueError(f'{arm}: no actual CUDA allocation')
+            selected_terminals.append(terminal)
+            sources.extend(terminal['sources'])
+            sources.extend(c._source_record(p) for p in (worker_path, entry_path))
+            scheduler_evidence.append(dict(arm_id=arm, intent=intent, accounting=accounting,
+                                           worker=worker, cuda_entry=entry, resources=measured))
+        rows += c._endpoint_table(dict(runs=selected_terminals, status='complete',
+                                      campaign_id=preflight['campaign_id']), preflight)
+    endpoint_count = 8 + 4 * len(args.elastic_arms)
+    c._require_equal(len(rows), endpoint_count, 'selected endpoint count')
+    c._require_equal(len({tuple(r['endpoint_identity']) for r in rows}), endpoint_count, 'unique endpoint identities')
     for row in rows:
-        for field, value in dict(actual_epochs=1, assigned_epochs=1, actual_tokens=713785344,
-                                 assigned_tokens=713785344, seed=42).items():
+        epochs = 1 if row['arm_id'].startswith('ST-') else 4
+        for field, value in dict(actual_epochs=epochs, assigned_epochs=epochs, actual_tokens=713785344 * epochs,
+                                 assigned_tokens=713785344 * epochs, seed=42).items():
             c._require_equal(row[field], value, f"{row['run_id']}.{field}")
 
     def publish(stage, output):
-        c.write_json_artifact(stage / 'standalone_endpoints.json', dict(
-            schema_version=1, status='standalone_only', holdout_evaluated=False, endpoints=rows))
+        status = 'selected_completed_runs' if args.elastic_arms else 'standalone_only'
+        stem = 'endpoints' if args.elastic_arms else 'standalone_endpoints'
+        c.write_json_artifact(stage / f'{stem}.json', dict(
+            schema_version=1, status=status, holdout_evaluated=False, endpoints=rows))
+        if args.elastic_arms:
+            c.write_json_artifact(stage / 'selected_terminal_validation.json', dict(
+                schema_version=1, status='passed', arms=args.elastic_arms,
+                terminals=selected_terminals, scheduler_evidence=scheduler_evidence))
         fields = ['group', 'campaign_id', 'run_id', 'arm_id', 'ffn_dimension',
                   'non_embedding_parameters', 'loss', 'perplexity', 'seed',
                   'actual_epochs', 'actual_tokens', 'checkpoint_sha256']
-        with (stage / 'standalone_endpoints.csv').open('w', newline='') as stream:
+        with (stage / f'{stem}.csv').open('w', newline='') as stream:
             writer = csv.DictWriter(stream, fieldnames=fields, extrasaction='ignore')
             writer.writeheader()
             writer.writerows(rows)
@@ -96,12 +145,13 @@ def main():
         for metric in ('loss', 'perplexity'):
             figure = Figure(figsize=(7.2, 5.4))
             ax = figure.subplots()
+            standalone_rows = [r for r in rows if r['arm_id'].startswith('ST-')]
             for historical in (True, False):
-                values = [r for r in rows if r['historical_reference'] == historical]
+                values = [r for r in standalone_rows if r['historical_reference'] == historical]
                 for row in values:
                     shared = any(r['historical_reference'] != historical
                                  and r['non_embedding_parameters'] == row['non_embedding_parameters']
-                                 and r[metric] == row[metric] for r in rows)
+                                 and r[metric] == row[metric] for r in standalone_rows)
                     # One triangle at coincident coordinates: blue left, orange right.
                     fill = ('left' if historical else 'right') if shared else 'full'
                     ax.plot(row['non_embedding_parameters'], row[metric], linestyle='None',
@@ -121,18 +171,33 @@ def main():
             handles = [Line2D([], [], linestyle='None', marker='^', markersize=9,
                               markeredgewidth=0, color=colors[historical], label=label)
                        for historical, label in ((True, 'Linear'), (False, 'Geometric'))]
+            elastic_styles = dict(S1=('#009E73', 'o', '-'), S2=('#8C56A2', 's', '--'),
+                                  C1=('#CC79A7', 'D', '-'), C2=('#555555', 'v', '--'),
+                                  C3=('#D55E00', 'P', ':'))
+            for arm in args.elastic_arms:
+                values = sorted((r for r in rows if r['arm_id'] == arm), key=lambda r: r['non_embedding_parameters'])
+                color, marker, style = elastic_styles[arm]
+                line, = ax.plot([r['non_embedding_parameters'] for r in values], [r[metric] for r in values],
+                                color=color, marker=marker, linestyle=style, linewidth=1.6,
+                                markersize=6, markerfacecolor='white', markeredgewidth=1.3, label=arm)
+                handles.append(line)
             ax.legend(handles=handles, frameon=False, loc='upper right')
-            figure.suptitle('TinyStories-Instruct · standalone models', fontsize=14, y=.97)
-            figure.text(.5, .025, 'Terminal ordinary validation · seed 42 · 1 epoch',
+            figure.suptitle('TinyStories-Instruct' if args.elastic_arms else 'TinyStories-Instruct · standalone models',
+                            fontsize=14, y=.97)
+            footer = ('Terminal ordinary validation · seed 42\nStandalone: 1 epoch · Elastic: 4 epochs'
+                      if args.elastic_arms else 'Terminal ordinary validation · seed 42 · 1 epoch')
+            figure.text(.5, .025, footer,
                         ha='center', fontsize=9, color='#555555')
             figure.tight_layout(rect=(0, .055, 1, .91))
             for suffix in ('png', 'pdf'):
                 figure.savefig(stage / f'{metric}_vs_parameters.{suffix}', dpi=180)
-        report = dict(schema_version=1, status='standalone_only', endpoint_count=8,
+        report = dict(schema_version=1, status=status, endpoint_count=endpoint_count,
+                      selected_elastic_arms=args.elastic_arms,
                       holdout_evaluated=False, input_sources=sources,
                       plot_style=dict(linear='blue triangle', geometric='orange triangle',
                                       coincident_points='single triangle, blue left half and orange right half'),
-                      interpretation_scope='Descriptive seed-42 terminal standalone comparison; no across-seed inference. '
+                      interpretation_scope='Descriptive seed-42 terminal comparison; no across-seed inference. '
+                      'Standalones receive one epoch; elastics receive four epochs with sampled widths, not equal compute or direct exposure. '
                       'Does not complete T045/T052 or the 24/28-endpoint campaign reports.',
                       output_sha256={p.name: c._source_record(p)['sha256'] for p in sorted(stage.iterdir())})
         report['content_hash'] = c.stable_hash(report)
@@ -141,9 +206,9 @@ def main():
         return report
 
     c._publish_directory(args.output_dir.resolve(), publish)
-    print(f'Published eight strictly validated endpoints to {args.output_dir}', flush=True)
+    print(f'Published {endpoint_count} strictly validated endpoints to {args.output_dir}', flush=True)
     for r in rows:
-        print(r['group'], r['ffn_dimension'], r['loss'], r['perplexity'])
+        print(r['group'], r['arm_id'], r['ffn_dimension'], r['loss'], r['perplexity'])
 
 
 if __name__ == '__main__':

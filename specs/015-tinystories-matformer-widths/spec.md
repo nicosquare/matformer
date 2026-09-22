@@ -2,12 +2,29 @@
 
 **Feature Branch**: `015-tinystories-matformer-widths`  
 **Created**: 2026-09-21  
-**Status**: Draft — specification validated; implementation and execution pending authorization  
+**Status**: Closed by user with partial experimental results — 2026-09-22
 **Input**: [Feature 015 request](../../notes/tinystories_matformer_widths_speckit_prompt_2026-09-21.md), beginning at “Feature request”.
 
 Researchers need to repeat the original uncorrected Feature 013 optimizer-ownership comparison with FFN widths 12.5%, 25%, 50%, and 100%. A width specifies the feed-forward network's intermediate dimension, not a fraction of total model parameters. The comparison uses four fresh dense standalone models followed by five fresh elastic models, which share weights across widths. Optimizer histories are gradient moments and update counters; separate histories do not imply separate model weights.
 
 The scientific intervention is the width grid. Width selection remains uniform. Historical standalone results provide additional context and repeated measurements at shared sizes; they do not replace fresh baselines. This invocation authorizes specification work only. Implementation and GPU execution require subsequent conversation authorization; prior Feature 013/014 launch approvals do not carry over.
+
+## Final disposition — 2026-09-22
+
+The user requested finalization as-is and no further experiments. This feature
+is **closed with partial experimental results**: implementation and readiness
+checks are complete; four fresh standalones and S1/S2 passed full-budget terminal
+validation. C1/C2 were cancelled partway through and C3 before starting. The
+background checker is stopped. Earlier execution authorization is superseded;
+do not submit, resume, or restart monitoring for this campaign.
+
+The retained report has **12 new endpoints plus four historical standalone
+endpoints (16 total)**. T037, T045 and T052 are cancelled, not successfully
+completed. The original nine-run and 24/28-endpoint acceptance criteria remain
+unmet; they are retained below as the original protocol, not future work.
+T056/T057 are completed against this explicitly reduced closeout scope. See
+[the runbook](../../docs/tinystories-matformer-widths-experiment.md) and
+[verification.md](verification.md) for results, costs and artifact provenance.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -131,7 +148,7 @@ A researcher reviews loss and perplexity against exact active parameter counts, 
 - **FR-015**: C1/C3 new identities MUST produce real clipping sidecars and valid metrics/summary references. Record active flags, pre/post norms, applied coefficients/caps, combined norms, and committed observation counts. Terminal readers MUST reject missing or inconsistent clipping evidence, guarding against the earlier arm-name-related omission.
 - **FR-016**: Resource reporting MUST distinguish actual optimizer allocations by owner/component/dtype, counters, temporary storage, device peaks, checkpoint size, elapsed execution, and throughput. Derive unequal-block expectations from actual parameter support; do not reuse equal-quarter storage formulas. Retain job IDs and all continuation/failure attempts, sum unique attempt durations, take maximum peaks, include failed/replayed work, and disclose incomplete measurements.
 - **FR-017**: Production MUST be gated on passed CPU checks and short real-shape bf16 GPU diagnostics bound to source/config hashes. Evidence MUST cover all new arm types, unequal-block update behavior, exact resume around epoch boundaries, clipping artifacts/readers, invalid-state rejection, partial C3 failure, scheduling/barrier behavior, 24/28-endpoint fixtures, and Feature 013/014 compatibility.
-- **FR-018**: When execution is authorized, use a fresh campaign artifact root separate from both prior campaigns, containing snapshots, configurations, diagnostics, launches, logs, checkpoints, and reports. GPU work MUST use sbatch, exclude gpu-[05,50,51], and respect user-wide limits of two running/four submitted jobs or stricter live limits. Scheduling MUST be restart-safe with one writer per run and preserve unrelated jobs/helpers.
+- **FR-018**: When execution is authorized, use a fresh campaign artifact root separate from both prior campaigns, containing snapshots, configurations, diagnostics, launches, logs, checkpoints, and reports. GPU work MUST use sbatch, exclude gpu-[05,50,51,54], and respect user-wide limits of two running/four submitted jobs or stricter live limits. Scheduling MUST be restart-safe with one writer per run and preserve unrelated jobs/helpers.
 - **FR-019**: Report only full-budget terminal checkpoints, with checkpoint and ordinary-validation identities frozen before reporting. Use the inherited target-token-weighted causal validation loss and perplexity equal to exp(aggregated loss). Best checkpoints, early elastic endpoints, and trailing averages MUST NOT substitute for terminal results. Completion-only recovery MUST take no additional training step.
 - **FR-020**: Export matching CSV/JSON tables of exactly 24 new endpoints and, when historical references validate, exactly 28 combined endpoints. Key each row by campaign/run identity and physical width; retain separate fresh/historical records at shared dimensions. Include group, arm, seed, fraction, dimension, exact active count, loss/perplexity, actual/assigned budgets, evaluation/checkpoint provenance, exposure, clipping, and resource fields as applicable.
 - **FR-021**: Reuse only the four original uncorrected Feature 013 standalone terminals at dimensions 64/128/192/256. Revalidate their saved identities/hashes, dimensions, count convention, one-epoch budgets, and evaluation protocol without rewriting historical files. Missing or incompatible references MUST be explicitly reported; no relabeling, omission, or replacement may produce a claimed complete comparison.

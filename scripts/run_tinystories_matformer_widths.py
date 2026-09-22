@@ -31,6 +31,7 @@ ARMS = tuple(a['arm_id'] for a in campaign.campaign_arms(4))
 STANDALONES, ELASTICS = ARMS[:4], ARMS[4:]
 PYTHON = '/home/ivo.navarrete/.conda/envs/elasticnn/bin/python'
 QOS = 'cscc-gpu-qos'
+EXCLUDED_NODES = 'gpu-[05,50,51,54]'
 ACTIVE = {'PENDING', 'RUNNING', 'CONFIGURING', 'COMPLETING', 'SUSPENDED', 'RESIZING', 'REQUEUED', 'REQUEUE_FED', 'REQUEUE_HOLD', 'SIGNALING', 'STAGE_OUT'}
 TERMINAL = {'COMPLETED', 'FAILED', 'CANCELLED', 'TIMEOUT', 'OUT_OF_MEMORY', 'NODE_FAIL', 'PREEMPTED', 'BOOT_FAIL', 'DEADLINE'}
 
@@ -306,6 +307,9 @@ def continuation(root, arm):
     output = root/'runs'/arm
     if not output.exists():
         return {'mode': 'fresh', 'step': 0, 'checkpoint': None}
+    runtime_path = output/'config.json'
+    if runtime_path.exists() and read(runtime_path).get('training', {}).get('resolved_mixed_precision') != 'bf16':
+        raise ConfigError(f'CPU/non-BF16 execution is not a valid production continuation: {output}')
     path = output/'checkpoints/latest.pt'
     if not path.is_file():
         raise ConfigError(f'Occupied run has no durable own checkpoint: {output}')
@@ -412,11 +416,11 @@ def _queue(root, once=False):
                     created_date=plan['created_date'], intent_time=time.time(), continuation=own,
                     bindings=plan['bindings'], cpu_gate_hash=plan['cpu_gate_hash'],
                     gpu_gate_hash=read(root/'diagnostics/gpu-gate.json')['content_hash'])
-                worker_cmd = [PYTHON,str(root/'source/scripts/run_tinystories_matformer_widths.py'),'worker',
+                worker_cmd = [PYTHON,str(Path(__file__).resolve()),'worker',
                     '--campaign-root',str(root),'--arm',arm,'--attempt-id',str(attempt)]
                 cmd = ['sbatch','--parsable','--job-name='+name,'--partition=cscc-gpu-p','--qos='+QOS,
                     '--nodes=1','--ntasks=1','--cpus-per-task=4','--gres=gpu:1','--mem=16G','--time=24:00:00',
-                    '--exclude=gpu-[05,50,51]','--no-requeue','--chdir='+str(root/'source'),
+                    '--exclude='+EXCLUDED_NODES,'--no-requeue','--chdir='+str(root/'source'),
                     '--output='+str(root/'logs'/f'{arm}-a{attempt}-%j.out'), '--error='+str(root/'logs'/f'{arm}-a{attempt}-%j.err'),
                     '--wrap='+shlex.join(worker_cmd)]
                 intent['command'] = cmd
@@ -475,7 +479,9 @@ def worker(root, arm, attempt_id):
         ledger.observe(process, sequence=1, run_id=run_id, launch_attempt_id=attempt_id, slurm_job_id=job,
             process_uuid=process, status='running', elapsed_seconds=None, attempted_steps=None,
             peak_allocated_bytes=None, peak_reserved_bytes=None, source_checkpoint=own['checkpoint'])
-        cmd = [PYTHON,str(root/'source/train.py'),'--config',str(root/'campaign/configs'/f'{arm}.yaml')]
+        cmd = [PYTHON,str(Path(__file__).with_name('train_cuda_required.py')),
+            '--config',str(root/'campaign/configs'/f'{arm}.yaml'),
+            '--entry-evidence',str(root/'launchers'/f'cuda-entry-{arm}-{attempt_id}.json')]
         try:
             result = subprocess.run(cmd,cwd=root/'source',env=env)
             record.update(returncode=result.returncode,status='completed' if result.returncode==0 else 'failed',
@@ -545,7 +551,9 @@ def main(argv=None):
     parser.add_argument('--attempt-id',type=int)
     parser.add_argument('--once',action='store_true')
     args=parser.parse_args(argv)
-    if REPO != args.campaign_root.resolve()/'source':
+    if REPO == args.campaign_root.resolve()/'launchers/cuda-required-v1':
+        verify_execution_revision(args.campaign_root)
+    elif REPO != args.campaign_root.resolve()/'source':
         parser.error('Run operational commands from the tested campaign source snapshot')
     if args.mode=='prepare':
         if args.cpu_evidence is None: parser.error('prepare requires --cpu-evidence')
@@ -556,6 +564,32 @@ def main(argv=None):
     elif args.mode=='report': report(args.campaign_root,args.reference_manifest)
     else: queue(args.campaign_root,args.once)
     return 0
+
+
+def verify_execution_revision(root):
+    """Supplement original scientific gates with evidence for a new launcher."""
+    root = Path(root).resolve()
+    expected = bindings(root)
+    files = source_files(root/'launchers/cuda-required-v1')
+    for mode in ('cpu', 'gpu'):
+        gate = read(root/'diagnostics/cuda-required-v1'/f'{mode}-gate.json')
+        check_seal(gate, f'CUDA-required {mode} gate')
+        if (gate.get('status') != 'passed' or gate.get('bindings') != expected
+                or gate.get('execution_files') != files or not gate.get('checks')):
+            raise ConfigError(f'CUDA-required {mode} execution evidence is stale or absent')
+        for check in gate['checks']:
+            if (check.get('returncode') != 0 or check.get('tests', 0) < 1
+                    or check.get('failures', 0) or check.get('errors', 0)
+                    or (mode == 'gpu' and check.get('skipped', 0))):
+                raise ConfigError(f'CUDA-required {mode} check did not pass')
+            campaign._check_sources(check.get('artifacts', []))
+        if mode == 'gpu' and (not gate.get('job_id') or not gate.get('hardware')
+                              or gate.get('real_shape_arms') != list(ARMS)):
+            raise ConfigError('CUDA-required GPU gate needs all nine real-shape probes')
+        if mode == 'cpu':
+            cpu_hash = gate['content_hash']
+        elif gate.get('cpu_gate_hash') != cpu_hash:
+            raise ConfigError('CUDA-required GPU gate is bound to different CPU evidence')
 
 
 if __name__=='__main__':

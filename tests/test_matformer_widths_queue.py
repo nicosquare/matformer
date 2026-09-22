@@ -25,7 +25,7 @@ def setup(tmp_path, monkeypatch):
     monkeypatch.setattr(queue,'queue_state',lambda:copy.deepcopy(active))
     monkeypatch.setattr(queue,'scheduler_history',lambda *args:None)
     def submit(cmd):
-        assert cmd[0]=='sbatch' and '--exclude=gpu-[05,50,51]' in cmd and '--gres=gpu:1' in cmd
+        assert cmd[0]=='sbatch' and '--exclude=gpu-[05,50,51,54]' in cmd and '--gres=gpu:1' in cmd
         submissions.append(cmd)
         name=next(v.split('=',1)[1] for v in cmd if v.startswith('--job-name='))
         job=str(100+len(submissions)); active.append(dict(job_id=job,name=name,state='PENDING',qos=queue.QOS))

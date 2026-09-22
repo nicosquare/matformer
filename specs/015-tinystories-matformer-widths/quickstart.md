@@ -1,11 +1,25 @@
 # Quickstart: Feature 015
 
-**Implementation interfaces available.** Phase 5 and required reporting
-prerequisites are implemented; exact local CPU results are in [verification.md](verification.md).
-Execution preparation, GPU diagnostics and production T034–T037 were explicitly
-authorized on 2026-09-21. Real-input preflight has passed; operational readiness
-and production status are tracked in the verification ledger. No production terminal or
-actual 24/28-point result is claimed by these fixture checks.
+## Final disposition — 2026-09-22
+
+The user requested finalization as-is and no further experiments. This feature
+is **closed with partial experimental results**: implementation and readiness
+checks are complete; four fresh standalones and S1/S2 passed full-budget terminal
+validation. C1/C2 were cancelled partway through and C3 before starting. The
+background checker is stopped. Earlier execution authorization is superseded;
+do not submit, resume, or restart monitoring for this campaign.
+
+The retained report has **12 new endpoints plus four historical standalone
+endpoints (16 total)**. T037, T045 and T052 are cancelled, not successfully
+completed. The original nine-run and 24/28-endpoint acceptance criteria remain
+unmet; they are retained below as the original protocol, not future work.
+T056/T057 are completed against this explicitly reduced closeout scope. See
+[the runbook](../../docs/tinystories-matformer-widths-experiment.md) and
+[verification.md](verification.md) for results, costs and artifact provenance.
+
+The commands below document the implemented interfaces and historical execution
+procedure. Queue, worker, diagnostic and monitor commands are not instructions
+to restart this closed campaign. Saved reports remain available for inspection.
 
 ## 1. Implement and verify the scientific changes
 
@@ -91,7 +105,7 @@ are cscc-gpu-p/cscc-gpu-qos. After preparation creates diagnostics/log directori
 ```bash
 sbatch --partition=cscc-gpu-p --qos=cscc-gpu-qos \
   --gres=gpu:1 --cpus-per-task=4 --mem=16G --time=00:30:00 \
-  --exclude='gpu-[05,50,51]' \
+  --exclude='gpu-[05,50,51,54]' \
   --chdir="$MW_ROOT/source" \
   --output="$MW_ROOT/logs/diagnostic-%j.out" \
   --error="$MW_ROOT/logs/diagnostic-%j.err" \
@@ -113,6 +127,15 @@ config set and preflight manifest. A job being submitted is not a passed gate.
 
 From the verified snapshot, use the queue command; `--once` performs one
 admission/reconciliation cycle, while omission continues the campaign monitor:
+
+For the existing campaign's accepted CUDA-required revision (2026-09-22), use
+`$MW_ROOT/launchers/cuda-required-v1/scripts/run_tinystories_matformer_widths.py`
+in place of the original snapshot launcher below. Its separate CPU/GPU gates
+must pass. The active checker handles this queue; do not launch a competing
+queue while it owns `launchers/background-checker.lock`. Actual GPU evidence
+is in `launchers/gpu-verification.json`, and the current checker log is
+`logs/background-checker-cuda-required.log`. The original launcher is retained
+for historical evidence and lacks the new gpu-54 exclusion/CUDA requirement.
 
 ```bash
 "$MW_PY" "$MW_ROOT/source/scripts/run_tinystories_matformer_widths.py" queue \
