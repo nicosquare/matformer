@@ -1,0 +1,79 @@
+{
+  "coordinates": {
+    "geometric": {
+      "s1_warmup256": [
+        90688,
+        115264,
+        164416,
+        262720
+      ],
+      "s1_warmup64": [
+        90688,
+        115264,
+        164416,
+        262720
+      ],
+      "standalone": [
+        90688,
+        115264,
+        164416,
+        262720
+      ]
+    },
+    "linear": {
+      "s1_warmup256": [
+        115264,
+        164416,
+        213568,
+        262720
+      ],
+      "s1_warmup64": [
+        115264,
+        164416,
+        213568,
+        262720
+      ],
+      "standalone": [
+        115264,
+        164416,
+        213568,
+        262720
+      ]
+    }
+  },
+  "delta_count": 8,
+  "endpoint_count": 24,
+  "figure_count": 16,
+  "fixture_output_sha256": {
+    "early_metrics.csv": "d7e2e909aee8f9fa5dca28e0c8f2d0a24625644caa05264b75cd33e551fb1453",
+    "early_metrics.json": "2df85c64c0bb35dbf8a39e72ca372f222960952fa7c134c100656bb350ff78d7",
+    "endpoints.csv": "e86c80b1a52e48b8eabc2b5225e1bea3a91b98e15d83c010141b05e7ad86df53",
+    "endpoints.json": "4fb8c1bf353a4edb57d5bcfaff4e18baab181b0c6bb74eebf4bd1b2f7970d6b0",
+    "findings.md": "8eeb437eb873676f74e6befb950ef5fd438f797a92771fb2b997e0608a632ac2",
+    "geometric_early_loss.pdf": "986738d8b96cbe384ce7e39a3cb998c38c795617bbc1735893f4498dc21b0bd6",
+    "geometric_early_loss.png": "fb252f7d250c63d2402d3d3fabbcced41f8abc683d2ad7d0b6545c7f8d5fc6e5",
+    "geometric_early_lr.pdf": "9dc1b9f516f03617408864093a35ffc952769e2b289bd93381841640743e5e11",
+    "geometric_early_lr.png": "da4960be47c2cdcd05c4a5f46d604bf08561678282a4e8903a466bb92cc6d562",
+    "geometric_loss_vs_parameters.pdf": "59ca38b7450a897a3e68412ce9946ff87281cdff01767e043c5205ffbafbe1e3",
+    "geometric_loss_vs_parameters.png": "b7cf48788e810e72a89cce418a645cdee7945118ba00ed1c79e08482fa931b2e",
+    "geometric_perplexity_vs_parameters.pdf": "eedf5b2a6ffd8e41fe68d64b67e2e16d7304bbafe7dd445eab892b5f6adb99e4",
+    "geometric_perplexity_vs_parameters.png": "dd9c76aa5fa3c7ffd5798a84348d96841407f638f3fe0a9f4492e48a674ec52b",
+    "linear_early_loss.pdf": "2c8a083d089975ef3dd2f3619130611d282e956105d504f0f0ef784ae181d87d",
+    "linear_early_loss.png": "5385f5551f03a360cd8ccd88e84f2c80ba3670fa24e0966184d00afea5ddcdb0",
+    "linear_early_lr.pdf": "aff514df0acdd198d437286ee57d26a5bb5765eed974deb3018dca834aef7c3f",
+    "linear_early_lr.png": "2a581197b3b2e217025387915fd7c8c68fedb661af1d7381f1bb147325d9ce8f",
+    "linear_loss_vs_parameters.pdf": "b01276180d7623c2687c8a2166bdbe81d93b173001b65966d9923544e644e666",
+    "linear_loss_vs_parameters.png": "22288cdda267777168ff52c7941f05c4ba9bb193f56e7f2542d802794045a3d7",
+    "linear_perplexity_vs_parameters.pdf": "b45859dffce3cd3dedfbd477fddd68afd7a41e2a4fff51eccb663bbd27581f46",
+    "linear_perplexity_vs_parameters.png": "46d0a596cc6a805fbc8f2d1dfdaae9e9411bf7da6935838a8526429aabe01787",
+    "paired_deltas.csv": "47c82e923c979aa516f9be813edf637d0444b63fcd3b2d2162157ecdb9980291",
+    "paired_deltas.json": "103331802b8bc72e16f5724a4b000beb42e20fa2cf0f2b4aed1c64e4e8161c1f"
+  },
+  "inspection": "Exact x coordinates, terminal/seed/budget labels, 0\u20131024 limits, separate training/validation panels and 64/256 markers checked. Increased standalone marker size/open fill and distinct warmup line styles after inspection to preserve visibility of coincident series. The final endpoint image was inspected again after refinement; all four standalone triangles remain visible at coincident coordinates.",
+  "manually_inspected": [
+    "linear_loss_vs_parameters.png",
+    "geometric_early_loss.png",
+    "linear_early_lr.png"
+  ],
+  "scope": "Synthetic saved-result fixture only; not real campaign evidence"
+}

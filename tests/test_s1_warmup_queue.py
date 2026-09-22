@@ -427,3 +427,87 @@ def test_restart_recovers_missing_outputs_after_recorded_completion(queue_setup,
     assert status['production']=='pending' and len(submitted)==4
     retries=ops.read(root/'launchers/submissions.json')['jobs'][2:]
     assert all(j['attempt_id']==2 and j['continuation']['mode']=='completion_only' for j in retries)
+
+
+from test_s1_warmup_reporting import reference_roots, preflight_inputs, report_inputs
+from test_optimizer_ownership_campaign import audited_inputs
+
+
+@pytest.mark.parametrize('missing', [None, 'reference', 'early'])
+def test_report_only_cli_recovery(report_inputs, monkeypatch, capsys, missing):
+    from scripts.analyze_tinystories_optimizer_ownership import main as analyze
+    import shutil
+    freeze,args=report_inputs
+    root=freeze['output_dir'].parents[1]
+    monkeypatch.setattr(ops,'report_source_plan',lambda root:dict(references={g:str(args[g+'_reference_root']) for g in ('linear','geometric')}))
+    monkeypatch.setattr(ops,'command',lambda *a,**k:pytest.fail('Report attempted a scheduler command'))
+    monkeypatch.setattr(ops,'worker',lambda *a,**k:pytest.fail('Report attempted training'))
+    # Exercise the actual analyzer freeze surface and launcher recovery from it.
+    analyze(['freeze','--campaign-manifest',str(freeze['campaign_manifest']),'--run-root',str(freeze['run_root']),
+        '--output-dir',str(freeze['output_dir'])])
+    before={str(p):p.read_bytes() for g in ('linear','geometric') for p in args[g+'_reference_root'].rglob('*') if p.is_file()}
+    if missing is None:shutil.rmtree(freeze['output_dir'])
+    if missing=='reference':shutil.rmtree(args['linear_reference_root'])
+    elif missing=='early':
+        path=args['linear_reference_root']/'runs/S1/metrics.csv'
+        path.write_text('\n'.join(x for x in path.read_text().splitlines() if ',train,' not in x)+'\n')
+    monkeypatch.setattr(ops,'REPO',root/'source')
+    code=ops.main(['report','--campaign-root',str(root)])
+    assert code==(1 if missing else 0)
+    assert (freeze['output_dir']/'endpoints.json').exists()
+    status=ops.read(root/'launchers/status.json')
+    assert status['new_report']=='complete'
+    assert status['early_report']==('complete' if not missing else 'incomplete')
+    if not missing:
+        assert before=={str(p):p.read_bytes() for g in ('linear','geometric') for p in args[g+'_reference_root'].rglob('*') if p.is_file()}
+        (freeze['output_dir']/'endpoints.csv').unlink()
+        assert ops.main(['report','--campaign-root',str(root)])==0
+        assert (freeze['output_dir']/'endpoints.csv').is_file()
+    else:
+        with pytest.raises(SystemExit) as error:
+            analyze(['report-s1-warmup','--manifest',str(args['manifest']),
+                '--linear-reference-root',str(args['linear_reference_root']), '--geometric-reference-root',str(args['geometric_reference_root']),
+                '--output-dir',str(root/'reports/cli-failure')])
+        assert error.value.code==1
+
+
+def test_analyzer_rejects_short_early_window(tmp_path):
+    from scripts.analyze_tinystories_optimizer_ownership import main
+    with pytest.raises(SystemExit) as error:
+        main(['report-s1-warmup','--manifest',str(tmp_path/'absent'),'--linear-reference-root',str(tmp_path/'linear'),
+              '--geometric-reference-root',str(tmp_path/'geometric'),'--output-dir',str(tmp_path/'out'),'--early-end-step','1023'])
+    assert error.value.code==1
+
+
+@pytest.mark.parametrize('damage',[None,'source','config','manifest','references'])
+def test_report_source_plan_is_independent_of_missing_references(bound_root,damage):
+    root=bound_root
+    plan=ops.prepare(root,root/'diagnostics/cpu-gate.json')
+    (root/'reference.json').unlink()
+    if damage=='source':(root/'source/scripts/train_cuda_required.py').write_text('changed')
+    elif damage=='config':(root/'campaign/configs'/f'{ops.ARMS[0]}.yaml').write_text('changed')
+    elif damage=='manifest':
+        path=root/'campaign/campaign_manifest.json';path.write_text(path.read_text()+'\n')
+    elif damage=='references':
+        changed={k:v for k,v in plan.items() if k!='content_hash'};changed['references']={'linear':'wrong','geometric':'wrong'}
+        ops.save(root/'launchers/plan.json',ops.sealed(changed))
+    if damage:
+        with pytest.raises(ConfigError):ops.report_source_plan(root)
+    else:assert ops.report_source_plan(root)==plan
+
+
+@pytest.mark.parametrize('skipped',[False,True])
+def test_reporting_gate_requires_executed_unskipped_report_cases(tmp_path,monkeypatch,skipped):
+    source=tmp_path/'source';source.mkdir();output=tmp_path/'check';output.mkdir()
+    names=[('test_s1_warmup_reporting','test_warmup_complete_report_cardinality_values_figures'),
+           ('test_s1_warmup_reporting','test_incomplete_comparison_preserves_new_endpoints'),
+           ('test_s1_warmup_reporting','test_early_reconstruction_gaps_and_replay'),
+           ('test_s1_warmup_queue','test_report_only_cli_recovery')]
+    def execute(cmd,**kwargs):
+        path=Path(next(a.split('=',1)[1] for a in cmd if a.startswith('--junitxml=')))
+        cases=''.join(f'<testcase classname="{module}" name="{name}">'+('<skipped/>' if skipped else '')+'</testcase>' for module,name in names)
+        path.write_text(f'<testsuites><testsuite tests="4" failures="0" errors="0" skipped="{4 if skipped else 0}">{cases}</testsuite></testsuites>')
+        return subprocess.CompletedProcess(cmd,0)
+    monkeypatch.setattr(diagnostics.subprocess,'run',execute)
+    record=diagnostics.pytest_check(source,output)
+    assert record['reporting_fixture_status']==('pending' if skipped else 'passed')

@@ -105,6 +105,15 @@ def pytest_check(source, output, *, gpu=False):
     for suite in suites:
         for key in counts: counts[key] += int(suite.get(key,0))
     record.update(counts)
+    if not gpu:
+        cases = [case for case in ET.parse(junit).getroot().iter('testcase')
+                 if case.get('classname', '').endswith(('test_s1_warmup_reporting', 'test_s1_warmup_queue'))]
+        required = ('test_warmup_complete_report_cardinality_values_figures',
+                    'test_report_only_cli_recovery', 'test_incomplete_comparison_preserves_new_endpoints',
+                    'test_early_reconstruction_gaps_and_replay')
+        covered = all(any(case.get('name', '').startswith(name) for case in cases) for name in required)
+        passed = covered and all(not any(case.find(tag) is not None for tag in ('failure', 'error', 'skipped')) for case in cases)
+        record['reporting_fixture_status'] = 'passed' if passed else 'pending'
     record['artifacts'] = [dict(path=str(p),sha256=ops.digest(p)) for p in (junit,output/'pytest.log')]
     return record
 
@@ -274,9 +283,7 @@ def execute(root, mode):
                 raise ops.ConfigError(f'{mode} acceptance failed: {output}/pytest.log')
             if ops.bindings(root) != expected: raise ops.ConfigError('Diagnostic inputs changed during execution')
             if mode == 'cpu':
-                # Phase 5 adds the report fixture gate. Phase 4 cannot authorize
-                # production merely because its runtime/admission checks pass.
-                gate['reporting_fixture_status'] = 'pending'
+                gate['reporting_fixture_status'] = check.get('reporting_fixture_status', 'pending')
             gate['status'] = 'passed'
         except BaseException as error:
             gate['error'] = str(error)

@@ -2016,7 +2016,11 @@ def freeze_campaign(*, campaign_manifest, output_dir, run_root=None, run_dirs=No
                 raise ConfigError(f'Duplicate or non-preflight run identity: {run_id}')
             seen.add(run_id)
             run = by_id[run_id]
-            runs.append(_inspect_terminal_run(path, run, manifest['expected_traces'][run['arm_id']], allow_partial=allow_partial))
+            terminal = _inspect_terminal_run(path, run, manifest['expected_traces'][run['arm_id']], allow_partial=allow_partial)
+            if manifest['schema_version'] == 5:
+                terminal['execution_evidence'] = inspect_warmup_execution(Path(campaign_manifest).resolve().parent.parent, run, manifest)
+                terminal['sources'].extend(terminal['execution_evidence']['sources'])
+            runs.append(terminal)
         runs.sort(key=lambda r: arm_ids.index(r['arm_id']))
         missing = _missing_endpoints(runs, arms)
         if missing and not allow_partial:
@@ -2032,6 +2036,10 @@ def freeze_campaign(*, campaign_manifest, output_dir, run_root=None, run_dirs=No
         def publish(stage, output):
             _check_sources([preflight_source] + [s for r in runs for s in r['sources']])
             write_json_artifact(stage / 'frozen_manifest.json', frozen)
+            if manifest['schema_version'] == 5:
+                rows = warmup_endpoint_rows(frozen, manifest)
+                _write_warmup_table(stage, 'endpoints', 'endpoints', rows)
+                _check_sources([preflight_source] + [s for r in runs for s in r['sources']])
             return frozen
         return _publish_directory(output_dir, publish)
     except (KeyError, TypeError, IndexError, OverflowError) as error:
@@ -2046,10 +2054,10 @@ def endpoint_csv_value(value):
 
 def _endpoint_table(frozen, preflight):
     rows = []
-    widths = campaign_widths(preflight['schema_version'])
     definitions = {r['arm_id']: r for r in preflight['runs']}
     for saved in frozen['runs']:
         run = definitions[saved['arm_id']]
+        widths = campaign_widths(preflight['schema_version'], run['arm_id'])
         summary = _read_json(saved['run_dir'] + '/run_summary.json')['optimizer_ownership']
         sidecar = _read_json(saved['run_dir'] + '/terminal_validation_results.json')
         for endpoint in saved['endpoints']:
@@ -2249,6 +2257,10 @@ def _validated_comparison_sources(manifest_path, *, correction=False, schema_ver
             _require_equal(Path(path).exists(), present, f'Frozen source presence: {path}')
         arm = saved['arm_id']
         actual = _inspect_terminal_run(saved['run_dir'], definitions[arm], preflight['expected_traces'][arm], allow_partial=False)
+        if preflight['schema_version'] == 5:
+            root = Path(frozen['preflight_source']['path']).parent.parent
+            actual['execution_evidence'] = inspect_warmup_execution(root, definitions[arm], preflight)
+            actual['sources'].extend(actual['execution_evidence']['sources'])
         _require_equal(actual, saved, f'{arm}.frozen terminal sources')
     _require_equal(_missing_endpoints(frozen['runs'], campaign_arms(preflight['schema_version'])), [], 'complete endpoints')
     return frozen, preflight, sources, _endpoint_table(frozen, preflight)
@@ -2859,3 +2871,358 @@ def verify_prepared_warmup(output, root, recipe, corpus, tokenizer, linear, geom
     report = _read_json(output/'preflight.json')
     _require_equal(report['manifest_hash'], manifest['manifest_hash'], 'prepared report')
     return report
+
+
+def inspect_warmup_execution(root, run, manifest):
+    """Revalidate saved successful execution without requiring historical inputs."""
+    from pathlib import Path
+    import copy
+    from scripts import run_tinystories_s1_warmup as ops
+    from src.utils.config import ConfigError
+
+    root = Path(root).resolve()
+    plan = ops.report_source_plan(root)
+    _require_equal(plan['bindings']['manifest_hash'], manifest['manifest_hash'], 'execution manifest')
+    submissions = root/'launchers/submissions.json'
+    jobs = _read_json(submissions)['jobs']
+    selected = [j for j in jobs if j['arm_id'] == run['arm_id']]
+    if not selected:
+        raise ConfigError(f"{run['arm_id']}: missing execution attempt")
+    intent = max(selected, key=lambda j: j['attempt_id'])
+    if intent.get('status') != 'completed' or intent.get('bindings') != plan['bindings']:
+        raise ConfigError('Latest execution attempt is not complete or has stale bindings')
+    account = intent.get('scheduler_accounting', {})
+    _require_equal(account.get('job_id'), intent.get('job_id'), 'execution accounting job')
+    evidence = ops.execution_evidence(root, intent, plan)
+    config = _read_json(root/'runs'/run['arm_id']/'config.json')
+    controls = copy.deepcopy(run['resolved_config'])
+    source = config['training'].get('effective_world_size_source')
+    if source not in (controls['training']['effective_world_size_source'], 'single_process'):
+        raise ConfigError('Incompatible execution world size source')
+    controls['training']['effective_world_size_source'] = source
+    _check_resolved_subset(controls, config, 'executed configuration')
+    sources = [*evidence['sources'], _source_record(submissions), _source_record(root/'launchers/plan.json'),
+               _source_record(root/'diagnostics/source-manifest.json')]
+    sources.append(_source_record(root/'campaign/configs'/f"{run['arm_id']}.yaml"))
+    snapshot = _read_json(root/'diagnostics/source-manifest.json')
+    sources.extend(dict(path=str(root/'source'/name), sha256=digest) for name,digest in snapshot['files'].items())
+    for mode in ('cpu','gpu'):
+        gate_path = root/'diagnostics'/f'{mode}-gate.json'
+        gate = ops.verify_gate(root, mode, expected=plan['bindings'])
+        _require_equal(gate.get('status'), 'passed', f'{mode} execution gate')
+        _require_equal(gate.get('bindings'), plan['bindings'], f'{mode} execution bindings')
+        expected_hash = plan['cpu_gate_hash'] if mode == 'cpu' else intent['gpu_gate_hash']
+        _require_equal(gate['content_hash'], expected_hash, f'{mode} execution gate hash')
+        sources.append(_source_record(gate_path))
+        for check in gate['checks']:
+            if check.get('returncode') or check.get('failures') or check.get('errors') or not check.get('tests'):
+                raise ConfigError('Execution gate lacks passing tests')
+            sources.extend(check['artifacts'])
+    _check_sources(sources)
+    return dict(status='passed', job_id=intent['job_id'], attempt_id=intent['attempt_id'],
+                source_sha256=plan['bindings']['source_sha256'], sources=sources)
+
+
+def warmup_endpoint_rows(frozen, preflight, *, grid=None):
+    """Add grid-qualified identities to the existing lossless endpoint projection."""
+    from pathlib import Path
+    definitions = {r['arm_id']:r for r in preflight['runs']}
+    terminals = {r['arm_id']:r for r in frozen['runs']}
+    rows = _endpoint_table(frozen, preflight)
+    for row in rows:
+        run = definitions[row['arm_id']]; saved = terminals[row['arm_id']]
+        run_dir = Path(saved['run_dir'])
+        sidecar = _read_json(run_dir/'terminal_validation_results.json')
+        summary = _read_json(run_dir/'run_summary.json')['optimizer_ownership']
+        grid_id = grid or run['grid_id']
+        reference_campaign = WARMUP_REFERENCES[grid_id]['campaign_id']
+        original_identity = [grid_id, reference_campaign, f'{reference_campaign}-S1-s42', row['ffn_dimension']]
+        standalone_identity = [grid_id, reference_campaign, f"{reference_campaign}-ST-{row['width']}-s42", row['ffn_dimension']]
+        role = 'standalone' if run['source_width'] else ('s1_warmup256' if preflight['schema_version']==5 else 's1_warmup64')
+        config_path = Path(frozen['preflight_source']['path']).parent/'configs'/f"{run['arm_id']}.yaml"
+        row.update(grid_id=grid_id, grid_label=grid_id.title(), role=role,
+            warmup_updates=run['resolved_config']['training']['scheduler']['resolved_warmup_steps'],
+            global_step=sidecar['global_step'], endpoint_identity=[grid_id,run['campaign_id'],run['run_id'],row['ffn_dimension']],
+            evaluation_path=str(run_dir/'terminal_validation_results.json'),
+            evaluation_sha256=_source_record(run_dir/'terminal_validation_results.json')['sha256'],
+            config_path=str(config_path), config_sha256=_source_record(config_path)['sha256'],
+            source_records=saved['sources'], source_identity=run['initialization']['source_files_sha256'],
+            execution_evidence=saved['execution_evidence'], expected_exposure=summary['expected_exposure'],
+            historical_reference=preflight['schema_version']!=5,
+            matching_original_s1=original_identity, matching_standalone=standalone_identity)
+        # Keep the same column set for all historical schema generations.
+        for key in ('group','canonical_arm','clipping_observations'):
+            row.pop(key, None)
+    return rows
+
+
+def _write_warmup_table(stage, stem, key, rows):
+    import csv
+    write_json_artifact(stage/(stem+'.json'), dict(schema_version=1, **{key:rows}))
+    with (stage/(stem+'.csv')).open('w', newline='') as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows({k:endpoint_csv_value(v) for k,v in r.items()} for r in rows)
+
+
+def pair_warmup_endpoints(rows):
+    from src.utils.config import ConfigError
+    if len(rows)!=24 or len({tuple(r['endpoint_identity']) for r in rows})!=24:
+        raise ConfigError('Comparison requires exactly 24 unique grid-qualified endpoints')
+    deltas = []
+    for grid in ('linear','geometric'):
+        selected = [r for r in rows if r['grid_id']==grid]
+        _require_equal(len(selected), 12, f'{grid}.endpoint count')
+        for width in campaign_widths(5, f'S1-{grid}-w256'):
+            dim = width['active_ffn_dimension']
+            matches = {}
+            for role in ('standalone','s1_warmup64','s1_warmup256'):
+                candidates = [r for r in selected if r['role']==role and r['ffn_dimension']==dim]
+                _require_equal(len(candidates), 1, f'{grid}.{dim}.{role}')
+                matches[role] = candidates[0]
+            old,new,st = (matches[r] for r in ('s1_warmup64','s1_warmup256','standalone'))
+            for row in matches.values():
+                row.update(matching_original_s1=old['endpoint_identity'], matching_standalone=st['endpoint_identity'])
+            delta = dict(grid_id=grid, ffn_dimension=dim, non_embedding_parameters=width['non_embedding_parameters'],
+                original_endpoint=old['endpoint_identity'], new_endpoint=new['endpoint_identity'], standalone_endpoint=st['endpoint_identity'])
+            for metric in ('loss','perplexity'):
+                delta.update({f'delta_{metric}':new[metric]-old[metric],
+                    f'old_standalone_gap_{metric}':old[metric]-st[metric], f'new_standalone_gap_{metric}':new[metric]-st[metric]})
+            deltas.append(delta)
+    return deltas
+
+
+def extract_warmup_early(run, root, *, end_step=1024):
+    """Read bounded raw scalars, accepting only unambiguous committed observations."""
+    import csv
+    import json
+    import math
+    from pathlib import Path
+    from src.utils.config import ConfigError
+
+    if type(end_step) is not int or not 1024 <= end_step <= run['assigned_updates']:
+        raise ConfigError('early-end-step must be between 1024 and the terminal update')
+    root = Path(root); metric_source = _source_record(root/'metrics.csv')
+    trace_source = _source_record(root/'optimizer_ownership_trace.jsonl')
+    config_source = _source_record(root/'config.json')
+    schema = run['optimizer_ownership_contract'].get('campaign_schema_version',1)
+    grid = run.get('grid_id', 'geometric' if schema==4 else 'linear')
+    widths = {w['label']:w['active_ffn_dimension'] for w in campaign_widths(schema,run['arm_id'])}
+    commits = {}
+    with (root/'optimizer_ownership_trace.jsonl').open() as stream:
+        for line in stream:
+            commit = json.loads(line); step = commit['step']
+            if step>end_step: break
+            if step in commits or commit.get('run_id')!=run['run_id']:
+                raise ConfigError('Ambiguous committed early trace provenance')
+            commits[step]=commit
+    candidates = {}
+    with (root/'metrics.csv').open() as stream:
+        for ordinal,row in enumerate(csv.DictReader(stream),2):
+            if row.get('split') not in ('train','validation'): continue
+            step = int(row['step'])
+            if step<1 or step>end_step: continue
+            if row.get('optimizer_step_committed','').lower() in ('false','0'): continue
+            if row.get('run_id') and row['run_id']!=run['run_id']:
+                raise ConfigError('Early metric run identity mismatch')
+            if row.get('optimizer_ownership_contract_hash') and row['optimizer_ownership_contract_hash']!=run['contract_hash']:
+                raise ConfigError('Early metric contract identity mismatch')
+            if row.get('evaluation_role') and row['evaluation_role']!=EVALUATION_ROLE:
+                raise ConfigError('Early metric evaluation role mismatch')
+            if step not in commits: raise ConfigError('Early metric lacks committed trace')
+            width = row['granularity']
+            if width not in widths: raise ConfigError('Early metric physical width mismatch')
+            attempt = row.get('attempt_id') or row.get('process_uuid')
+            if attempt and attempt!=commits[step].get('attempt_id'): continue
+            if row['split']=='train' and commits[step].get('width') and width!=commits[step]['width']:
+                raise ConfigError('Early training width differs from committed action')
+            if row['split']=='train' and row.get('optimizer_batch_provenance'):
+                _require_equal(json.loads(row['optimizer_batch_provenance']), commits[step]['batch_provenance'], 'early committed batch')
+            if row.get('optimizer_action_id') and commits[step].get('action_id') and row['optimizer_action_id']!=commits[step]['action_id']: continue
+            key=(step,row['split'],width if row['split']=='validation' else None)
+            if key in candidates: raise ConfigError(f'Ambiguous duplicate early observation: {key}')
+            candidates[key]=(ordinal,row)
+    observations=[]
+    def append(step, split, width, metric, value, ordinal, row, kind='recorded'):
+        value=float(value)
+        if not math.isfinite(value) or (metric=='learning_rate' and value<0):
+            raise ConfigError('Nonfinite/invalid early scalar')
+        observations.append(dict(grid_id=grid,campaign_id=run['campaign_id'],run_id=run['run_id'],
+            warmup_updates=run['resolved_config']['training']['scheduler']['resolved_warmup_steps'],step=step,split=split,
+            width=width,ffn_dimension=widths.get(width),metric=metric,value=value,source_kind=kind,
+            source_path=metric_source['path'] if kind=='recorded' else str(root/'config.json'),
+            source_sha256=metric_source['sha256'] if kind=='recorded' else config_source['sha256'],
+            source_row=ordinal if kind=='recorded' else None,attempt_id=commits.get(step,{}).get('attempt_id'),
+            action_id=row.get('optimizer_action_id') or None,trace_source=trace_source,
+            schedule_position=step-1 if metric=='learning_rate' else None,
+            schedule_convention='update u applies position u-1; stored position u',smoothing='none'))
+    for (step,split,_), (ordinal,row) in sorted(candidates.items()):
+        if row.get('loss') not in ('',None): append(step,split,row['granularity'],'loss',row['loss'],ordinal,row)
+        if split=='train' and row.get('learning_rate') not in ('',None):
+            append(step,split,None,'learning_rate',row['learning_rate'],ordinal,row)
+    training = {r['step'] for r in observations if r['split']=='train' and r['metric']=='loss'}
+    missing = []
+    if not training or max(training)<1024: missing.append('required training loss through update 1024')
+    validation_steps={w:sorted(r['step'] for r in observations if r['split']=='validation' and r['width']==w) for w in widths}
+    for width,steps in validation_steps.items():
+        if not steps or max(steps)<1024: missing.append(f'required ordinary-validation loss through update 1024: {width}')
+    if missing: raise ConfigError('Missing early evidence: '+', '.join(missing))
+    lr_steps={r['step'] for r in observations if r['metric']=='learning_rate'}
+    scheduler=run['resolved_config']['training']['scheduler']
+    warmup=scheduler['resolved_warmup_steps']; horizon=run['assigned_updates']
+    # Controls were validated by the terminal reader; reconstruction is never
+    # labeled as measured execution, and losses are never filled in.
+    for step in range(1,end_step+1):
+        if step in lr_steps: continue
+        position=step-1
+        factor=position/warmup if position<warmup else .5*(1+math.cos(math.pi*(position-warmup)/(horizon-warmup)))
+        append(step,'train',None,'learning_rate',.008*factor,None,{},'reconstructed_schedule')
+    observations.sort(key=lambda r:(r['step'],r['split'],r['width'] or '',r['metric']))
+    notes=dict(grid_id=grid,run_id=run['run_id'],window=[0,end_step],smoothing='none',
+        training_missing_steps=sorted(set(range(1,end_step+1))-training),validation_steps=validation_steps,
+        lr_reconstructed_steps=sorted(set(range(1,end_step+1))-lr_steps),
+        explanation='Raw minibatch and ordinary-validation losses are distinct; no measured step-zero loss. Missing training steps are gaps; validation retains its recorded cadence.')
+    _check_sources([metric_source,trace_source,config_source])
+    return observations,notes
+
+
+def warmup_endpoint_figure(rows, *, metric):
+    from matplotlib.figure import Figure
+    figure=Figure(figsize=(10,7)); ax=figure.subplots()
+    for role,label,color,marker in [('standalone','Standalone (1 epoch)','#555555','^'),
+            ('s1_warmup64','64-update warmup','#0072B2','o'),('s1_warmup256','256-update warmup','#D55E00','s')]:
+        selected=sorted((r for r in rows if r['role']==role),key=lambda r:r['ffn_dimension'])
+        ax.plot([r['non_embedding_parameters'] for r in selected],[r[metric] for r in selected],
+            label=label,color=color,marker=marker,linestyle='None' if role=='standalone' else '-',
+            markersize=10 if role=='standalone' else 5, fillstyle='none', zorder=4 if role=='standalone' else 2)
+    ax.set(xlabel='Active non-embedding parameters (input embedding and LM head excluded)',ylabel=metric.capitalize())
+    ax.set_xticks(sorted({r['non_embedding_parameters'] for r in rows})); ax.ticklabel_format(axis='x',style='plain')
+    ax.legend();ax.grid(alpha=.2)
+    figure.suptitle(f"{rows[0]['grid_label']} · TinyStories-Instruct · seed 42\nOrdinary validation · exact terminal checkpoints")
+    figure.text(.5,.025,'Standalone: 1 epoch / 713,785,344 tokens; each S1: 4 epochs / 2,855,141,376 tokens.',ha='center',fontsize=9)
+    figure.tight_layout(rect=(0,.07,1,.92))
+    return figure
+
+
+def warmup_early_figure(rows, *, grid, metric, end_step):
+    from matplotlib.figure import Figure
+    import math
+    figure=Figure(figsize=(11,8 if metric=='loss' else 5))
+    axes=list(figure.subplots(2,1)) if metric=='loss' else [figure.subplots()]
+    selected=[r for r in rows if r['grid_id']==grid and r['metric']==metric]
+    for warmup,color in ((64,'#0072B2'),(256,'#D55E00')):
+        for index,split in enumerate(('train','validation') if metric=='loss' else ('train',)):
+            values=[r for r in selected if r['warmup_updates']==warmup and r['split']==split]
+            dimensions=sorted({r['ffn_dimension'] for r in values}) if split=='validation' else [None]
+            for dimension in dimensions:
+                series=sorted((r for r in values if split=='train' or r['ffn_dimension']==dimension),key=lambda r:r['step'])
+                label=f'{warmup}-update warmup'+(f' · FFN {dimension}' if dimension else '')
+                if metric=='learning_rate' and any(r['source_kind']=='reconstructed_schedule' for r in series):label+=' (includes reconstructed schedule)'
+                if split=='validation':
+                    # Disconnected markers preserve observed cadence without
+                    # suggesting interpolation over missing evaluations.
+                    axes[index].plot([r['step'] for r in series],[r['value'] for r in series],marker={32:'v',64:'o',128:'s',192:'D',256:'^'}[dimension],linestyle='None',color=color,label=label,markersize=4)
+                else:
+                    by_step={r['step']:r['value'] for r in series}
+                    axes[index].plot(range(1,end_step+1),[by_step.get(s,math.nan) for s in range(1,end_step+1)],
+                        color=color,label=label,linestyle='-' if warmup==64 else '--')
+    for index,ax in enumerate(axes):
+        ax.axvline(64,color='grey',linestyle=':',label='update 64');ax.axvline(256,color='grey',linestyle='--',label='update 256')
+        ax.set(xlim=(0,end_step),xlabel='Committed absolute optimizer update',ylabel='Applied LR' if metric!='loss' else ('Training minibatch loss' if index==0 else 'Ordinary-validation loss'))
+        ax.legend(fontsize=7,ncol=2);ax.grid(alpha=.2)
+    figure.suptitle(f'{grid.title()} · TinyStories-Instruct · seed 42 · raw early observations')
+    figure.text(.5,.015,'No smoothing or step-zero loss. Training gaps are breaks; validation markers retain recorded cadence.\nLR reconstruction, if present, is labeled and is not execution evidence. See early_metrics.json and report cadence/gaps.',ha='center',fontsize=8)
+    figure.tight_layout(rect=(0,.065,1,.94))
+    return figure
+
+
+def report_s1_warmup(*, manifest, linear_reference_root, geometric_reference_root, output_dir, early_end_step=1024):
+    """Publish a complete comparison atomically, or a separate incomplete record."""
+    from pathlib import Path
+    from src.utils.config import ConfigError
+    output=Path(output_dir).resolve()
+    endpoint_status=early_status='incomplete'
+    sources=[]
+    if type(early_end_step) is not int or early_end_step<1024:
+        raise ConfigError('early-end-step must be at least 1024')
+    # A diagnostic can be replaced on recovery; complete artifacts are immutable.
+    if output.exists():
+        existing=_read_json(output/'comparison_report.json')
+        if existing.get('status')=='complete':
+            _check_content_hash(existing, 'content_hash', 'existing comparison')
+            if _source_record(manifest) not in existing['input_sources']:
+                raise ConfigError('Existing comparison uses a different frozen manifest')
+            _check_sources(existing['input_sources'])
+            for relative,digest in existing['output_sha256'].items():
+                _check_sources([dict(path=str(output/relative),sha256=digest)])
+            _require_equal(existing['early_end_step'],early_end_step,'existing early window')
+            _require_equal(existing['reference_roots'],dict(linear=str(Path(linear_reference_root).resolve()),geometric=str(Path(geometric_reference_root).resolve())),'existing reference roots')
+            return existing
+        if set(p.name for p in output.iterdir())!={'comparison_report.json'}:
+            raise ConfigError(f'Occupied comparison output: {output}')
+    try:
+        frozen,preflight,sources,_=_validated_comparison_sources(manifest,schema_version=5)
+        rows=warmup_endpoint_rows(frozen,preflight)
+        references=inspect_warmup_references(linear_reference_root=linear_reference_root,geometric_reference_root=geometric_reference_root)
+        sources.extend(references['sources'])
+        early_runs=[(r,Path(s['run_dir'])) for r,s in zip(preflight['runs'],frozen['runs'],strict=True)]
+        for grid,selection in references['grids'].items():
+            historical=_read_preflight_manifest(selection['manifest_source']['path'])
+            old_frozen=dict(status='complete',campaign_id=historical['campaign_id'],runs=selection['terminals'],preflight_source=selection['manifest_source'])
+            rows.extend(warmup_endpoint_rows(old_frozen,historical,grid=grid))
+            early_runs.append((selection['counterpart'],Path(selection['root'])/'runs/S1'))
+        deltas=pair_warmup_endpoints(rows);endpoint_status='complete'
+        early,notes=[],[]
+        for run,root in early_runs:
+            observations,note=extract_warmup_early(run,root,end_step=early_end_step)
+            early.extend(observations);notes.append(note)
+            sources.append(_source_record(root/'config.json'))
+        early_status='complete'
+        def publish(stage,destination):
+            _write_warmup_table(stage,'endpoints','endpoints',rows)
+            _write_warmup_table(stage,'paired_deltas','paired_deltas',deltas)
+            _write_warmup_table(stage,'early_metrics','observations',early)
+            figures=[]
+            for grid in ('linear','geometric'):
+                for metric in ('loss','perplexity'):
+                    figure=warmup_endpoint_figure([r for r in rows if r['grid_id']==grid],metric=metric)
+                    for suffix in ('png','pdf'):
+                        name=f'{grid}_{metric}_vs_parameters.{suffix}';figure.savefig(stage/name);figures.append(str(destination/name))
+                    figure.clear()
+                for metric,label in (('learning_rate','lr'),('loss','loss')):
+                    figure=warmup_early_figure(early,grid=grid,metric=metric,end_step=early_end_step)
+                    for suffix in ('png','pdf'):
+                        name=f'{grid}_early_{label}.{suffix}';figure.savefig(stage/name);figures.append(str(destination/name))
+                    figure.clear()
+            findings=['# Warmup comparison','', 'Descriptive seed-42 observations; no significance or causal diagnosis. Standalones use one epoch and S1 uses four; these are not equal per-run compute or runtime budgets.','']
+            for d in deltas:
+                direction='improved' if d['delta_loss']<0 else 'worsened' if d['delta_loss']>0 else 'unchanged'
+                findings.append(f"- {d['grid_id'].title()} FFN {d['ffn_dimension']}: loss {direction}; new-minus-old loss {d['delta_loss']:+.8g}, perplexity {d['delta_perplexity']:+.8g}; standalone loss gaps old/new {d['old_standalone_gap_loss']:+.8g}/{d['new_standalone_gap_loss']:+.8g}, perplexity gaps {d['old_standalone_gap_perplexity']:+.8g}/{d['new_standalone_gap_perplexity']:+.8g}.")
+            findings+=['','Early observations are raw minibatch loss, recorded or explicitly reconstructed applied LR, and separate per-width ordinary validation. Warmup boundaries are marked at 64 and 256; no step-zero loss is invented.']
+            for run,root in early_runs:
+                loss=[r for r in early if r['run_id']==run['run_id'] and r['split']=='train' and r['metric']=='loss']
+                findings.append(f"- {run['run_id']}: observed minibatch loss {loss[0]['value']:.8g} at update {loss[0]['step']} to {loss[-1]['value']:.8g} at update {loss[-1]['step']}; this is not a validation estimate.")
+            incomplete=sorted({r['run_id'] for r in rows if not r['resources']['measurement_complete']})
+            findings+=['',f'Resource measurements marked incomplete for: {incomplete or "none"}. Attempted/replayed work and allocator measurements retain their saved completeness flags; no equal-runtime or resource-improvement claim is made.']
+            (stage/'findings.md').write_text('\n'.join(findings)+'\n')
+            _check_sources(sources)
+            report=dict(schema_version=1,status='complete',endpoint_status='complete',early_status='complete',new_terminal_status='complete',
+                endpoint_count=len(rows),paired_delta_count=len(deltas),early_observation_count=len(early),early_end_step=early_end_step,
+                reference_roots={g:s['root'] for g,s in references['grids'].items()},selection_status=references['status'],
+                figures=figures,input_sources=sources,early_notes=notes,reasons=[],holdout_evaluated=False,
+                output_sha256={str(p.relative_to(stage)):_source_record(p)['sha256'] for p in stage.iterdir() if p.is_file()})
+            report['content_hash']=stable_hash(report);write_json_artifact(stage/'comparison_report.json',report)
+            return report
+        if output.exists():
+            (output/'comparison_report.json').unlink();output.rmdir()
+        return _publish_directory(output,publish)
+    except (ValueError,OSError,RuntimeError,KeyError,TypeError,IndexError,OverflowError) as error:
+        try:
+            _check_sources(sources)
+        except (ValueError, OSError):
+            endpoint_status='incomplete'
+        record=dict(schema_version=1,status='incomplete',endpoint_status=endpoint_status,early_status='incomplete',
+            reasons=[str(error)],input_sources=sources,holdout_evaluated=False)
+        output.mkdir(parents=True,exist_ok=True)
+        write_json_artifact(output/'comparison_report.json',record)
+        raise ConfigError(f'Incomplete warmup comparison: {error}') from error

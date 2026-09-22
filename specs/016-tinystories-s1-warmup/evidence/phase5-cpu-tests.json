@@ -1,0 +1,97 @@
+{
+  "checks": [
+    {
+      "artifacts": [
+        {
+          "path": "specs/016-tinystories-s1-warmup/evidence/phase5-final.txt",
+          "sha256": "54d40f456ce619afefadb7d620ee20c1789f34dfd48c9f7aa712aa6cd1653fc5"
+        },
+        {
+          "path": "specs/016-tinystories-s1-warmup/evidence/phase5-final.xml",
+          "sha256": "283bad43b09d8d1464d85b2745f15b2ec996d7e64ae7f4b1c9db88931f8bbc02"
+        }
+      ],
+      "command": "OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest tests/test_s1_warmup_reporting.py tests/test_s1_warmup_queue.py -q -rs --tb=short --junitxml=/tmp/phase5-final.xml > /tmp/phase5-final.txt 2>&1",
+      "counts": {
+        "errors": 0,
+        "failures": 0,
+        "passed": 102,
+        "skipped": 0,
+        "tests": 102
+      },
+      "name": "final",
+      "returncode": 0,
+      "seconds": 210.979
+    },
+    {
+      "artifacts": [
+        {
+          "path": "specs/016-tinystories-s1-warmup/evidence/phase5-regressions.txt",
+          "sha256": "075acdd3aa70e3a09d99a09863d2076d32d7ca17bbcec27924865218c71e7ac4"
+        },
+        {
+          "path": "specs/016-tinystories-s1-warmup/evidence/phase5-regressions.xml",
+          "sha256": "87e25aa75f5a614f50c208cdc2941d8d8dcc26b58148ca58dd123a94a0e3ed38"
+        }
+      ],
+      "command": "OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest tests/test_s1_warmup_campaign.py tests/test_optimizer_ownership_reporting.py tests/test_matformer_widths_reporting.py -q -rs --tb=short --junitxml=/tmp/phase5-regressions.xml > /tmp/phase5-regressions.txt 2>&1",
+      "counts": {
+        "errors": 0,
+        "failures": 0,
+        "passed": 215,
+        "skipped": 0,
+        "tests": 215
+      },
+      "name": "regressions",
+      "returncode": 0,
+      "seconds": 136.557
+    },
+    {
+      "artifacts": [
+        {
+          "path": "specs/016-tinystories-s1-warmup/evidence/phase5-recovery.txt",
+          "sha256": "79e3698519cac5336b162175b2879e288d01a2140fae1fcda45b6366233ae151"
+        },
+        {
+          "path": "specs/016-tinystories-s1-warmup/evidence/phase5-recovery.xml",
+          "sha256": "1d0db89cd122c76aa095444f622b9837b7826990033808e37fc4b99be65bbdf5"
+        }
+      ],
+      "command": "OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest tests/test_s1_warmup_queue.py -k report_only_cli_recovery -q -rs --tb=short --junitxml=/tmp/phase5-recovery.xml > /tmp/phase5-recovery.txt 2>&1",
+      "counts": {
+        "errors": 0,
+        "failures": 0,
+        "passed": 3,
+        "skipped": 0,
+        "tests": 3
+      },
+      "name": "recovery",
+      "returncode": 0,
+      "seconds": 34.424
+    }
+  ],
+  "distinct_passed_tests": 317,
+  "failed": 0,
+  "local_junit_reporting_coverage": "passed; real snapshot-bound CPU gate remains pending",
+  "notes": [
+    "The three recovery tests overlap the final matrix; their strengthened deletion/regeneration assertions ran afterward.",
+    "The regression run precedes final new-report-only hash and visualization refinements; shared historical projection behavior did not change afterward.",
+    "Initial TDD failed at the missing execution inspector, then exposed the resolved scheduler field name; corrected to resolved_warmup_steps.",
+    "No signature fixtures were regenerated. No external result directories or jobs were created."
+  ],
+  "scope": "Phase 5 CPU software/fixture checks; no real-input audit, GPU readiness or production",
+  "skipped": 0,
+  "source_revision": "2460e2331725b6c9e860915288b3e9adde125b91",
+  "source_sha256": {
+    "configs/controlled_exps/tinystories_instruct_s1_warmup.yaml": "133ba407d683e803c023a301680e78e9675bb4e269f436a77b38fbf82d858b6b",
+    "scripts/analyze_tinystories_optimizer_ownership.py": "140479c282953901644ecbb6b00b7e8c9fd62d28c2855d2f23f5cfa3677c11e7",
+    "scripts/preflight_tinystories_s1_warmup.py": "47ebd828ad23d14bfa9a1096889387a1ee07d72fff1366b9d7b9795e2657472a",
+    "scripts/run_tinystories_s1_warmup.py": "abdce85bbbdf6163db33a3fb6c0b8f6914801d7622586582c255603038fa6ab3",
+    "src/evaluation/optimizer_ownership.py": "60abeaf2af4de80ba678b625a69f6c7b185c55ed7ecb8e5abff9076a6588afbc",
+    "tests/fixtures/optimizer_ownership_legacy_signatures.json": "8a3d67fac6f7bc266866bc24b597de71dadb7b5dc1d0af0f54c914ce74201252",
+    "tests/fixtures/s1_warmup_schema4_signatures.json": "657031baaf15b720605259799b6ba9b89fcb7e2d721e4fd6b7df3030b1100b19",
+    "tests/test_s1_warmup_campaign.py": "91555ef0915a85ba1df922be0b240b5942f200b290d90282c0161b3f49b81322",
+    "tests/test_s1_warmup_queue.py": "99871ae800b7177654ea4a118e2a089e7d55e4da5516fa1caf4bac023b598ccb",
+    "tests/test_s1_warmup_reporting.py": "7d375dfbedf1b8a06aa9942f8491625cb7375b95b4a43e6d7eb996a4dcdccf66"
+  }
+}

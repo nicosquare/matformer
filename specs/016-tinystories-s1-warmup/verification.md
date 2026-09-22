@@ -2,7 +2,7 @@
 
 ## Scope and stage status
 
-The current authorization covers phase 4 (T017–T035), building on phases 1–3
+The current authorization covers phase 5 (T036–T048), building on phases 1–4
 and their historical compatibility and CPU preparation baseline. It creates no production
 root, reservation, production source snapshot, real-input readiness gate, or
 training job. Snapshot/gate/submission artifacts created by tests are temporary fixtures. Historical
@@ -13,7 +13,8 @@ results remain read-only. Fixture metadata is not an audit of real inputs.
 | Setup and compatibility foundation | Passed | T001–T004; 20 focused compatibility tests passed |
 | Phase-3 CPU preparation | Passed against fixtures | T005–T016; 72 distinct focused cases validated |
 | Phase-4 runtime/admission | Passed against CPU fixtures | T017–T035; 1149 broad regression passes; final runtime60/queue54 passes |
-| Full implementation checks | Pending | Reporting phase 5 and final T049–T050 remain |
+| Phase-5 saved-artifact reporting | Passed against CPU fixtures | T036–T048; results recorded below |
+| Full implementation checks | Pending | Final cross-cutting T049–T050 remain |
 | Real input audit | Pending | Corpus/tokenizer/role and trace checks at T051 |
 | Selected historical reference audit | Pending | Ten terminals at T051; planning observations are not certification |
 | Snapshot-bound CPU gate | Pending | T052; local compatibility tests are not this gate |
@@ -450,3 +451,70 @@ All phase4 task boxes are checked. Phase5 and T049–T056 remain unchecked even
 where this work exercised overlapping regressions. A real snapshot-bound CPU
 gate remains T052; GPU readiness, production, real terminal acceptance and
 reports remain outstanding. The optional Git commit hook was not executed.
+
+## Phase 5: saved-artifact reporting (T036–T048)
+
+Implemented schema-5 new-only freeze and strict comparison reporting. The freeze
+publishes eight endpoints with terminal checkpoint/evaluation/config identities,
+actual and assigned budgets, exposure, resource completeness, and new-run
+execution evidence. Comparison revalidates ten selected historical terminals,
+retains 24 grid-qualified endpoints, and exports eight new-minus-original deltas
+plus both S1-to-standalone gaps. CSV and JSON use the existing lossless cell
+serialization convention. Shared physical sizes remain distinct measurements.
+
+The early reader retains recorded minibatch loss/applied LR and per-width
+ordinary-validation loss, binds CSV rows to committed traces, rejects ambiguous
+duplicates and non-finite values, and excludes failed or noncommitted replay
+rows. Explicit process provenance can disambiguate abandoned replay rows.
+Missing LR is reconstructed only from validated controls and labeled in every
+exported row and figure; no loss or step-zero measurement is fabricated. Raw
+training gaps break lines, and validation uses disconnected markers at recorded
+updates. Required loss series must reach update 1024; earlier-ending or missing
+series produce a named incomplete result. The default common x range is 0–1024.
+
+Four endpoint and four early views produce exactly sixteen PNG/PDF files.
+Endpoint x coordinates use exact measured parameter-count contracts; open,
+larger standalone markers preserve coincident points without jitter or merging.
+Training/validation panels are separate, warmup boundaries are marked at 64/256,
+and early series use distinct colors/line styles. Findings report direction and
+magnitude at all eight widths, both standalone gaps, observed early behavior and
+seed/resource limitations. Figure structure is asserted against Matplotlib
+objects; representative images were also visually inspected, including the
+final standalone-marker refinement. See
+[figure inspection evidence](evidence/phase5-figure-inspection.json).
+
+Comparison publication is atomic. Invalid/missing references or required early
+evidence return nonzero and publish only an incomplete diagnostic, preserving
+valid new-only outputs. Launcher `report` uses frozen source and prepared
+reference mappings, can recreate missing new report outputs, and verifies
+existing complete output/source hashes on repeated calls. It performs no
+training or submission and never modifies historical artifacts. New execution
+validation is independent of historical file availability, and reuses the
+existing gate, worker, CUDA-entry, resource, terminal and continuation validators.
+
+The CPU gate now derives reporting fixture acceptance from executed JUnit cases:
+required complete-report, rejection, early-provenance and launcher-recovery
+cases must be present, and reporting/queue cases must have no failures/errors or
+skips. Missing coverage retains `pending`; no gate is manually relabeled. This
+software change does not create a real snapshot-bound CPU or GPU gate.
+
+Validation commands, counts, source/golden bindings and log/JUnit hashes are in
+[phase5-cpu-tests.json](evidence/phase5-cpu-tests.json). Focused reporting/queue
+checks passed **102/102**, and relevant historical reporting/protocol/runtime
+regressions passed **215/215**, all with zero failures/skips. The recovery rerun
+passed **3/3** overlapping cases; it is not added to the 317 distinct-test total.
+The final recovery rerun explicitly removes all new report outputs, then removes
+a derived CSV, proving both regeneration paths while historical bytes remain
+unchanged. Analyzer `report-s1-warmup --help`, launcher `--help`, Python syntax
+checks and `git diff --check` passed. Existing SWIG deprecation warnings remain.
+
+Limits: terminal checkpoint payloads and full-budget trace/device histories in
+comparison fixtures are synthetic; bulk terminal trace IO, historical Slurm
+accounting and the modern execution inspector are stubbed there. Separate
+existing/new launcher tests validate source/config bindings, worker/device/
+checkpoint evidence and gate coverage. These checks do not certify real input
+or reference terminals, GPU readiness, production, or real comparison results.
+No external result root, real job, historical modification, new dependency or
+ignore-file change was made. Historical signature fixtures remain unchanged.
+T049–T056 stay pending; this invocation completes only phase 5. Optional Git
+commit hooks were surfaced but not executed.

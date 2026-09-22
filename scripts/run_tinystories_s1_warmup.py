@@ -367,21 +367,94 @@ def worker(root,arm,attempt_id):
             record.update(status='failed',error=str(error),finished_at=time.time());save(path,record);raise
 
 
+def report_source_plan(root):
+    """Check our saved identity without reopening historical inputs or Slurm."""
+    root = Path(root).resolve()
+    plan = read(root/'launchers/plan.json'); check_seal(plan, 'report plan')
+    snapshot = read(root/'diagnostics/source-manifest.json'); check_seal(snapshot, 'report snapshot')
+    actual = source_files(root/'source')
+    if (actual != snapshot['files'] or stable_hash(actual) != snapshot['source_sha256']
+            or stable_hash(actual) != plan['bindings']['source_sha256']):
+        raise ConfigError('Report source snapshot changed')
+    manifest = campaign._read_preflight_manifest(root/'campaign/campaign_manifest.json')
+    if (manifest['schema_version'] != 5 or plan['arms'] != list(ARMS) or plan['campaign_root'] != str(root)
+            or digest(root/'campaign/campaign_manifest.json') != plan['bindings']['campaign_manifest_sha256']
+            or manifest['manifest_hash'] != plan['bindings']['manifest_hash']):
+        raise ConfigError('Report manifest/plan identity changed')
+    for arm in ARMS:
+        if digest(root/'campaign/configs'/f'{arm}.yaml') != plan['bindings']['config_sha256'][arm]:
+            raise ConfigError('Report executable config changed')
+    expected_references = {g:s['root'] for g,s in manifest['reference_selection']['grids'].items()}
+    if plan['references'] != expected_references:
+        raise ConfigError('Report reference mappings differ from preparation')
+    return plan
+
+
+def report(root):
+    import csv
+    root = Path(root).resolve()
+    with lock(root/'launchers/report.lock'):
+        plan = report_source_plan(root)
+        status_path = root/'launchers/status.json'
+        status = read(status_path) if status_path.exists() else {}
+        destination = root/'reports/new'
+        try:
+            if destination.exists():
+                campaign._validated_comparison_sources(destination/'frozen_manifest.json', schema_version=5)
+                frozen = read(destination/'frozen_manifest.json')
+                preflight = campaign._read_preflight_manifest(root/'campaign/campaign_manifest.json')
+                expected = campaign.warmup_endpoint_rows(frozen, preflight)
+                # Recover missing derived tables without modifying terminal sources.
+                if not all((destination/f'endpoints.{ext}').exists() for ext in ('json','csv')):
+                    campaign._write_warmup_table(destination, 'endpoints', 'endpoints', expected)
+                if read(destination/'endpoints.json')['endpoints'] != expected:
+                    raise ConfigError('Existing new endpoint table changed')
+                with (destination/'endpoints.csv').open() as stream:
+                    csv_rows = list(csv.DictReader(stream))
+                if csv_rows != [{k:campaign.endpoint_csv_value(v) for k,v in row.items()} for row in expected]:
+                    raise ConfigError('Existing new endpoint CSV differs from JSON')
+            else:
+                campaign.freeze_campaign(campaign_manifest=root/'campaign/campaign_manifest.json',
+                    run_root=root/'runs', output_dir=destination)
+            status['new_report'] = 'complete'
+            save(status_path, status)
+            result = campaign.report_s1_warmup(manifest=destination/'frozen_manifest.json',
+                linear_reference_root=plan['references']['linear'], geometric_reference_root=plan['references']['geometric'],
+                output_dir=root/'reports/comparison')
+            status.update(endpoint_comparison=result['endpoint_status'], early_report=result['early_status'])
+            status.pop('report_error', None)
+            save(status_path, status)
+            return result
+        except (ValueError, OSError, RuntimeError) as error:
+            diagnostic = root/'reports/comparison/comparison_report.json'
+            outcome = read(diagnostic) if diagnostic.exists() else {}
+            endpoint_status = outcome.get('endpoint_status','incomplete') if outcome.get('status')=='incomplete' else 'incomplete'
+            status.update(endpoint_comparison=endpoint_status, early_report='incomplete', report_error=str(error))
+            save(status_path, status)
+            raise
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode',choices=('prepare','queue','worker'))
+    parser.add_argument('mode',choices=('prepare','queue','worker','report'))
     parser.add_argument('--campaign-root',type=Path,required=True)
     parser.add_argument('--cpu-evidence',type=Path)
     parser.add_argument('--arm',choices=ARMS);parser.add_argument('--attempt-id',type=int)
     parser.add_argument('--once',action='store_true');args=parser.parse_args(argv)
     root=args.campaign_root.resolve()
     if REPO!=root/'source':
-        if args.mode!='prepare':parser.error('Execute queue/worker from the tested source snapshot')
+        if args.mode!='prepare':parser.error('Execute queue/worker/report from the tested source snapshot')
         # Convenience prepare command still runs the exact tested executable.
         return subprocess.call([PYTHON,str(root/'source/scripts/run_tinystories_s1_warmup.py'),*sys.argv[1:]])
     if args.mode=='prepare':
         if args.cpu_evidence is None:parser.error('prepare requires --cpu-evidence')
         prepare(root,args.cpu_evidence)
+    elif args.mode=='report':
+        try:
+            report(root)
+        except (ValueError, OSError, RuntimeError) as error:
+            print(f'Campaign report incomplete: {error}', file=sys.stderr)
+            return 1
     elif args.mode=='worker':
         if args.arm is None or args.attempt_id is None:parser.error('worker requires --arm and --attempt-id')
         return worker(root,args.arm,args.attempt_id)

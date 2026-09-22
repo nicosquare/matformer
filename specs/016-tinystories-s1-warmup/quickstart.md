@@ -1,6 +1,6 @@
 # Quickstart: S1 Warmup Extension
 
-Phases 3–4 implement schema-5 preflight, runtime/continuation checks, snapshot-bound diagnostics and prepare/queue/worker, verified against fixtures (see [verification.md](verification.md)). Reporting remains phase-5 work; production is blocked until its fixture gate passes. Real corpus/terminal audits, GPU diagnostics and production have not been performed. Subsequent user instructions authorize those stages; earlier campaigns' approvals do not apply.
+Phases 3–5 implement schema-5 preflight, runtime/continuation checks, snapshot-bound diagnostics and prepare/queue/worker, verified against fixtures (see [verification.md](verification.md)). Phase-5 freeze/comparison/report recovery is implemented; production requires the snapshot-bound reporting fixture gate to pass. Real corpus/terminal audits, GPU diagnostics and production have not been performed. Subsequent user instructions authorize those stages; earlier campaigns' approvals do not apply.
 
 ## 1. Implement and verify locally
 
@@ -52,14 +52,14 @@ Only `S1-linear-w256` and `S1-geometric-w256` may run. Require fresh initial sta
 
 ## 4. Freeze and compare saved results
 
-After phase-5 reporting implementation, use the frozen source and prepared mappings:
+Use the frozen source and prepared mappings:
 
 ```bash
 "$WARMUP_PYTHON" "$WARMUP_ROOT/source/scripts/run_tinystories_s1_warmup.py" report \
   --campaign-root "$WARMUP_ROOT"
 ```
 
-The launcher freezes two full-budget terminals and eight new endpoints independently, then revalidates selected historical inputs and generates the comparison. Lower-level proposed analyzer commands are specified in the [CLI contract](contracts/lifecycle-and-cli.md).
+The launcher freezes two full-budget terminals and eight new endpoints independently, then revalidates selected historical inputs and generates the comparison. Lower-level analyzer commands are specified in the [CLI contract](contracts/lifecycle-and-cli.md).
 
 Expected completion evidence:
 

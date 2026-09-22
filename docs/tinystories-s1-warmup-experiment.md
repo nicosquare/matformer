@@ -2,11 +2,11 @@
 
 ## Current scope
 
-Phases 3–4 implement schema-5 preparation, grid-aware runtime accounting and
+Phases 3–5 implement schema-5 preparation, grid-aware runtime accounting and
 terminal metadata, immutable source/CPU/GPU diagnostics, and the two-arm launcher.
 CPU fixtures verify protocol, continuation, failure durability and admission.
-Reporting implementation (phase 5), real input/reference audits, source-bound
-readiness and production remain pending. See independent stage
+Phase 5 adds strict saved-artifact reporting and fixture verification. Real
+input/reference audits, source-bound readiness and production remain pending. See independent stage
 statuses and test evidence in [verification.md](../specs/016-tinystories-s1-warmup/verification.md).
 
 ## Fixed experiment
@@ -82,8 +82,8 @@ Proposed fresh root (not reserved):
 ```
 
 Use `/home/ivo.navarrete/.conda/envs/elasticnn/bin/python` from the repository
-root. Preflight, diagnostics and prepare/queue/worker are implemented. The
-reporting interfaces in the last three rows remain phase-5 work:
+root. Preflight, diagnostics, prepare/queue/worker, freeze and reporting are
+implemented and exercised against temporary fixtures:
 
 | Entry point | Arguments | Contract |
 | --- | --- | --- |
@@ -108,8 +108,8 @@ returns an explicit nonzero failure; queue capacity records a pending wait.
 
 ## Authorization, execution and recovery
 
-The current request authorizes phase 4 (T017–T035) software and fixture checks,
-building on phases 1–3. Real-input preparation remains T051–T052. GPU
+The current request authorizes phase 5 (T036–T048) software and fixture checks,
+building on phases 1–4. Real-input preparation remains T051–T052. GPU
 readiness T053 requires subsequent diagnostic authorization; production T054
 requires subsequent production authorization and passed CPU/GPU gates. Earlier
 campaign approvals and successful tests do not authorize these stages.
@@ -227,10 +227,11 @@ histories are explicitly state-seeded, not evidence of prior training. A GPU
 skip cannot pass; the gate additionally requires matching successful diagnostic
 worker and Slurm accounting. Until accounting arrives, readiness is pending.
 
-Phase4's CPU gate sets `reporting_fixture_status=pending`. Production admission
-explicitly rejects that status even if runtime diagnostics pass. Phase5 must
-add and pass the reporting fixture gate before any production launch; refresh
-the tested snapshot and affected gates after implementation changes. Do not
+The CPU gate sets `reporting_fixture_status=passed` only when its JUnit evidence
+contains the required report/cardinality/recovery/early-data acceptance cases
+and all reporting/queue cases pass without skips. Missing cases retain `pending`,
+which blocks production. Refresh the tested snapshot and affected gates after
+implementation changes. Do not
 manually change a gate to bypass this prerequisite.
 
 After phase5, all readiness evidence, and T054 production authorization:
@@ -267,3 +268,26 @@ checkpoint progress. Worker/queue records disclose missing observations and
 report Slurm allocation seconds separately, since these overlap process time.
 A lost worker can remain an explicitly incomplete cost observation; it does not
 silently become zero cost or invalidate earlier valid committed work.
+
+## Saved-report recovery
+
+Use the frozen `run_tinystories_s1_warmup.py report --campaign-root ROOT`
+entry point. It checks the source snapshot, prepared mappings and new-run
+execution independently of historical availability. It freezes eight new rows
+in `reports/new/endpoints.{csv,json}` with `frozen_manifest.json`, recovers
+missing derived new tables, then requests the strict comparison. It never calls
+a trainer or submits a job. Historical validation may query read-only Slurm
+accounting.
+
+A failed comparison returns nonzero and writes
+`reports/comparison/comparison_report.json` with explicit reasons and separate
+endpoint/early statuses. New-only evidence survives. Rerunning after restoring
+the missing evidence replaces the diagnostic with an atomic complete report;
+an existing complete report is verified by its source and output hashes.
+
+Complete comparison exports 24 endpoints, eight signed deltas and standalone
+gaps, raw early scalars, sixteen PNG/PDF files, and `findings.md`. Validation
+uses disconnected per-width markers to retain observed cadence; missing
+training samples break the curve. Schedule-only LR reconstruction is labeled
+in each scalar row and figure, and never substitutes for missing losses or
+execution evidence. These fixture outputs do not constitute real results.

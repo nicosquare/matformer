@@ -1,6 +1,6 @@
 # Contract: Lifecycle, Evidence and CLI
 
-Phase 4 implements preparation, diagnostics and prepare/queue/worker. Reporting commands remain planned for phase 5. Existing unrelated command behavior remains unchanged.
+Phases 4–5 implement preparation, diagnostics, prepare/queue/worker and saved-artifact reporting. Existing unrelated command behavior remains unchanged.
 
 ## Preparation and identities
 
