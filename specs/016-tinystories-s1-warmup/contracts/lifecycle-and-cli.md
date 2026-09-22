@@ -1,6 +1,6 @@
 # Contract: Lifecycle, Evidence and CLI
 
-These are planned interfaces, not currently implemented commands. Existing unrelated command behavior remains unchanged.
+Phase 4 implements preparation, diagnostics and prepare/queue/worker. Reporting commands remain planned for phase 5. Existing unrelated command behavior remains unchanged.
 
 ## Preparation and identities
 
@@ -29,7 +29,8 @@ Reject occupied/newly conflicting roots or run identities before publication. Re
 | --- | --- | --- |
 | `scripts/analyze_tinystories_optimizer_ownership.py` | `preflight --campaign RECIPE --prepared-corpus-dir CORPUS --tokenizer-dir TOKENIZER --output-dir ROOT/campaign --run-output-root ROOT/runs --linear-reference-root LINEAR --geometric-reference-root GEOMETRIC` | Strict schema 5 expansion/audit, expected schedules/traces and new reference selections. Reference flags required only for schema 5. |
 | `scripts/preflight_tinystories_s1_warmup.py` | `cpu --campaign-root ROOT` | Freeze source if absent; test exact snapshot/configs and publish passed/failed CPU gate. |
-| Same | `gpu --campaign-root ROOT` | Under authorized sbatch allocation only; both real-shape bf16 grids, matching CPU evidence. |
+| Same | `submit-gpu --campaign-root ROOT` | Explicitly authorized diagnostic submission through shared live-limit/intent policy. |
+| Same | `gpu --campaign-root ROOT` | Internal worker under authorized sbatch allocation only; both real-shape bf16 grids, matching CPU evidence. |
 | `scripts/run_tinystories_s1_warmup.py` | `prepare --campaign-root ROOT --cpu-evidence PATH` | Validate reservation, source/config/reference bindings and CPU gate; publish launch plan. No submission. |
 | Same | `queue --campaign-root ROOT [--once]` | Reconcile attempts, verify CPU/GPU gates, inspect live limits, submit only eligible declared runs. |
 | Same | `worker --campaign-root ROOT --arm ARM --attempt-id N` | Internal sbatch-only unique writer; validate intent/gates/own continuation; invoke CUDA-required trainer. |

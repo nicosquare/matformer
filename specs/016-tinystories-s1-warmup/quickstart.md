@@ -1,6 +1,6 @@
 # Quickstart: S1 Warmup Extension
 
-This is the implementation/execution runbook design. The proposed schema 5 recipe, scripts and options do not exist yet. This planning invocation performs no implementation, corpus/terminal audit, GPU diagnostic or production submission. Subsequent user instructions authorize those stages; earlier campaigns' approvals do not apply.
+Phases 3–4 implement schema-5 preflight, runtime/continuation checks, snapshot-bound diagnostics and prepare/queue/worker, verified against fixtures (see [verification.md](verification.md)). Reporting remains phase-5 work; production is blocked until its fixture gate passes. Real corpus/terminal audits, GPU diagnostics and production have not been performed. Subsequent user instructions authorize those stages; earlier campaigns' approvals do not apply.
 
 ## 1. Implement and verify locally
 
@@ -39,9 +39,9 @@ Review the exact two configs and warmup-only differences, real parameter counts,
 
 ## 3. Subsequently authorized GPU readiness and execution
 
-The implementation must provide a diagnostic sbatch submission using the frozen `source/scripts/preflight_tinystories_s1_warmup.py gpu --campaign-root ROOT` entry point, one process/GPU, excluded nodes `gpu-[05,50,51,54]`, and current user-wide limits. Do not bypass live admission by blindly executing a sample sbatch command. Diagnostics use real d64/l4/h4, batch64, context128 and bf16 for both grids, all widths and boundary/resume/failure checks. Save actual device/allocation/job evidence, zero mandatory GPU skips and exact CPU/source/config bindings.
+After diagnostic authorization, submit with `"$WARMUP_PYTHON" "$WARMUP_ROOT/source/scripts/preflight_tinystories_s1_warmup.py" submit-gpu --campaign-root "$WARMUP_ROOT"`. This invokes the frozen `source/scripts/preflight_tinystories_s1_warmup.py gpu --campaign-root ROOT` entry point, one process/GPU, excluded nodes `gpu-[05,50,51,54]`, and current user-wide limits. Do not bypass live admission by blindly executing a sample sbatch command. Diagnostics use real d64/l4/h4, batch64, context128 and bf16 for both grids, all widths and boundary/resume/failure checks. Save actual device/allocation/job evidence, zero mandatory GPU skips and exact CPU/source/config bindings.
 
-Once execution is authorized and both gates pass, the planned queue entry is:
+Once execution is authorized and both gates pass, the queue entry is:
 
 ```bash
 "$WARMUP_PYTHON" "$WARMUP_ROOT/source/scripts/run_tinystories_s1_warmup.py" queue \
@@ -52,7 +52,7 @@ Only `S1-linear-w256` and `S1-geometric-w256` may run. Require fresh initial sta
 
 ## 4. Freeze and compare saved results
 
-Use the frozen source and prepared mappings:
+After phase-5 reporting implementation, use the frozen source and prepared mappings:
 
 ```bash
 "$WARMUP_PYTHON" "$WARMUP_ROOT/source/scripts/run_tinystories_s1_warmup.py" report \

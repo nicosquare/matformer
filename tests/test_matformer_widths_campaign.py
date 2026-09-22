@@ -117,7 +117,7 @@ def test_schema_qualified_repeated_labels_and_legacy_defaults():
             campaign.campaign_arm(schema, arm)
 
 
-@pytest.mark.parametrize("version", [None, True, False, 0, -1, 5, "4", 4.0, 1.0])
+@pytest.mark.parametrize("version", [None, True, False, 0, -1, 6, "4", 4.0, 1.0])
 def test_unknown_or_noninteger_schemas_fail_all_selectors(version):
     for selector in (campaign.campaign_arms, campaign.campaign_widths,
                      campaign.campaign_common, campaign.campaign_topology):

@@ -4,7 +4,7 @@
 
 **Input**: Feature 016 and [source request](../../notes/tinystories_s1_warmup_speckit_prompt_2026-09-22.md).
 
-**Status**: Planning complete; implementation, readiness, production, and comparison completion pending.
+**Status**: Planning and phases 1–4 implementation complete; CPU preparation/runtime/admission and compatibility verification is recorded in [verification.md](verification.md). Reporting implementation, real input audits, readiness, production, and comparison remain pending.
 
 ## Summary
 

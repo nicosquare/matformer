@@ -28,6 +28,8 @@ def main(argv=None):
         "run-output-root",
     ):
         preflight.add_argument("--" + option, required=True)
+    preflight.add_argument('--linear-reference-root')
+    preflight.add_argument('--geometric-reference-root')
     freeze = subcommands.add_parser('freeze', help='Freeze saved terminal checkpoints and ordinary-validation evidence')
     freeze.add_argument('--campaign-manifest', required=True)
     locations = freeze.add_mutually_exclusive_group(required=True)
@@ -67,6 +69,8 @@ def main(argv=None):
                 tokenizer_dir=args.tokenizer_dir,
                 output_dir=args.output_dir,
                 run_output_root=args.run_output_root,
+                linear_reference_root=args.linear_reference_root,
+                geometric_reference_root=args.geometric_reference_root,
             )
     except (ValueError, OSError, RuntimeError) as error:
         parser.exit(1, f"Campaign {args.command} failed: {error}\n")

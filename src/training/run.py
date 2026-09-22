@@ -2531,7 +2531,7 @@ def build_ownership_run_summary(config, model, optimizer, state):
     from src.evaluation.optimizer_ownership import campaign_widths
 
     contract = config['optimizer_ownership_contract']
-    widths = campaign_widths(contract.get('campaign_schema_version', 1))
+    widths = campaign_widths(contract.get('campaign_schema_version', 1), contract.get('arm_id'))
     width_labels = tuple(w['label'] for w in widths)
     step = int(state['last_completed_step'])
     resources = dict(state.get('resource_summary') or {
@@ -2577,6 +2577,8 @@ def build_ownership_run_summary(config, model, optimizer, state):
             'campaign_id': contract['campaign_id'], 'arm_id': contract['arm_id'],
             'contract_hash': config['optimizer_ownership_contract_hash'],
             'contract': copy.deepcopy(contract),
+            **({key: copy.deepcopy(contract[key]) for key in ('grid_id', 'intervention', 'width_grid')}
+               if contract.get('campaign_schema_version') == 5 else {}),
             'state_scope': config['training']['optimizer_state_scope'],
             'clipping_contract': copy.deepcopy(config['training']['gradient_clipping']),
             'steps': step, 'tokens_seen': state['tokens_seen'], 'packed_tokens_per_update': config['training']['expected_tokens_per_step'],
@@ -2656,6 +2658,8 @@ def complete_ownership_terminal(config, model, optimizer, scheduler, state, eval
         'schema_version': 1, 'campaign_id': contract['campaign_id'], 'arm_id': contract['arm_id'],
         'run_id': config['run']['run_id'], 'contract_hash': config['optimizer_ownership_contract_hash'],
         'contract': copy.deepcopy(contract),
+        **({key: copy.deepcopy(contract[key]) for key in ('grid_id', 'intervention', 'width_grid')}
+           if contract.get('campaign_schema_version') == 5 else {}),
         'checkpoint_path': str(checkpoint.resolve()), 'checkpoint_sha256': checkpoint_hash,
         'checkpoint_bytes': checkpoint.stat().st_size,
         'global_step': step, 'actual_updates': step, 'assigned_updates': training['max_steps'],

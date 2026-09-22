@@ -473,7 +473,7 @@ class StreamingMetricsAccumulator:
         if campaign_contract and any(k in campaign_contract for k in ("campaign_schema_version", "width_grid", "block_boundaries")):
             from src.evaluation.optimizer_ownership import campaign_topology
             from src.utils.reproducibility import stable_hash
-            expected = campaign_topology(campaign_contract.get("campaign_schema_version"))
+            expected = campaign_topology(campaign_contract.get("campaign_schema_version"), campaign_contract.get("arm_id"))
             if not expected or any(stable_hash(campaign_contract.get(k)) != stable_hash(v) for k, v in expected.items()):
                 raise ValueError("Invalid campaign topology for metrics attempts")
             self.attempt_widths = tuple(w["label"] for w in expected["width_grid"])

@@ -209,6 +209,27 @@ MATFORMER_BLOCK_BOUNDARIES = tuple(
 )
 
 
+WARMUP_CAMPAIGN_SCHEMA_VERSION = 5
+WARMUP_CAMPAIGN_ID = "tinystories-optimizer-ownership-s1-warmup-v1"
+WARMUP_ARMS = tuple(
+    {**ELASTIC_ARMS[0], "arm_id": f"S1-{grid}-w256", "grid_id": grid,
+     "endpoint_widths": tuple(w["label"] for w in widths)}
+    for grid, widths in (("linear", WIDTHS), ("geometric", MATFORMER_WIDTHS))
+)
+WARMUP_REFERENCES = {
+    "linear": {
+        "campaign_id": "tinystories-optimizer-ownership-v1", "schema_version": 1,
+        "s1_config_sha256": "ef16f8a6cb883abe6782b9201f32b6d137b324f4d0cd5ac112f66b6fb57ac3fa",
+        "selected_arms": ["ST-g250", "ST-g500", "ST-g750", "ST-g1000", "S1"],
+    },
+    "geometric": {
+        "campaign_id": MATFORMER_CAMPAIGN_ID, "schema_version": 4,
+        "s1_config_sha256": "781254c7bbd8a7fdc48ba4c09bdc940dd44e132c73d1fe9d8b9209796d94a6c8",
+        "selected_arms": ["ST-g125", "ST-g250", "ST-g500", "ST-g1000", "S1"],
+    },
+}
+
+
 def inverse_membership_sampling_contract(config):
     from src.utils.reproducibility import seed_for
     return {
@@ -242,6 +263,8 @@ def campaign_arms(schema_version=CAMPAIGN_SCHEMA_VERSION):
         return INVERSE_MEMBERSHIP_ARMS
     if type(schema_version) is int and schema_version == MATFORMER_CAMPAIGN_SCHEMA_VERSION:
         return MATFORMER_ARMS
+    if type(schema_version) is int and schema_version == 5:
+        return WARMUP_ARMS
     raise ConfigError(f"Unsupported campaign schema_version: {schema_version}")
 
 
@@ -255,18 +278,22 @@ def campaign_arm(schema_version, arm_id):
     raise ConfigError(f"Unknown arm_id {arm_id!r} for campaign schema_version {schema_version}")
 
 
-def campaign_widths(schema_version=CAMPAIGN_SCHEMA_VERSION):
+def campaign_widths(schema_version=CAMPAIGN_SCHEMA_VERSION, arm_id=None):
     campaign_arms(schema_version)  # Reject unknown versions before choosing a grid.
+    if schema_version == 5:
+        return MATFORMER_WIDTHS if campaign_arm(5, arm_id)["grid_id"] == "geometric" else WIDTHS
     return MATFORMER_WIDTHS if schema_version == MATFORMER_CAMPAIGN_SCHEMA_VERSION else WIDTHS
 
 
-def campaign_common(schema_version=CAMPAIGN_SCHEMA_VERSION):
+def campaign_common(schema_version=CAMPAIGN_SCHEMA_VERSION, arm_id=None):
     """Return detached controls; historical inputs receive no new defaults."""
     import copy
 
-    widths = campaign_widths(schema_version)
+    widths = campaign_widths(schema_version, arm_id)
     common = copy.deepcopy(PINNED_COMMON)
-    if schema_version == MATFORMER_CAMPAIGN_SCHEMA_VERSION:
+    if schema_version == 5:
+        common["training"]["warmup_steps"] = 256
+    if schema_version in (4, 5):
         common["model"]["granularities"] = [width["label"] for width in widths]
         common["model"]["granularity_prefixes"] = {
             width["label"]: width["source_fraction"] for width in widths
@@ -274,11 +301,22 @@ def campaign_common(schema_version=CAMPAIGN_SCHEMA_VERSION):
     return common
 
 
-def campaign_topology(schema_version=CAMPAIGN_SCHEMA_VERSION):
+def campaign_topology(schema_version=CAMPAIGN_SCHEMA_VERSION, arm_id=None):
     """New-only identity fields shared by campaign and run contracts."""
     import copy
 
     campaign_arms(schema_version)
+    if schema_version == 5:
+        arm = campaign_arm(5, arm_id)
+        widths = campaign_widths(5, arm_id)
+        ends = [0] + [w["active_ffn_dimension"] for w in widths]
+        return copy.deepcopy({
+            "campaign_schema_version": 5, "grid_id": arm["grid_id"],
+            "width_grid": list(widths),
+            "block_boundaries": [dict(id=q, start=ends[i], end=ends[i+1],
+                dimension=ends[i+1]-ends[i], supported_widths=arm["endpoint_widths"][i:])
+                for i, q in enumerate(QUARTER_IDS)],
+        })
     if schema_version != MATFORMER_CAMPAIGN_SCHEMA_VERSION:
         return {}
     return copy.deepcopy({
@@ -693,15 +731,17 @@ def build_run_scientific_contract(
         },
         "evaluation": copy.deepcopy(config["evaluation"]),
         "count_convention": PARAMETER_COUNT_CONVENTION,
-        **campaign_topology(campaign_schema_version),
+        **campaign_topology(campaign_schema_version, arm["arm_id"]),
     }
+    if campaign_schema_version == 5:
+        contract["intervention"] = warmup_intervention(arm["arm_id"])
     if "correction_mode" in arm:
         contract["correction"] = membership_correction_contract(arm["correction_mode"])
     return build_optimizer_ownership_signature(contract)
 
 
 def expand_campaign(recipe, *, prepared_corpus_dir, tokenizer_dir, run_output_root):
-    """Resolve exactly nine fresh normal trainer configs, without run-directory IO."""
+    """Resolve the exact declared fresh trainer configs, without run-directory IO."""
     import copy
     import re
     import tempfile
@@ -714,10 +754,15 @@ def expand_campaign(recipe, *, prepared_corpus_dir, tokenizer_dir, run_output_ro
         raise ConfigError("campaign must be a mapping")
     _require_equal(
         set(recipe),
-        {"schema_version", "campaign_id", "common", "arms", "expected_data"},
+        {"schema_version", "campaign_id", "common", "arms", "expected_data"}
+        | ({"references"} if recipe.get("schema_version") == 5 else set()),
         "campaign fields",
     )
     arms = campaign_arms(recipe["schema_version"])
+    if recipe["schema_version"] == 5:
+        _require_equal(recipe["campaign_id"], WARMUP_CAMPAIGN_ID, "campaign_id")
+        _require_equal(recipe["references"], WARMUP_REFERENCES, "references")
+        _require_equal(recipe["common"], campaign_common(5, WARMUP_ARMS[0]["arm_id"]), "common")
     campaign_id = recipe["campaign_id"]
     if not isinstance(campaign_id, str) or not re.fullmatch(
         r"tinystories-optimizer-ownership-[A-Za-z0-9_-]+", campaign_id
@@ -737,15 +782,23 @@ def expand_campaign(recipe, *, prepared_corpus_dir, tokenizer_dir, run_output_ro
             arm_id = arm["arm_id"]
             if not isinstance(recipe["arms"][arm_id], dict):
                 raise ConfigError(f"arms.{arm_id} must be a mapping")
-            raw = _merge(recipe["common"], recipe["arms"][arm_id])
-            _require_equal(raw, _merge(campaign_common(recipe["schema_version"]), _arm_overrides(arm)), arm_id)
+            override = copy.deepcopy(recipe["arms"][arm_id])
+            if recipe["schema_version"] == 5:
+                _require_equal(override.pop("grid_id", None), arm["grid_id"], f"{arm_id}.grid_id")
+            raw = _merge(recipe["common"], override)
+            # Prefix maps are a complete grid, not an additive override.
+            if recipe["schema_version"] == 5 and "granularity_prefixes" in override.get("model", {}):
+                raw["model"]["granularity_prefixes"] = override["model"]["granularity_prefixes"]
+            _require_equal(raw, _merge(campaign_common(recipe["schema_version"], arm_id), _arm_overrides(arm)), arm_id)
             run_id = f"{campaign_id}-{arm_id}-s{SEED}"
             output = str(Path(run_output_root).expanduser().resolve() / arm_id)
             raw["run"].update(
                 run_id=run_id, campaign_id=campaign_id, arm_id=arm_id, output_dir=output
             )
-            if recipe["schema_version"] == MATFORMER_CAMPAIGN_SCHEMA_VERSION:
-                raw["run"]["campaign_schema_version"] = MATFORMER_CAMPAIGN_SCHEMA_VERSION
+            if recipe["schema_version"] in (4, 5):
+                raw["run"]["campaign_schema_version"] = recipe["schema_version"]
+            if recipe["schema_version"] == 5:
+                raw["run"]["grid_id"] = arm["grid_id"]
             raw["model"]["tokenizer_dir"] = str(
                 Path(tokenizer_dir).expanduser().resolve()
             )
@@ -795,13 +848,18 @@ def expand_campaign(recipe, *, prepared_corpus_dir, tokenizer_dir, run_output_ro
 
 def validate_run_budget(config, arm):
     training, dataset = config["training"], config["dataset"]
+    warmup = 64
+    if config["run"].get("campaign_schema_version") == 5:
+        validate_warmup_controls(config)
+        _require_equal(arm, campaign_arm(5, config["run"]["arm_id"]), "budget arm")
+        warmup = 256
     for key, expected in {
         "max_steps": arm["assigned_updates"],
         "derived_max_steps": arm["assigned_updates"],
         "token_budget": arm["assigned_tokens"],
         "expected_tokens_per_step": TOKENS_PER_UPDATE,
         "max_steps_cap": None,
-        "resolved_warmup_steps": 64,
+        "resolved_warmup_steps": warmup,
     }.items():
         _require_equal(training[key], expected, f"{arm['arm_id']}.training.{key}")
     expected = {
@@ -916,7 +974,7 @@ def inspect_campaign_models(runs):
                     )
                 all_parameter_ids.update(ids)
                 counts = {}
-                for width in campaign_widths(config["run"].get("campaign_schema_version", 1)):
+                for width in campaign_widths(config["run"].get("campaign_schema_version", 1), config["run"].get("arm_id")):
                     if width["label"] not in run["endpoint_widths"]:
                         continue
                     counts[width["label"]] = model_parameter_counts(
@@ -1076,13 +1134,14 @@ def build_expected_traces(runs, corpus_dir, corpus_manifest):
     for run in runs:
         trace = result[run["arm_id"]]
         _require_equal(trace["epochs"][0], first, f"{run['arm_id']}.first_epoch")
-        if not run["source_width"]:
+        if not run["source_width"] and run["resolved_config"]["run"].get("campaign_schema_version") != 5:
             _require_equal(trace, elastic, f"{run['arm_id']}.elastic_trace")
     return result
 
 
 def preflight_campaign(
-    *, campaign_path, prepared_corpus_dir, tokenizer_dir, output_dir, run_output_root
+    *, campaign_path, prepared_corpus_dir, tokenizer_dir, output_dir, run_output_root,
+    linear_reference_root=None, geometric_reference_root=None
 ):
     """Audit and stage everything before publishing a manifest or reserving runs."""
     import json
@@ -1096,8 +1155,22 @@ def preflight_campaign(
 
     output = Path(output_dir).expanduser().resolve()
     root = Path(run_output_root).expanduser().resolve()
+    recipe = yaml.safe_load(Path(campaign_path).read_text())
+    warmup = recipe.get("schema_version") == 5
+    if warmup and (linear_reference_root is None or geometric_reference_root is None):
+        raise ConfigError("schema 5 requires --linear-reference-root and --geometric-reference-root")
+    if output.is_symlink():
+        raise ConfigError(f"occupied preflight output: {output}")
+    if output.exists() and warmup:
+        return verify_prepared_warmup(output, root, recipe, prepared_corpus_dir, tokenizer_dir,
+                                      linear_reference_root, geometric_reference_root)
     if output.exists() or output.is_symlink():
         raise ConfigError(f"occupied preflight output: {output}")
+    if warmup:
+        if output.parent != root.parent or output.name != 'campaign' or root.name != 'runs':
+            raise ConfigError('schema 5 requires sibling ROOT/campaign and ROOT/runs')
+        if output.parent.exists() and any(output.parent.iterdir()):
+            raise ConfigError(f'occupied warmup campaign root: {output.parent}')
     if output == root or output in root.parents or root in output.parents:
         raise ConfigError(
             "Preflight output and run-output-root must be separate directory trees"
@@ -1138,6 +1211,21 @@ def preflight_campaign(
             config["optimizer_ownership_contract_hash"] = run["contract_hash"]
     corpus_manifest = load_corpus_manifest(prepared_corpus_dir, verify_shards=False)
     traces = build_expected_traces(runs, prepared_corpus_dir, corpus_manifest)
+    extra = {}
+    references = None
+    if warmup:
+        references = inspect_warmup_references(linear_reference_root=linear_reference_root,
+                                               geometric_reference_root=geometric_reference_root)
+        audits = {}
+        for run in runs:
+            selected = references['grids'][run['grid_id']]
+            audits[run['arm_id']] = audit_warmup_counterpart(
+                run['resolved_config'], selected['counterpart']['resolved_config'])
+            audits[run['arm_id']]['old_config_source'] = selected['s1_config_source']
+            _require_equal(traces[run['arm_id']], selected['expected_traces'], f"{run['arm_id']}.counterpart traces")
+        extra = dict(arm_grids={r['arm_id']: campaign_topology(5, r['arm_id']) for r in runs},
+                     references=recipe['references'], reference_selection=references,
+                     control_audits=audits, recipe_source=_source_record(campaign_path))
     manifest = {
         "schema_version": recipe["schema_version"],
         "campaign_id": recipe["campaign_id"],
@@ -1155,7 +1243,7 @@ def preflight_campaign(
         "runtime_ownership_verified": False,
         "training_started": False,
         "holdout_evaluated": False,
-        **campaign_topology(recipe["schema_version"]),
+        **(extra if warmup else campaign_topology(recipe["schema_version"])),
     }
     manifest["manifest_hash"] = stable_hash(manifest)
     report = {
@@ -1183,6 +1271,28 @@ def preflight_campaign(
             (stage / "configs" / f"{run['arm_id']}.yaml").write_text(
                 yaml.safe_dump(run["executable_config"], sort_keys=False)
             )
+        if warmup:
+            (stage / 'schedules').mkdir()
+            schedules = {}
+            for run in runs:
+                filename = f"schedules/{run['arm_id']}.csv"
+                schedules[run['arm_id']] = export_expected_schedule(run['resolved_config'], stage / filename)
+                schedules[run['arm_id']]['path'] = filename
+                config_source = _source_record(stage / 'configs' / f"{run['arm_id']}.yaml")
+                manifest['control_audits'][run['arm_id']]['new_config_source'] = {
+                    **config_source, 'path': str(output / 'configs' / f"{run['arm_id']}.yaml")}
+            _require_equal(len({v['array_sha256'] for v in schedules.values()}), 1, 'identical new schedules')
+            manifest['expected_schedules'] = schedules
+            (stage / 'references').mkdir()
+            write_json_artifact(stage / 'references/selection.json', references)
+            write_json_artifact(stage / 'control_differences.json', manifest['control_audits'])
+            write_json_artifact(stage / 'expected_traces.json', traces)
+            write_json_artifact(stage / 'expected_schedules.json', schedules)
+            manifest['artifact_sha256'] = {str(p.relative_to(stage)): _source_record(p)['sha256']
+                for p in sorted(stage.rglob('*')) if p.is_file()}
+            manifest['manifest_hash'] = stable_hash({k:v for k,v in manifest.items() if k != 'manifest_hash'})
+            report['manifest_hash'] = manifest['manifest_hash']
+            _check_sources(references['sources'] + [manifest['recipe_source']])
         write_json_artifact(stage / "preflight.json", report)
         write_json_artifact(stage / "campaign_manifest.json", manifest)
         _check_unoccupied(root, arms)
@@ -1234,17 +1344,21 @@ def validate_materialized_config(config):
     )
     schema = config["run"].get("campaign_schema_version")
     if schema is not None or "campaign_schema_version" in contract:
-        _require_equal(schema, MATFORMER_CAMPAIGN_SCHEMA_VERSION, "run.campaign_schema_version")
-        _require_equal(config["run"].get("campaign_id"), MATFORMER_CAMPAIGN_ID, "campaign_id")
-        for key, expected in campaign_topology(schema).items():
+        if schema not in (4, 5):
+            raise ConfigError("Unsupported run.campaign_schema_version")
+        campaign_id = WARMUP_CAMPAIGN_ID if schema == 5 else MATFORMER_CAMPAIGN_ID
+        _require_equal(config["run"].get("campaign_id"), campaign_id, "campaign_id")
+        for key, expected in campaign_topology(schema, config["run"].get("arm_id")).items():
             _require_equal(stable_hash(contract.get(key)), stable_hash(expected), key)
         arm = campaign_arm(schema, config["run"].get("arm_id"))
         _require_equal(contract["initialization"].get("method"), "fresh_normal_constructor", "initialization.method")
-        _require_equal(config["run"].get("run_id"), f"{MATFORMER_CAMPAIGN_ID}-{arm['arm_id']}-s{SEED}", "run_id")
+        _require_equal(config["run"].get("run_id"), f"{campaign_id}-{arm['arm_id']}-s{SEED}", "run_id")
     else:
         arm = next((a for a in (*ARMS, *CORRECTION_ARMS, *INVERSE_MEMBERSHIP_ARMS) if a["arm_id"] == config["run"].get("arm_id")), None)
     if arm is None:
         raise ConfigError("optimizer_ownership_contract: unknown arm_id")
+    if schema == 5:
+        _require_equal(contract.get("intervention"), warmup_intervention(arm["arm_id"]), "intervention")
     if arm.get("sampling_policy") == "fixed_inverse_membership":
         _require_equal(config["model"]["granularity_sampling_mode"], "fixed_global", "IM sampling mode")
         _require_equal(config["model"]["granularities"], list(WIDTH_LABELS), "IM ordered widths")
@@ -1309,12 +1423,13 @@ def inspect_run_observations(run_dir, summary):
             or stable_hash(audit['contract']) != audit['contract_hash']
             or summary.get('run_id') != audit['run_id']):
         raise ConfigError('Run summary schema/contract identity mismatch')
-    widths = tuple(w['label'] for w in campaign_widths(audit['contract'].get('campaign_schema_version', 1)))
+    widths = tuple(w['label'] for w in campaign_widths(audit['contract'].get('campaign_schema_version', 1), audit['arm_id']))
     scope = audit['state_scope']
     counts = dict.fromkeys(audit['width_selection_counts'], 0)
-    if audit['contract'].get('campaign_schema_version') == 4:
-        arm = campaign_arm(4, audit['contract']['arm_id'])
-        for key, expected in campaign_topology(4).items():
+    if audit['contract'].get('campaign_schema_version') in (4, 5):
+        schema = audit['contract']['campaign_schema_version']
+        arm = campaign_arm(schema, audit['contract']['arm_id'])
+        for key, expected in campaign_topology(schema, arm['arm_id']).items():
             _require_equal(stable_hash(audit['contract'].get(key)), stable_hash(expected), key)
         _require_equal(audit['contract'].get('representation'), arm['representation'], 'observation representation')
         _require_equal(scope, arm['state_scope'], 'observation state_scope')
@@ -1396,7 +1511,7 @@ def inspect_run_observations(run_dir, summary):
             raise ConfigError(f'Trace/summary mismatch: {key}')
     if not audit['accounting_reconciled']:
         raise ConfigError('Summary accounting is not reconciled')
-    if audit['contract'].get('campaign_schema_version') == 4:
+    if audit['contract'].get('campaign_schema_version') in (4, 5):
         import csv
         metrics_path = root / 'metrics.csv'
         if not metrics_path.is_file():
@@ -1616,7 +1731,7 @@ def _read_preflight_manifest(path):
     arm_ids = [a['arm_id'] for a in arms]
     for key, expected in {
         'schema_version': manifest['schema_version'], 'seed': SEED,
-        'common': campaign_common(manifest['schema_version']), 'allowed_difference_matrix': [
+        'common': campaign_common(manifest['schema_version'], arm_ids[0]), 'allowed_difference_matrix': [
             {**a, 'endpoint_widths': list(a['endpoint_widths'])} for a in arms],
         'expected_data': PINNED_DATA, 'count_convention': PARAMETER_COUNT_CONVENTION,
         'evaluation_role': EVALUATION_ROLE,
@@ -1659,7 +1774,12 @@ def _read_preflight_manifest(path):
         for key in ('run_id', 'campaign_id', 'arm_id'):
             _require_equal(raw['run'].pop(key), run[key], f'{label}.{key}')
         _require_equal(raw['run'].pop('output_dir'), run['output_path'], f'{label}.output_path')
-        common = campaign_common(manifest['schema_version'])
+        common = campaign_common(manifest['schema_version'], label)
+        if manifest['schema_version'] == 5:
+            _require_equal(raw['run'].pop('campaign_schema_version'), 5, f'{label}.schema')
+            _require_equal(raw['run'].pop('grid_id'), arm['grid_id'], f'{label}.grid_id')
+            _require_equal(stable_hash(manifest['arm_grids'][label]), stable_hash(campaign_topology(5, label)), f'{label}.grid')
+            _require_equal(manifest['references'], WARMUP_REFERENCES, 'preflight.references')
         if manifest['schema_version'] == 4:
             _require_equal(raw['run'].pop('campaign_schema_version'), 4, f'{label}.schema')
             for field, value in campaign_topology(4).items():
@@ -1677,7 +1797,7 @@ def _read_preflight_manifest(path):
         traces = manifest['expected_traces'][label]
         _require_equal(len(traces['epochs']), arm['assigned_epochs'], f'{label}.expected epochs')
         _require_equal(traces['epochs'][0], first_epoch, f'{label}.first epoch')
-        if not arm['source_width']:
+        if not arm['source_width'] and manifest['schema_version'] != 5:
             _require_equal(traces, manifest['expected_traces'][next(a['arm_id'] for a in arms if not a['source_width'])], f'{label}.elastic traces')
     return manifest
 
@@ -1688,7 +1808,7 @@ def _terminal_endpoints(sidecar, run, *, allow_partial):
 
     label = run['arm_id']
     contract = run['optimizer_ownership_contract']
-    widths = campaign_widths(contract.get('campaign_schema_version', 1))
+    widths = campaign_widths(contract.get('campaign_schema_version', 1), contract.get('arm_id'))
     labels = [w['label'] for w in widths]
     _check_content_hash(sidecar, 'content_hash', f'{label}.terminal')
     protocol = dict(contract['evaluation']['validation'])
@@ -1726,7 +1846,7 @@ def _terminal_endpoints(sidecar, run, *, allow_partial):
             _require_equal(row.get(key), identity[key], f'{label}.{width}.{key}')
         physical = next(w for w in widths if w['label'] == width)
         count = physical['non_embedding_parameters']
-        if contract.get('campaign_schema_version') == 4:
+        if contract.get('campaign_schema_version') in (4, 5):
             for key, value in {'width_fraction': physical['source_fraction'], 'ffn_dimension': physical['active_ffn_dimension']}.items():
                 if key in row:
                     _require_equal(row[key], value, f'{label}.{width}.{key}')
@@ -1769,7 +1889,7 @@ def _inspect_terminal_run(root, run, expected_traces, *, allow_partial):
         'clipping_path': 'optimizer_ownership_clipping.jsonl' if run['representation'] == 'concat' and run['state_scope'] != 'per_granularity' else None,
     }.items():
         _require_equal(audit.get(key), value, f'{label}.summary.{key}')
-    if run['optimizer_ownership_contract'].get('campaign_schema_version') == 4:
+    if run['optimizer_ownership_contract'].get('campaign_schema_version') in (4, 5):
         import math
         from src.training.run import ResourceAttemptLedger
         resources = audit.get('resources')
@@ -2385,3 +2505,357 @@ def report_matformer_widths_comparison(*, manifest, reference_manifest, output_d
         write_json_artifact(stage / 'comparison_report.json', report)
         return report
     return _publish_directory(output_dir, publish)
+
+
+def warmup_intervention(arm_id):
+    import copy
+    arm = campaign_arm(5, arm_id)
+    reference = copy.deepcopy(WARMUP_REFERENCES[arm['grid_id']])
+    return dict(kind='s1_lr_warmup', original_warmup_steps=64, warmup_steps=256,
+                total_updates=4 * UPDATES_PER_EPOCH,
+                reference={**reference, 'arm_id': 'S1',
+                           'run_id': reference['campaign_id'] + '-S1-s42'})
+
+
+def _check_resolved_subset(expected, actual, path):
+    """Resolver defaults may add fields; explicit pinned controls cannot change."""
+    from src.utils.config import ConfigError
+    for key, value in expected.items():
+        if key not in actual:
+            raise ConfigError(f'{path}.{key}: missing resolved control')
+        if isinstance(value, dict):
+            _check_resolved_subset(value, actual[key], f'{path}.{key}')
+        else:
+            _require_equal(actual[key], value, f'{path}.{key}')
+
+
+def validate_warmup_controls(config):
+    """Warmup eligibility follows the complete fixed protocol, never a parameter."""
+    run = config['run']
+    arm = campaign_arm(5, run.get('arm_id'))
+    _require_equal(run.get('campaign_schema_version'), 5, 'run.campaign_schema_version')
+    _require_equal(run.get('campaign_id'), WARMUP_CAMPAIGN_ID, 'run.campaign_id')
+    _require_equal(run.get('run_id'), f"{WARMUP_CAMPAIGN_ID}-{arm['arm_id']}-s42", 'run.run_id')
+    _require_equal(run.get('grid_id'), arm['grid_id'], 'run.grid_id')
+    expected = _merge(campaign_common(5, arm['arm_id']), _arm_overrides(arm))
+    expected['model'].pop('tokenizer_dir')
+    expected['dataset'].pop('prepared_corpus_dir')
+    expected['training']['optimizer'].pop('state_scope')
+    expected['training']['optimizer'].pop('scheduler_clock')
+    _check_resolved_subset(expected, config, 'protocol')
+    _require_equal(config['training'].get('resolved_warmup_steps'), 256, 'training.resolved_warmup_steps')
+    for field in ('corpus_hash', 'training_order_sha256'):
+        _require_equal(config['dataset'].get(field), PINNED_DATA[field], f'dataset.{field}')
+    for role in ('optimizer_training', 'ordinary_validation', 'controller', 'final_holdout'):
+        _require_equal(config['dataset']['role_manifest_hashes'].get(role), PINNED_DATA[role+'_manifest_hash'], f'dataset.role_manifest_hashes.{role}')
+    for field in ('tokenizer_manifest_hash', 'tokenizer_model_sha256'):
+        _require_equal(config['model'].get(field), PINNED_DATA[field], f'model.{field}')
+    from src.utils.config import _resolve_gradient_interference_defaults, _resolve_sign_dynamics_defaults
+    import copy
+    defaults = copy.deepcopy(config)
+    for name in ('gradient_interference', 'sign_dynamics'):
+        defaults['evaluation'].pop(name, None)
+    _resolve_gradient_interference_defaults(defaults)
+    _resolve_sign_dynamics_defaults(defaults)
+    for name in ('gradient_interference', 'sign_dynamics'):
+        _require_equal(config['evaluation'].get(name), defaults['evaluation'][name], f'evaluation.{name}')
+    for schedule in (config['training']['scheduler'], config['training']['optimizer_state_contract']['scheduler_contract']):
+        _require_equal(schedule['resolved_warmup_steps'], 256, 'scheduler.resolved_warmup_steps')
+        _require_equal(schedule['kwargs']['warmup_steps'], 256, 'scheduler.kwargs.warmup_steps')
+    for key, value in dict(resolved_warmup_steps=256, resolved_learning_rate=.008,
+                           optimizer_state_scope='shared', optimizer_scheduler_clock='global_step').items():
+        _require_equal(config['training'].get(key), value, f'training.{key}')
+
+
+def _control_leaves(value, path=''):
+    if isinstance(value, dict) and value:
+        return {p: v for key, item in value.items()
+                for p, v in _control_leaves(item, f'{path}.{key}' if path else key).items()}
+    return {path: value}
+
+
+def audit_warmup_counterpart(config, counterpart):
+    """A closed leaf-path audit, retaining full resolved scientific projections."""
+    import copy
+    from src.utils.config import ConfigError
+    validate_materialized_config(config)
+    validate_materialized_config(counterpart)
+    grid = config['run']['grid_id']
+    reference = WARMUP_REFERENCES[grid]
+    _require_equal(counterpart['run']['campaign_id'], reference['campaign_id'], 'reference.campaign_id')
+    _require_equal(counterpart['run']['arm_id'], 'S1', 'reference.arm_id')
+    _require_equal(counterpart['training']['resolved_warmup_steps'], 64, 'reference.warmup')
+    # Contract contents are audited through their resolved projections and the
+    # materialized validator; provenance is kept separately with both hashes.
+    def projection(c):
+        result = copy.deepcopy({k: v for k, v in c.items()
+                                if k not in ('optimizer_ownership_contract', 'optimizer_ownership_contract_hash')})
+        provenance_fields = {'code_revision', 'working_tree_dirty', 'tracked_code_diff_sha256',
+                             'source_files_sha256', 'dependency_versions'}
+        result['initialization'] = {k:v for k,v in c['optimizer_ownership_contract']['initialization'].items()
+                                    if k not in provenance_fields}
+        return result
+    old, new = projection(counterpart), projection(config)
+    allowed = {
+        'training.warmup_steps', 'training.resolved_warmup_steps',
+        'run.campaign_id', 'run.run_id', 'run.arm_id', 'run.grid_id',
+        'run.campaign_schema_version', 'run.output_dir', 'run.output_root',
+        'monitoring.name',
+        'training.scheduler.kwargs.warmup_steps', 'training.scheduler.resolved_warmup_steps',
+        'training.optimizer_state_contract.scheduler_contract.kwargs.warmup_steps',
+        'training.optimizer_state_contract.scheduler_contract.resolved_warmup_steps',
+        'evaluation.gradient_interference.diagnostic_contract_hash',
+        'evaluation.gradient_interference.milestone_reasons.64',
+        'evaluation.gradient_interference.milestone_reasons.256',
+        'evaluation.gradient_interference.resolved_milestones',
+        'evaluation.gradient_interference.resolved_steps',
+        'evaluation.sign_dynamics.resolved_snapshot_milestones',
+        'evaluation.sign_dynamics.resolved_snapshot_steps',
+        'evaluation.sign_dynamics.snapshot_milestone_reasons.64',
+        'evaluation.sign_dynamics.snapshot_milestone_reasons.256',
+    }
+    # Topology is new identity metadata; enumerate every leaf, so changes in the
+    # model, optimizer, evaluation or stream controls are never hidden by a prefix.
+    topology = _control_leaves(campaign_topology(5, config['run']['arm_id']), 'training.optimizer_state_topology')
+    allowed.update(topology)
+    # Linear predates sign-dynamics defaults. Permit only the exact disabled
+    # default record, already checked above, enumerated leaf by leaf in evidence.
+    if 'sign_dynamics' not in counterpart['evaluation']:
+        allowed.update(_control_leaves(config['evaluation']['sign_dynamics'], 'evaluation.sign_dynamics'))
+    differences = []
+    missing = {'absent': True}
+    old_leaves, new_leaves = _control_leaves(old), _control_leaves(new)
+    for path in sorted(old_leaves.keys() | new_leaves.keys()):
+        a, b = old_leaves.get(path, missing), new_leaves.get(path, missing)
+        if a != b:
+            differences.append(dict(path=path, old=a, new=b, allowed=path in allowed))
+    failures = [row['path'] for row in differences if not row['allowed']]
+    if failures:
+        raise ConfigError('counterpart control differences: ' + ', '.join(failures))
+    return dict(status='passed', grid_id=grid, allowed_paths=sorted(allowed),
+                differences=differences, failures=[], old_projection=old, new_projection=new,
+                old_projection_hash=stable_hash(old), new_projection_hash=stable_hash(new),
+                old_contract_hash=counterpart['optimizer_ownership_contract_hash'],
+                new_contract_hash=config['optimizer_ownership_contract_hash'])
+
+
+def export_expected_schedule(config, path):
+    """Stream the full inherited cosine schedule; memory stays independent of T."""
+    import csv
+    import hashlib
+    import importlib.metadata
+    import inspect
+    import math
+    import struct
+    from pathlib import Path
+    from transformers.optimization import _get_cosine_schedule_with_warmup_lr_lambda
+    validate_warmup_controls(config)
+    horizon, warmup, peak = 4 * UPDATES_PER_EPOCH, 256, .008
+    digest = hashlib.sha256()
+    with Path(path).open('w', newline='') as stream:
+        writer = csv.DictWriter(stream, fieldnames=['scheduler_position', 'learning_rate', 'applied_update', 'warmup_steps', 'total_updates'])
+        writer.writeheader()
+        for position in range(horizon + 1):
+            lr = peak * position / warmup if position < warmup else peak * .5 * (1 + math.cos(math.pi * (position-warmup)/(horizon-warmup)))
+            inherited = peak * _get_cosine_schedule_with_warmup_lr_lambda(position, num_warmup_steps=warmup, num_training_steps=horizon, num_cycles=.5)
+            if not math.isclose(lr, inherited, rel_tol=1e-14, abs_tol=1e-18):
+                raise ValueError(f'Installed cosine schedule mismatch at {position}')
+            digest.update(struct.pack('<d', lr))
+            writer.writerow(dict(scheduler_position=position, learning_rate=lr,
+                applied_update=position+1 if position < horizon else None,
+                warmup_steps=warmup, total_updates=horizon))
+    return dict(schema_version=1, run_id=config['run']['run_id'], grid_id=config['run']['grid_id'],
+        positions=horizon+1, warmup_steps=warmup, total_updates=horizon, peak_learning_rate=peak,
+        array_sha256=digest.hexdigest(), array_encoding='ordered little-endian float64 learning rates',
+        indexing='update u applies position u-1; terminal position has no subsequent update',
+        kind='expected_schedule_not_measured_execution',
+        dependency_versions={name: importlib.metadata.version(name) for name in ('torch', 'transformers')},
+        scheduler_source_sha256=hashlib.sha256(inspect.getsource(_get_cosine_schedule_with_warmup_lr_lambda).encode()).hexdigest(),
+        source_files_sha256=_provenance().get('source_files_sha256', {}),
+        csv_sha256=_source_record(path)['sha256'])
+
+
+def _historical_job_accounting(job_id):
+    """Read-only Slurm accounting; no queue reconciliation or cancellation."""
+    import subprocess
+    from src.utils.config import ConfigError
+    result = subprocess.run(['sacct', '-X', '--noheader', '--parsable2', '--jobs='+str(job_id),
+        '--format=JobIDRaw,State,ExitCode'], check=True, capture_output=True, text=True, timeout=45)
+    rows = [line.split('|') for line in result.stdout.strip().splitlines()]
+    if len(rows) != 1 or rows[0][:3] != [str(job_id), 'COMPLETED', '0:0']:
+        raise ConfigError(f'Historical job {job_id}: missing successful scheduler evidence')
+    return dict(job_id=str(job_id), state='COMPLETED', exit_code='0:0')
+
+
+def inspect_historical_device(root, run, manifest):
+    """Check evidence available to that generation, including measured allocation.
+
+    Linear predates worker/CUDA-entry records; geometric standalones predate the
+    CUDA entry point. Geometric S1 must have the replacement attempt's entry.
+    """
+    from pathlib import Path
+    from src.utils.config import ConfigError
+    root = Path(root)
+    arm, run_id = run['arm_id'], run['run_id']
+    modern = manifest['schema_version'] == 4
+    submissions_path = root/'launchers'/('submissions.json' if modern else 'training-submissions.json')
+    config_path = root/'runs'/arm/'config.json'
+    ledger_path = root/'runs'/arm/'resource_attempts.json'
+    paths = [submissions_path, config_path, ledger_path]
+    sources = [_source_record(p) for p in paths]
+    config, ledger = _read_json(config_path), _read_json(ledger_path)
+    _require_equal(config.get('optimizer_ownership_contract_hash'), run['contract_hash'], f'{arm}.saved config contract')
+    # Runtime adds observations (distributed rank, role bindings, continuation)
+    # to config.json. Every preflight control must still match its saved value.
+    import copy
+    controls = copy.deepcopy(run['resolved_config'])
+    source = config['training'].get('effective_world_size_source')
+    if source not in (controls['training']['effective_world_size_source'], 'single_process'):
+        raise ConfigError(f'{arm}: incompatible runtime world size source')
+    controls['training']['effective_world_size_source'] = source
+    _check_resolved_subset(controls, config, f'{arm}.runtime config')
+    _require_equal(config['training'].get('resolved_mixed_precision'), 'bf16', f'{arm}.actual precision')
+    _require_equal(ledger.get('run_id'), run_id, f'{arm}.resource run')
+    jobs = [j for j in _read_json(submissions_path)['jobs'] if j['arm_id'] == arm]
+    if not jobs:
+        raise ConfigError(f'{arm}: missing historical submission')
+    intent = max(jobs, key=lambda j: j.get('attempt_id', 0))
+    if intent.get('status') in ('cancelled', 'invalid', 'retryable', 'failed'):
+        raise ConfigError(f'{arm}: invalid selected submission')
+    job = str(intent['job_id'])
+    accounting = _historical_job_accounting(job)
+    for key, value in dict(job_id=job, state='COMPLETED', exit_code='0:0').items():
+        _require_equal(accounting.get(key), value, f'{arm}.scheduler.{key}')
+    if modern:
+        attempt = intent['attempt_id']
+        worker_path = root/'launchers'/f'worker-{arm}-{attempt}.json'
+        sources.append(_source_record(worker_path))
+        worker = _read_json(worker_path)
+        for key, value in dict(job_id=job, arm_id=arm, attempt_id=attempt, status='completed', returncode=0).items():
+            _require_equal(worker.get(key), value, f'{arm}.worker.{key}')
+        bindings = intent.get('bindings', {})
+        _require_equal(bindings.get('manifest_hash'), manifest['manifest_hash'], f'{arm}.submission manifest')
+        _require_equal(bindings.get('config_sha256', {}).get(arm),
+                       _source_record(root/'campaign/configs'/f'{arm}.yaml')['sha256'], f'{arm}.submission config')
+        measured = ledger['attempts'].get(worker['process_uuid'])
+        if not measured:
+            raise ConfigError(f'{arm}: missing selected attempt resources')
+        _require_equal(measured.get('slurm_job_id'), job, f'{arm}.resource job')
+        _require_equal(measured.get('launch_attempt_id'), attempt, f'{arm}.resource attempt')
+        if arm == 'S1':
+            entry_path = root/'launchers'/f'cuda-entry-{arm}-{attempt}.json'
+            sources.append(_source_record(entry_path))
+            entry = _read_json(entry_path)
+            for key, value in dict(job_id=job, requested_device='cuda:0', required_precision='bf16',
+                                  config=str(root/'campaign/configs'/f'{arm}.yaml')).items():
+                _require_equal(entry.get(key), value, f'{arm}.CUDA entry.{key}')
+    else:
+        _require_equal(intent.get('run_id'), run_id, f'{arm}.submission run')
+        command = intent.get('command', [])
+        if 'sbatch' not in command or '--gres=gpu:1' not in command or str(root/'campaign/configs'/f'{arm}.yaml') not in command:
+            raise ConfigError(f'{arm}: missing GPU launcher/config evidence')
+        completed = [a for a in ledger['attempts'].values() if a.get('status') == 'completed']
+        if len(completed) != 1:
+            raise ConfigError(f'{arm}: ambiguous completed resource attempt')
+        measured = completed[0]
+    _require_equal(measured.get('status'), 'completed', f'{arm}.resource status')
+    _require_equal(measured.get('measurement_complete'), True, f'{arm}.resource completeness')
+    import math
+    for key in ('peak_allocated_bytes', 'peak_reserved_bytes', 'elapsed_seconds'):
+        value = measured.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+            raise ConfigError(f'{arm}: missing actual CUDA measurement {key}')
+    start = (measured.get('source_checkpoint') or {}).get('step', 0)
+    if measured.get('attempted_steps', -1) < run['assigned_updates'] - start:
+        raise ConfigError(f'{arm}: incomplete measured terminal attempt')
+    _check_sources(sources)
+    return dict(generation='worker' if modern else 'legacy_launcher', job_id=job,
+                accounting=accounting, intent=intent, resources=measured, sources=sources)
+
+
+def inspect_warmup_references(*, linear_reference_root, geometric_reference_root):
+    """Select exactly five per grid from immutable, possibly closed campaigns."""
+    from pathlib import Path
+    import yaml
+    from src.utils.config import ConfigError
+    roots = dict(linear=linear_reference_root, geometric=geometric_reference_root)
+    grids, sources = {}, []
+    for grid, location in roots.items():
+        if location is None:
+            raise ConfigError(f'schema 5 requires --{grid}-reference-root')
+        root = Path(location).expanduser().resolve()
+        reference = WARMUP_REFERENCES[grid]
+        manifest_path = root/'campaign/campaign_manifest.json'
+        manifest_source = _source_record(manifest_path)
+        manifest = _read_preflight_manifest(manifest_path)
+        for key in ('schema_version', 'campaign_id'):
+            _require_equal(manifest[key], reference[key], f'{grid}.reference.{key}')
+        selected = reference['selected_arms']
+        expected = [a['arm_id'] for a in campaign_arms(reference['schema_version']) if a['source_width']] + ['S1']
+        _require_equal(selected, expected, f'{grid}.selected arms')
+        sources.append(manifest_source)
+        definitions = {r['arm_id']: r for r in manifest['runs']}
+        for arm in selected:
+            path = root/'campaign/configs'/f'{arm}.yaml'
+            source = _source_record(path); sources.append(source)
+            if arm == 'S1':
+                _require_equal(source['sha256'], reference['s1_config_sha256'], f'{grid}.S1 config hash')
+            _require_equal(yaml.safe_load(path.read_text()), definitions[arm]['executable_config'], f'{grid}.{arm}.saved config')
+            _require_equal(str(Path(definitions[arm]['output_path']).resolve()), str(root/'runs'/arm), f'{grid}.{arm}.run location')
+        # Capture before parsing terminal sources as well as after, so a file
+        # replaced during inspection cannot be certified under its new hash.
+        for arm in selected:
+            run_dir = root/'runs'/arm
+            for filename in ('run_summary.json', 'terminal_validation_results.json',
+                             'optimizer_ownership_trace.jsonl', 'metrics.csv', 'resource_attempts.json'):
+                sources.append(_source_record(run_dir/filename))
+        terminals = inspect_selected_terminals(manifest_path, selected, run_root=root/'runs')
+        for terminal in terminals:
+            arm = terminal['arm_id']
+            widths = {w['label']: w for w in campaign_widths(reference['schema_version'])}
+            for endpoint in terminal['endpoints']:
+                width = widths[endpoint['width']]
+                for field, expected_value in [('width_fraction', width['source_fraction']),
+                                              ('ffn_dimension', width['active_ffn_dimension'])]:
+                    if field in endpoint:
+                        _require_equal(endpoint[field], expected_value, f'{grid}.{arm}.{field}')
+            device = inspect_historical_device(root, definitions[arm], manifest)
+            terminal['execution_evidence'] = device
+            sources.extend(terminal['sources']); sources.extend(device['sources'])
+        grids[grid] = dict(root=str(root), manifest_source=manifest_source, terminals=terminals,
+            counterpart=definitions['S1'], expected_traces=manifest['expected_traces']['S1'],
+            s1_config_source=_source_record(root/'campaign/configs/S1.yaml'))
+    _require_equal(sum(len(g['terminals']) for g in grids.values()), 10, 'selected terminal count')
+    _require_equal(sum(len(t['endpoints']) for g in grids.values() for t in g['terminals']), 16, 'historical endpoint count')
+    _check_sources(sources)
+    return dict(schema_version=1, status='passed', grids=grids, sources=sources)
+
+
+def verify_prepared_warmup(output, root, recipe, corpus, tokenizer, linear, geometric):
+    """An identical untouched preparation is verifiable, never adopted or rewritten."""
+    from pathlib import Path
+    import yaml
+    from src.utils.config import ConfigError
+    manifest = _read_preflight_manifest(output/'campaign_manifest.json')
+    _require_equal(manifest['schema_version'], 5, 'prepared schema')
+    _require_equal(manifest['run_output_root'], str(root), 'prepared run root')
+    _require_equal(yaml.safe_load(Path(manifest['recipe_source']['path']).read_text()), recipe, 'prepared recipe')
+    _check_sources([manifest['recipe_source']])
+    for grid, location in [('linear', linear), ('geometric', geometric)]:
+        _require_equal(manifest['reference_selection']['grids'][grid]['root'], str(Path(location).resolve()), f'{grid}.prepared root')
+    for run in manifest['runs']:
+        if (root/run['arm_id']).exists() or (root/run['arm_id']).is_symlink():
+            raise ConfigError(f"occupied campaign run identity: {root/run['arm_id']}")
+        config = run['resolved_config']
+        _require_equal(config['model']['tokenizer_dir'], str(Path(tokenizer).resolve()), 'prepared tokenizer')
+        _require_equal(config['dataset']['prepared_corpus_dir'], str(Path(corpus).resolve()), 'prepared corpus')
+        for key, value in _provenance().items():
+            _require_equal(run['initialization'].get(key), value, f'prepared source.{key}')
+    reservation = _read_json(_reservation_path(root))
+    _require_equal(reservation['manifest_hash'], manifest['manifest_hash'], 'prepared reservation')
+    for relative, digest in manifest['artifact_sha256'].items():
+        _require_equal(_source_record(output/relative)['sha256'], digest, f'prepared artifact.{relative}')
+    _check_sources(manifest['reference_selection']['sources'])
+    report = _read_json(output/'preflight.json')
+    _require_equal(report['manifest_hash'], manifest['manifest_hash'], 'prepared report')
+    return report
