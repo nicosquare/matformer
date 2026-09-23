@@ -3037,7 +3037,13 @@ def extract_warmup_early(run, root, *, end_step=1024):
             if row['split']=='train' and commits[step].get('width') and width!=commits[step]['width']:
                 raise ConfigError('Early training width differs from committed action')
             if row['split']=='train' and row.get('optimizer_batch_provenance'):
-                _require_equal(json.loads(row['optimizer_batch_provenance']), commits[step]['batch_provenance'], 'early committed batch')
+                try:
+                    batch_provenance = json.loads(row['optimizer_batch_provenance'])
+                except json.JSONDecodeError:
+                    # Historical CSV writers serialized dictionaries with repr.
+                    import ast
+                    batch_provenance = ast.literal_eval(row['optimizer_batch_provenance'])
+                _require_equal(batch_provenance, commits[step]['batch_provenance'], 'early committed batch')
             if row.get('optimizer_action_id') and commits[step].get('action_id') and row['optimizer_action_id']!=commits[step]['action_id']: continue
             key=(step,row['split'],width if row['split']=='validation' else None)
             if key in candidates: raise ConfigError(f'Ambiguous duplicate early observation: {key}')
