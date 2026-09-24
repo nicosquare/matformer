@@ -18,7 +18,7 @@ from src.evaluation import optimizer_ownership as oo
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--results-root', type=Path, default=Path('/nfs-stor/ivo.navarrete/results/elasticnn'))
-    parser.add_argument('--output-dir', type=Path, default=Path('outputs/tinystories-s1-warmup-comparison'))
+    parser.add_argument('--output-dir', type=Path, default=Path('/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-s1-warmup-comparison'))
     args = parser.parse_args()
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
