@@ -1,0 +1,24 @@
+Traceback (most recent call last):
+  File "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/scripts/preflight_tinystories_s1_warmup.py", line 355, in <module>
+    if __name__=='__main__':sys.exit(main())
+                                     ^^^^^^
+  File "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/scripts/preflight_tinystories_s1_warmup.py", line 351, in main
+    else:execute(args.campaign_root,args.mode)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/scripts/preflight_tinystories_s1_warmup.py", line 271, in execute
+    probes = gpu_real_shapes(root,output)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/scripts/preflight_tinystories_s1_warmup.py", line 210, in gpu_real_shapes
+    try: run.run_training(resolve_run_config(config_file), device='cuda:0')
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/src/utils/config.py", line 346, in resolve_run_config
+    validate_run_config(resolved)
+  File "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/src/utils/config.py", line 1360, in validate_run_config
+    validate_run_budget(config, campaign_arm(5, run.get("arm_id")))
+  File "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/src/evaluation/optimizer_ownership.py", line 853, in validate_run_budget
+    validate_warmup_controls(config)
+  File "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/src/evaluation/optimizer_ownership.py", line 2550, in validate_warmup_controls
+    _require_equal(run.get('run_id'), f"{WARMUP_CAMPAIGN_ID}-{arm['arm_id']}-s42", 'run.run_id')
+  File "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/src/evaluation/optimizer_ownership.py", line 578, in _require_equal
+    raise ConfigError(f"{field}: expected {expected!r}, found {actual!r}")
+src.utils.config.ConfigError: run.run_id: expected 'tinystories-optimizer-ownership-s1-warmup-v1-S1-linear-w256-s42', found 's1w-gpu-diagnostic-273610-S1-linear-w256'

@@ -1,0 +1,15 @@
+{
+  "file_count_before": 22586,
+  "file_count_after": 22586,
+  "changed_or_missing": [],
+  "added": [],
+  "metadata_unchanged": true,
+  "s1_config_sha256": {
+    "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/campaign/configs/S1.yaml": "ef16f8a6cb883abe6782b9201f32b6d137b324f4d0cd5ac112f66b6fb57ac3fa",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-matformer-widths-v1/campaign/configs/S1.yaml": "781254c7bbd8a7fdc48ba4c09bdc940dd44e132c73d1fe9d8b9209796d94a6c8"
+  },
+  "s1_configs_unchanged": true,
+  "metadata_sha256": "7021ae3411a8f050bae80a914e31e1cc59ea6b7035d7a4d425e6ba7b3fe4cc54",
+  "verification_scope": "Recursive file paths, sizes and mtimes; byte hashes for both pinned S1 YAMLs. Not a complete content-hash audit.",
+  "historical_writes_performed": false
+}

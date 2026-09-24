@@ -1,0 +1,23 @@
+{
+  "recorded_at": "2026-09-22T17:14:36.601165+00:00",
+  "reason": "Slurm replaces SLURM_CONF inside allocations; reassert verified client config in batch command and support guarded failed-before-worker retries.",
+  "accounting": "273663|FAILED|1:0|13|gpu-53\n273665|FAILED|1:0|13|gpu-53\n273678|COMPLETED|0:0|1|gpu-53",
+  "moved": {
+    "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/superseded/accounting-environment-failure-273663-273665/source",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/superseded/accounting-environment-failure-273663-273665/diagnostics",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/launchers": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/superseded/accounting-environment-failure-273663-273665/launchers"
+  },
+  "preserved_preflight_manifest_hash": "cfc2dd9c83ace4b621a9e90befd6edbb79028d7b4909023cf980988009b2d4ed",
+  "preflight_core_source_hashes_unchanged": true,
+  "attempt_ledgers_preserved": true,
+  "production_run_state_created": false,
+  "preserved_artifacts_sha256": {
+    "diagnostics/source-manifest.json": "c0007d39198ceb15d8fc1307b5bdc74321e412f3a422238db50c88e6131a5885",
+    "diagnostics/cpu-gate.json": "dac014c64e277be1d888d732e507e1bced1f7fe6ab1fb633b7c6f1079d767590",
+    "diagnostics/gpu-gate.json": "6c88ec91c9737be3c3f1bca419e34aedf623741b1d0db05310adf957f242ddee",
+    "diagnostics/submissions.json": "223349f8f0e75ea8e5bcc380d7ea40b46c4d350d2de36c9cb06fb85dd36d5937",
+    "launchers/plan.json": "db3e5c7a983f98afd7e15710667eeab2197bd8813f4f145238c3cff01de651c4",
+    "launchers/status.json": "cfe216ff1e6ade01e0592d7238521401e4a1cd6091cc95bbe48830e1a944ba33",
+    "launchers/submissions.json": "d3fd092a8e911feb179d89436a46321d3d239161d213cc4dbf8005dc12ff72c5"
+  }
+}

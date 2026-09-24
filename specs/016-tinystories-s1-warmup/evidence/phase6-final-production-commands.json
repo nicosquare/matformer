@@ -1,0 +1,27 @@
+[
+  {
+    "command": [
+      "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+      "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/scripts/preflight_tinystories_s1_warmup.py",
+      "submit-gpu",
+      "--campaign-root",
+      "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1"
+    ],
+    "returncode": 0,
+    "started_at": 1790098289.7922237,
+    "finished_at": 1790098335.5841393
+  },
+  {
+    "command": [
+      "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+      "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/scripts/run_tinystories_s1_warmup.py",
+      "queue",
+      "--campaign-root",
+      "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1",
+      "--once"
+    ],
+    "returncode": 0,
+    "started_at": 1790098335.585875,
+    "finished_at": 1790098467.3321242
+  }
+]

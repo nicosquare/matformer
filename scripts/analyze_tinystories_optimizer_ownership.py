@@ -12,6 +12,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.evaluation.optimizer_ownership import preflight_campaign, freeze_campaign, report_campaign, report_correction_comparison, report_inverse_membership_comparison, report_matformer_widths_comparison
+from src.evaluation.optimizer_ownership import report_s1_warmup
 
 
 def main(argv=None):
@@ -28,6 +29,8 @@ def main(argv=None):
         "run-output-root",
     ):
         preflight.add_argument("--" + option, required=True)
+    preflight.add_argument('--linear-reference-root')
+    preflight.add_argument('--geometric-reference-root')
     freeze = subcommands.add_parser('freeze', help='Freeze saved terminal checkpoints and ordinary-validation evidence')
     freeze.add_argument('--campaign-manifest', required=True)
     locations = freeze.add_mutually_exclusive_group(required=True)
@@ -47,9 +50,16 @@ def main(argv=None):
     matformer = subcommands.add_parser('report-matformer-widths', help='Compare new widths with four original standalones')
     for option in ('manifest', 'reference-manifest', 'output-dir'):
         matformer.add_argument('--' + option, required=True)
+    warmup = subcommands.add_parser('report-s1-warmup', help='Compare two warmup terminals with selected historical endpoints and early scalars')
+    for option in ('manifest', 'linear-reference-root', 'geometric-reference-root', 'output-dir'):
+        warmup.add_argument('--' + option, required=True)
+    warmup.add_argument('--early-end-step', type=int, default=1024)
     args = parser.parse_args(argv)
     try:
-        if args.command == 'report-matformer-widths':
+        if args.command == 'report-s1-warmup':
+            report = report_s1_warmup(manifest=args.manifest, linear_reference_root=args.linear_reference_root,
+                geometric_reference_root=args.geometric_reference_root, output_dir=args.output_dir, early_end_step=args.early_end_step)
+        elif args.command == 'report-matformer-widths':
             report = report_matformer_widths_comparison(manifest=args.manifest, reference_manifest=args.reference_manifest, output_dir=args.output_dir)
         elif args.command == 'report-inverse-membership':
             report = report_inverse_membership_comparison(manifest=args.manifest, reference_manifest=args.reference_manifest, output_dir=args.output_dir)
@@ -67,6 +77,8 @@ def main(argv=None):
                 tokenizer_dir=args.tokenizer_dir,
                 output_dir=args.output_dir,
                 run_output_root=args.run_output_root,
+                linear_reference_root=args.linear_reference_root,
+                geometric_reference_root=args.geometric_reference_root,
             )
     except (ValueError, OSError, RuntimeError) as error:
         parser.exit(1, f"Campaign {args.command} failed: {error}\n")

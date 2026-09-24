@@ -1,0 +1,36 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+_ test_gpu_diagnostic_identity_resolves_without_relaxing_protocol[S1-linear-w256] _
+tests/test_s1_warmup_campaign.py:195: in test_gpu_diagnostic_identity_resolves_without_relaxing_protocol
+    resolved = resolve_run_config(path, create_output_dirs=False)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/utils/config.py:346: in resolve_run_config
+    validate_run_config(resolved)
+src/utils/config.py:1360: in validate_run_config
+    validate_run_budget(config, campaign_arm(5, run.get("arm_id")))
+src/evaluation/optimizer_ownership.py:853: in validate_run_budget
+    validate_warmup_controls(config)
+src/evaluation/optimizer_ownership.py:2550: in validate_warmup_controls
+    _require_equal(run.get('run_id'), f"{WARMUP_CAMPAIGN_ID}-{arm['arm_id']}-s42", 'run.run_id')
+src/evaluation/optimizer_ownership.py:578: in _require_equal
+    raise ConfigError(f"{field}: expected {expected!r}, found {actual!r}")
+E   src.utils.config.ConfigError: run.run_id: expected 'tinystories-optimizer-ownership-s1-warmup-v1-S1-linear-w256-s42', found 's1w-gpu-diagnostic-test-S1-linear-w256'
+_ test_gpu_diagnostic_identity_resolves_without_relaxing_protocol[S1-geometric-w256] _
+tests/test_s1_warmup_campaign.py:195: in test_gpu_diagnostic_identity_resolves_without_relaxing_protocol
+    resolved = resolve_run_config(path, create_output_dirs=False)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/utils/config.py:346: in resolve_run_config
+    validate_run_config(resolved)
+src/utils/config.py:1360: in validate_run_config
+    validate_run_budget(config, campaign_arm(5, run.get("arm_id")))
+src/evaluation/optimizer_ownership.py:853: in validate_run_budget
+    validate_warmup_controls(config)
+src/evaluation/optimizer_ownership.py:2550: in validate_warmup_controls
+    _require_equal(run.get('run_id'), f"{WARMUP_CAMPAIGN_ID}-{arm['arm_id']}-s42", 'run.run_id')
+src/evaluation/optimizer_ownership.py:578: in _require_equal
+    raise ConfigError(f"{field}: expected {expected!r}, found {actual!r}")
+E   src.utils.config.ConfigError: run.run_id: expected 'tinystories-optimizer-ownership-s1-warmup-v1-S1-geometric-w256-s42', found 's1w-gpu-diagnostic-test-S1-geometric-w256'
+=========================== short test summary info ============================
+FAILED tests/test_s1_warmup_campaign.py::test_gpu_diagnostic_identity_resolves_without_relaxing_protocol[S1-linear-w256]
+FAILED tests/test_s1_warmup_campaign.py::test_gpu_diagnostic_identity_resolves_without_relaxing_protocol[S1-geometric-w256]
+2 failed, 113 deselected in 2.69s

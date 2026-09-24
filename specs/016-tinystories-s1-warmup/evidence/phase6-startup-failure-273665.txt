@@ -1,0 +1,15 @@
+Traceback (most recent call last):
+  File "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/scripts/run_tinystories_s1_warmup.py", line 465, in <module>
+    if __name__=='__main__':sys.exit(main())
+                                     ^^^^^^
+  File "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/scripts/run_tinystories_s1_warmup.py", line 460, in main
+    return worker(root,args.arm,args.attempt_id)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/scripts/run_tinystories_s1_warmup.py", line 332, in worker
+    plan=verify_plan(root)
+         ^^^^^^^^^^^^^^^^^
+  File "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/scripts/run_tinystories_s1_warmup.py", line 123, in verify_plan
+    verify_gate(root, 'gpu', expected)
+  File "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/scripts/run_tinystories_s1_warmup.py", line 110, in verify_gate
+    raise ConfigError('GPU readiness awaits matching successful worker and Slurm accounting')
+src.utils.config.ConfigError: GPU readiness awaits matching successful worker and Slurm accounting

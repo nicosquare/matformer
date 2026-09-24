@@ -1,0 +1,247 @@
+{
+  "schema_version": 1,
+  "stage": "phase4_implementation_cpu_fixtures",
+  "status": "passed",
+  "date": "2026-09-22",
+  "source_revision": "f309fe22e98ad0e78698ba963911b2f84df729ff",
+  "working_tree_dirty": true,
+  "source_files_sha256": {
+    "scripts/run_tinystories_s1_warmup.py": "df55321fed2cc6a1f88c516db53e7ed4a4d737f5b823000a1559bfaa2474b48c",
+    "scripts/preflight_tinystories_s1_warmup.py": "d33128cd2a4c56add1f0cc45146493402e96b0a0511e4001559cf5380cafab2e",
+    "scripts/run_tinystories_matformer_widths.py": "2ec59a864d203895f7b7c5c02542fe633a1f85cb2505a7fd13de9d5bc962e662",
+    "scripts/train_cuda_required.py": "61e8617668b333148824beb6d78390cf9b4680a3976dfddcaabfd6b48bb92c4f",
+    "src/evaluation/optimizer_ownership.py": "a027a7f3520d3ba5dffd14e96a673c1095d8a0d9573689c36389560dcb8f8b4f",
+    "src/utils/config.py": "1b3390d5c5d2817fc041341bbb6babcaf970b33d831a10b5485a86d7166f5707",
+    "src/utils/reproducibility.py": "b54771768da5a9ba7d093d73828e71bdfa943c2fbad55fd3f1613b1be094ecc1",
+    "src/utils/metrics.py": "971343047f71e7d8dbecb9368e0ab017944ca20df1a2752a2c1c63774e7dc484",
+    "src/training/run.py": "60a957cbe740f7336b474574bcf6b02320af38f39535cdcfb227a2f5fd19112c",
+    "src/training/steps.py": "22029cc8cd604f7b209cd2c8d4bad2b9f89b08b39c3426f39bf0d59fdc11dab4",
+    "src/training/checkpointing.py": "ab9c8a7f3753edae0acd83ca390def5a0c7c626a17c986c86473f0b8707e26d4",
+    "configs/controlled_exps/tinystories_instruct_s1_warmup.yaml": "133ba407d683e803c023a301680e78e9675bb4e269f436a77b38fbf82d858b6b",
+    "tests/test_s1_warmup_campaign.py": "91555ef0915a85ba1df922be0b240b5942f200b290d90282c0161b3f49b81322",
+    "tests/test_s1_warmup_queue.py": "edac58df5f012144e727e99bb48264c636b11a235d5d67b1f8afb3561bde7555",
+    "tests/test_s1_warmup_reporting.py": "4b3c13ca0134160a3e5c9acb08b6572d8a2dfa89916aad6126103c55bc02f12b",
+    "tests/fixtures/optimizer_ownership_legacy_signatures.json": "8a3d67fac6f7bc266866bc24b597de71dadb7b5dc1d0af0f54c914ce74201252",
+    "tests/fixtures/s1_warmup_schema4_signatures.json": "657031baaf15b720605259799b6ba9b89fcb7e2d721e4fd6b7df3030b1100b19"
+  },
+  "checks": [
+    {
+      "name": "regressions",
+      "command": "CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest tests/test_s1_warmup_campaign.py tests/test_s1_warmup_reporting.py tests/test_s1_warmup_queue.py tests/test_config.py tests/test_optimizer_ownership.py tests/test_optimizer_ownership_campaign.py tests/test_optimizer_ownership_resume.py tests/test_optimizer_ownership_reporting.py tests/test_optimizer_ownership_corrections.py tests/test_matformer_widths_campaign.py tests/test_matformer_widths_reporting.py tests/test_matformer_widths_queue.py tests/test_matformer_resource_reconciliation.py tests/test_metrics_compact_accounting.py -q -rs --tb=short --junitxml=/tmp/s1-phase4-regressions.xml",
+      "returncode": 0,
+      "counts": {
+        "tests": 1188,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 39,
+        "passed": 1149
+      },
+      "elapsed_seconds": 355.422,
+      "log": "specs/016-tinystories-s1-warmup/evidence/phase4-regressions.txt",
+      "log_sha256": "1d46fa64049cb7ee4b4e229087162ae373610fefb12cbf1b76432611ed7f3282",
+      "junit_original_path": "/tmp/s1-phase4-regressions.xml",
+      "junit_sha256": "6dd5bcefa1bb61b7d9a076170b81e6816af6174f9dca3a0c2db24b32e2c1d107",
+      "skips": [
+        {
+          "test": "test_real_trainer_orders_owner_calls_then_clock_and_publishes_complete_updates[cuda]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-1-ST-g250]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-1-ST-g500]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-1-ST-g750]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-1-ST-g1000]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-1-S1]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-1-S2]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-1-C1]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-1-C2]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-1-C3]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-2-ST-g250]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-2-ST-g500]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-2-ST-g750]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-2-ST-g1000]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-2-S1]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-2-S2]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-2-C1]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-2-C2]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-2-C3]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-3-ST-g250]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-3-ST-g500]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-3-ST-g750]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-3-ST-g1000]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-3-S1]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-3-S2]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-3-C1]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-3-C2]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_repeating_packed_sampler_exact_batches_actions_rng_and_state[cuda-3-C3]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_corrected_resume[cuda-gmc-shared]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_corrected_resume[cuda-gmc-per_granularity]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_corrected_resume[cuda-gmc-per_ffn_block]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_corrected_resume[cuda-lmc-shared]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_corrected_resume[cuda-lmc-per_granularity]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_corrected_resume[cuda-lmc-per_ffn_block]",
+          "message": "CUDA unavailable; bf16 diagnostic requires one GPU"
+        },
+        {
+          "test": "test_mw_gpu_semantic_probe[S1]",
+          "message": "Separately authorized sbatch GPU semantic probe"
+        },
+        {
+          "test": "test_mw_gpu_semantic_probe[S2]",
+          "message": "Separately authorized sbatch GPU semantic probe"
+        },
+        {
+          "test": "test_mw_gpu_semantic_probe[C1]",
+          "message": "Separately authorized sbatch GPU semantic probe"
+        },
+        {
+          "test": "test_mw_gpu_semantic_probe[C2]",
+          "message": "Separately authorized sbatch GPU semantic probe"
+        },
+        {
+          "test": "test_mw_gpu_semantic_probe[C3]",
+          "message": "Separately authorized sbatch GPU semantic probe"
+        }
+      ]
+    },
+    {
+      "name": "runtime-final",
+      "command": "CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest tests/test_s1_warmup_campaign.py -k 'runtime' -q -rs --tb=short --junitxml=/tmp/s1-phase4-runtime-final.xml",
+      "returncode": 0,
+      "counts": {
+        "tests": 60,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "passed": 60
+      },
+      "elapsed_seconds": 29.508,
+      "log": "specs/016-tinystories-s1-warmup/evidence/phase4-runtime-final.txt",
+      "log_sha256": "cac99c9170cfd54b1ed9437eb6568c6f0ee9c8215e7769a6a39f78d09a91bd6a",
+      "junit_original_path": "/tmp/s1-phase4-runtime-final.xml",
+      "junit_sha256": "518b95338e525cfc63c3902c2eeb2c7a9961a5126bd342ddd820e366090148b7",
+      "skips": []
+    },
+    {
+      "name": "queue-final",
+      "command": "CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest tests/test_s1_warmup_queue.py -q -rs --tb=short --junitxml=/tmp/s1-phase4-queue-final.xml",
+      "returncode": 0,
+      "counts": {
+        "tests": 54,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "passed": 54
+      },
+      "elapsed_seconds": 9.306,
+      "log": "specs/016-tinystories-s1-warmup/evidence/phase4-queue-final.txt",
+      "log_sha256": "60e2cf3a269a3a9af878111c992f3f2b23bac9607b9d25ff48f7694cf050544e",
+      "junit_original_path": "/tmp/s1-phase4-queue-final.xml",
+      "junit_sha256": "bbc493f3e0267a802d87fe0b4125ea803aff9b0b1b03c2e7ac5cc178e5ffec41",
+      "skips": []
+    }
+  ],
+  "notes": [
+    "Broad regressions passed before the final launcher recovery refinement and two extra runtime assertions. The final runtime/queue reruns cover those final source versions.",
+    "The 60 runtime and 54 queue checks overlap the broad selection; do not add totals as distinct tests.",
+    "Source hashes describe the final implementation, not an immutable production snapshot or readiness gate.",
+    "CPU hides CUDA. The 39 broad-suite GPU skips do not establish GPU readiness.",
+    "GPU, real input/reference certification, reporting implementation and production remain pending. No real sbatch submission or historical write occurred."
+  ]
+}

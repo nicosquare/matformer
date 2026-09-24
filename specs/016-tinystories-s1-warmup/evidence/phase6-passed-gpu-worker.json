@@ -1,0 +1,8 @@
+{
+  "gate_hash": "b75a4ac6acddab277542ac63c47ab1e5cfe955b0b487b66aa5e56e0f9f449efb",
+  "job_id": "273655",
+  "name": "s1w-diagnostic-a2-450634f8",
+  "output": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f",
+  "returncode": 0,
+  "status": "passed"
+}

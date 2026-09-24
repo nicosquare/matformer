@@ -1,0 +1,263 @@
+{
+  "allocation": "JobId=273655 JobName=s1w-diagnostic-a2-450634f8 UserId=ivo.navarrete(2196) GroupId=cscc-users(2012) MCS_label=N/A Priority=2624 Nice=0 Account=cscc-users QOS=cscc-gpu-qos JobState=RUNNING Reason=None Dependency=(null) Requeue=0 Restarts=0 BatchFlag=1 Reboot=0 ExitCode=0:0 RunTime=00:00:19 TimeLimit=1-00:00:00 TimeMin=N/A SubmitTime=2026-09-22T20:58:24 EligibleTime=2026-09-22T20:58:24 AccrueTime=2026-09-22T20:58:24 StartTime=2026-09-22T20:58:24 EndTime=2026-09-23T20:58:24 Deadline=N/A PreemptEligibleTime=2026-09-22T20:58:24 PreemptTime=None SuspendTime=None SecsPreSuspend=0 LastSchedEval=2026-09-22T20:58:24 Scheduler=Main Partition=cscc-gpu-p AllocNode:Sid=ciai-login-1:2472689 ReqNodeList=(null) ExcNodeList=gpu-[05,50-51,54] NodeList=gpu-53 BatchHost=gpu-53 NumNodes=1 NumCPUs=4 NumTasks=1 CPUs/Task=4 ReqB:S:C:T=0:0:*:* ReqTRES=cpu=4,mem=16G,node=1,billing=4,gres/gpu=1 AllocTRES=cpu=4,mem=16G,node=1,billing=4,gres/gpu=1 Socks/Node=* NtasksPerN:B:S:C=0:0:*:* CoreSpec=* MinCPUsNode=4 MinMemoryNode=16G MinTmpDiskNode=0 Features=(null) DelayBoot=00:00:00 OverSubscribe=OK Contiguous=0 Licenses=(null) LicensesAlloc=(null) Network=(null) Command=(null) WorkDir=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source StdErr=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/logs/diagnostic-a2-273655.err StdIn=/dev/null StdOut=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/logs/diagnostic-a2-273655.out TresPerNode=gres/gpu:1 TresPerTask=cpu=4",
+  "bindings": {
+    "artifacts_sha256": "eb3fbd811c455635c57ce0ee5302dc2614cc6bf577fc09dbe6808c22229369ac",
+    "campaign_id": "tinystories-optimizer-ownership-s1-warmup-v1",
+    "campaign_manifest_sha256": "237188139e7ca8110d62651f6e364ac25e3c26c5bc308e6b0c449fa5f0c8a3b1",
+    "config_set_sha256": "3db81e1e2238a57b35ca2aa1583e968c4405edf0383904ebcb4ecc5af8151204",
+    "config_sha256": {
+      "S1-geometric-w256": "5622556cdb91bc0c9643510df8c968cc26c264b056975a16b4cfe14305b07caa",
+      "S1-linear-w256": "6423c3531d758a3f4b57c3f888cf00a7b96fb2b5976e70035f056fd20869d318"
+    },
+    "contracts": {
+      "S1-geometric-w256": "693f54d5760fea8be724888b90c83c0078c4cb005a5a4418589a22cd857361ec",
+      "S1-linear-w256": "bb0f38d6c287be3a66b17b0e1c353ded8fe97be062ec7bcad15596da367e5916"
+    },
+    "manifest_hash": "cfc2dd9c83ace4b621a9e90befd6edbb79028d7b4909023cf980988009b2d4ed",
+    "preflight_sha256": "52e5c536e036f3488b69deb7c3d2d69ca6dc8a42eaa3103a3a479499a3ef6f26",
+    "recipe_sha256": "133ba407d683e803c023a301680e78e9675bb4e269f436a77b38fbf82d858b6b",
+    "references_sha256": "1f545c565c68ca86fb6b9509fd0ef67eb481e0dcabdfb28a53a3409c7a0cfe90",
+    "source_sha256": "af2f2c2b7f20e05f1adeb83c0acf67b40f64c3e270ab1c8b1035abca954ae419"
+  },
+  "boundary_history": "State-seeded synthetic-history diagnostics; no full-budget training claim",
+  "checks": [
+    {
+      "artifacts": [
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/real-shapes.json",
+          "sha256": "13ca5a8a3b7ace2f61f81c4834d1f39e51c096770926a57226ccd5be6f9b69ae"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/S1-linear-w256.yaml",
+          "sha256": "37e1499a07a7607a3d1700af7e910d81ee08abae33980a8f1b5aa7cccddbcc56"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-linear-w256/checkpoints/latest.pt",
+          "sha256": "e742fc07f261729aed2f7b079aa03c6002a2028967ef2ca70c4cfc9242fe624a"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-linear-w256/optimizer_ownership_trace.jsonl",
+          "sha256": "d6cb741bb809f6125a2f4b7db39acb961d45ce8cf799f7ce610ec81596323cbd"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-linear-w256/heartbeats.jsonl",
+          "sha256": "79c52afdd70d2cf81b33d4c17cff9f5573b895e3500b50e77a852e0a79f30906"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-linear-w256/resource_attempts.json",
+          "sha256": "c0469620320f362b7d8dd695d9a5a442b37c1e9d1d5fbc4fb9404c735381c227"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-linear-w256/config.json",
+          "sha256": "732c670d5ea4450c8f8a28cb172ffa1a3138af87d15d6742625871479e364fbe"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/S1-geometric-w256.yaml",
+          "sha256": "e1ae3793a092890871103da9db9e4b123737572afd6f9d01f852c827eebf8cb0"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-geometric-w256/checkpoints/latest.pt",
+          "sha256": "f23a1315302973626c0a58641edc5b6d820cf8a4f110ea4ca250c96ba953dc76"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-geometric-w256/optimizer_ownership_trace.jsonl",
+          "sha256": "98431dda039ef61c85995a572cb51ee43ebaf8f1c9e2dc0081b46e8c962fb1ba"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-geometric-w256/heartbeats.jsonl",
+          "sha256": "fad865b118d7e2f607e7c2e593b4b6a25a15623cb038e29d1803041bc12e10ab"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-geometric-w256/resource_attempts.json",
+          "sha256": "1fcf7d0f8191d0390b63bdbaba02d8862d5324be5eaf0bce934ff1061e04cedf"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-geometric-w256/config.json",
+          "sha256": "b851da8246194e73a57691057df417dae4a8e7da49804ca718891c01e3edfb1f"
+        }
+      ],
+      "command": [
+        "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+        "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/scripts/preflight_tinystories_s1_warmup.py",
+        "gpu",
+        "--campaign-root",
+        "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1"
+      ],
+      "errors": 0,
+      "failures": 0,
+      "returncode": 0,
+      "skipped": 0,
+      "tests": 2
+    },
+    {
+      "artifacts": [
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/pytest.xml",
+          "sha256": "968f61a2abd4cb47c14f0510d0748ad7d88ebf7dddee1aedf63a32e1f84abb5e"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/pytest.log",
+          "sha256": "599c5b5f06fe506a1b5459c2fb70521a026c719888207f1327242e3c25d7efe0"
+        }
+      ],
+      "command": [
+        "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-rs",
+        "--tb=short",
+        "-p",
+        "no:cacheprovider",
+        "--junitxml=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/pytest.xml",
+        "tests/test_s1_warmup_campaign.py",
+        "-k",
+        "warmup_runtime"
+      ],
+      "cwd": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/pytest-workspace",
+      "errors": 0,
+      "execution": "in_process_pytest",
+      "failures": 0,
+      "finished_at": 1790096406.3063858,
+      "returncode": 0,
+      "skipped": 0,
+      "source": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source",
+      "started_at": 1790096335.722023,
+      "tests": 60
+    }
+  ],
+  "content_hash": "b75a4ac6acddab277542ac63c47ab1e5cfe955b0b487b66aa5e56e0f9f449efb",
+  "coverage": [
+    "all_widths",
+    "applied_lr",
+    "warmup_resume",
+    "epoch_resume",
+    "terminal_recovery",
+    "invalid_restore",
+    "partial_failure"
+  ],
+  "cpu_gate_hash": "e5bcdf01269ec0a5d4bc55ecc60849de438be98cc979317121d929677d885514",
+  "environment": {
+    "executable": "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+    "packages": {
+      "PyYAML": "6.0.3",
+      "numpy": "2.4.3",
+      "pytest": "9.0.3",
+      "torch": "2.11.0+cu128",
+      "transformers": "5.8.0"
+    },
+    "platform": "Linux-6.12.95-ql-generic-14-12-x86_64-with-glibc2.39",
+    "python": "3.12.13 | packaged by conda-forge | (main, Aug 11 2026, 10:27:28) [GCC 14.4.0]"
+  },
+  "hardware": "NVIDIA A100-SXM4-40GB",
+  "holdout_evaluated": false,
+  "intent_uuid": "450634f85c7c4c2fb47be9b3aef333f2",
+  "job_id": "273655",
+  "mode": "gpu",
+  "precision": "bf16",
+  "probes": [
+    {
+      "actual_cuda_bf16_forwards": 8,
+      "arm_id": "S1-linear-w256",
+      "artifacts": [
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/S1-linear-w256.yaml",
+          "sha256": "37e1499a07a7607a3d1700af7e910d81ee08abae33980a8f1b5aa7cccddbcc56"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-linear-w256/checkpoints/latest.pt",
+          "sha256": "e742fc07f261729aed2f7b079aa03c6002a2028967ef2ca70c4cfc9242fe624a"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-linear-w256/optimizer_ownership_trace.jsonl",
+          "sha256": "d6cb741bb809f6125a2f4b7db39acb961d45ce8cf799f7ce610ec81596323cbd"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-linear-w256/heartbeats.jsonl",
+          "sha256": "79c52afdd70d2cf81b33d4c17cff9f5573b895e3500b50e77a852e0a79f30906"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-linear-w256/resource_attempts.json",
+          "sha256": "c0469620320f362b7d8dd695d9a5a442b37c1e9d1d5fbc4fb9404c735381c227"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-linear-w256/config.json",
+          "sha256": "732c670d5ea4450c8f8a28cb172ffa1a3138af87d15d6742625871479e364fbe"
+        }
+      ],
+      "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-linear-w256/checkpoints/latest.pt",
+      "checkpoint_sha256": "e742fc07f261729aed2f7b079aa03c6002a2028967ef2ca70c4cfc9242fe624a",
+      "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/S1-linear-w256.yaml",
+      "config_sha256": "37e1499a07a7607a3d1700af7e910d81ee08abae33980a8f1b5aa7cccddbcc56",
+      "horizon": 348528,
+      "overrides": {
+        "output_dir": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-linear-w256",
+        "run_id": "s1w-gpu-diagnostic-273655-S1-linear-w256",
+        "stops": [
+          4,
+          8
+        ]
+      },
+      "status": "passed",
+      "steps": 8
+    },
+    {
+      "actual_cuda_bf16_forwards": 8,
+      "arm_id": "S1-geometric-w256",
+      "artifacts": [
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/S1-geometric-w256.yaml",
+          "sha256": "e1ae3793a092890871103da9db9e4b123737572afd6f9d01f852c827eebf8cb0"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-geometric-w256/checkpoints/latest.pt",
+          "sha256": "f23a1315302973626c0a58641edc5b6d820cf8a4f110ea4ca250c96ba953dc76"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-geometric-w256/optimizer_ownership_trace.jsonl",
+          "sha256": "98431dda039ef61c85995a572cb51ee43ebaf8f1c9e2dc0081b46e8c962fb1ba"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-geometric-w256/heartbeats.jsonl",
+          "sha256": "fad865b118d7e2f607e7c2e593b4b6a25a15623cb038e29d1803041bc12e10ab"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-geometric-w256/resource_attempts.json",
+          "sha256": "1fcf7d0f8191d0390b63bdbaba02d8862d5324be5eaf0bce934ff1061e04cedf"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-geometric-w256/config.json",
+          "sha256": "b851da8246194e73a57691057df417dae4a8e7da49804ca718891c01e3edfb1f"
+        }
+      ],
+      "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-geometric-w256/checkpoints/latest.pt",
+      "checkpoint_sha256": "f23a1315302973626c0a58641edc5b6d820cf8a4f110ea4ca250c96ba953dc76",
+      "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/S1-geometric-w256.yaml",
+      "config_sha256": "e1ae3793a092890871103da9db9e4b123737572afd6f9d01f852c827eebf8cb0",
+      "horizon": 348528,
+      "overrides": {
+        "output_dir": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/gpu-e73e2270250940b39d4a3dda8867185f/runs/s1w-gpu-diagnostic-273655-S1-geometric-w256",
+        "run_id": "s1w-gpu-diagnostic-273655-S1-geometric-w256",
+        "stops": [
+          4,
+          8
+        ]
+      },
+      "status": "passed",
+      "steps": 8
+    }
+  ],
+  "real_shape": {
+    "batch_size": 64,
+    "context_length": 128,
+    "d_model": 64,
+    "num_attention_heads": 4,
+    "num_layers": 4
+  },
+  "real_shape_arms": [
+    "S1-linear-w256",
+    "S1-geometric-w256"
+  ],
+  "schema_version": 1,
+  "status": "passed"
+}

@@ -1,0 +1,21 @@
+Traceback (most recent call last):
+  File "/home/ivo.navarrete/ElasticNN/matformer/scripts/analyze_tinystories_optimizer_ownership.py", line 89, in <module>
+    main()
+  File "/home/ivo.navarrete/ElasticNN/matformer/scripts/analyze_tinystories_optimizer_ownership.py", line 74, in main
+    report = preflight_campaign(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/home/ivo.navarrete/ElasticNN/matformer/src/evaluation/optimizer_ownership.py", line 1217, in preflight_campaign
+    references = inspect_warmup_references(linear_reference_root=linear_reference_root,
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ivo.navarrete/ElasticNN/matformer/src/evaluation/optimizer_ownership.py", line 2834, in inspect_warmup_references
+    device = inspect_historical_device(root, definitions[arm], manifest)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ivo.navarrete/ElasticNN/matformer/src/evaluation/optimizer_ownership.py", line 2738, in inspect_historical_device
+    accounting = _historical_job_accounting(job)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ivo.navarrete/ElasticNN/matformer/src/evaluation/optimizer_ownership.py", line 2694, in _historical_job_accounting
+    result = subprocess.run(['sacct', '-X', '--noheader', '--parsable2', '--jobs='+str(job_id),
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ivo.navarrete/.conda/envs/elasticnn/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['sacct', '-X', '--noheader', '--parsable2', '--jobs=220971', '--format=JobIDRaw,State,ExitCode']' returned non-zero exit status 1.

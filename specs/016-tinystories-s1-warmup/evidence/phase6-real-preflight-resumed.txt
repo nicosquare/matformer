@@ -1,0 +1,185 @@
+{
+  "audit": {
+    "corpus_hash": "e2eff35bc7078f4f4c4d618638988b3b82e96e7c20e40175ec8d272c5370efc9",
+    "corpus_name": "tinystories-instruct-packed-full-v1",
+    "reserved_pairwise_intersection_counts": {
+      "controller__final_holdout": 0,
+      "ordinary_validation__controller": 0,
+      "ordinary_validation__final_holdout": 0
+    },
+    "reserved_role_counts": {
+      "controller": 128,
+      "final_holdout": 512,
+      "ordinary_validation": 128
+    },
+    "role_manifest_hashes": {
+      "controller": "69b039d6f6cec565e9efb576080b3e91d652c63290ebdea6f376fd133b6bd987",
+      "final_holdout": "e20160ab1d7781b4fe7f24a78ed547fce0ef3b7b1f0cd66eaf2f84dd89113076",
+      "optimizer_training": "c06270adebde4c5456517a5bcf266b2e4520587fb928541333009735ee2e60dd",
+      "ordinary_validation": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856"
+    },
+    "role_source_document_counts": {
+      "controller": 128,
+      "final_holdout": 512,
+      "optimizer_training": 2476404,
+      "ordinary_validation": 128
+    },
+    "schema_version": 3,
+    "source_document_count": 2477172,
+    "source_exhausted": true,
+    "source_termination": "source_exhausted",
+    "status": "passed",
+    "tokenizer_manifest_hash": "93e6bc7a94df82ca043519a71d5178bb645846ecd553f2302244b72c954e3819",
+    "tokenizer_model_sha256": "6ae42a09bb5dc007267f11bfd7b7b4fefd006c960c5954a4a45ce7b89ace7713",
+    "tokenizer_vocab_size": 2048,
+    "training_order_sha256": "d94ed9514a314a404fc420385a4b0f3a317774707ca3a212100aa7d4f35badbc",
+    "training_sequence_count": 5576491,
+    "training_token_count": 713790848,
+    "verified_shard_count": 89,
+    "verified_training_order_count": 5576491
+  },
+  "campaign_id": "tinystories-optimizer-ownership-s1-warmup-v1",
+  "expected_traces": {
+    "S1-geometric-w256": {
+      "actions": {
+        "counts": {
+          "g1000": 87072,
+          "g125": 86898,
+          "g250": 87221,
+          "g500": 87337
+        },
+        "encoding": "ASCII width label plus LF per update",
+        "expected_counts": {
+          "g1000": 87132.0,
+          "g125": 87132.0,
+          "g250": 87132.0,
+          "g500": 87132.0
+        },
+        "forced_balance": false,
+        "sampling": "uniform_random_with_replacement",
+        "sha256": "3b76212fe2a4d3ecef3d48b4aa35b034d89da730ae05f7bda5b5479db03c46b5",
+        "updates": 348528
+      },
+      "epochs": [
+        {
+          "batch_size": 64,
+          "encoding": "ordered sequence IDs as little-endian uint64",
+          "epoch_index": 0,
+          "fixed_epoch_set_hash": "1329fd4243b12fad836f2ba1328b4bd679450d516ae643ca8473ca57c953f0a2",
+          "sequences": 5576448,
+          "sha256": "b12bb2e42d4f6625f48c68dd39a872a962ffa01cbbfc87c0edbe47368d387f27",
+          "updates": 87132
+        },
+        {
+          "batch_size": 64,
+          "encoding": "ordered sequence IDs as little-endian uint64",
+          "epoch_index": 1,
+          "fixed_epoch_set_hash": "1329fd4243b12fad836f2ba1328b4bd679450d516ae643ca8473ca57c953f0a2",
+          "sequences": 5576448,
+          "sha256": "0359d3e543bbb65fe0cb401f872a8c28fdd10d68a387157d324a52097e4b5cd4",
+          "updates": 87132
+        },
+        {
+          "batch_size": 64,
+          "encoding": "ordered sequence IDs as little-endian uint64",
+          "epoch_index": 2,
+          "fixed_epoch_set_hash": "1329fd4243b12fad836f2ba1328b4bd679450d516ae643ca8473ca57c953f0a2",
+          "sequences": 5576448,
+          "sha256": "32b4df4d8a74bc017076c3a20135649ab2e933b53ee0b9cfa1f86b08fb7d949c",
+          "updates": 87132
+        },
+        {
+          "batch_size": 64,
+          "encoding": "ordered sequence IDs as little-endian uint64",
+          "epoch_index": 3,
+          "fixed_epoch_set_hash": "1329fd4243b12fad836f2ba1328b4bd679450d516ae643ca8473ca57c953f0a2",
+          "sequences": 5576448,
+          "sha256": "7e36c5b85d9ba4a92c94837224635689a47a0deefa4a5376d18c8ed4f03c78fb",
+          "updates": 87132
+        }
+      ]
+    },
+    "S1-linear-w256": {
+      "actions": {
+        "counts": {
+          "g1000": 87072,
+          "g250": 86898,
+          "g500": 87221,
+          "g750": 87337
+        },
+        "encoding": "ASCII width label plus LF per update",
+        "expected_counts": {
+          "g1000": 87132.0,
+          "g250": 87132.0,
+          "g500": 87132.0,
+          "g750": 87132.0
+        },
+        "forced_balance": false,
+        "sampling": "uniform_random_with_replacement",
+        "sha256": "275c4fd957d103c609b3cb1ae9e7d1f37635e58e6eca92994261ddb5f0346b26",
+        "updates": 348528
+      },
+      "epochs": [
+        {
+          "batch_size": 64,
+          "encoding": "ordered sequence IDs as little-endian uint64",
+          "epoch_index": 0,
+          "fixed_epoch_set_hash": "1329fd4243b12fad836f2ba1328b4bd679450d516ae643ca8473ca57c953f0a2",
+          "sequences": 5576448,
+          "sha256": "b12bb2e42d4f6625f48c68dd39a872a962ffa01cbbfc87c0edbe47368d387f27",
+          "updates": 87132
+        },
+        {
+          "batch_size": 64,
+          "encoding": "ordered sequence IDs as little-endian uint64",
+          "epoch_index": 1,
+          "fixed_epoch_set_hash": "1329fd4243b12fad836f2ba1328b4bd679450d516ae643ca8473ca57c953f0a2",
+          "sequences": 5576448,
+          "sha256": "0359d3e543bbb65fe0cb401f872a8c28fdd10d68a387157d324a52097e4b5cd4",
+          "updates": 87132
+        },
+        {
+          "batch_size": 64,
+          "encoding": "ordered sequence IDs as little-endian uint64",
+          "epoch_index": 2,
+          "fixed_epoch_set_hash": "1329fd4243b12fad836f2ba1328b4bd679450d516ae643ca8473ca57c953f0a2",
+          "sequences": 5576448,
+          "sha256": "32b4df4d8a74bc017076c3a20135649ab2e933b53ee0b9cfa1f86b08fb7d949c",
+          "updates": 87132
+        },
+        {
+          "batch_size": 64,
+          "encoding": "ordered sequence IDs as little-endian uint64",
+          "epoch_index": 3,
+          "fixed_epoch_set_hash": "1329fd4243b12fad836f2ba1328b4bd679450d516ae643ca8473ca57c953f0a2",
+          "sequences": 5576448,
+          "sha256": "7e36c5b85d9ba4a92c94837224635689a47a0deefa4a5376d18c8ed4f03c78fb",
+          "updates": 87132
+        }
+      ]
+    }
+  },
+  "holdout_evaluated": false,
+  "kind": "campaign_audit_model_trace",
+  "manifest_hash": "cfc2dd9c83ace4b621a9e90befd6edbb79028d7b4909023cf980988009b2d4ed",
+  "manifest_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/campaign/campaign_manifest.json",
+  "model_counts": {
+    "S1-geometric-w256": {
+      "g1000": 262720,
+      "g125": 90688,
+      "g250": 115264,
+      "g500": 164416
+    },
+    "S1-linear-w256": {
+      "g1000": 262720,
+      "g250": 115264,
+      "g500": 164416,
+      "g750": 213568
+    }
+  },
+  "run_count": 2,
+  "runtime_ownership_verified": false,
+  "schema_version": 1,
+  "status": "passed",
+  "training_started": false
+}

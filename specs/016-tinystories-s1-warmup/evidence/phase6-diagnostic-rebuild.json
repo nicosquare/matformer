@@ -1,0 +1,22 @@
+{
+  "recorded_at": "2026-09-22T16:45:46.617251+00:00",
+  "reason": "Diagnostic identity context omitted budget validation; source and both readiness gates must be regenerated.",
+  "failed_job_accounting": "273610|FAILED|1:0|28|gpu-55",
+  "moved": {
+    "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/superseded/gpu-identity-failure-273610/source",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/superseded/gpu-identity-failure-273610/diagnostics",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/launchers": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/superseded/gpu-identity-failure-273610/launchers"
+  },
+  "preserved_preflight_manifest_hash": "cfc2dd9c83ace4b621a9e90befd6edbb79028d7b4909023cf980988009b2d4ed",
+  "preflight_core_source_hashes_unchanged": true,
+  "diagnostic_attempt_sequence_preserved": true,
+  "production_runs_started": false,
+  "preserved_artifacts_sha256": {
+    "diagnostics/source-manifest.json": "f630eac7d45b92ad52affc59a51634108631191028d12a6014d9a126bab6e322",
+    "diagnostics/cpu-gate.json": "ff1115960187e391591006c27a4faab970beec11c4ca38f58920b14a72ab48ea",
+    "diagnostics/gpu-gate.json": "4072499d1dfe5415db2ce136bd2e2adb0869daef6af3b11b3ce3eb85d109cfb8",
+    "diagnostics/submissions.json": "277f125a7ab0e8d81cd59ece3c3e0fcfdc9ef912900ea5a3f28b9c212956b62f",
+    "launchers/plan.json": "5618f568eab22f5750d19d3a4351fd3fb46cbc1e1a3fa430ec21bf90d0695ac3",
+    "launchers/status.json": "0624817bc20fa979fc1a3851d8a1275434757d1d28f0dc3f820d42025f7e2085"
+  }
+}

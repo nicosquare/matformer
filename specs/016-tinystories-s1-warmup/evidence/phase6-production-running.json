@@ -1,0 +1,187 @@
+{
+  "observed_at": "2026-09-22T17:35:57.758427+00:00",
+  "scheduler": "273716|s1w-S1-geometric-w256-a2-9ec16e49|RUNNING|gpu-08|gpu-08\n273714|s1w-S1-linear-w256-a2-e73c65b5|RUNNING|gpu-53|gpu-53\n",
+  "accounting": "273610|s1w-diagnostic-a1-5c41c5a6|FAILED|1:0|28|billing=4,cpu=4,gres/gpu=1,mem=16G,node=1|gpu-55\n273655|s1w-diagnostic-a2-450634f8|COMPLETED|0:0|113|billing=4,cpu=4,gres/gpu=1,mem=16G,node=1|gpu-53\n273663|s1w-S1-linear-w256-a1-94403d7f|FAILED|1:0|13|billing=4,cpu=4,gres/gpu=1,mem=16G,node=1|gpu-53\n273665|s1w-S1-geometric-w256-a1-231d7953|FAILED|1:0|13|billing=4,cpu=4,gres/gpu=1,mem=16G,node=1|gpu-53\n273678|s1w-accounting-probe-164fa11c|COMPLETED|0:0|1|billing=4,cpu=4,gres/gpu=1,mem=16G,node=1|gpu-53\n273708|s1w-diagnostic-a3-1c6c8faa|COMPLETED|0:0|118|billing=4,cpu=4,gres/gpu=1,mem=16G,node=1|gpu-53\n273714|s1w-S1-linear-w256-a2-e73c65b5|RUNNING|0:0|131|billing=4,cpu=4,gres/gpu=1,mem=16G,node=1|gpu-53\n273716|s1w-S1-geometric-w256-a2-9ec16e49|RUNNING|0:0|78|billing=4,cpu=4,gres/gpu=1,mem=16G,node=1|gpu-08\n",
+  "production": [
+    {
+      "arm_id": "S1-linear-w256",
+      "job_id": "273714",
+      "attempt_id": 2,
+      "host": "gpu-53",
+      "precision": "bf16",
+      "worker": {
+        "arm_id": "S1-linear-w256",
+        "attempt_id": 2,
+        "bindings": {
+          "artifacts_sha256": "eb3fbd811c455635c57ce0ee5302dc2614cc6bf577fc09dbe6808c22229369ac",
+          "campaign_id": "tinystories-optimizer-ownership-s1-warmup-v1",
+          "campaign_manifest_sha256": "237188139e7ca8110d62651f6e364ac25e3c26c5bc308e6b0c449fa5f0c8a3b1",
+          "config_set_sha256": "3db81e1e2238a57b35ca2aa1583e968c4405edf0383904ebcb4ecc5af8151204",
+          "config_sha256": {
+            "S1-geometric-w256": "5622556cdb91bc0c9643510df8c968cc26c264b056975a16b4cfe14305b07caa",
+            "S1-linear-w256": "6423c3531d758a3f4b57c3f888cf00a7b96fb2b5976e70035f056fd20869d318"
+          },
+          "contracts": {
+            "S1-geometric-w256": "693f54d5760fea8be724888b90c83c0078c4cb005a5a4418589a22cd857361ec",
+            "S1-linear-w256": "bb0f38d6c287be3a66b17b0e1c353ded8fe97be062ec7bcad15596da367e5916"
+          },
+          "manifest_hash": "cfc2dd9c83ace4b621a9e90befd6edbb79028d7b4909023cf980988009b2d4ed",
+          "preflight_sha256": "52e5c536e036f3488b69deb7c3d2d69ca6dc8a42eaa3103a3a479499a3ef6f26",
+          "recipe_sha256": "133ba407d683e803c023a301680e78e9675bb4e269f436a77b38fbf82d858b6b",
+          "references_sha256": "1f545c565c68ca86fb6b9509fd0ef67eb481e0dcabdfb28a53a3409c7a0cfe90",
+          "source_sha256": "f3232ac6772cba650a236cc01290d67210d9e981743e54db159ec9e7d937acc6"
+        },
+        "command": [
+          "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+          "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/scripts/train_cuda_required.py",
+          "--config",
+          "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/campaign/configs/S1-linear-w256.yaml",
+          "--entry-evidence",
+          "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/launchers/cuda-entry-S1-linear-w256-2.json"
+        ],
+        "continuation": {
+          "checkpoint": null,
+          "mode": "fresh",
+          "step": 0
+        },
+        "cpu_gate_hash": "cd0b72957eec47b7009722ffec4c540af8a0d83ebd2bdc478dc8dbe8b63458a3",
+        "gpu_gate_hash": "23119bcd53ccc2fc038a49b53d0e31cfc6a5e7f639bbcc0180af65281c537820",
+        "intent_uuid": "e73c65b57b724571a675c375774f67e6",
+        "job_id": "273714",
+        "measurement_complete": false,
+        "name": "s1w-S1-linear-w256-a2-e73c65b5",
+        "process_uuid": "815fff700be54ed58fb022109bc88688",
+        "started_at": 1790098444.806517,
+        "status": "running"
+      },
+      "cuda_entry": {
+        "config": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/campaign/configs/S1-linear-w256.yaml",
+        "cuda_visible_devices": "3",
+        "host": "gpu-53",
+        "job_id": "273714",
+        "nvidia_smi": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "0, GPU-596cd49b-c002-f227-9714-da46717c6e7e, NVIDIA A100-SXM4-40GB, 570.195.03\n1, GPU-33ed5b61-71ed-330a-afb6-d2c7d6ab1f78, NVIDIA A100-SXM4-40GB, 570.195.03\n2, GPU-41b053af-d9f1-eedc-57ea-a48822988e08, NVIDIA A100-SXM4-40GB, 570.195.03\n3, GPU-8feaa481-7de3-621b-3038-881be196484e, NVIDIA A100-SXM4-40GB, 570.195.03\n"
+        },
+        "process_id": 1993963,
+        "requested_device": "cuda:0",
+        "required_precision": "bf16",
+        "slurm_job_gpus": "3",
+        "status": "starting"
+      },
+      "resources": {
+        "attempts": {
+          "815fff700be54ed58fb022109bc88688": {
+            "attempted_steps": 2330,
+            "elapsed_seconds": 107.40618584305048,
+            "failure": null,
+            "launch_attempt_id": 2,
+            "measurement_complete": false,
+            "peak_allocated_bytes": 453779968,
+            "peak_reserved_bytes": 528482304,
+            "process_uuid": "815fff700be54ed58fb022109bc88688",
+            "run_id": "tinystories-optimizer-ownership-s1-warmup-v1-S1-linear-w256-s42",
+            "sequence": 343,
+            "slurm_job_id": "273714",
+            "source_checkpoint": null,
+            "started_at": "2026-09-22T17:34:10.712122+00:00",
+            "status": "running"
+          }
+        },
+        "run_id": "tinystories-optimizer-ownership-s1-warmup-v1-S1-linear-w256-s42",
+        "schema_version": 1
+      }
+    },
+    {
+      "arm_id": "S1-geometric-w256",
+      "job_id": "273716",
+      "attempt_id": 2,
+      "host": "gpu-08",
+      "precision": "bf16",
+      "worker": {
+        "arm_id": "S1-geometric-w256",
+        "attempt_id": 2,
+        "bindings": {
+          "artifacts_sha256": "eb3fbd811c455635c57ce0ee5302dc2614cc6bf577fc09dbe6808c22229369ac",
+          "campaign_id": "tinystories-optimizer-ownership-s1-warmup-v1",
+          "campaign_manifest_sha256": "237188139e7ca8110d62651f6e364ac25e3c26c5bc308e6b0c449fa5f0c8a3b1",
+          "config_set_sha256": "3db81e1e2238a57b35ca2aa1583e968c4405edf0383904ebcb4ecc5af8151204",
+          "config_sha256": {
+            "S1-geometric-w256": "5622556cdb91bc0c9643510df8c968cc26c264b056975a16b4cfe14305b07caa",
+            "S1-linear-w256": "6423c3531d758a3f4b57c3f888cf00a7b96fb2b5976e70035f056fd20869d318"
+          },
+          "contracts": {
+            "S1-geometric-w256": "693f54d5760fea8be724888b90c83c0078c4cb005a5a4418589a22cd857361ec",
+            "S1-linear-w256": "bb0f38d6c287be3a66b17b0e1c353ded8fe97be062ec7bcad15596da367e5916"
+          },
+          "manifest_hash": "cfc2dd9c83ace4b621a9e90befd6edbb79028d7b4909023cf980988009b2d4ed",
+          "preflight_sha256": "52e5c536e036f3488b69deb7c3d2d69ca6dc8a42eaa3103a3a479499a3ef6f26",
+          "recipe_sha256": "133ba407d683e803c023a301680e78e9675bb4e269f436a77b38fbf82d858b6b",
+          "references_sha256": "1f545c565c68ca86fb6b9509fd0ef67eb481e0dcabdfb28a53a3409c7a0cfe90",
+          "source_sha256": "f3232ac6772cba650a236cc01290d67210d9e981743e54db159ec9e7d937acc6"
+        },
+        "command": [
+          "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+          "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/scripts/train_cuda_required.py",
+          "--config",
+          "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/campaign/configs/S1-geometric-w256.yaml",
+          "--entry-evidence",
+          "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/launchers/cuda-entry-S1-geometric-w256-2.json"
+        ],
+        "continuation": {
+          "checkpoint": null,
+          "mode": "fresh",
+          "step": 0
+        },
+        "cpu_gate_hash": "cd0b72957eec47b7009722ffec4c540af8a0d83ebd2bdc478dc8dbe8b63458a3",
+        "gpu_gate_hash": "23119bcd53ccc2fc038a49b53d0e31cfc6a5e7f639bbcc0180af65281c537820",
+        "intent_uuid": "9ec16e493bb8400f81cd51ac6e4d0469",
+        "job_id": "273716",
+        "measurement_complete": false,
+        "name": "s1w-S1-geometric-w256-a2-9ec16e49",
+        "process_uuid": "76174518e4c94245a6e37971c719cb05",
+        "started_at": 1790098506.2258112,
+        "status": "running"
+      },
+      "cuda_entry": {
+        "config": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/campaign/configs/S1-geometric-w256.yaml",
+        "cuda_visible_devices": "3",
+        "host": "gpu-08",
+        "job_id": "273716",
+        "nvidia_smi": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "0, GPU-d5d49859-26e6-4780-cf9e-6b99a16a2d3e, NVIDIA A100-SXM4-40GB, 570.195.03\n1, GPU-fe2015ee-207d-ed5d-d05c-8609c0dcdf02, NVIDIA A100-SXM4-40GB, 570.195.03\n2, GPU-3f327eee-0685-8225-e3b8-0913ea3aceec, NVIDIA A100-SXM4-40GB, 570.195.03\n3, GPU-f55b0ad9-5a4c-1c8a-094d-d01db63c531a, NVIDIA A100-SXM4-40GB, 570.195.03\n"
+        },
+        "process_id": 2621937,
+        "requested_device": "cuda:0",
+        "required_precision": "bf16",
+        "slurm_job_gpus": "3",
+        "status": "starting"
+      },
+      "resources": {
+        "attempts": {
+          "76174518e4c94245a6e37971c719cb05": {
+            "attempted_steps": 672,
+            "elapsed_seconds": 45.22150324843824,
+            "failure": null,
+            "launch_attempt_id": 2,
+            "measurement_complete": false,
+            "peak_allocated_bytes": 453779968,
+            "peak_reserved_bytes": 528482304,
+            "process_uuid": "76174518e4c94245a6e37971c719cb05",
+            "run_id": "tinystories-optimizer-ownership-s1-warmup-v1-S1-geometric-w256-s42",
+            "sequence": 100,
+            "slurm_job_id": "273716",
+            "source_checkpoint": null,
+            "started_at": "2026-09-22T17:35:12.859689+00:00",
+            "status": "running"
+          }
+        },
+        "run_id": "tinystories-optimizer-ownership-s1-warmup-v1-S1-geometric-w256-s42",
+        "schema_version": 1
+      }
+    }
+  ]
+}

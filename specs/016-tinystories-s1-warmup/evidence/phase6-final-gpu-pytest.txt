@@ -1,0 +1,8 @@
+............................................................             [100%]
+=============================== warnings summary ===============================
+../../../../../../../../home/ivo.navarrete/.conda/envs/elasticnn/lib/python3.12/site-packages/_pytest/config/__init__.py:1309
+  /home/ivo.navarrete/.conda/envs/elasticnn/lib/python3.12/site-packages/_pytest/config/__init__.py:1309: PytestAssertRewriteWarning: Module already imported so cannot be rewritten; anyio
+    self._mark_plugins_for_rewrite(hook, disable_autoload)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+60 passed, 55 deselected, 1 warning in 82.89s (0:01:22)

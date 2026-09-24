@@ -1,0 +1,129 @@
+{
+  "observed_at": "2026-09-22T16:38:47.420652+00:00",
+  "task": "T052",
+  "status": "passed",
+  "environment": {
+    "SLURM_CONF": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-matformer-widths-v1/launchers/slurm-client.conf",
+    "OMP_NUM_THREADS": "1",
+    "PYTHONDONTWRITEBYTECODE": "1"
+  },
+  "cpu_command": [
+    "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+    "scripts/preflight_tinystories_s1_warmup.py",
+    "cpu",
+    "--campaign-root",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1"
+  ],
+  "cpu_returncode": 0,
+  "prepare_command": [
+    "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/scripts/run_tinystories_s1_warmup.py",
+    "prepare",
+    "--campaign-root",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1",
+    "--cpu-evidence",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/cpu-gate.json"
+  ],
+  "prepare_returncode": 0,
+  "cpu_gate_hash": "df74d72fe8e0dfe9a795a994aa08b3061caa4e89595ece76e04c16b355b40ea7",
+  "source_sha256": "7d1e1e45c2c4fde418a39cb27cc8ff65ef4c9a98b8951dbfb98c303915cf75a2",
+  "source_file_count": 201,
+  "plan_hash": "b02185c05f9f37cf3b359001cb28c9b084e236dc0c1f1ad3ba4cb830e880466d",
+  "bindings": {
+    "artifacts_sha256": "eb3fbd811c455635c57ce0ee5302dc2614cc6bf577fc09dbe6808c22229369ac",
+    "campaign_id": "tinystories-optimizer-ownership-s1-warmup-v1",
+    "campaign_manifest_sha256": "237188139e7ca8110d62651f6e364ac25e3c26c5bc308e6b0c449fa5f0c8a3b1",
+    "config_set_sha256": "3db81e1e2238a57b35ca2aa1583e968c4405edf0383904ebcb4ecc5af8151204",
+    "config_sha256": {
+      "S1-geometric-w256": "5622556cdb91bc0c9643510df8c968cc26c264b056975a16b4cfe14305b07caa",
+      "S1-linear-w256": "6423c3531d758a3f4b57c3f888cf00a7b96fb2b5976e70035f056fd20869d318"
+    },
+    "contracts": {
+      "S1-geometric-w256": "693f54d5760fea8be724888b90c83c0078c4cb005a5a4418589a22cd857361ec",
+      "S1-linear-w256": "bb0f38d6c287be3a66b17b0e1c353ded8fe97be062ec7bcad15596da367e5916"
+    },
+    "manifest_hash": "cfc2dd9c83ace4b621a9e90befd6edbb79028d7b4909023cf980988009b2d4ed",
+    "preflight_sha256": "52e5c536e036f3488b69deb7c3d2d69ca6dc8a42eaa3103a3a479499a3ef6f26",
+    "recipe_sha256": "133ba407d683e803c023a301680e78e9675bb4e269f436a77b38fbf82d858b6b",
+    "references_sha256": "1f545c565c68ca86fb6b9509fd0ef67eb481e0dcabdfb28a53a3409c7a0cfe90",
+    "source_sha256": "7d1e1e45c2c4fde418a39cb27cc8ff65ef4c9a98b8951dbfb98c303915cf75a2"
+  },
+  "checks": [
+    {
+      "artifacts": [
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/cpu-6c54ef48f39544a6a1691b53ad6e40bc/pytest.xml",
+          "sha256": "d46cff2bd1830d0fca84b1fc8a653280d9a0a80a253d23ff70fb69b4306de48e"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/cpu-6c54ef48f39544a6a1691b53ad6e40bc/pytest.log",
+          "sha256": "5e7edd776e4185e69f7281ba6babce5f2826da60fa553ef4512835b2610d5648"
+        }
+      ],
+      "command": [
+        "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-rs",
+        "--tb=short",
+        "-p",
+        "no:cacheprovider",
+        "--junitxml=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/cpu-6c54ef48f39544a6a1691b53ad6e40bc/pytest.xml",
+        "tests/test_s1_warmup_campaign.py",
+        "tests/test_s1_warmup_reporting.py",
+        "tests/test_s1_warmup_queue.py",
+        "tests/test_config.py",
+        "tests/test_optimizer_ownership.py",
+        "tests/test_optimizer_ownership_campaign.py",
+        "tests/test_optimizer_ownership_resume.py",
+        "tests/test_optimizer_ownership_reporting.py",
+        "tests/test_optimizer_ownership_corrections.py",
+        "tests/test_matformer_widths_campaign.py",
+        "tests/test_matformer_widths_reporting.py",
+        "tests/test_matformer_widths_queue.py",
+        "tests/test_matformer_resource_reconciliation.py",
+        "tests/test_metrics_compact_accounting.py"
+      ],
+      "cwd": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/diagnostics/cpu-6c54ef48f39544a6a1691b53ad6e40bc/pytest-workspace",
+      "errors": 0,
+      "execution": "subprocess",
+      "failures": 0,
+      "finished_at": 1790094931.2659876,
+      "reporting_fixture_status": "passed",
+      "returncode": 0,
+      "skipped": 39,
+      "source": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source",
+      "started_at": 1790094443.2701206,
+      "tests": 1218
+    }
+  ],
+  "reporting_fixture_status": "passed",
+  "all_snapshot_files_read_only": true,
+  "run_directories": [],
+  "production_jobs_submitted": 0,
+  "gpu_diagnostic_jobs_submitted": 0,
+  "next_task": "T053: separately authorized GPU diagnostics",
+  "diagnostic_command": [
+    "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/scripts/preflight_tinystories_s1_warmup.py",
+    "submit-gpu",
+    "--campaign-root",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1"
+  ],
+  "diagnostic_resources": {
+    "gpus": 1,
+    "processes": 1,
+    "cpus": 4,
+    "memory": "16G",
+    "time_limit": "24:00:00",
+    "excluded_nodes": "gpu-[05,50,51,54]",
+    "admission": "Live user-wide two-running/four-submitted ceilings or stricter limits"
+  },
+  "artifacts_sha256": {
+    "diagnostics/source-manifest.json": "f630eac7d45b92ad52affc59a51634108631191028d12a6014d9a126bab6e322",
+    "diagnostics/cpu-gate.json": "ff1115960187e391591006c27a4faab970beec11c4ca38f58920b14a72ab48ea",
+    "launchers/plan.json": "5618f568eab22f5750d19d3a4351fd3fb46cbc1e1a3fa430ec21bf90d0695ac3",
+    "launchers/status.json": "0624817bc20fa979fc1a3851d8a1275434757d1d28f0dc3f820d42025f7e2085"
+  }
+}

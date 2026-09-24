@@ -1,0 +1,151 @@
+{
+  "bindings": {
+    "artifacts_sha256": "eb3fbd811c455635c57ce0ee5302dc2614cc6bf577fc09dbe6808c22229369ac",
+    "campaign_id": "tinystories-optimizer-ownership-s1-warmup-v1",
+    "campaign_manifest_sha256": "237188139e7ca8110d62651f6e364ac25e3c26c5bc308e6b0c449fa5f0c8a3b1",
+    "config_set_sha256": "3db81e1e2238a57b35ca2aa1583e968c4405edf0383904ebcb4ecc5af8151204",
+    "config_sha256": {
+      "S1-geometric-w256": "5622556cdb91bc0c9643510df8c968cc26c264b056975a16b4cfe14305b07caa",
+      "S1-linear-w256": "6423c3531d758a3f4b57c3f888cf00a7b96fb2b5976e70035f056fd20869d318"
+    },
+    "contracts": {
+      "S1-geometric-w256": "693f54d5760fea8be724888b90c83c0078c4cb005a5a4418589a22cd857361ec",
+      "S1-linear-w256": "bb0f38d6c287be3a66b17b0e1c353ded8fe97be062ec7bcad15596da367e5916"
+    },
+    "manifest_hash": "cfc2dd9c83ace4b621a9e90befd6edbb79028d7b4909023cf980988009b2d4ed",
+    "preflight_sha256": "52e5c536e036f3488b69deb7c3d2d69ca6dc8a42eaa3103a3a479499a3ef6f26",
+    "recipe_sha256": "133ba407d683e803c023a301680e78e9675bb4e269f436a77b38fbf82d858b6b",
+    "references_sha256": "1f545c565c68ca86fb6b9509fd0ef67eb481e0dcabdfb28a53a3409c7a0cfe90",
+    "source_sha256": "f3232ac6772cba650a236cc01290d67210d9e981743e54db159ec9e7d937acc6"
+  },
+  "jobs": [
+    {
+      "arm_id": "S1-linear-w256",
+      "attempt_id": 1,
+      "bindings": {
+        "artifacts_sha256": "eb3fbd811c455635c57ce0ee5302dc2614cc6bf577fc09dbe6808c22229369ac",
+        "campaign_id": "tinystories-optimizer-ownership-s1-warmup-v1",
+        "campaign_manifest_sha256": "237188139e7ca8110d62651f6e364ac25e3c26c5bc308e6b0c449fa5f0c8a3b1",
+        "config_set_sha256": "3db81e1e2238a57b35ca2aa1583e968c4405edf0383904ebcb4ecc5af8151204",
+        "config_sha256": {
+          "S1-geometric-w256": "5622556cdb91bc0c9643510df8c968cc26c264b056975a16b4cfe14305b07caa",
+          "S1-linear-w256": "6423c3531d758a3f4b57c3f888cf00a7b96fb2b5976e70035f056fd20869d318"
+        },
+        "contracts": {
+          "S1-geometric-w256": "693f54d5760fea8be724888b90c83c0078c4cb005a5a4418589a22cd857361ec",
+          "S1-linear-w256": "bb0f38d6c287be3a66b17b0e1c353ded8fe97be062ec7bcad15596da367e5916"
+        },
+        "manifest_hash": "cfc2dd9c83ace4b621a9e90befd6edbb79028d7b4909023cf980988009b2d4ed",
+        "preflight_sha256": "52e5c536e036f3488b69deb7c3d2d69ca6dc8a42eaa3103a3a479499a3ef6f26",
+        "recipe_sha256": "133ba407d683e803c023a301680e78e9675bb4e269f436a77b38fbf82d858b6b",
+        "references_sha256": "1f545c565c68ca86fb6b9509fd0ef67eb481e0dcabdfb28a53a3409c7a0cfe90",
+        "source_sha256": "af2f2c2b7f20e05f1adeb83c0acf67b40f64c3e270ab1c8b1035abca954ae419"
+      },
+      "command": [
+        "sbatch",
+        "--parsable",
+        "--job-name=s1w-S1-linear-w256-a1-94403d7f",
+        "--partition=cscc-gpu-p",
+        "--qos=cscc-gpu-qos",
+        "--nodes=1",
+        "--ntasks=1",
+        "--cpus-per-task=4",
+        "--gres=gpu:1",
+        "--mem=16G",
+        "--time=24:00:00",
+        "--exclude=gpu-[05,50,51,54]",
+        "--no-requeue",
+        "--chdir=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source",
+        "--output=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/logs/S1-linear-w256-a1-%j.out",
+        "--error=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/logs/S1-linear-w256-a1-%j.err",
+        "--wrap=/home/ivo.navarrete/.conda/envs/elasticnn/bin/python /nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/scripts/run_tinystories_s1_warmup.py worker --campaign-root /nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1 --arm S1-linear-w256 --attempt-id 1"
+      ],
+      "continuation": {
+        "checkpoint": null,
+        "mode": "fresh",
+        "step": 0
+      },
+      "cpu_gate_hash": "e5bcdf01269ec0a5d4bc55ecc60849de438be98cc979317121d929677d885514",
+      "created_date": "2026-09-22",
+      "failure_stage": "before_worker_admission",
+      "gpu_gate_hash": "b75a4ac6acddab277542ac63c47ab1e5cfe955b0b487b66aa5e56e0f9f449efb",
+      "intent_time": 1790096664.5035331,
+      "intent_uuid": "94403d7fb77048fc812f744a4b1bfe12",
+      "job_id": "273663",
+      "name": "s1w-S1-linear-w256-a1-94403d7f",
+      "scheduler_accounting": {
+        "allocation_seconds": "13",
+        "exit_code": "1:0",
+        "job_id": "273663",
+        "name": "s1w-S1-linear-w256-a1-94403d7f",
+        "state": "FAILED"
+      },
+      "status": "retryable"
+    },
+    {
+      "arm_id": "S1-geometric-w256",
+      "attempt_id": 1,
+      "bindings": {
+        "artifacts_sha256": "eb3fbd811c455635c57ce0ee5302dc2614cc6bf577fc09dbe6808c22229369ac",
+        "campaign_id": "tinystories-optimizer-ownership-s1-warmup-v1",
+        "campaign_manifest_sha256": "237188139e7ca8110d62651f6e364ac25e3c26c5bc308e6b0c449fa5f0c8a3b1",
+        "config_set_sha256": "3db81e1e2238a57b35ca2aa1583e968c4405edf0383904ebcb4ecc5af8151204",
+        "config_sha256": {
+          "S1-geometric-w256": "5622556cdb91bc0c9643510df8c968cc26c264b056975a16b4cfe14305b07caa",
+          "S1-linear-w256": "6423c3531d758a3f4b57c3f888cf00a7b96fb2b5976e70035f056fd20869d318"
+        },
+        "contracts": {
+          "S1-geometric-w256": "693f54d5760fea8be724888b90c83c0078c4cb005a5a4418589a22cd857361ec",
+          "S1-linear-w256": "bb0f38d6c287be3a66b17b0e1c353ded8fe97be062ec7bcad15596da367e5916"
+        },
+        "manifest_hash": "cfc2dd9c83ace4b621a9e90befd6edbb79028d7b4909023cf980988009b2d4ed",
+        "preflight_sha256": "52e5c536e036f3488b69deb7c3d2d69ca6dc8a42eaa3103a3a479499a3ef6f26",
+        "recipe_sha256": "133ba407d683e803c023a301680e78e9675bb4e269f436a77b38fbf82d858b6b",
+        "references_sha256": "1f545c565c68ca86fb6b9509fd0ef67eb481e0dcabdfb28a53a3409c7a0cfe90",
+        "source_sha256": "af2f2c2b7f20e05f1adeb83c0acf67b40f64c3e270ab1c8b1035abca954ae419"
+      },
+      "command": [
+        "sbatch",
+        "--parsable",
+        "--job-name=s1w-S1-geometric-w256-a1-231d7953",
+        "--partition=cscc-gpu-p",
+        "--qos=cscc-gpu-qos",
+        "--nodes=1",
+        "--ntasks=1",
+        "--cpus-per-task=4",
+        "--gres=gpu:1",
+        "--mem=16G",
+        "--time=24:00:00",
+        "--exclude=gpu-[05,50,51,54]",
+        "--no-requeue",
+        "--chdir=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source",
+        "--output=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/logs/S1-geometric-w256-a1-%j.out",
+        "--error=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/logs/S1-geometric-w256-a1-%j.err",
+        "--wrap=/home/ivo.navarrete/.conda/envs/elasticnn/bin/python /nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/scripts/run_tinystories_s1_warmup.py worker --campaign-root /nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1 --arm S1-geometric-w256 --attempt-id 1"
+      ],
+      "continuation": {
+        "checkpoint": null,
+        "mode": "fresh",
+        "step": 0
+      },
+      "cpu_gate_hash": "e5bcdf01269ec0a5d4bc55ecc60849de438be98cc979317121d929677d885514",
+      "created_date": "2026-09-22",
+      "failure_stage": "before_worker_admission",
+      "gpu_gate_hash": "b75a4ac6acddab277542ac63c47ab1e5cfe955b0b487b66aa5e56e0f9f449efb",
+      "intent_time": 1790096714.565705,
+      "intent_uuid": "231d795348204c8596e1a9da7c60284f",
+      "job_id": "273665",
+      "name": "s1w-S1-geometric-w256-a1-231d7953",
+      "scheduler_accounting": {
+        "allocation_seconds": "13",
+        "exit_code": "1:0",
+        "job_id": "273665",
+        "name": "s1w-S1-geometric-w256-a1-231d7953",
+        "state": "FAILED"
+      },
+      "status": "retryable"
+    }
+  ],
+  "method": "frozen reconcile after CPU-only plan verification; no job submission",
+  "time": 1790098105.3938708
+}

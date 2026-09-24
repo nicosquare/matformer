@@ -1,0 +1,166 @@
+{
+  "jobs": [
+    {
+      "attempt_id": 1,
+      "bindings": {
+        "artifacts_sha256": "eb3fbd811c455635c57ce0ee5302dc2614cc6bf577fc09dbe6808c22229369ac",
+        "campaign_id": "tinystories-optimizer-ownership-s1-warmup-v1",
+        "campaign_manifest_sha256": "237188139e7ca8110d62651f6e364ac25e3c26c5bc308e6b0c449fa5f0c8a3b1",
+        "config_set_sha256": "3db81e1e2238a57b35ca2aa1583e968c4405edf0383904ebcb4ecc5af8151204",
+        "config_sha256": {
+          "S1-geometric-w256": "5622556cdb91bc0c9643510df8c968cc26c264b056975a16b4cfe14305b07caa",
+          "S1-linear-w256": "6423c3531d758a3f4b57c3f888cf00a7b96fb2b5976e70035f056fd20869d318"
+        },
+        "contracts": {
+          "S1-geometric-w256": "693f54d5760fea8be724888b90c83c0078c4cb005a5a4418589a22cd857361ec",
+          "S1-linear-w256": "bb0f38d6c287be3a66b17b0e1c353ded8fe97be062ec7bcad15596da367e5916"
+        },
+        "manifest_hash": "cfc2dd9c83ace4b621a9e90befd6edbb79028d7b4909023cf980988009b2d4ed",
+        "preflight_sha256": "52e5c536e036f3488b69deb7c3d2d69ca6dc8a42eaa3103a3a479499a3ef6f26",
+        "recipe_sha256": "133ba407d683e803c023a301680e78e9675bb4e269f436a77b38fbf82d858b6b",
+        "references_sha256": "1f545c565c68ca86fb6b9509fd0ef67eb481e0dcabdfb28a53a3409c7a0cfe90",
+        "source_sha256": "7d1e1e45c2c4fde418a39cb27cc8ff65ef4c9a98b8951dbfb98c303915cf75a2"
+      },
+      "command": [
+        "sbatch",
+        "--parsable",
+        "--job-name=s1w-diagnostic-a1-5c41c5a6",
+        "--partition=cscc-gpu-p",
+        "--qos=cscc-gpu-qos",
+        "--nodes=1",
+        "--ntasks=1",
+        "--cpus-per-task=4",
+        "--gres=gpu:1",
+        "--mem=16G",
+        "--time=24:00:00",
+        "--exclude=gpu-[05,50,51,54]",
+        "--no-requeue",
+        "--chdir=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source",
+        "--output=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/logs/diagnostic-a1-%j.out",
+        "--error=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/logs/diagnostic-a1-%j.err",
+        "--wrap=/home/ivo.navarrete/.conda/envs/elasticnn/bin/python /nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/scripts/preflight_tinystories_s1_warmup.py gpu --campaign-root /nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1"
+      ],
+      "cpu_gate_hash": "df74d72fe8e0dfe9a795a994aa08b3061caa4e89595ece76e04c16b355b40ea7",
+      "created_date": "2026-09-22",
+      "intent_uuid": "5c41c5a6b33f4160abe0e0d1e814efc2",
+      "job_id": "273610",
+      "name": "s1w-diagnostic-a1-5c41c5a6",
+      "scheduler_accounting": {
+        "allocation_seconds": "28",
+        "exit_code": "1:0",
+        "job_id": "273610",
+        "name": "s1w-diagnostic-a1-5c41c5a6",
+        "state": "FAILED"
+      },
+      "status": "failed"
+    },
+    {
+      "attempt_id": 2,
+      "bindings": {
+        "artifacts_sha256": "eb3fbd811c455635c57ce0ee5302dc2614cc6bf577fc09dbe6808c22229369ac",
+        "campaign_id": "tinystories-optimizer-ownership-s1-warmup-v1",
+        "campaign_manifest_sha256": "237188139e7ca8110d62651f6e364ac25e3c26c5bc308e6b0c449fa5f0c8a3b1",
+        "config_set_sha256": "3db81e1e2238a57b35ca2aa1583e968c4405edf0383904ebcb4ecc5af8151204",
+        "config_sha256": {
+          "S1-geometric-w256": "5622556cdb91bc0c9643510df8c968cc26c264b056975a16b4cfe14305b07caa",
+          "S1-linear-w256": "6423c3531d758a3f4b57c3f888cf00a7b96fb2b5976e70035f056fd20869d318"
+        },
+        "contracts": {
+          "S1-geometric-w256": "693f54d5760fea8be724888b90c83c0078c4cb005a5a4418589a22cd857361ec",
+          "S1-linear-w256": "bb0f38d6c287be3a66b17b0e1c353ded8fe97be062ec7bcad15596da367e5916"
+        },
+        "manifest_hash": "cfc2dd9c83ace4b621a9e90befd6edbb79028d7b4909023cf980988009b2d4ed",
+        "preflight_sha256": "52e5c536e036f3488b69deb7c3d2d69ca6dc8a42eaa3103a3a479499a3ef6f26",
+        "recipe_sha256": "133ba407d683e803c023a301680e78e9675bb4e269f436a77b38fbf82d858b6b",
+        "references_sha256": "1f545c565c68ca86fb6b9509fd0ef67eb481e0dcabdfb28a53a3409c7a0cfe90",
+        "source_sha256": "af2f2c2b7f20e05f1adeb83c0acf67b40f64c3e270ab1c8b1035abca954ae419"
+      },
+      "command": [
+        "sbatch",
+        "--parsable",
+        "--job-name=s1w-diagnostic-a2-450634f8",
+        "--partition=cscc-gpu-p",
+        "--qos=cscc-gpu-qos",
+        "--nodes=1",
+        "--ntasks=1",
+        "--cpus-per-task=4",
+        "--gres=gpu:1",
+        "--mem=16G",
+        "--time=24:00:00",
+        "--exclude=gpu-[05,50,51,54]",
+        "--no-requeue",
+        "--chdir=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source",
+        "--output=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/logs/diagnostic-a2-%j.out",
+        "--error=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/logs/diagnostic-a2-%j.err",
+        "--wrap=/home/ivo.navarrete/.conda/envs/elasticnn/bin/python /nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/scripts/preflight_tinystories_s1_warmup.py gpu --campaign-root /nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1"
+      ],
+      "cpu_gate_hash": "e5bcdf01269ec0a5d4bc55ecc60849de438be98cc979317121d929677d885514",
+      "created_date": "2026-09-22",
+      "intent_uuid": "450634f85c7c4c2fb47be9b3aef333f2",
+      "job_id": "273655",
+      "name": "s1w-diagnostic-a2-450634f8",
+      "scheduler_accounting": {
+        "allocation_seconds": "113",
+        "exit_code": "0:0",
+        "job_id": "273655",
+        "name": "s1w-diagnostic-a2-450634f8",
+        "state": "COMPLETED"
+      },
+      "status": "completed"
+    },
+    {
+      "attempt_id": 3,
+      "bindings": {
+        "artifacts_sha256": "eb3fbd811c455635c57ce0ee5302dc2614cc6bf577fc09dbe6808c22229369ac",
+        "campaign_id": "tinystories-optimizer-ownership-s1-warmup-v1",
+        "campaign_manifest_sha256": "237188139e7ca8110d62651f6e364ac25e3c26c5bc308e6b0c449fa5f0c8a3b1",
+        "config_set_sha256": "3db81e1e2238a57b35ca2aa1583e968c4405edf0383904ebcb4ecc5af8151204",
+        "config_sha256": {
+          "S1-geometric-w256": "5622556cdb91bc0c9643510df8c968cc26c264b056975a16b4cfe14305b07caa",
+          "S1-linear-w256": "6423c3531d758a3f4b57c3f888cf00a7b96fb2b5976e70035f056fd20869d318"
+        },
+        "contracts": {
+          "S1-geometric-w256": "693f54d5760fea8be724888b90c83c0078c4cb005a5a4418589a22cd857361ec",
+          "S1-linear-w256": "bb0f38d6c287be3a66b17b0e1c353ded8fe97be062ec7bcad15596da367e5916"
+        },
+        "manifest_hash": "cfc2dd9c83ace4b621a9e90befd6edbb79028d7b4909023cf980988009b2d4ed",
+        "preflight_sha256": "52e5c536e036f3488b69deb7c3d2d69ca6dc8a42eaa3103a3a479499a3ef6f26",
+        "recipe_sha256": "133ba407d683e803c023a301680e78e9675bb4e269f436a77b38fbf82d858b6b",
+        "references_sha256": "1f545c565c68ca86fb6b9509fd0ef67eb481e0dcabdfb28a53a3409c7a0cfe90",
+        "source_sha256": "f3232ac6772cba650a236cc01290d67210d9e981743e54db159ec9e7d937acc6"
+      },
+      "command": [
+        "sbatch",
+        "--parsable",
+        "--job-name=s1w-diagnostic-a3-1c6c8faa",
+        "--partition=cscc-gpu-p",
+        "--qos=cscc-gpu-qos",
+        "--nodes=1",
+        "--ntasks=1",
+        "--cpus-per-task=4",
+        "--gres=gpu:1",
+        "--mem=16G",
+        "--time=24:00:00",
+        "--exclude=gpu-[05,50,51,54]",
+        "--no-requeue",
+        "--chdir=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source",
+        "--output=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/logs/diagnostic-a3-%j.out",
+        "--error=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/logs/diagnostic-a3-%j.err",
+        "--wrap=env SLURM_CONF=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-matformer-widths-v1/launchers/slurm-client.conf /home/ivo.navarrete/.conda/envs/elasticnn/bin/python /nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1/source/scripts/preflight_tinystories_s1_warmup.py gpu --campaign-root /nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1"
+      ],
+      "cpu_gate_hash": "cd0b72957eec47b7009722ffec4c540af8a0d83ebd2bdc478dc8dbe8b63458a3",
+      "created_date": "2026-09-22",
+      "intent_uuid": "1c6c8faad22e4aa59cfa6c9f62d9b569",
+      "job_id": "273708",
+      "name": "s1w-diagnostic-a3-1c6c8faa",
+      "scheduler_accounting": {
+        "allocation_seconds": "118",
+        "exit_code": "0:0",
+        "job_id": "273708",
+        "name": "s1w-diagnostic-a3-1c6c8faa",
+        "state": "COMPLETED"
+      },
+      "status": "completed"
+    }
+  ]
+}

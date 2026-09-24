@@ -1,0 +1,20 @@
+{
+  "recorded_at": "2026-09-22T16:41:01.586151+00:00",
+  "user_instruction": "yes, please continue until the rea jobs are running",
+  "scope": {
+    "T053_gpu_diagnostics": "authorized",
+    "T054_two_arm_production_launch": "authorized after passed readiness gates",
+    "requested_stop": "both real production jobs confirmed running"
+  },
+  "campaign_root": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-warmup-v1",
+  "arms": [
+    "S1-linear-w256",
+    "S1-geometric-w256"
+  ],
+  "constraints": [
+    "Frozen source/config bindings and passed CPU/GPU gates",
+    "Checked sbatch path and live user-wide limits",
+    "One GPU/process per job; exclude gpu-[05,50,51,54]",
+    "No historical retraining/writes or extra arms"
+  ]
+}

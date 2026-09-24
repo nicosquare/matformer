@@ -846,7 +846,8 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         and run["campaign_id"].startswith("tinystories-optimizer-ownership-")
         and run.get("arm_id") in {"ST-g125", "ST-g250", "ST-g500", "ST-g750", "ST-g1000", "S1", "S2", "C1", "C2", "C3",
                                   "C1-GMC", "C1-LMC", "C2-GMC", "C2-LMC", "C3-GMC", "C3-LMC",
-                                  "S1-IM", "S2-IM", "C1-IM", "C2-IM", "C3-IM"}
+                                  "S1-IM", "S2-IM", "C1-IM", "C2-IM", "C3-IM",
+                                  "S1-linear-w256", "S1-geometric-w256"}
         and run_id == f"{run['campaign_id']}-{run['arm_id']}-s{run.get('seed')}"
         and output_dir.name == run["arm_id"]
     )
@@ -1354,6 +1355,9 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
     _validate_derived_training_length(training, model)
     _validate_distributed_and_prepared_corpus_contract(config)
     _validate_portfolio_aligned_epoch_contract(config)
+    if run.get("campaign_schema_version") == 5:
+        from src.evaluation.optimizer_ownership import campaign_arm, validate_run_budget
+        validate_run_budget(config, campaign_arm(5, run.get("arm_id")))
     if "optimizer_ownership_contract" in config or "optimizer_ownership_contract_hash" in config:
         from src.evaluation.optimizer_ownership import validate_materialized_config
 
@@ -4454,9 +4458,9 @@ def _resolve_optimizer_state_contract(config: dict[str, Any]) -> None:
 
 
 def _validate_matformer_campaign_topology(config: Mapping[str, Any]) -> dict[str, Any] | None:
-    """Admit only the declared schema-4 layout, never an arbitrary unequal grid."""
+    """Admit only declared schema-4/5 layouts, never an arbitrary unequal grid."""
     from src.evaluation.optimizer_ownership import (
-        MATFORMER_CAMPAIGN_ID, campaign_arm, campaign_common, campaign_topology,
+        MATFORMER_CAMPAIGN_ID, WARMUP_CAMPAIGN_ID, campaign_arm, campaign_common, campaign_topology,
         _require_equal,
     )
 
@@ -4466,14 +4470,14 @@ def _validate_matformer_campaign_topology(config: Mapping[str, Any]) -> dict[str
     marker = run.get("campaign_schema_version")
     contract = config.get("optimizer_ownership_contract", {})
     if marker is None:
-        if any(key in contract for key in ("campaign_schema_version", "width_grid", "block_boundaries")) or run.get("campaign_id") == MATFORMER_CAMPAIGN_ID:
+        if any(key in contract for key in ("campaign_schema_version", "width_grid", "block_boundaries")) or run.get("campaign_id") in (MATFORMER_CAMPAIGN_ID, WARMUP_CAMPAIGN_ID) or run.get("arm_id") in ("S1-linear-w256", "S1-geometric-w256"):
             raise ConfigError("Missing run.campaign_schema_version for MatFormer campaign")
         return None
-    if type(marker) is not int or marker != 4:
+    if type(marker) is not int or marker not in (4, 5):
         raise ConfigError("Unsupported run.campaign_schema_version")
-    _require_equal(run.get("campaign_id"), MATFORMER_CAMPAIGN_ID, "campaign_id")
+    _require_equal(run.get("campaign_id"), WARMUP_CAMPAIGN_ID if marker == 5 else MATFORMER_CAMPAIGN_ID, "campaign_id")
     arm = campaign_arm(marker, run.get("arm_id"))
-    common = campaign_common(marker)["model"]
+    common = campaign_common(marker, arm["arm_id"])["model"]
     for key in ("d_model", "num_layers", "num_attention_heads", "granularity_mode"):
         _require_equal(model.get(key), common[key], f"model.{key}")
     _require_equal(model.get("intermediate_size"), arm["physical_ffn_dimension"], "model.intermediate_size")
@@ -4501,7 +4505,7 @@ def _validate_matformer_campaign_topology(config: Mapping[str, Any]) -> dict[str
         for key, expected in (("granularity_sampling_mode", "global"), ("global_sampling_schedule", "random_with_replacement"), ("global_sampling_interval_steps", 1)):
             _require_equal(model.get(key), expected, f"model.{key}")
     import json
-    topology = json.loads(json.dumps(campaign_topology(marker)))
+    topology = json.loads(json.dumps(campaign_topology(marker, arm["arm_id"])))
     if "optimizer_state_topology" in training:
         _require_equal(stable_hash(training["optimizer_state_topology"]), stable_hash(topology), "optimizer_state_topology")
     if contract:
