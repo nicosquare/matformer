@@ -2026,6 +2026,9 @@ def run_training(
             "global_sampling_schedule_version": config["model"].get(
                 "global_sampling_schedule_version"
             ),
+            "global_sampling_epoch_distributions": config["model"].get(
+                "global_sampling_epoch_distributions"
+            ),
             "global_sampling_state": copy.deepcopy(
                 run_state.get("global_sampling_state")
             ),

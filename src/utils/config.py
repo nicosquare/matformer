@@ -50,8 +50,10 @@ VALID_MODEL_GRANULARITY_SAMPLING_MODES = {
 VALID_GLOBAL_SAMPLING_SCHEDULES = {
     "random_with_replacement",
     "balanced_cycle",
+    "epoch_categorical",
 }
 BALANCED_GLOBAL_SAMPLING_SCHEDULE_VERSION = 1
+EPOCH_GLOBAL_SAMPLING_SCHEDULE_VERSION = 1
 VALID_ADAPTIVE_SAMPLER_STRATEGIES = {"panelgrad", "thompson", "ucb"}
 PROBABILISTIC_ADAPTIVE_SAMPLING_MODES = {
     "adaptive_global",
@@ -1028,6 +1030,16 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
                 "granularities times model.global_sampling_interval_steps "
                 "for balanced-cycle sampling"
             )
+    if global_schedule == "epoch_categorical":
+        if (
+            granularity_sampling_mode != "global"
+            or run.get("sampling_mode") != "nested-random"
+            or interval != 1
+            or bool(warmup.get("enabled", False))
+            or model.get("global_sampling_schedule_version")
+            != EPOCH_GLOBAL_SAMPLING_SCHEDULE_VERSION
+        ):
+            raise ConfigError("epoch_categorical requires global H=1 nested-random sampling without pre-nested warmup")
     requested_mode = model.get("requested_correction_mode")
     if requested_mode not in (None, ""):
         if not isinstance(requested_mode, str):
@@ -1354,6 +1366,20 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
 
     _validate_derived_training_length(training, model)
     _validate_distributed_and_prepared_corpus_contract(config)
+    if model.get("global_sampling_schedule") == "epoch_categorical":
+        iteration = config["dataset"]["optimizer_iteration"]
+        distributions = model["global_sampling_epoch_distributions"]
+        if (iteration.get("mode") != "repeat_epochs"
+            or iteration.get("epoch_order") != "deterministic_per_epoch"
+            or iteration.get("partial_final_epoch_samples") != 0
+            or iteration.get("complete_epochs") != len(distributions)):
+            raise ConfigError("epoch_categorical requires one distribution per complete deterministic epoch")
+        epoch_tokens = iteration.get("aligned_epoch_tokens")
+        step_tokens = training.get("expected_tokens_per_step")
+        if (not isinstance(epoch_tokens, int) or not isinstance(step_tokens, int)
+            or step_tokens <= 0 or epoch_tokens % step_tokens != 0
+            or training.get("max_steps") != len(distributions) * (epoch_tokens // step_tokens)):
+            raise ConfigError("epoch_categorical epoch boundaries must align with optimizer updates")
     _validate_portfolio_aligned_epoch_contract(config)
     if run.get("campaign_schema_version") == 5:
         from src.evaluation.optimizer_ownership import campaign_arm, validate_run_budget
@@ -2402,19 +2428,37 @@ def _resolve_global_sampling_schedule(config: dict[str, Any]) -> None:
             "runs with model.granularity_sampling_mode=global"
         )
 
+    raw_epochs = model.get("global_sampling_epoch_distributions")
+    if schedule == "epoch_categorical":
+        labels = [str(label) for label in model.get("granularities", [])]
+        if not isinstance(raw_epochs, list) or not raw_epochs:
+            raise ConfigError("epoch_categorical requires a nonempty epoch distribution list")
+        epochs = []
+        for epoch_index, row in enumerate(raw_epochs):
+            if not isinstance(row, Mapping) or set(row) != set(labels):
+                raise ConfigError(f"Epoch {epoch_index} distribution must contain every width exactly once")
+            normalized = {label: _nonnegative_finite_float(row[label], f"epoch {epoch_index} {label}")
+                          for label in labels}
+            if not math.isclose(math.fsum(normalized.values()), 1.0, rel_tol=0.0, abs_tol=1e-9):
+                raise ConfigError(f"Epoch {epoch_index} probabilities must sum to one")
+            epochs.append(normalized)
+        model["global_sampling_epoch_distributions"] = epochs
+    elif raw_epochs is not None:
+        raise ConfigError("global_sampling_epoch_distributions requires epoch_categorical")
+
     model["global_sampling_schedule"] = schedule
     model["global_sampling_schedule_version"] = (
         BALANCED_GLOBAL_SAMPLING_SCHEDULE_VERSION
         if schedule == "balanced_cycle"
-        else None
+        else EPOCH_GLOBAL_SAMPLING_SCHEDULE_VERSION if schedule == "epoch_categorical" else None
     )
     provenance = model.get("granularity_pattern_provenance")
     if isinstance(provenance, dict) and eligible:
-        if schedule == "balanced_cycle":
+        if schedule in {"balanced_cycle", "epoch_categorical"}:
             provenance["global_sampling_schedule"] = schedule
-            provenance["global_sampling_schedule_version"] = (
-                BALANCED_GLOBAL_SAMPLING_SCHEDULE_VERSION
-            )
+            provenance["global_sampling_schedule_version"] = model["global_sampling_schedule_version"]
+            if schedule == "epoch_categorical":
+                provenance["global_sampling_epoch_distributions"] = epochs
         else:
             provenance.pop("global_sampling_schedule", None)
             provenance.pop("global_sampling_schedule_version", None)

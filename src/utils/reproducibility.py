@@ -489,6 +489,13 @@ def build_comparison_control_signature(config: Mapping[str, Any]) -> tuple[str, 
             "optimizer_training_manifest_hash"
         ),
     }
+    if model.get("global_sampling_schedule") == "epoch_categorical":
+        inputs["global_sampling_schedule_version"] = model.get(
+            "global_sampling_schedule_version"
+        )
+        inputs["global_sampling_epoch_distributions"] = model.get(
+            "global_sampling_epoch_distributions"
+        )
     optimizer_iteration = dataset.get("optimizer_iteration")
     if (
         isinstance(optimizer_iteration, Mapping)

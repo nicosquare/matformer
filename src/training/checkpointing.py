@@ -110,6 +110,7 @@ PROBABILISTIC_CONTROLLER_PHASES = {
 
 BALANCED_GLOBAL_SAMPLING_SCHEMA_VERSION = 2
 BALANCED_GLOBAL_SAMPLING_SCHEDULE_VERSION = 1
+EPOCH_GLOBAL_SAMPLING_SCHEDULE_VERSION = 1
 CHECKPOINT_SCHEMA_VERSION = 1
 RESUMABLE_CHECKPOINT_KIND = "resumable_training"
 MODEL_ONLY_CHECKPOINT_KIND = "model_only_evaluation"
@@ -2421,6 +2422,21 @@ def _fixed_sampling_state_identity(config):
     }
 
 
+def _epoch_categorical_state_identity(config: Mapping[str, Any]) -> dict[str, Any]:
+    model = config["model"]
+    iteration = config["dataset"]["optimizer_iteration"]
+    step_tokens = int(config["training"]["expected_tokens_per_step"])
+    distributions = model["global_sampling_epoch_distributions"]
+    return {
+        "schedule": "epoch_categorical",
+        "schedule_version": EPOCH_GLOBAL_SAMPLING_SCHEDULE_VERSION,
+        "epoch_steps": int(iteration["aligned_epoch_tokens"]) // step_tokens,
+        "epoch_distributions_sha256": hashlib.sha256(
+            json.dumps(distributions, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+    }
+
+
 def _balanced_cycle_base_permutation(
     config: Mapping[str, Any],
     *,
@@ -2499,8 +2515,13 @@ def build_initial_global_sampling_state(
             "total_successful_updates": 0,
             "exposure_counts": {label: 0 for label in granularities},
         }
+    epoch_identity = (
+        _epoch_categorical_state_identity(config)
+        if schedule == "epoch_categorical" else {}
+    )
     return {
         **(_fixed_sampling_state_identity(config) if uses_ownership_fixed_sampling(config) else {}),
+        **epoch_identity,
         "schema_version": 1,
         "interval_steps": int(model.get("global_sampling_interval_steps", 1)),
         "held_granularity": None,
@@ -2566,6 +2587,14 @@ def validate_global_sampling_state(
             f"{sorted(missing)}"
         )
     normalized = copy.deepcopy(dict(state))
+    if expected_schedule == "epoch_categorical":
+        for key, expected in _epoch_categorical_state_identity(config).items():
+            if normalized.get(key) != expected:
+                raise ConfigError(f"Checkpoint epoch categorical {key} does not match config")
+    elif any(key in normalized for key in (
+        "schedule", "schedule_version", "epoch_steps", "epoch_distributions_sha256"
+    )):
+        raise ConfigError("Epoch categorical state cannot be restored as random sampling")
     integer_fields = (
         "schema_version",
         "interval_steps",

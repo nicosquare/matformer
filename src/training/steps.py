@@ -508,9 +508,22 @@ def _select_optimizer_window_action(
             state["successful_updates_in_window"] = 0
             state["held_granularity"] = None
         if state["held_granularity"] is None:
-            state["held_granularity"] = select_training_granularities(
-                config, granularities, device
-            )[0]
+            if state.get("schedule") == "epoch_categorical":
+                epoch_index = int(state["total_successful_updates"]) // int(state["epoch_steps"])
+                distributions = config["model"]["global_sampling_epoch_distributions"]
+                if epoch_index >= len(distributions):
+                    raise ConfigError("Epoch categorical schedule is exhausted")
+                weights = [float(distributions[epoch_index][label]) for label in granularities]
+                state["held_granularity"] = granularities[
+                    select_random_granularity_index(
+                        config, len(granularities), device,
+                        sampling_distribution=weights,
+                    )
+                ]
+            else:
+                state["held_granularity"] = select_training_granularities(
+                    config, granularities, device
+                )[0]
         action = {
             "kind": "global",
             "granularities": [str(state["held_granularity"])],
@@ -524,6 +537,14 @@ def _select_optimizer_window_action(
         }
         if model_sampling_mode == "fixed_global":
             action["sampled_probability"] = float(config["model"]["global_sampling_distribution"][state["held_granularity"]])
+        if state.get("schedule") == "epoch_categorical":
+            epoch_index = int(state["total_successful_updates"]) // int(state["epoch_steps"])
+            action["global_sampling_schedule"] = "epoch_categorical"
+            action["global_sampling_schedule_version"] = int(state["schedule_version"])
+            action["global_sampling_epoch_index"] = epoch_index
+            action["sampled_probability"] = float(
+                config["model"]["global_sampling_epoch_distributions"][epoch_index][state["held_granularity"]]
+            )
         return action
 
     action = {
@@ -573,6 +594,13 @@ def _commit_global_sampling_window_action(
         raise ConfigError(
             "Committed balanced global action has stale cycle identity"
         )
+    if state.get("schedule") == "epoch_categorical" and (
+        action.get("global_sampling_schedule") != "epoch_categorical"
+        or action.get("global_sampling_schedule_version") != state["schedule_version"]
+        or action.get("global_sampling_epoch_index")
+        != int(state["total_successful_updates"]) // int(state["epoch_steps"])
+    ):
+        raise ConfigError("Committed epoch categorical action has stale epoch identity")
 
     state["successful_updates_in_window"] = int(
         state["successful_updates_in_window"]
@@ -635,6 +663,7 @@ def _training_action_heartbeat_fields(action: Mapping[str, Any]) -> dict[str, An
         )
     for field in (
         "global_sampling_schedule_version",
+        "global_sampling_epoch_index",
         "global_sampling_interval_steps",
         "global_sampling_window_index",
         "global_sampling_window_progress",
@@ -1979,16 +2008,19 @@ def select_random_granularity_index(
     config: Mapping[str, Any],
     granularity_count: int,
     device: torch.device,
+    sampling_distribution: list[float] | None = None,
 ) -> int:
     if granularity_count <= 0:
         raise ValueError("granularity_count must be positive")
 
     model = config.get("model", {})
-    fixed_distribution = None
+    fixed_distribution = sampling_distribution
     if (
         isinstance(model, Mapping)
         and model.get("granularity_sampling_mode") == "fixed_global"
     ):
+        if sampling_distribution is not None:
+            raise ConfigError("fixed_global sampling cannot override its distribution")
         raw_distribution = model.get("global_sampling_distribution")
         granularities = model.get("granularities")
         if not isinstance(raw_distribution, Mapping) or not isinstance(
@@ -2009,7 +2041,7 @@ def select_random_granularity_index(
 
     def sample_index() -> int:
         generator = dedicated_random(config, "granularity_selection")
-        if fixed_distribution is not None:
+        if fixed_distribution is not None and len(set(fixed_distribution)) != 1:
             return int(
                 generator.choices(
                     range(granularity_count),
