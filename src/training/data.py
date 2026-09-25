@@ -761,6 +761,8 @@ def build_packed_mmap_dataloaders(
             ordering_policy_version=str(
                 optimizer_iteration["ordering_policy_version"]
             ),
+            batch_order_path=optimizer_iteration.get("batch_order_path"),
+            batch_order_hash_expected=optimizer_iteration.get("batch_order_sha256"),
             corpus_hash=str(manifest["corpus_hash"]),
             optimizer_training_manifest_hash=str(
                 manifest["roles"]["optimizer_training"]["manifest_hash"]

@@ -1518,17 +1518,17 @@ def _validate_distributed_and_prepared_corpus_contract(
         raise ConfigError(
             "dataset.optimizer_iteration.mode must be single_pass or repeat_epochs"
         )
-    if epoch_order not in {"stored_permutation", "deterministic_per_epoch"}:
+    if epoch_order not in {"stored_permutation", "deterministic_per_epoch", "coverage_balanced_batches"}:
         raise ConfigError(
             "dataset.optimizer_iteration.epoch_order must be stored_permutation "
-            "or deterministic_per_epoch"
+            "or deterministic_per_epoch or coverage_balanced_batches"
         )
     expected_order = (
         "stored_permutation"
         if iteration_mode == "single_pass"
         else "deterministic_per_epoch"
     )
-    if epoch_order != expected_order:
+    if epoch_order != expected_order and not (iteration_mode == "repeat_epochs" and epoch_order == "coverage_balanced_batches"):
         raise ConfigError(
             "dataset.optimizer_iteration mode/order must be "
             "single_pass+stored_permutation or "
@@ -1563,8 +1563,8 @@ def _validate_distributed_and_prepared_corpus_contract(
         "mode": iteration_mode,
         "epoch_order": epoch_order,
         "ordering_policy_version": (
-            REPEATED_EPOCH_ORDER_VERSION
-            if iteration_mode == "repeat_epochs"
+            "coverage_balanced_batches_v1" if epoch_order == "coverage_balanced_batches"
+            else REPEATED_EPOCH_ORDER_VERSION if iteration_mode == "repeat_epochs"
             else manifest["training_order"]["permutation_version"]
         ),
         "planned_samples": planned_samples,
@@ -1597,6 +1597,20 @@ def _validate_distributed_and_prepared_corpus_contract(
             manifest.get("role_manifest_hashes", {}).get("optimizer_training"),
         ),
     }
+    if epoch_order == "coverage_balanced_batches":
+        if model.get("global_sampling_schedule") != "balanced_cycle" or int(model.get("global_sampling_interval_steps", 1)) != 1:
+            raise ConfigError("Coverage-balanced batches require H=1 balanced-cycle global width sampling")
+        if complete_epochs != 4 or partial_final_epoch_samples != 0 or len(model.get("granularities", [])) != 4:
+            raise ConfigError("Coverage-balanced batches require exactly four widths and four complete epochs")
+        order_path = Path(str(optimizer_iteration.get("batch_order_path", ""))).expanduser().resolve()
+        order_sha256 = optimizer_iteration.get("batch_order_sha256")
+        if not order_path.is_file() or not isinstance(order_sha256, str):
+            raise ConfigError("Coverage-balanced batch order manifest is missing")
+        from src.training.packed_corpus import sha256_file
+        if sha256_file(order_path) != order_sha256:
+            raise ConfigError("Coverage-balanced batch order manifest checksum mismatch")
+        resolved_optimizer_iteration["batch_order_path"] = str(order_path)
+        resolved_optimizer_iteration["batch_order_sha256"] = order_sha256
     source = manifest["source"]
     expected_source = {
         "dataset_name": dataset.get("dataset_name"),

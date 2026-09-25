@@ -30,6 +30,7 @@ PACKED_CORPUS_SCHEMA_VERSION = 3
 PACKING_VERSION = "contiguous_eos_uint32_v1"
 PERMUTATION_VERSION = "numpy_pcg64_uint64_le_v1"
 REPEATED_EPOCH_ORDER_VERSION = "numpy_pcg64_epoch_positions_v1"
+COVERAGE_BATCH_ORDER_VERSION = "coverage_balanced_batches_v1"
 DOCUMENT_HASH_CHAIN_VERSION = "sha256_chain_v1"
 PREPARATION_PROGRESS_SCHEMA_VERSION = 1
 DEFAULT_DATA_SEED = 42
@@ -1862,6 +1863,8 @@ class RepeatingNoPaddingDistributedBatchSampler(Sampler[list[int]]):
     permutation_version: str = PERMUTATION_VERSION
     epoch_order: str = "deterministic_per_epoch"
     ordering_policy_version: str = REPEATED_EPOCH_ORDER_VERSION
+    batch_order_path: str | Path | None = None
+    batch_order_hash_expected: str | None = None
     corpus_hash: str | None = None
     optimizer_training_manifest_hash: str | None = None
 
@@ -1894,9 +1897,13 @@ class RepeatingNoPaddingDistributedBatchSampler(Sampler[list[int]]):
             raise PackedCorpusError("Sampler cursor is outside the planned stream")
         if self.permutation_version != PERMUTATION_VERSION:
             raise PackedCorpusError("Unsupported stored permutation version")
-        if self.epoch_order != "deterministic_per_epoch":
+        if self.epoch_order not in {"deterministic_per_epoch", "coverage_balanced_batches"}:
             raise PackedCorpusError("Unsupported repeated epoch order")
-        if self.ordering_policy_version != REPEATED_EPOCH_ORDER_VERSION:
+        expected_order_version = (
+            COVERAGE_BATCH_ORDER_VERSION if self.epoch_order == "coverage_balanced_batches"
+            else REPEATED_EPOCH_ORDER_VERSION
+        )
+        if self.ordering_policy_version != expected_order_version:
             raise PackedCorpusError("Unsupported repeated epoch ordering version")
         if not isinstance(self.corpus_hash, str) or not self.corpus_hash:
             raise PackedCorpusError("Repeating sampler corpus identity is missing")
@@ -1934,6 +1941,24 @@ class RepeatingNoPaddingDistributedBatchSampler(Sampler[list[int]]):
                 "epoch_sample_count": self.epoch_sample_count,
             }
         )
+        self._batch_order = None
+        self._batch_order_hash = None
+        if self.epoch_order == "coverage_balanced_batches":
+            if self.batch_order_path is None or not self.batch_order_hash_expected:
+                raise PackedCorpusError("Coverage-balanced batch order identity is missing")
+            path = Path(self.batch_order_path).expanduser().resolve()
+            batch_count = self.epoch_sample_count // self.global_batch_size
+            expected_bytes = self.planned_sample_count // self.epoch_sample_count * batch_count * 4
+            if not path.is_file() or path.stat().st_size != expected_bytes:
+                raise PackedCorpusError("Coverage-balanced batch order size mismatch")
+            actual_hash = sha256_file(path)
+            if actual_hash != self.batch_order_hash_expected:
+                raise PackedCorpusError("Coverage-balanced batch order checksum mismatch")
+            self._batch_order = np.memmap(
+                path, mode="r", dtype="<u4",
+                shape=(self.planned_sample_count // self.epoch_sample_count, batch_count),
+            )
+            self._batch_order_hash = actual_hash
         self._cached_epoch_index: int | None = None
         self._cached_epoch_order: np.ndarray | np.memmap | None = None
         self.last_yielded_cursor = self.total_cursor
@@ -1955,7 +1980,10 @@ class RepeatingNoPaddingDistributedBatchSampler(Sampler[list[int]]):
         if self._cached_epoch_index == epoch_index and self._cached_epoch_order is not None:
             return self._cached_epoch_order
         fixed_prefix = self._permutation[: self.epoch_sample_count]
-        if epoch_index == 0:
+        if self._batch_order is not None:
+            base_batches = fixed_prefix.reshape(-1, self.global_batch_size)
+            order = np.asarray(base_batches[self._batch_order[epoch_index]].reshape(-1), dtype="<u8")
+        elif epoch_index == 0:
             order: np.ndarray | np.memmap = fixed_prefix
         else:
             positions = deterministic_epoch_positions(
@@ -2021,6 +2049,7 @@ class RepeatingNoPaddingDistributedBatchSampler(Sampler[list[int]]):
             "iteration_mode": "repeat_epochs",
             "epoch_order": self.epoch_order,
             "ordering_policy_version": self.ordering_policy_version,
+            "batch_order_hash": self._batch_order_hash,
             "data_seed": self.data_seed,
             "dataset_size": self.dataset_size,
             "planned_samples": self.planned_sample_count,
@@ -2054,6 +2083,7 @@ class RepeatingNoPaddingDistributedBatchSampler(Sampler[list[int]]):
             "iteration_mode",
             "epoch_order",
             "ordering_policy_version",
+            "batch_order_hash",
             "data_seed",
             "dataset_size",
             "planned_samples",
