@@ -4516,6 +4516,8 @@ def _resolve_optimizer_state_contract(config: dict[str, Any]) -> None:
     }
     if training.get("block_update_policy") is not None:
         training["optimizer_state_contract"]["block_update_policy"] = training["block_update_policy"]
+    if training.get("c4_correction") is not None:
+        training["optimizer_state_contract"]["c4_correction"] = copy.deepcopy(training["c4_correction"])
 
 
 def _validate_matformer_campaign_topology(config: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -4529,9 +4531,33 @@ def _validate_matformer_campaign_topology(config: Mapping[str, Any]) -> dict[str
 
     run, model, training = config["run"], config["model"], config["training"]
     if run.get("c4_selected_block_protocol") == 1:
-        if run.get("campaign_id") != "tinystories-optimizer-ownership-c4-selected-block-v1" or run.get("arm_id") not in ("C4-linear", "C4-geometric"):
-            raise ConfigError("C4 run identity is invalid")
-        grid = run["arm_id"].removeprefix("C4-")
+        separate = run.get("c4_separate_corrections_protocol")
+        if separate is not None:
+            if type(separate) is not int or separate != 1:
+                raise ConfigError("Unsupported C4 separate correction version")
+            arms = {f"C4-{grid}-{kind}": (grid, kind)
+                    for grid in ("linear", "geometric") for kind in ("GMC", "LMC-only")}
+            if (run.get("campaign_id") != "tinystories-optimizer-ownership-c4-separate-corrections-v1"
+                    or run.get("arm_id") not in arms):
+                raise ConfigError("C4 separate correction identity is invalid")
+            grid, kind = arms[run["arm_id"]]
+            expected = {
+                "version": 1, "kind": kind,
+                "gradient_correction": kind == "GMC",
+                "learning_rate_correction": kind == "LMC-only",
+                "factors": {"O-A": 1., "O-B": 4/3, "O-C": 2., "O-D": 4., "O-common": 1.},
+                "order": "backward; clear unselected; joint L2 clip; selected AdamW at effective LR; restore nominal LR; global clock",
+                "factor_basis": "configured forward membership; not C4 optimizer frequency",
+                "parameter_change_correction": False,
+            }
+            if training.get("c4_correction") != expected or model.get("correction_mode") != ("gmc" if kind == "GMC" else "none"):
+                raise ConfigError("C4 correction isolation or factors differ from version 1")
+        else:
+            if training.get("c4_correction") is not None:
+                raise ConfigError("C4 correction metadata requires separate protocol")
+            if run.get("campaign_id") != "tinystories-optimizer-ownership-c4-selected-block-v1" or run.get("arm_id") not in ("C4-linear", "C4-geometric"):
+                raise ConfigError("C4 run identity is invalid")
+            grid = run["arm_id"].removeprefix("C4-")
         widths = ("g250", "g500", "g750", "g1000") if grid == "linear" else ("g125", "g250", "g500", "g1000")
         ends = (0, 64, 128, 192, 256) if grid == "linear" else (0, 32, 64, 128, 256)
         expected_prefixes = {width: end / 256 for width, end in zip(widths, ends[1:])}
@@ -4611,6 +4637,8 @@ def _validate_optimizer_state_eligibility(
         raise ConfigError("Optimizer-state eligibility requires resolved run sections")
 
     state_scope = training.get("optimizer_state_scope")
+    if (training.get("c4_correction") is not None or run.get("c4_separate_corrections_protocol") is not None) and run.get("c4_selected_block_protocol") != 1:
+        raise ConfigError("Separate corrections require C4 selected-block protocol")
     policy = training.get("block_update_policy")
     if policy is not None and (policy != "selected_block" or run.get("c4_selected_block_protocol") != 1):
         raise ConfigError("Selected-block optimizer policy requires the C4 protocol")

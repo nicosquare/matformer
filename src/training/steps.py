@@ -1257,9 +1257,10 @@ def train_for_steps(
                             if config["model"].get("correction_mode") == "lmc"
                             else []
                         )
+                        owner_lr_evidence = []
                         for owner_id in active_owners:
                             failure_stage = f"optimizer_step:{owner_id}"
-                            optimizer.optimizer_for(owner_id).step()
+                            owner_lr_evidence.append(optimizer.step_owner(owner_id))
                             returned_owners.append(owner_id)
                         if lmc_snapshots:
                             failure_stage = "membership_correction"
@@ -1524,6 +1525,10 @@ def train_for_steps(
                     step_metric_rows = []
                     for label, loss_value in global_losses.items():
                         pattern, correction = runtime_artifacts[label]
+                        if training.get('c4_correction'):
+                            correction = {**correction, 'c4_correction': training['c4_correction'],
+                                          'owner_step_learning_rates': owner_lr_evidence,
+                                          'joint_clipping': clipping_observation}
                         step_metric_rows.append(
                             build_training_metric_row(
                                 config,

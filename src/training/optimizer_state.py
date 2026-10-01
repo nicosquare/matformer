@@ -659,6 +659,7 @@ class BlockOptimizerCollection:
         self.ordered_granularities = tuple(self.owners[-1].active_widths)
         self.diagnostic_global_clip = bool(diagnostic_global_clip)
         self.block_update_policy = training.get('block_update_policy', 'prefix')
+        self.c4_correction = copy.deepcopy(training.get('c4_correction'))
         self.entries = tuple(
             BlockOptimizerEntry(owner.owner_id, _build_optimizer(owner.parameters, training))
             for owner in self.owners
@@ -711,6 +712,28 @@ class BlockOptimizerCollection:
         if owner_id not in self._optimizers:
             raise ConfigError(f'Unknown block optimizer owner: {owner_id}')
         return self._optimizers[owner_id]
+
+    def step_owner(self, owner_id):
+        """Apply one LR-only AdamW multiplier, then restore the nominal clock rate.
+
+        This scales decoupled decay as well as the adaptive term. Moments and
+        counters use the original gradients. A failed step remains fatal to the
+        caller's logical update; restoring LR does not roll back mutations.
+        """
+        item = self.optimizer_for(owner_id)
+        nominal = self.validate_synchronized_learning_rates()
+        factor = (self.c4_correction['factors'][owner_id]
+                  if self.c4_correction and self.c4_correction['learning_rate_correction'] else 1.)
+        effective = tuple(rate * factor for rate in nominal)
+        try:
+            for group, rate in zip(item.param_groups, effective, strict=True):
+                group['lr'] = rate
+            item.step()
+        finally:
+            for group, rate in zip(item.param_groups, nominal, strict=True):
+                group['lr'] = rate
+        return dict(owner=owner_id, nominal_learning_rates=list(nominal),
+                    effective_learning_rates=list(effective), factor=factor)
 
     def zero_grad(self, *, set_to_none=True):
         for entry in self.entries:
@@ -778,6 +801,8 @@ class BlockOptimizerCollection:
             'last_active_granularity': self.last_active_granularity,
             'current_learning_rates': list(self.current_learning_rates),
         }
+        if self.c4_correction is not None:
+            state['c4_correction'] = copy.deepcopy(self.c4_correction)
         if self.block_update_policy == 'selected_block':
             state['block_update_policy'] = self.block_update_policy
         return state
@@ -797,6 +822,8 @@ class BlockOptimizerCollection:
                 raise ConfigError(f'Block collection mismatch: {key}')
         if self.block_update_policy == 'selected_block' and state['block_update_policy'] != 'selected_block':
             raise ConfigError('Block update policy mismatch')
+        if self.c4_correction is not None and state['c4_correction'] != self.c4_correction:
+            raise ConfigError('C4 correction semantics mismatch')
         owners = state['ordered_owners']
         if not isinstance(owners, list) or len(owners) != len(self.owners):
             raise ConfigError('Block owner mapping mismatch')
