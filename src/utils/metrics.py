@@ -1142,7 +1142,7 @@ def build_optimizer_state_summary_fields(
         )
     )
 
-    if config.get('optimizer_ownership_contract'):
+    if config.get('optimizer_ownership_contract') or training.get('block_update_policy') == 'selected_block':
         exposures = dict(state.get('optimizer_width_selection_counts') or {})
         updates = dict(state.get('optimizer_update_counts') or {})
         scheduler_position = int(state.get('global_scheduler_position', 0))
@@ -1153,7 +1153,9 @@ def build_optimizer_state_summary_fields(
             attempted = resources['attempted_steps']
             failed = max(attempted - committed, 0)
         quarters = {f'O-{q}': sum(exposures.get(w, 0) for w in ordered[i:]) for i, q in enumerate('ABCD')} if len(ordered) == 4 else {}
-        expected_calls = ({**quarters, 'O-common': committed} if scope == 'per_ffn_block'
+        expected_calls = ({**{f'O-{q}': exposures.get(width, 0) for q, width in zip('ABCD', ordered, strict=True)},
+                           'O-common': committed} if training.get('block_update_policy') == 'selected_block'
+                          else {**quarters, 'O-common': committed} if scope == 'per_ffn_block'
                           else exposures if scope == 'per_granularity' else {'shared': committed})
         reconciled = (sum(exposures.values()) == committed and updates == expected_calls
                       and state.get('optimizer_quarter_activation_counts') == quarters

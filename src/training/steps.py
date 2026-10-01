@@ -172,7 +172,7 @@ def _gradient_l2_norm(parameters):
 
 
 def clip_optimizer_gradients(
-    model, training, width, *, owners=None, diagnostic_global_clip=False,
+    model, training, width, *, owners=None, diagnostic_global_clip=False, selected_owner_ids=None,
 ):
     """Apply exactly one intended rescale and return detached observations.
 
@@ -185,7 +185,12 @@ def clip_optimizer_gradients(
     if owners is None:
         groups = [('global', parameters, True)]
     else:
-        groups = [(owner.owner_id, owner.parameters, width in owner.active_widths) for owner in owners]
+        groups = [(owner.owner_id, owner.parameters,
+                   owner.owner_id in selected_owner_ids if selected_owner_ids is not None else width in owner.active_widths)
+                  for owner in owners]
+        if selected_owner_ids is not None:
+            selected = {p for _, members, active in groups if active for p in members}
+            parameters = tuple(p for p in parameters if p in selected)
     if mode == 'per_owner' and owners is None:
         raise ConfigError('Per-owner clipping requires the concat partition')
     observations = {}
@@ -1190,10 +1195,18 @@ def train_for_steps(
                     if training.get("gradient_clipping"):
                         if any(not math.isfinite(value) for value in local_loss_numerators.values()):
                             raise RuntimeError("Optimizer update loss must be finite")
+                        selected_owner_ids = None
+                        if isinstance(optimizer, BlockOptimizerCollection) and optimizer.block_update_policy == 'selected_block':
+                            selected_owner_ids = active_owners
+                            for owner in optimizer.owners:
+                                if owner.owner_id not in selected_owner_ids:
+                                    for parameter in owner.parameters:
+                                        parameter.grad = None
                         clipping_observation = clip_optimizer_gradients(
                             model, training, action["granularities"][0],
                             owners=clipping_owners,
                             diagnostic_global_clip=getattr(optimizer, "diagnostic_global_clip", False),
+                            selected_owner_ids=selected_owner_ids,
                         )
                     elif gradient_clip_norm is not None:
                         clip_grad_norm_(model.parameters(), float(gradient_clip_norm))
@@ -1367,7 +1380,7 @@ def train_for_steps(
                             "optimizer_update_counts": dict(optimizer.successful_update_counts),
                             "optimizer_width_selection_counts": dict(optimizer.width_selection_counts),
                             "optimizer_quarter_activation_counts": {
-                                owner.owner_id: optimizer.successful_update_counts[owner.owner_id]
+                                owner.owner_id: sum(optimizer.width_selection_counts[width] for width in owner.active_widths)
                                 for owner in optimizer.owners[:-1]
                             },
                             "optimizer_total_successful_updates": optimizer.total_successful_updates,

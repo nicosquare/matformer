@@ -121,7 +121,25 @@ def _validate_concat_quarters(module: CatLlamaMLP, widths: tuple[str, ...], topo
     else:
         from src.evaluation.optimizer_ownership import campaign_topology, _require_equal
         from src.utils.reproducibility import stable_hash
-        _require_equal(stable_hash(topology), stable_hash(campaign_topology(4)), "concat campaign topology")
+        if topology.get('c4_selected_block_protocol') == 1:
+            from src.evaluation.optimizer_ownership import WIDTHS, MATFORMER_WIDTHS
+            grid = topology.get('grid_id')
+            reference = WIDTHS if grid == 'linear' else MATFORMER_WIDTHS if grid == 'geometric' else None
+            if reference is None:
+                raise ConfigError('Unknown C4 width grid')
+            ends = [0] + [item['active_ffn_dimension'] for item in reference]
+            expected = {
+                'c4_selected_block_protocol': 1, 'grid_id': grid, 'width_grid': list(reference),
+                'block_boundaries': [
+                    {'id': block, 'start': ends[index], 'end': ends[index + 1],
+                     'dimension': ends[index + 1] - ends[index],
+                     'supported_widths': list(tuple(w['label'] for w in reference)[index:])}
+                    for index, block in enumerate('ABCD')
+                ],
+            }
+            _require_equal(stable_hash(topology), stable_hash(expected), 'C4 concat topology')
+        else:
+            _require_equal(stable_hash(topology), stable_hash(campaign_topology(4)), "concat campaign topology")
         _require_equal(list(widths), [w["label"] for w in topology["width_grid"]], "concat width order")
         _require_equal(module.intermediate_size, 256, "concat full dimension")
         sizes = [b["dimension"] for b in topology["block_boundaries"]]
@@ -640,6 +658,7 @@ class BlockOptimizerCollection:
         self.owners = tuple(owners)
         self.ordered_granularities = tuple(self.owners[-1].active_widths)
         self.diagnostic_global_clip = bool(diagnostic_global_clip)
+        self.block_update_policy = training.get('block_update_policy', 'prefix')
         self.entries = tuple(
             BlockOptimizerEntry(owner.owner_id, _build_optimizer(owner.parameters, training))
             for owner in self.owners
@@ -655,16 +674,17 @@ class BlockOptimizerCollection:
         if training.get('optimizer_name', 'adamw') != 'adamw':
             raise ConfigError('Block optimizer ownership requires AdamW')
         clipping = training.get('gradient_clipping', {})
-        if clipping.get('mode') != 'per_owner':
-            raise ConfigError('Block optimizer ownership requires per_owner clipping')
+        selected = training.get('block_update_policy') == 'selected_block'
+        if clipping.get('mode') != ('global' if selected else 'per_owner'):
+            raise ConfigError('Block optimizer clipping does not match the update policy')
         owners = build_concat_parameter_partition(
             model, ordered_widths=training['optimizer_state_contract']['ordered_granularities'],
             topology=training.get('optimizer_state_topology'),
         )
         caps = clipping.get('owner_max_norms', {})
-        if set(caps) != {owner.owner_id for owner in owners} or any(
+        if not selected and (set(caps) != {owner.owner_id for owner in owners} or any(
             not math.isfinite(float(cap)) or float(cap) <= 0 for cap in caps.values()
-        ):
+        )):
             raise ConfigError('Block clipping requires a finite positive cap for every owner')
         return cls(owners, training, diagnostic_global_clip=diagnostic_global_clip)
 
@@ -675,6 +695,9 @@ class BlockOptimizerCollection:
     def active_owner_ids(self, width):
         if width not in self.ordered_granularities:
             raise ConfigError(f'Unknown block optimizer width: {width}')
+        if self.block_update_policy == 'selected_block':
+            index = self.ordered_granularities.index(width)
+            return (self.owners[index].owner_id, self.owners[-1].owner_id)
         return tuple(owner.owner_id for owner in self.owners if width in owner.active_widths)
 
     def owner_from_action(self, action):
@@ -730,16 +753,13 @@ class BlockOptimizerCollection:
             raise ConfigError('Block width selections and committed step do not reconcile')
         if width_counts is not None and dict(width_counts) != self.width_selection_counts:
             raise ConfigError('Block width selections and sampling exposures do not reconcile')
-        expected = {
-            owner.owner_id: sum(self.width_selection_counts[w] for w in owner.active_widths)
-            for owner in self.owners
-        }
+        expected = self.expected_owner_calls(self.width_selection_counts)
         if self.successful_update_counts != expected:
             raise ConfigError('Block owner calls and quarter activations do not reconcile')
         self.validate_synchronized_learning_rates()
 
     def state_dict(self):
-        return {
+        state = {
             'block_optimizer_collection_schema_version': self.schema_version,
             'state_scope': 'per_ffn_block',
             'diagnostic_global_clip': self.diagnostic_global_clip,
@@ -758,6 +778,15 @@ class BlockOptimizerCollection:
             'last_active_granularity': self.last_active_granularity,
             'current_learning_rates': list(self.current_learning_rates),
         }
+        if self.block_update_policy == 'selected_block':
+            state['block_update_policy'] = self.block_update_policy
+        return state
+
+    def expected_owner_calls(self, counts):
+        if self.block_update_policy == 'selected_block':
+            return {**{owner.owner_id: counts[width] for owner, width in zip(self.owners[:-1], self.ordered_granularities, strict=True)},
+                    self.owners[-1].owner_id: sum(counts.values())}
+        return {owner.owner_id: sum(counts[w] for w in owner.active_widths) for owner in self.owners}
 
 
     def validate_state_dict(self, state):
@@ -766,6 +795,8 @@ class BlockOptimizerCollection:
         for key in ('block_optimizer_collection_schema_version', 'state_scope', 'diagnostic_global_clip'):
             if state[key] != self.state_dict()[key]:
                 raise ConfigError(f'Block collection mismatch: {key}')
+        if self.block_update_policy == 'selected_block' and state['block_update_policy'] != 'selected_block':
+            raise ConfigError('Block update policy mismatch')
         owners = state['ordered_owners']
         if not isinstance(owners, list) or len(owners) != len(self.owners):
             raise ConfigError('Block owner mapping mismatch')
@@ -775,7 +806,7 @@ class BlockOptimizerCollection:
         for value in counts.values():
             _require_nonnegative_int(value, 'block width count')
         total = _require_nonnegative_int(state['total_successful_updates'], 'block total')
-        expected_calls = {o.owner_id: sum(counts[w] for w in o.active_widths) for o in self.owners}
+        expected_calls = self.expected_owner_calls(counts)
         if sum(counts.values()) != total or state['successful_update_counts'] != expected_calls:
             raise ConfigError('Block exposure/call counts do not reconcile')
         for value in state['successful_update_counts'].values():

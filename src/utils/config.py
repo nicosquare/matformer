@@ -4413,6 +4413,7 @@ def _resolve_gradient_clipping(training: dict[str, Any]) -> None:
     """Keep legacy inputs untouched; make explicit L2 owner caps unambiguous."""
     raw = training.get("gradient_clipping")
     scope = training["optimizer_state_scope"]
+    selected_block = training.get("block_update_policy") == "selected_block"
     if raw is None:
         if scope == "per_ffn_block":
             raise ConfigError("per_ffn_block requires gradient_clipping.mode=per_owner")
@@ -4437,7 +4438,7 @@ def _resolve_gradient_clipping(training: dict[str, Any]) -> None:
     global_cap = cap(training["gradient_clip_norm"], "training.gradient_clip_norm")
     resolved = {"mode": mode, "norm_type": 2, "stabilization_epsilon": 1e-6}
     if mode == "global":
-        if scope == "per_ffn_block" or "owner_max_norms" in raw:
+        if (scope == "per_ffn_block" and not selected_block) or "owner_max_norms" in raw:
             raise ConfigError("per_ffn_block requires per_owner gradient_clipping; global cannot have owners")
         if cap(raw.get("max_norm", global_cap), "training.gradient_clipping.max_norm") != global_cap:
             raise ConfigError("Conflicting training.gradient_clipping and gradient_clip_norm thresholds")
@@ -4513,6 +4514,8 @@ def _resolve_optimizer_state_contract(config: dict[str, Any]) -> None:
         "scheduler_contract": copy.deepcopy(training["scheduler"]),
         "single_process_required": state_scope in {"per_granularity", "per_ffn_block"},
     }
+    if training.get("block_update_policy") is not None:
+        training["optimizer_state_contract"]["block_update_policy"] = training["block_update_policy"]
 
 
 def _validate_matformer_campaign_topology(config: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -4525,6 +4528,30 @@ def _validate_matformer_campaign_topology(config: Mapping[str, Any]) -> dict[str
     from src.utils.reproducibility import stable_hash
 
     run, model, training = config["run"], config["model"], config["training"]
+    if run.get("c4_selected_block_protocol") == 1:
+        if run.get("campaign_id") != "tinystories-optimizer-ownership-c4-selected-block-v1" or run.get("arm_id") not in ("C4-linear", "C4-geometric"):
+            raise ConfigError("C4 run identity is invalid")
+        grid = run["arm_id"].removeprefix("C4-")
+        widths = ("g250", "g500", "g750", "g1000") if grid == "linear" else ("g125", "g250", "g500", "g1000")
+        ends = (0, 64, 128, 192, 256) if grid == "linear" else (0, 32, 64, 128, 256)
+        expected_prefixes = {width: end / 256 for width, end in zip(widths, ends[1:])}
+        if (model.get("granularities") != list(widths) or model.get("granularity_prefixes") != expected_prefixes
+                or model.get("variant") != "concat" or model.get("intermediate_size") != 256
+                or training.get("block_update_policy") != "selected_block"
+                or training.get("optimizer_state_scope") != "per_ffn_block"
+                or training.get("gradient_clipping", {}).get("mode") != "global"
+                or training.get("gradient_clipping", {}).get("max_norm") != 1.0):
+            raise ConfigError("C4 selected-block grid, ownership, or clipping differs from protocol")
+        from src.evaluation.optimizer_ownership import WIDTHS, MATFORMER_WIDTHS
+        return {
+            "c4_selected_block_protocol": 1, "grid_id": grid,
+            "width_grid": list(WIDTHS if grid == "linear" else MATFORMER_WIDTHS),
+            "block_boundaries": [
+                {"id": block, "start": ends[index], "end": ends[index + 1],
+                 "dimension": ends[index + 1] - ends[index], "supported_widths": list(widths[index:])}
+                for index, block in enumerate("ABCD")
+            ],
+        }
     marker = run.get("campaign_schema_version")
     contract = config.get("optimizer_ownership_contract", {})
     if marker is None:
@@ -4584,6 +4611,11 @@ def _validate_optimizer_state_eligibility(
         raise ConfigError("Optimizer-state eligibility requires resolved run sections")
 
     state_scope = training.get("optimizer_state_scope")
+    policy = training.get("block_update_policy")
+    if policy is not None and (policy != "selected_block" or run.get("c4_selected_block_protocol") != 1):
+        raise ConfigError("Selected-block optimizer policy requires the C4 protocol")
+    if run.get("c4_selected_block_protocol") == 1 and policy != "selected_block":
+        raise ConfigError("C4 requires selected-block optimizer policy")
     if state_scope not in VALID_OPTIMIZER_STATE_SCOPES:
         raise ConfigError(
             "training.optimizer_state_scope must be one of "
