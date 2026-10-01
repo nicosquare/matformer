@@ -230,6 +230,44 @@ WARMUP_REFERENCES = {
 }
 
 
+LINEAR_CALR_CAMPAIGN_ID = "tinystories-linear-s1-s2-calr-v1"
+LINEAR_CALR_ARMS = tuple(
+    {**arm, 'arm_id': f"{arm['arm_id']}-linear-{policy}",
+     'reference_arm_id': arm['arm_id'], 'grid_id': 'linear',
+     'exponent_policy': 'uniform' if policy == 'poly' else 'complexity_log'}
+    for arm in ELASTIC_ARMS[:2] for policy in ('poly', 'CaLR')
+)
+LINEAR_CALR_COUNTS = dict(zip(WIDTH_LABELS, (377408,426560,475712,524864)))
+LINEAR_CALR_REFERENCES = {
+    **{f'{scope}-cosine': dict(path=f'optimizer-ownership-v1/runs/{scope}',
+        arm_id=scope, peak=.008, warmup_steps=64) for scope in ('S1','S2')},
+    'S1-cosine-004': dict(path='optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004', arm_id='S1-linear-lr0004',peak=.004,warmup_steps=64),
+    'S2-cosine-004': dict(path='optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004', arm_id='S2-linear-lr0004',peak=.004,warmup_steps=64),
+    **{f'ST-{g}': dict(path=f'optimizer-ownership-v1/runs/ST-{g}',
+        arm_id=f'ST-{g}',peak=.008,warmup_steps=64) for g in WIDTH_LABELS},
+}
+
+
+def linear_calr_schedule_contract(arm):
+    from src.training.schedules import complexity_log_exponents
+    from src.utils.config import linear_calr_schedule_contract_dict
+    policy = arm['exponent_policy']
+    return linear_calr_schedule_contract_dict(dict(version=1, family='warmup_polynomial',
+        position_convention='pre_update_zero_based', peak=.008, warmup_steps=64,
+        horizon=348528, exponent_policy=policy,
+        complexity_definition='active_trainable_scalars_including_embeddings_head_tied_once_v1',
+        ordered_granularities=list(WIDTH_LABELS),
+        ffn_sizes={w['label']:w['active_ffn_dimension'] for w in WIDTHS},
+        complexity_counts=LINEAR_CALR_COUNTS,
+        reporting_counts={w['label']:w['non_embedding_parameters'] for w in WIDTHS},
+        exponents=complexity_log_exponents(LINEAR_CALR_COUNTS) if policy=='complexity_log' else dict.fromkeys(WIDTH_LABELS,1.),
+        gamma_min=.5,gamma_max=2.,nominal_exponent=1,
+        effective_rate_policy='temporary_all_groups_restore_nominal_v1',
+        optimizer_state_scope=arm['state_scope'],campaign_id=LINEAR_CALR_CAMPAIGN_ID,
+        arm_id=arm['arm_id'],run_id=f"{LINEAR_CALR_CAMPAIGN_ID}-{arm['arm_id']}-s42",
+        seed=42,seed_stream_version=1))
+
+
 def inverse_membership_sampling_contract(config):
     from src.utils.reproducibility import seed_for
     return {
@@ -265,6 +303,8 @@ def campaign_arms(schema_version=CAMPAIGN_SCHEMA_VERSION):
         return MATFORMER_ARMS
     if type(schema_version) is int and schema_version == 5:
         return WARMUP_ARMS
+    if type(schema_version) is int and schema_version == 6:
+        return LINEAR_CALR_ARMS
     raise ConfigError(f"Unsupported campaign schema_version: {schema_version}")
 
 
@@ -291,6 +331,8 @@ def campaign_common(schema_version=CAMPAIGN_SCHEMA_VERSION, arm_id=None):
 
     widths = campaign_widths(schema_version, arm_id)
     common = copy.deepcopy(PINNED_COMMON)
+    if schema_version == 6:
+        common["training"]["scheduler"]["name"] = "warmup_polynomial"
     if schema_version == 5:
         common["training"]["warmup_steps"] = 256
     if schema_version in (4, 5):
@@ -306,6 +348,8 @@ def campaign_topology(schema_version=CAMPAIGN_SCHEMA_VERSION, arm_id=None):
     import copy
 
     campaign_arms(schema_version)
+    if schema_version == 6:
+        return {"campaign_schema_version": 6, "grid_id": "linear", "width_grid": copy.deepcopy(list(WIDTHS))}
     if schema_version == 5:
         arm = campaign_arm(5, arm_id)
         widths = campaign_widths(5, arm_id)
@@ -600,6 +644,8 @@ def _arm_overrides(arm):
             global_sampling_schedule="random_with_replacement",
             global_sampling_interval_steps=1,
         )
+    if "exponent_policy" in arm:
+        training["linear_calr_schedule_contract"] = linear_calr_schedule_contract(arm)
     if arm.get("sampling_policy") == "fixed_inverse_membership":
         model["granularity_sampling_mode"] = "fixed_global"
         model["global_sampling_distribution"] = dict(zip(WIDTH_LABELS, IM_PROBABILITIES))
@@ -755,18 +801,21 @@ def expand_campaign(recipe, *, prepared_corpus_dir, tokenizer_dir, run_output_ro
     _require_equal(
         set(recipe),
         {"schema_version", "campaign_id", "common", "arms", "expected_data"}
-        | ({"references"} if recipe.get("schema_version") == 5 else set()),
+        | ({"references"} if recipe.get("schema_version") in (5, 6) else set()),
         "campaign fields",
     )
     arms = campaign_arms(recipe["schema_version"])
+    if recipe["schema_version"] == 6:
+        _require_equal(recipe["campaign_id"], LINEAR_CALR_CAMPAIGN_ID, "campaign_id")
+        _require_equal(recipe["references"], LINEAR_CALR_REFERENCES, "references")
     if recipe["schema_version"] == 5:
         _require_equal(recipe["campaign_id"], WARMUP_CAMPAIGN_ID, "campaign_id")
         _require_equal(recipe["references"], WARMUP_REFERENCES, "references")
         _require_equal(recipe["common"], campaign_common(5, WARMUP_ARMS[0]["arm_id"]), "common")
     campaign_id = recipe["campaign_id"]
-    if not isinstance(campaign_id, str) or not re.fullmatch(
+    if recipe["schema_version"] != 6 and (not isinstance(campaign_id, str) or not re.fullmatch(
         r"tinystories-optimizer-ownership-[A-Za-z0-9_-]+", campaign_id
-    ):
+    )):
         raise ConfigError(
             "campaign_id must be a fresh tinystories-optimizer-ownership-* identity"
         )
@@ -795,9 +844,9 @@ def expand_campaign(recipe, *, prepared_corpus_dir, tokenizer_dir, run_output_ro
             raw["run"].update(
                 run_id=run_id, campaign_id=campaign_id, arm_id=arm_id, output_dir=output
             )
-            if recipe["schema_version"] in (4, 5):
+            if recipe["schema_version"] in (4, 5, 6):
                 raw["run"]["campaign_schema_version"] = recipe["schema_version"]
-            if recipe["schema_version"] == 5:
+            if recipe["schema_version"] in (5, 6):
                 raw["run"]["grid_id"] = arm["grid_id"]
             raw["model"]["tokenizer_dir"] = str(
                 Path(tokenizer_dir).expanduser().resolve()
@@ -849,6 +898,8 @@ def expand_campaign(recipe, *, prepared_corpus_dir, tokenizer_dir, run_output_ro
 def validate_run_budget(config, arm):
     training, dataset = config["training"], config["dataset"]
     warmup = 64
+    if config["run"].get("campaign_schema_version") == 6:
+        validate_linear_calr_controls(config)
     if config["run"].get("campaign_schema_version") == 5:
         validate_warmup_controls(config)
         _require_equal(arm, campaign_arm(5, config["run"]["arm_id"]), "budget arm")
@@ -985,6 +1036,25 @@ def inspect_campaign_models(runs):
                         width[PARAMETER_COUNT_FIELD],
                         f"{run['arm_id']}.counts.{width['label']}",
                     )
+                complexity_counts = {}
+                if config['run'].get('campaign_schema_version') == 6:
+                    schedule = linear_calr_schedule_contract(campaign_arm(6, run['arm_id']))
+                    _require_equal(config['training']['linear_calr_schedule_contract'], schedule, 'schedule contract')
+                    for width in WIDTH_LABELS:
+                        # named_parameters deduplicates tied identities; prefix modules
+                        # count only active trainable entries, including their biases.
+                        actual = model_parameter_counts(model, trainable_only=True, granularity=width)
+                        complexity_counts[width] = actual['total_parameters']
+                        _require_equal(actual['total_parameters'], schedule['complexity_counts'][width], f"{run['arm_id']}.complexity.{width}")
+                        _require_equal(actual['non_embedding_parameters'], schedule['reporting_counts'][width], f"{run['arm_id']}.reporting.{width}")
+                fresh_tensor_sha256 = None
+                if config['run'].get('campaign_schema_version') == 6 or any(r['resolved_config']['run'].get('campaign_schema_version') == 6 for r in runs):
+                    import hashlib
+                    digest = hashlib.sha256()
+                    for name, tensor in model.state_dict().items():
+                        digest.update(repr((name, tuple(tensor.shape), str(tensor.dtype))).encode())
+                        digest.update(tensor.detach().contiguous().view(torch.uint8).numpy().tobytes())
+                    fresh_tensor_sha256 = digest.hexdigest()
                 owners = []
                 for layer in model.model.layers:
                     mlp = layer.mlp
@@ -1038,9 +1108,11 @@ def inspect_campaign_models(runs):
                     {
                         "arm_id": run["arm_id"],
                         "counts": counts,
+                        **({"complexity_counts": complexity_counts} if complexity_counts else {}),
                         "owners": owners,
                         "parameter_descriptors": list(descriptors),
                         "fresh_parameter_identity": True,
+                        **({"fresh_tensor_sha256": fresh_tensor_sha256} if fresh_tensor_sha256 else {}),
                     }
                 )
     finally:
@@ -1141,7 +1213,7 @@ def build_expected_traces(runs, corpus_dir, corpus_manifest):
 
 def preflight_campaign(
     *, campaign_path, prepared_corpus_dir, tokenizer_dir, output_dir, run_output_root,
-    linear_reference_root=None, geometric_reference_root=None
+    linear_reference_root=None, geometric_reference_root=None, reference_root=None
 ):
     """Audit and stage everything before publishing a manifest or reserving runs."""
     import json
@@ -1156,6 +1228,9 @@ def preflight_campaign(
     output = Path(output_dir).expanduser().resolve()
     root = Path(run_output_root).expanduser().resolve()
     recipe = yaml.safe_load(Path(campaign_path).read_text())
+    calr = recipe.get("schema_version") == 6
+    if calr and reference_root is None:
+        raise ConfigError("schema 6 requires --reference-root for explicit saved references")
     warmup = recipe.get("schema_version") == 5
     if warmup and (linear_reference_root is None or geometric_reference_root is None):
         raise ConfigError("schema 5 requires --linear-reference-root and --geometric-reference-root")
@@ -1226,6 +1301,29 @@ def preflight_campaign(
         extra = dict(arm_grids={r['arm_id']: campaign_topology(5, r['arm_id']) for r in runs},
                      references=recipe['references'], reference_selection=references,
                      control_audits=audits, recipe_source=_source_record(campaign_path))
+    if calr:
+        references = inspect_linear_calr_references(reference_root)
+        audits = {}
+        counterpart_checks = inspect_campaign_models([runs[0], *references['counterparts'].values()])
+        for check in [*models, *counterpart_checks]:
+            _require_equal(check['fresh_tensor_sha256'], models[0]['fresh_tensor_sha256'],
+                           f"{check['arm_id']}.fresh tensor equality")
+        for run in runs:
+            counterpart = references['counterparts'][run['reference_arm_id']]
+            audits[run['arm_id']] = audit_linear_calr_pair(counterpart['resolved_config'], run['resolved_config'], kind='counterpart')
+            _require_equal(traces[run['arm_id']], counterpart['expected_traces'] if 'expected_traces' in counterpart else
+                build_expected_traces([counterpart], prepared_corpus_dir, corpus_manifest)[counterpart['arm_id']],
+                f"{run['arm_id']}.counterpart traces")
+        for kind, pairs in (('schedule', ((0,1),(2,3))), ('ownership', ((0,2),(1,3)))):
+            for a,b in pairs:
+                audits[f"{kind}:{runs[a]['arm_id']}:{runs[b]['arm_id']}"] = audit_linear_calr_pair(
+                    runs[a]['resolved_config'], runs[b]['resolved_config'], kind=kind)
+        extra = dict(references=recipe['references'], reference_selection=references,
+            control_audits=audits, recipe_source=_source_record(campaign_path),
+            assigned_totals=dict(updates=sum(r['assigned_updates'] for r in runs),
+                tokens=sum(r['assigned_tokens'] for r in runs)),
+            designated_sequences_per_epoch=5576448, excluded_tail_sequences=43,
+            evaluation_roles_used=['ordinary_validation'])
     manifest = {
         "schema_version": recipe["schema_version"],
         "campaign_id": recipe["campaign_id"],
@@ -1243,7 +1341,7 @@ def preflight_campaign(
         "runtime_ownership_verified": False,
         "training_started": False,
         "holdout_evaluated": False,
-        **(extra if warmup else campaign_topology(recipe["schema_version"])),
+        **(extra if warmup or calr else campaign_topology(recipe["schema_version"])),
     }
     manifest["manifest_hash"] = stable_hash(manifest)
     report = {
@@ -1293,6 +1391,27 @@ def preflight_campaign(
             manifest['manifest_hash'] = stable_hash({k:v for k,v in manifest.items() if k != 'manifest_hash'})
             report['manifest_hash'] = manifest['manifest_hash']
             _check_sources(references['sources'] + [manifest['recipe_source']])
+        if calr:
+            (stage / 'schedules').mkdir()
+            schedules = {}
+            for run in runs:
+                filename = f"schedules/{run['arm_id']}.csv"
+                schedules[run['arm_id']] = export_linear_calr_schedule(run['resolved_config'], stage / filename)
+                schedules[run['arm_id']]['path'] = filename
+                schedules[run['arm_id']]['source']['path'] = str(output / filename)
+            manifest['expected_schedules'] = schedules
+            write_json_artifact(stage / 'reference_selection.json', references)
+            write_json_artifact(stage / 'control_differences.json', audits)
+            write_json_artifact(stage / 'expected_traces.json', traces)
+            manifest['artifact_sha256'] = {str(p.relative_to(stage)): _source_record(p)['sha256']
+                for p in sorted(stage.rglob('*')) if p.is_file()}
+            manifest['manifest_hash'] = stable_hash({k:v for k,v in manifest.items() if k != 'manifest_hash'})
+            report.update(manifest_hash=manifest['manifest_hash'],
+                complexity_counts={m['arm_id']:m['complexity_counts'] for m in models},
+                analytic_schedule_status='passed', control_audit_status='passed',
+                reference_status='config_inspected', terminal_reference_status='pending',
+                assigned_totals=extra['assigned_totals'])
+            _check_sources(references['sources'] + [extra['recipe_source']])
         write_json_artifact(stage / "preflight.json", report)
         write_json_artifact(stage / "campaign_manifest.json", manifest)
         _check_unoccupied(root, arms)
@@ -1344,9 +1463,9 @@ def validate_materialized_config(config):
     )
     schema = config["run"].get("campaign_schema_version")
     if schema is not None or "campaign_schema_version" in contract:
-        if schema not in (4, 5):
+        if schema not in (4, 5, 6):
             raise ConfigError("Unsupported run.campaign_schema_version")
-        campaign_id = WARMUP_CAMPAIGN_ID if schema == 5 else MATFORMER_CAMPAIGN_ID
+        campaign_id = LINEAR_CALR_CAMPAIGN_ID if schema == 6 else WARMUP_CAMPAIGN_ID if schema == 5 else MATFORMER_CAMPAIGN_ID
         _require_equal(config["run"].get("campaign_id"), campaign_id, "campaign_id")
         for key, expected in campaign_topology(schema, config["run"].get("arm_id")).items():
             _require_equal(stable_hash(contract.get(key)), stable_hash(expected), key)
@@ -3232,3 +3351,210 @@ def report_s1_warmup(*, manifest, linear_reference_root, geometric_reference_roo
         output.mkdir(parents=True,exist_ok=True)
         write_json_artifact(output/'comparison_report.json',record)
         raise ConfigError(f'Incomplete warmup comparison: {error}') from error
+
+
+def _linear_calr_audit_projection(config):
+    import copy
+    result = copy.deepcopy(config)
+    # Source provenance is retained as evidence, independently of scientific controls.
+    initialization = result['optimizer_ownership_contract']['initialization']
+    for key in ('code_revision', 'working_tree_dirty', 'tracked_code_diff_sha256',
+                'source_files_sha256', 'dependency_versions'):
+        initialization.pop(key, None)
+    return result
+
+
+def linear_calr_allowed_paths(kind):
+    """Closed enumerations: no prefix/wildcard exclusions or input-derived keys."""
+    from src.utils.config import ConfigError
+    if kind not in ('counterpart', 'schedule', 'ownership'):
+        raise ConfigError(f'Unknown linear CaLR comparison: {kind}')
+    allowed = {'run.arm_id', 'run.run_id', 'run.output_dir', 'run.output_root',
+               'monitoring.name', 'optimizer_ownership_contract.arm_id',
+               'optimizer_ownership_contract.run_id', 'optimizer_ownership_contract_hash'}
+    schedule_fields = {'arm_id', 'run_id'}
+    training_fields = {'optimizer_state_contract.linear_calr_schedule_contract_hash'}
+    if kind == 'schedule':
+        schedule_fields |= {'exponent_policy'} | {f'exponents.{g}' for g in WIDTH_LABELS}
+    elif kind == 'ownership':
+        schedule_fields.add('optimizer_state_scope')
+        training_fields |= {'optimizer_state_scope', 'requested_optimizer_state_scope',
+            'optimizer_state_contract.state_scope', 'optimizer_state_contract.single_process_required',
+            'optimizer_state_eligibility.required_action_cardinality',
+            'optimizer_state_eligibility.required_action_kind'}
+        allowed.add('optimizer_ownership_contract.state_scope')
+    else:
+        allowed |= {'run.campaign_id', 'run.campaign_schema_version', 'run.grid_id',
+                    'optimizer_ownership_contract.campaign_id',
+                    'optimizer_ownership_contract.campaign_schema_version',
+                    'optimizer_ownership_contract.grid_id', 'optimizer_ownership_contract.width_grid'}
+        schedule_fields |= {'version', 'family', 'position_convention', 'peak', 'warmup_steps',
+            'horizon', 'exponent_policy', 'complexity_definition', 'ordered_granularities',
+            'gamma_min', 'gamma_max', 'nominal_exponent', 'effective_rate_policy',
+            'optimizer_state_scope', 'campaign_id', 'seed', 'seed_stream_version'}
+        schedule_fields |= {f'{field}.{g}' for field in ('ffn_sizes','complexity_counts','reporting_counts','exponents') for g in WIDTH_LABELS}
+        training_fields |= {'scheduler.name', 'scheduler_name', 'optimizer_state_contract.scheduler_contract.name'}
+    for root in ('training', 'optimizer_ownership_contract.optimizer'):
+        allowed |= {f'{root}.{field}' for field in training_fields}
+        for prefix in ('linear_calr_schedule_contract', 'optimizer_state_contract.linear_calr_schedule_contract'):
+            allowed |= {f'{root}.{prefix}.{field}' for field in schedule_fields}
+    return allowed
+
+
+def audit_linear_calr_pair(left, right, *, kind):
+    """Validate each contract first, then reject every undeclared resolved difference."""
+    from src.utils.config import ConfigError
+    validate_materialized_config(left)
+    validate_materialized_config(right)
+    a, b = left['run'], right['run']
+    if kind == 'counterpart':
+        _require_equal(a['arm_id'], campaign_arm(6, b['arm_id'])['reference_arm_id'], 'counterpart.arm_id')
+        _require_equal(a['campaign_id'], 'tinystories-optimizer-ownership-v1', 'counterpart.campaign_id')
+        _require_equal(left['training']['resolved_learning_rate'], .008, 'counterpart.peak')
+        _require_equal(left['training']['scheduler_name'], 'cosine', 'counterpart.scheduler')
+    else:
+        aa, bb = campaign_arm(6,a['arm_id']), campaign_arm(6,b['arm_id'])
+        _require_equal(aa['state_scope'] == bb['state_scope'], kind == 'schedule', f'{kind}.ownership pairing')
+        _require_equal(aa['exponent_policy'] == bb['exponent_policy'], kind == 'ownership', f'{kind}.policy pairing')
+    old, new = _linear_calr_audit_projection(left), _linear_calr_audit_projection(right)
+    al, bl = _control_leaves(old), _control_leaves(new)
+    allowed = linear_calr_allowed_paths(kind)
+    if kind == 'counterpart' and 'sign_dynamics' not in left['evaluation']:
+        import copy
+        from src.utils.config import _resolve_sign_dynamics_defaults
+        defaults = copy.deepcopy(right)
+        defaults['evaluation'].pop('sign_dynamics', None)
+        _resolve_sign_dynamics_defaults(defaults)
+        _require_equal(right['evaluation']['sign_dynamics'], defaults['evaluation']['sign_dynamics'], 'disabled sign dynamics defaults')
+        # Older originals predate this disabled diagnostic. Only exact disabled
+        # defaults may be added; each permitted resolved leaf is enumerated.
+        fields = {'enabled','campaign_id','arm_id','measurement_scope','cadence_steps','retention',
+            'hysteresis_thresholds','snapshot_trajectory_fractions','include_warmup_completion',
+            'schema_version','event_type','support_manifest_path','journal_path','snapshot_directory',
+            'resolved_snapshot_steps','resolved_snapshot_milestones','support_hash','diagnostic_contract_hash'}
+        fields |= {f'snapshot_milestone_reasons.{p}' for p in (0,64,3486,8714,17427,34853,87132,174264,261396,348528)}
+        for root in ('evaluation', 'optimizer_ownership_contract.evaluation'):
+            allowed |= {f'{root}.sign_dynamics.{field}' for field in fields}
+    absent = {'absent': True}
+    differences = [dict(path=p, old=al.get(p,absent), new=bl.get(p,absent), allowed=p in allowed)
+        for p in sorted(al.keys() | bl.keys()) if al.get(p,absent) != bl.get(p,absent)]
+    failures = [d['path'] for d in differences if not d['allowed']]
+    if failures:
+        raise ConfigError(f'{kind} control differences: ' + ', '.join(failures))
+    return dict(status='passed', kind=kind, allowed_paths=sorted(allowed), differences=differences,
+        old_projection=old, new_projection=new, old_projection_hash=stable_hash(old),
+        new_projection_hash=stable_hash(new),
+        source_provenance=[left['optimizer_ownership_contract']['initialization'], right['optimizer_ownership_contract']['initialization']])
+
+
+def export_linear_calr_schedule(config, path):
+    """Full-horizon, bounded-memory analytic rates, explicitly not measured rates."""
+    import csv
+    import hashlib
+    import math
+    from pathlib import Path
+    from src.training.schedules import warmup_polynomial_learning_rate
+    schedule = config['training']['linear_calr_schedule_contract']
+    digest = hashlib.sha256()
+    with Path(path).open('w', newline='') as stream:
+        writer = csv.writer(stream)
+        writer.writerow(['evidence_kind','pre_update_position','width','complexity','exponent',
+                         'analytic_nominal_learning_rate','analytic_effective_learning_rate'])
+        args = dict(peak=schedule['peak'], warmup_steps=schedule['warmup_steps'], horizon=schedule['horizon'])
+        for position in range(schedule['horizon'] + 1):
+            nominal = warmup_polynomial_learning_rate(position, **args)
+            for width in schedule['ordered_granularities']:
+                gamma = schedule['exponents'][width]
+                effective = warmup_polynomial_learning_rate(position, exponent=gamma, **args)
+                if not math.isfinite(effective) or effective < 0:
+                    raise ValueError('Invalid analytic rate')
+                row = ['analytic', position, width, schedule['complexity_counts'][width], gamma, nominal, effective]
+                writer.writerow(row)
+                digest.update((repr(row)+'\n').encode())
+    return dict(evidence_kind='analytic', positions=schedule['horizon']+1,
+        rows=4*(schedule['horizon']+1), array_sha256=digest.hexdigest(),
+        source=_source_record(path), schedule_contract_hash=stable_hash(schedule))
+
+
+def inspect_linear_calr_references(reference_root):
+    """Discover eight explicit saved configs read-only; terminal proof is a later gate."""
+    from pathlib import Path
+    from src.utils.config import ConfigError
+    root = Path(reference_root).expanduser().resolve()
+    selection, counterparts, sources = {}, {}, []
+    for label, expected in LINEAR_CALR_REFERENCES.items():
+        path = root / expected['path'] / 'config.json'
+        source = _source_record(path)
+        config = _read_json(path)
+        _require_equal(config['run']['arm_id'], expected['arm_id'], f'{label}.arm_id')
+        _require_equal(config['run']['seed'], 42, f'{label}.seed')
+        _require_equal(config['training']['resolved_learning_rate'], expected['peak'], f'{label}.peak')
+        _require_equal(config['training']['resolved_warmup_steps'], 64, f'{label}.warmup')
+        _require_equal(config['training']['scheduler_name'], 'cosine', f'{label}.scheduler')
+        selection[label] = dict(**expected, config_source=source, status='config_inspected', terminal_status='pending')
+        sources.append(source)
+        if label in ('S1-cosine', 'S2-cosine'):
+            # Use the prepared resolved definition for controls; the saved trainer
+            # may add device/runtime observations, checked against the definition.
+            manifest_path = root / 'optimizer-ownership-v1/campaign/campaign_manifest.json'
+            manifest_source = _source_record(manifest_path)
+            manifest = _read_json(manifest_path)
+            _require_equal(manifest.get("manifest_hash"), stable_hash({k:v for k,v in manifest.items() if k != "manifest_hash"}), "reference manifest hash")
+            candidates = [r for r in manifest['runs'] if r['arm_id'] == expected['arm_id']]
+            if len(candidates) != 1:
+                raise ConfigError(f'{label}: ambiguous counterpart')
+            prepared = candidates[0]
+            import copy
+            expected_config = copy.deepcopy(prepared['resolved_config'])
+            # Runtime resolution records its source as single_process; the
+            # numerical world size remains a pinned scientific control.
+            runtime_source = config['training'].get('effective_world_size_source')
+            if runtime_source == 'single_process':
+                _require_equal(config['training']['effective_world_size'], 1, f'{label}.world size')
+                expected_config['training']['effective_world_size_source'] = runtime_source
+            _check_resolved_subset(expected_config, config, label)
+            saved_controls = copy.deepcopy(config)
+            for section, role in (('validation','ordinary_validation'), ('adaptive_controller','controller'), ('final_holdout','final_holdout')):
+                if 'manifest_hash' not in expected_config['evaluation'][section] and 'manifest_hash' in saved_controls['evaluation'][section]:
+                    _require_equal(saved_controls['evaluation'][section].pop('manifest_hash'), PINNED_DATA[role+'_manifest_hash'], f'{label}.{section}.manifest_hash')
+            for section in ('model','dataset','evaluation','outputs','monitoring'):
+                _require_equal(saved_controls[section], expected_config[section], f'{label}.{section}')
+            saved_training = copy.deepcopy(config['training'])
+            for field, value in dict(enabled=False, fsdp={}, local_rank=0, rank=0, world_size=1).items():
+                if field not in expected_config['training']['distributed'] and field in saved_training['distributed']:
+                    _require_equal(saved_training['distributed'].pop(field), value, f'{label}.distributed.{field}')
+            _require_equal(saved_training, expected_config['training'], f'{label}.training')
+            counterparts[expected['arm_id']] = prepared
+            sources.append(manifest_source)
+    _check_sources(sources)
+    return dict(status='config_inspected', terminal_status='pending', references=selection,
+                counterparts=counterparts, sources=sources)
+
+
+def validate_linear_calr_controls(config):
+    """Pin the full fixed recipe even if someone recomputes a modified contract hash."""
+    import copy
+    from src.utils.config import _resolve_sign_dynamics_defaults, _resolve_gradient_interference_defaults
+    arm = campaign_arm(6, config['run'].get('arm_id'))
+    expected = _merge(campaign_common(6), _arm_overrides(arm))
+    expected['model'].pop('tokenizer_dir')
+    expected['dataset'].pop('prepared_corpus_dir')
+    expected['training']['optimizer'].pop('state_scope')
+    expected['training']['optimizer'].pop('scheduler_clock')
+    _check_resolved_subset(expected, config, 'linear_calr.protocol')
+    _require_equal(config['run'].get('grid_id'), 'linear', 'run.grid_id')
+    _require_equal(config['training']['optimizer_state_scope'], arm['state_scope'], 'optimizer_state_scope')
+    _require_equal(config['training']['scheduler_name'], 'warmup_polynomial', 'scheduler_name')
+    for field in ('corpus_hash', 'training_order_sha256'):
+        _require_equal(config['dataset'].get(field), PINNED_DATA[field], f'dataset.{field}')
+    for role in ('optimizer_training', 'ordinary_validation', 'controller', 'final_holdout'):
+        _require_equal(config['dataset']['role_manifest_hashes'].get(role), PINNED_DATA[role+'_manifest_hash'], f'dataset.role_manifest_hashes.{role}')
+    for field in ('tokenizer_manifest_hash', 'tokenizer_model_sha256'):
+        _require_equal(config['model'].get(field), PINNED_DATA[field], f'model.{field}')
+    defaults = copy.deepcopy(config)
+    for name in ('sign_dynamics', 'gradient_interference'):
+        defaults['evaluation'].pop(name, None)
+    _resolve_sign_dynamics_defaults(defaults)
+    _resolve_gradient_interference_defaults(defaults)
+    for name in ('sign_dynamics', 'gradient_interference'):
+        _require_equal(config['evaluation'][name], defaults['evaluation'][name], f'evaluation.{name}')

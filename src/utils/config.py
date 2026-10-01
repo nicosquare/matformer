@@ -853,6 +853,12 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         and run_id == f"{run['campaign_id']}-{run['arm_id']}-s{run.get('seed')}"
         and output_dir.name == run["arm_id"]
     )
+    if run.get('campaign_schema_version') == 6:
+        from src.evaluation.optimizer_ownership import LINEAR_CALR_CAMPAIGN_ID, LINEAR_CALR_ARMS
+        campaign_arm_output = (run.get('campaign_id') == LINEAR_CALR_CAMPAIGN_ID
+            and run.get('arm_id') in {a['arm_id'] for a in LINEAR_CALR_ARMS}
+            and run_id == f"{run['campaign_id']}-{run['arm_id']}-s{run.get('seed')}"
+            and output_dir.name == run['arm_id'])
     if output_dir.name != run_id and not campaign_arm_output:
         raise ConfigError(
             f"run.output_dir must end with run.run_id: {output_dir} vs {run_id}"
@@ -4590,6 +4596,12 @@ def _validate_matformer_campaign_topology(config: Mapping[str, Any]) -> dict[str
         if any(key in contract for key in ("campaign_schema_version", "width_grid", "block_boundaries")) or run.get("campaign_id") in (MATFORMER_CAMPAIGN_ID, WARMUP_CAMPAIGN_ID) or run.get("arm_id") in ("S1-linear-w256", "S1-geometric-w256"):
             raise ConfigError("Missing run.campaign_schema_version for MatFormer campaign")
         return None
+    if type(marker) is int and marker == 6:
+        from src.evaluation.optimizer_ownership import LINEAR_CALR_CAMPAIGN_ID, linear_calr_schedule_contract
+        _require_equal(run.get('campaign_id'), LINEAR_CALR_CAMPAIGN_ID, 'campaign_id')
+        arm = campaign_arm(6, run.get('arm_id'))
+        _require_equal(training.get('linear_calr_schedule_contract'), linear_calr_schedule_contract(arm), 'linear_calr_schedule_contract')
+        return None  # Linear prefixes retain the historical optimizer layout.
     if type(marker) is not int or marker not in (4, 5):
         raise ConfigError("Unsupported run.campaign_schema_version")
     _require_equal(run.get("campaign_id"), WARMUP_CAMPAIGN_ID if marker == 5 else MATFORMER_CAMPAIGN_ID, "campaign_id")

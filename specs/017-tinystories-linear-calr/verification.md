@@ -162,3 +162,92 @@ Tested SHA-256 bindings:
 | `tests/test_linear_calr_campaign.py` | `ccf5380c203484185d90ca9be8083e174a77dd68fcb1fbe1a7a91cb3842f0a71` |
 | `tests/fixtures/optimizer_ownership_legacy_signatures.json` | `8a3d67fac6f7bc266866bc24b597de71dadb7b5dc1d0af0f54c914ce74201252` |
 | `specs/017-tinystories-linear-calr/evidence/phase2-foundation.txt` | `515c6c5490c4479dfd929733c2a1e2237f9fe93fc85cd5c0718e849e5be730d1` |
+
+
+## Phase 3 — matched comparison definitions (T006–T013)
+
+Date: 2026-10-02. Phase 3 is complete. Four schema-6 arms resolve without training:
+S1-linear-poly, S1-linear-CaLR, S2-linear-poly, S2-linear-CaLR. Every run is
+348528 updates / 2855141376 packed tokens; campaign totals are 1394112 /
+11420565504. The recipe pins seed 42, .008 peak, 64 warmup, linear prefixes,
+original controls/data identities, and all eight explicit saved reference paths.
+
+Actual CPU models validate trainable active counts (including embeddings/head,
+tied parameter identities once) 377408/426560/475712/524864 independently of
+reporting counts 115264/164416/213568/262720. Preflight hashes fresh tensors and
+requires equality across all four arms and original counterparts. Tests walk the
+entire 348528-update runtime sampler horizon with bounded memory and compare
+all action digests, batches and fixed epoch sets across all six definitions.
+Closed resolved-field audits separately admit counterpart, schedule-policy and
+ownership changes, including contract hash consequences. Disabled diagnostic
+fields absent from old originals are admitted only at exact validated defaults.
+
+The existing `preflight` CLI accepts schema 6 with required `--reference-root`
+(the base directory containing the eight relative saved run mappings). Other
+required options remain `--campaign`, `--prepared-corpus-dir`, `--tokenizer-dir`,
+`--output-dir`, `--run-output-root`. It audits corpus/tokenizer/manifest controls,
+counts, fresh weights, full traces and full-horizon analytic rates before atomic
+publication/reservation. Failures return nonzero. Analytic CSVs include every
+position 0 through T and every width, with separately named nominal/effective
+rates. No field claims those rates were observed during training.
+
+Commands (repository root, existing interpreter, no new packages):
+
+```bash
+OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest tests/test_linear_calr_campaign.py tests/test_linear_calr_schedule.py tests/test_linear_calr_foundation.py tests/test_config.py tests/test_optimizer_ownership_campaign.py tests/test_s1_warmup_campaign.py tests/test_reproducibility.py -q -rs --tb=short
+OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest tests/test_linear_calr_campaign.py tests/test_linear_calr_schedule.py tests/test_linear_calr_foundation.py -q -rs --tb=short
+OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest tests/test_linear_calr_campaign.py -k 'preflight_saved or counterpart_predating or rejects_changed_declared' -q -rs --tb=short
+OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python specs/017-tinystories-linear-calr/evidence/phase3-saved-controls.py
+```
+
+- Affected regressions: **539 passed, 0 skipped**, 117.16s, exit 0.
+- Final focused formula/campaign/foundation suite: **93 passed, 0 skipped**,
+  59.15s, exit 0. Includes frozen schema 1–5 signatures, S1/S2/C3 clocks/resume
+  and separate C4 correction probes.
+- Subsequent saved-config closure checks: **6 passed, 49 deselected, 0 skipped**,
+  10.36s, exit 0. These cover the final read-only runtime-metadata checks added
+  after the broad suite; no historical resolver branch changed afterward.
+- Read-only saved discovery inspected exactly eight configs. All four new arms
+  passed closed controls against actual original S1/S2 prepared definitions.
+  The retained helper uses mocked corpus metadata and normal CPU models; it
+  verifies saved controls, not the live corpus or terminal checkpoints.
+
+Only existing SWIG deprecation warnings were emitted. Initial test-first
+failures identified the missing new recipe/API and new campaign output identity;
+those were resolved. Real saved config discovery exposed the existing runtime
+world-size source and role-manifest additions. These are checked explicitly,
+including exact role hashes; unknown model/training/evaluation controls fail.
+
+Limits: no GPU work, external root reservation, training or historical writes.
+No terminal checkpoint/reference acceptance is claimed. Fixture preflight uses
+mocked corpus/trace I/O and short analytic CSVs for publication checks; separate
+full-horizon tests verify every rate and every runtime sampler step. Actual
+corpus reaudit and readiness remain later tasks. Runtime rate application and
+continuation for schema 6 remain Phase 4.
+
+Retained evidence and SHA-256:
+
+| Artifact | SHA-256 |
+|---|---|
+| [evidence/phase3-regressions.txt](evidence/phase3-regressions.txt) | `f96108185cd4c332fa75b1f7f0ebb6846b37eac2f075799d39f3b56e51c2ab86` |
+| [evidence/phase3-focused.txt](evidence/phase3-focused.txt) | `879b476b9621126073dcd885b3bb4d26a8e71a0c934836148e02f0fca7326202` |
+| [evidence/phase3-reference.txt](evidence/phase3-reference.txt) | `5b82bf4ba3b5ecda5a67bf589890f316bcfbbd3ea0511472527009ca9b124b21` |
+| [evidence/phase3-saved-controls.txt](evidence/phase3-saved-controls.txt) | `0d66866e15de3736f5d934b8b0505f886eaccf99d3f0315f2e54cb383c81cfb1` |
+| [evidence/phase3-saved-controls.py](evidence/phase3-saved-controls.py) | `c3a80f57aaafde9760dc4308c94447ef62ac8e66fe01d176f42922540dfe63de` |
+
+Final source/config/test bindings:
+
+| Path | SHA-256 |
+|---|---|
+| `configs/controlled_exps/tinystories_instruct_linear_calr.yaml` | `9425b2736f8e12ec0c2c0028f96f3a9d39d79c044248e5f319b58e6913374b72` |
+| `src/evaluation/optimizer_ownership.py` | `494c134c3c2d387b4836835afc304005591773ef5335908e4c9b6038b9d9c35b` |
+| `src/utils/config.py` | `c862ee181897778521773421faaf2ba1436dd73ae99864c18719583c5352b246` |
+| `src/utils/reproducibility.py` | `d947470c25f311cb1e19afb7e9339f4b36641da81e8a8efff087e60394e4d974` |
+| `src/training/schedules.py` | `b8f56505d3e1db685522df1cda0e03bbade062c468b557d26080d3be5619f1b8` |
+| `src/utils/model_size.py` | `6642b1875e3e9591f1addc02bcc3535f0b96edfa7b1df08327c3f8694c8c593e` |
+| `scripts/analyze_tinystories_optimizer_ownership.py` | `338658ee1f60acc4e04b13435b1f5c281c1bb3dab6c429d8da6f5246c7b1c9fe` |
+| `tests/test_linear_calr_campaign.py` | `ce9c8ad529aff3b3b99d2c79bf048f49631af8c640fd5e284af5a0620bbf56cd` |
+| `tests/test_linear_calr_schedule.py` | `65d0c915bb6a6a5880e9ac236aa3b0272858876561ad0f3fc99d6f4b87aa5aaf` |
+| `tests/test_linear_calr_foundation.py` | `c7bc077384b12e4e05088a2b78e0acfeb4616467aa0e6f576d6d195c3ffb6e76` |
+| `tests/fixtures/optimizer_ownership_legacy_signatures.json` | `8a3d67fac6f7bc266866bc24b597de71dadb7b5dc1d0af0f54c914ce74201252` |
+| `tests/fixtures/s1_warmup_schema4_signatures.json` | `657031baaf15b720605259799b6ba9b89fcb7e2d721e4fd6b7df3030b1100b19` |

@@ -29,6 +29,7 @@ def main(argv=None):
         "run-output-root",
     ):
         preflight.add_argument("--" + option, required=True)
+    preflight.add_argument('--reference-root', help='Read-only saved reference base for schema 6')
     preflight.add_argument('--linear-reference-root')
     preflight.add_argument('--geometric-reference-root')
     freeze = subcommands.add_parser('freeze', help='Freeze saved terminal checkpoints and ordinary-validation evidence')
@@ -58,7 +59,8 @@ def main(argv=None):
     try:
         if args.command == 'report-s1-warmup':
             report = report_s1_warmup(manifest=args.manifest, linear_reference_root=args.linear_reference_root,
-                geometric_reference_root=args.geometric_reference_root, output_dir=args.output_dir, early_end_step=args.early_end_step)
+                geometric_reference_root=args.geometric_reference_root,
+                reference_root=args.reference_root, output_dir=args.output_dir, early_end_step=args.early_end_step)
         elif args.command == 'report-matformer-widths':
             report = report_matformer_widths_comparison(manifest=args.manifest, reference_manifest=args.reference_manifest, output_dir=args.output_dir)
         elif args.command == 'report-inverse-membership':
