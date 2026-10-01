@@ -21,9 +21,9 @@ This file plans work; generating it does not implement, reserve an external outp
 
 **Purpose**: Provide new-only identity and schedule primitives shared by the stories.
 
-- [ ] T003 Add immutable version-1 schedule-contract parsing/validation and semantic slicing/shared-or-per-granularity eligibility in src/utils/config.py; bind grid, counts/definition, policies/exponents/bounds, peak/warmup/horizon, effective-rate policy, ownership and run identity, reject malformed contracts, and leave old resolution/serialization branches unchanged.
-- [ ] T004 Extend src/utils/reproducibility.py with new-contract-only scientific/optimizer/schedule hash inputs while preserving old signatures and initialization/action/data stream derivation independently of new arm/run names.
-- [ ] T005 Implement pure validated warmup-polynomial rates and complexity-log exponents in src/training/schedules.py: integer p in [0,T], 0<W<T, positive counts, distinct CaLR extrema, finite positive gamma, exact zero at T, and explicit analytic-versus-applied evidence names; nominal gamma is always one.
+- [X] T003 Add immutable version-1 schedule-contract parsing/validation and semantic slicing/shared-or-per-granularity eligibility in src/utils/config.py; bind grid, counts/definition, policies/exponents/bounds, peak/warmup/horizon, effective-rate policy, ownership and run identity, reject malformed contracts, and leave old resolution/serialization branches unchanged.
+- [X] T004 Extend src/utils/reproducibility.py with new-contract-only scientific/optimizer/schedule hash inputs while preserving old signatures and initialization/action/data stream derivation independently of new arm/run names.
+- [X] T005 Implement pure validated warmup-polynomial rates and complexity-log exponents in src/training/schedules.py: integer p in [0,T], 0<W<T, positive counts, distinct CaLR extrema, finite positive gamma, exact zero at T, and explicit analytic-versus-applied evidence names; nominal gamma is always one.
 
 **Checkpoint**: T001–T005 complete before story implementation. No historical signature or restore semantics may change.
 

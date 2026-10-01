@@ -134,3 +134,31 @@ Corpus/tokenizer audits use existing fixtures; saved historical terminal checkpo
 | `tests/test_s1_warmup_campaign.py` | `9e8d960d3ac620071323579870526c5140328634f7d90650baf700fb648827c9` |
 | `tests/test_s1_warmup_queue.py` | `4bac493b0976e72937b499d4c361eb606059e6a162950ef5f221ca39ef2d4062` |
 | `tests/test_s1_warmup_reporting.py` | `7d375dfbedf1b8a06aa9942f8491625cb7375b95b4a43e6d7eb996a4dcdccf66` |
+
+## Phase 2 foundation verification
+
+Date: 2026-10-02. Completed T003–T005. Added deeply immutable version-1 contract parsing with detached JSON/YAML serialization, semantic slicing/shared-or-per-granularity eligibility, new-only scientific and optimizer schedule/hash bindings, pure warmup-polynomial rates, complexity-log exponents, and explicitly analytic evidence fields. Named seed derivation is unchanged. Existing ignore patterns remain sufficient; no additional tool-specific setup was detected.
+
+Command:
+
+```bash
+OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest tests/test_linear_calr_foundation.py tests/test_linear_calr_campaign.py tests/test_config.py tests/test_reproducibility.py -q -rs --tb=short
+```
+
+Result: **362 passed, 0 skipped, 2 existing SWIG warnings in 15.21s; exit 0**. `git diff --check` passed. Retained log: [evidence/phase2-foundation.txt](evidence/phase2-foundation.txt).
+
+Foundation tests cover immutable/detached contracts, malformed fields/counts/policies/positions, all-width warmup/decay/terminal anchors, finite nonnegative rates at every position of the full horizon, semantic eligibility for both scopes, changed identity hashes and name-independent initialization/action/data seeds. Historical tests preserve schema 1–5 signatures and S1/S2/C4 schedule/restore behavior.
+
+This phase supplies primitives only: schema-6 campaign expansion, actual-model count validation, runtime LR transactions, checkpoint integration and operational readiness remain later tasks. No training, GPU jobs, external root reservation or historical writes were performed.
+
+Tested SHA-256 bindings:
+
+| File | SHA-256 |
+| --- | --- |
+| `src/utils/config.py` | `27f70d9e201ad1a176ac73b6ae485d789653fae1dbecec71efbc789bc6544d24` |
+| `src/utils/reproducibility.py` | `d947470c25f311cb1e19afb7e9339f4b36641da81e8a8efff087e60394e4d974` |
+| `src/training/schedules.py` | `b8f56505d3e1db685522df1cda0e03bbade062c468b557d26080d3be5619f1b8` |
+| `tests/test_linear_calr_foundation.py` | `c7bc077384b12e4e05088a2b78e0acfeb4616467aa0e6f576d6d195c3ffb6e76` |
+| `tests/test_linear_calr_campaign.py` | `ccf5380c203484185d90ca9be8083e174a77dd68fcb1fbe1a7a91cb3842f0a71` |
+| `tests/fixtures/optimizer_ownership_legacy_signatures.json` | `8a3d67fac6f7bc266866bc24b597de71dadb7b5dc1d0af0f54c914ce74201252` |
+| `specs/017-tinystories-linear-calr/evidence/phase2-foundation.txt` | `515c6c5490c4479dfd929733c2a1e2237f9fe93fc85cd5c0718e849e5be730d1` |

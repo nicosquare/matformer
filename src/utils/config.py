@@ -927,6 +927,7 @@ def validate_run_config(config: Mapping[str, Any]) -> None:
         training["optimizer_state_topology"] = topology
     elif "optimizer_state_topology" in training:
         raise ConfigError("optimizer_state_topology requires a validated campaign")
+    validate_linear_calr_schedule_eligibility(config)
     optimizer_state_eligibility = _validate_optimizer_state_eligibility(config)
     if isinstance(training, dict):
         training["optimizer_state_eligibility"] = optimizer_state_eligibility
@@ -4514,6 +4515,11 @@ def _resolve_optimizer_state_contract(config: dict[str, Any]) -> None:
         "scheduler_contract": copy.deepcopy(training["scheduler"]),
         "single_process_required": state_scope in {"per_granularity", "per_ffn_block"},
     }
+    if "linear_calr_schedule_contract" in training:
+        schedule = linear_calr_schedule_contract_dict(training["linear_calr_schedule_contract"])
+        training["linear_calr_schedule_contract"] = schedule
+        training["optimizer_state_contract"]["linear_calr_schedule_contract"] = schedule
+        training["optimizer_state_contract"]["linear_calr_schedule_contract_hash"] = stable_hash(schedule)
     if training.get("block_update_policy") is not None:
         training["optimizer_state_contract"]["block_update_policy"] = training["block_update_policy"]
     if training.get("c4_correction") is not None:
@@ -6223,3 +6229,116 @@ def _require_one_of_fields(
     if any(field_name in section for field_name in field_names):
         return
     raise ConfigError(f"Missing {section_name} field; expected one of {field_names}")
+
+
+def parse_linear_calr_schedule_contract(raw: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Validate and deeply freeze the new-only version-1 scientific schedule."""
+    from types import MappingProxyType
+    from src.training.schedules import complexity_log_exponents, warmup_polynomial_learning_rate
+
+    fields = {'version', 'family', 'position_convention', 'peak', 'warmup_steps',
+              'horizon', 'exponent_policy', 'complexity_definition',
+              'ordered_granularities', 'ffn_sizes', 'complexity_counts',
+              'reporting_counts', 'exponents', 'gamma_min', 'gamma_max',
+              'nominal_exponent', 'effective_rate_policy', 'optimizer_state_scope',
+              'campaign_id', 'arm_id', 'run_id', 'seed', 'seed_stream_version'}
+    if not isinstance(raw, Mapping) or set(raw) != fields:
+        raise ConfigError('Linear CaLR schedule contract has missing or unknown fields')
+    fixed = {'version': 1, 'family': 'warmup_polynomial',
+             'position_convention': 'pre_update_zero_based',
+             'complexity_definition': 'active_trainable_scalars_including_embeddings_head_tied_once_v1',
+             'nominal_exponent': 1,
+             'effective_rate_policy': 'temporary_all_groups_restore_nominal_v1'}
+    for key, expected in fixed.items():
+        if raw[key] != expected or isinstance(raw[key], bool):
+            raise ConfigError(f'Invalid schedule contract {key}')
+    labels = raw['ordered_granularities']
+    if not isinstance(labels, (list, tuple)) or not labels or any(
+            not isinstance(g, str) or not g for g in labels) or len(set(labels)) != len(labels):
+        raise ConfigError('Schedule grid must contain unique ordered width names')
+    for name in ('ffn_sizes', 'complexity_counts', 'reporting_counts', 'exponents'):
+        if not isinstance(raw[name], Mapping) or set(raw[name]) != set(labels):
+            raise ConfigError(f'{name} must match the exact schedule grid')
+    for name in ('ffn_sizes', 'complexity_counts', 'reporting_counts'):
+        if any(isinstance(v, bool) or not isinstance(v, int) or v <= 0
+               for v in raw[name].values()):
+            raise ConfigError(f'{name} must contain positive integer counts')
+        values = [raw[name][g] for g in labels]
+        if values != sorted(set(values)):
+            raise ConfigError(f'{name} must increase with the ordered grid')
+    if any(raw['reporting_counts'][g] > raw['complexity_counts'][g] for g in labels):
+        raise ConfigError('Reporting counts cannot exceed active complexity')
+    if raw['optimizer_state_scope'] not in {'shared', 'per_granularity'}:
+        raise ConfigError('Polynomial schedule requires shared or per_granularity ownership')
+    for name in ('campaign_id', 'arm_id', 'run_id'):
+        if not isinstance(raw[name], str) or not raw[name].strip():
+            raise ConfigError(f'{name} must be a nonempty identity')
+    for name, minimum in (('seed', 0), ('seed_stream_version', 1)):
+        if isinstance(raw[name], bool) or not isinstance(raw[name], int) or raw[name] < minimum:
+            raise ConfigError(f'Invalid {name}')
+    try:
+        bounds = (raw['gamma_min'], raw['gamma_max'])
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0 for v in bounds) or bounds[0] >= bounds[1]:
+            raise ValueError('Invalid exponent bounds')
+        if raw['exponent_policy'] == 'uniform':
+            derived = {g: 1.0 for g in labels}
+        elif raw['exponent_policy'] == 'complexity_log':
+            derived = complexity_log_exponents(raw['complexity_counts'], gamma_min=bounds[0], gamma_max=bounds[1])
+        else:
+            raise ValueError('Unknown exponent policy')
+        for g in labels:
+            warmup_polynomial_learning_rate(0, peak=raw['peak'],
+                warmup_steps=raw['warmup_steps'], horizon=raw['horizon'],
+                exponent=raw['exponents'][g])
+            if not math.isclose(raw['exponents'][g], derived[g], rel_tol=1e-14, abs_tol=0):
+                raise ValueError(f'Exponent for {g} differs from declared policy')
+    except (ValueError, TypeError, OverflowError) as error:
+        raise ConfigError(str(error)) from error
+    def freeze(value):
+        if isinstance(value, Mapping):
+            return MappingProxyType({k: freeze(v) for k, v in value.items()})
+        if isinstance(value, (list, tuple)):
+            return tuple(freeze(v) for v in value)
+        return value
+    return freeze(raw)
+
+
+def linear_calr_schedule_contract_dict(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a validated detached JSON/YAML representation of the immutable contract."""
+    def thaw(value):
+        if isinstance(value, Mapping):
+            return {k: thaw(v) for k, v in value.items()}
+        if isinstance(value, tuple):
+            return [thaw(v) for v in value]
+        return value
+    return thaw(parse_linear_calr_schedule_contract(raw))
+
+
+def validate_linear_calr_schedule_eligibility(config: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Bind an opt-in contract to slicing semantics and resolved run controls."""
+    training = config['training']
+    raw = training.get('linear_calr_schedule_contract')
+    if raw is None:
+        return None
+    contract = parse_linear_calr_schedule_contract(raw)
+    model, run = config['model'], config['run']
+    checks = {
+        'slicing': model.get('variant') == 'slicing',
+        'nested global action': run.get('model_family') == 'nested' and run.get('sampling_mode') == 'nested-random' and model.get('granularity_sampling_mode') == 'global',
+        'uncorrected': model.get('correction_mode', 'none') == 'none',
+        'global clock': training.get('optimizer_scheduler_clock') == 'global_step',
+        'ownership': training.get('optimizer_state_scope') == contract['optimizer_state_scope'],
+        'grid': tuple(model.get('granularities', ())) == contract['ordered_granularities'],
+        'FFN sizes': all(model.get('granularity_prefixes', {}).get(g, -1) * model['intermediate_size'] == contract['ffn_sizes'][g] for g in contract['ordered_granularities']),
+        'peak': training.get('resolved_learning_rate') == contract['peak'],
+        'warmup': training.get('resolved_warmup_steps') == contract['warmup_steps'],
+        'horizon': training.get('max_steps') == contract['horizon'],
+        'adamw': training.get('optimizer_name') == 'adamw',
+        'single process': training.get('effective_world_size') == 1,
+    }
+    checks.update({name: run.get(name) == contract[name] for name in ('campaign_id', 'arm_id', 'run_id', 'seed')})
+    checks['seed stream'] = run.get('reproducibility', {}).get('seed_stream_version') == contract['seed_stream_version']
+    failures = [name for name, valid in checks.items() if not valid]
+    if failures:
+        raise ConfigError('Linear CaLR schedule eligibility failed: ' + ', '.join(failures))
+    return contract

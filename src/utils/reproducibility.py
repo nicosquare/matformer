@@ -580,6 +580,10 @@ def build_comparison_control_signature(config: Mapping[str, Any]) -> tuple[str, 
             "ordinary_validation": config.get("validation_manifest_hash"),
             "final_holdout": config.get("final_holdout_manifest_hash"),
         }
+    if "linear_calr_schedule_contract" in training:
+        schedule_hash, schedule = build_linear_calr_schedule_signature(training["linear_calr_schedule_contract"])
+        inputs["linear_calr_schedule_contract"] = schedule
+        inputs["linear_calr_schedule_contract_hash"] = schedule_hash
     return stable_hash(inputs), inputs
 
 
@@ -613,3 +617,10 @@ def build_full_run_signature(
     full_inputs = dict(paired_inputs)
     full_inputs["optimizer_state_scope"] = str(state_scope)
     return stable_hash(full_inputs), full_inputs
+
+
+def build_linear_calr_schedule_signature(contract: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Hash the complete validated new contract without touching seed derivation."""
+    from src.utils.config import linear_calr_schedule_contract_dict
+    inputs = linear_calr_schedule_contract_dict(contract)
+    return stable_hash(inputs), inputs

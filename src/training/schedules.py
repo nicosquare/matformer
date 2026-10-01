@@ -189,3 +189,69 @@ def scheduler_metric_fields(
         float(learning_rate) if learning_rate is not None else None
     )
     return fields
+
+
+def _positive_finite(value: Any, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be numeric")
+    result = float(value)
+    if not math.isfinite(result) or result <= 0:
+        raise ValueError(f"{name} must be finite and positive")
+    return result
+
+
+def complexity_log_exponents(
+    counts: Mapping[str, int], *, gamma_min: float = 0.5, gamma_max: float = 2.0,
+) -> dict[str, float]:
+    """Derive decay exponents from active trainable scalars, never width fractions."""
+    if not counts or any(isinstance(c, bool) or not isinstance(c, int) or c <= 0
+                         for c in counts.values()):
+        raise ValueError("complexity counts must be positive integers")
+    low = _positive_finite(gamma_min, "gamma_min")
+    high = _positive_finite(gamma_max, "gamma_max")
+    if low >= high:
+        raise ValueError("gamma_min must be less than gamma_max")
+    smallest, largest = min(counts.values()), max(counts.values())
+    if smallest == largest:
+        raise ValueError("CaLR requires distinct complexity extrema")
+    denominator = math.log(largest / smallest)
+    return {width: high if count == smallest else low if count == largest else
+            high - (high - low) * math.log(count / smallest) / denominator
+            for width, count in counts.items()}
+
+
+def warmup_polynomial_learning_rate(
+    position: int, *, peak: float, warmup_steps: int, horizon: int,
+    exponent: float = 1.0,
+) -> float:
+    """Analytic pre-update LR; the nominal clock always uses exponent one."""
+    if any(isinstance(v, bool) or not isinstance(v, int)
+           for v in (position, warmup_steps, horizon)):
+        raise ValueError("position, warmup_steps and horizon must be integers")
+    if not 0 < warmup_steps < horizon or not 0 <= position <= horizon:
+        raise ValueError("require 0 < warmup_steps < horizon and 0 <= position <= horizon")
+    peak = _positive_finite(peak, "peak")
+    exponent = _positive_finite(exponent, "exponent")
+    if position == horizon:
+        return 0.0
+    if position < warmup_steps:
+        return peak * position / warmup_steps
+    return peak * ((horizon - position) / (horizon - warmup_steps)) ** exponent
+
+
+def polynomial_schedule_evidence(contract: Mapping[str, Any], width: str,
+                                 position: int) -> dict[str, Any]:
+    """Return analytic evidence, explicitly distinct from measured applied LRs."""
+    from src.utils.config import parse_linear_calr_schedule_contract
+    resolved = parse_linear_calr_schedule_contract(contract)
+    if width not in resolved['ordered_granularities']:
+        raise ValueError(f"Unknown schedule width: {width}")
+    arguments = dict(peak=resolved['peak'], warmup_steps=resolved['warmup_steps'],
+                     horizon=resolved['horizon'])
+    return {'evidence_kind': 'analytic', 'pre_update_position': position,
+            'width': width, 'complexity': resolved['complexity_counts'][width],
+            'exponent': resolved['exponents'][width],
+            'analytic_effective_learning_rate': warmup_polynomial_learning_rate(
+                position, exponent=resolved['exponents'][width], **arguments),
+            'analytic_nominal_learning_rate': warmup_polynomial_learning_rate(
+                position, exponent=1.0, **arguments)}
