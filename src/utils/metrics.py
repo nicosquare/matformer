@@ -3785,6 +3785,10 @@ def append_optimizer_ownership_observation(config, state, *, train_dataloader):
         'quarter_activation_counts': state['optimizer_quarter_activation_counts'],
         'owner_call_counts': state['optimizer_update_counts'],
     }
+    if config['training'].get('linear_calr_schedule_contract'):
+        row.update(applied_schedule_record=state['last_applied_schedule_record'],
+                   applied_schedule_watermark=state['applied_schedule_watermark'],
+                   resource_watermark=state.get('resource_ledger_watermark', {}))
     root = Path(config['run']['output_dir'])
     root.mkdir(parents=True, exist_ok=True)
     records = [('optimizer_ownership_trace.jsonl', row)]
@@ -3799,3 +3803,48 @@ def append_optimizer_ownership_observation(config, state, *, train_dataloader):
             stream.flush()
             os.fsync(stream.fileno())
     _fsync_directory(root)
+
+
+def validate_linear_calr_trace_watermark(config, payload):
+    """Stream the durable prefix before restore/admission; never retain all rows."""
+    from src.utils.config import ConfigError
+    from src.utils.reproducibility import stable_hash
+    from src.training.schedules import polynomial_schedule_evidence
+    path = Path(config['run']['output_dir'])/'optimizer_ownership_trace.jsonl'
+    step = payload['step']
+    if not step:
+        return
+    if not path.is_file():
+        if config['run'].get('campaign_schema_version') == 6:
+            raise ConfigError('Applied schedule durable trace missing')
+        return  # Isolated synthetic fixture probes explicitly do not publish production evidence.
+    contract = config['training']['linear_calr_schedule_contract']
+    chain = None
+    last = None
+    try:
+        with path.open() as stream:
+            for ordinal in range(1,step+1):
+                row = json.loads(next(stream))
+                record = row['applied_schedule_record']
+                evidence = polynomial_schedule_evidence(contract,row['width'],ordinal-1)
+                if (row['step'] != ordinal or row['run_id'] != config['run']['run_id']
+                        or row['contract_hash'] != config['optimizer_ownership_contract_hash']
+                        or record['step'] != ordinal or record['pre_update_position'] != ordinal-1
+                        or record['run_id'] != config['run']['run_id'] or record['arm_id'] != contract['arm_id']
+                        or record['width'] != row['width'] or record['action_ordinal'] != ordinal
+                        or record['schedule_contract_hash'] != stable_hash(contract)
+                        or record['complexity'] != contract['complexity_counts'][row['width']]
+                        or record['exponent'] != contract['exponents'][row['width']]
+                        or record['batch_provenance'] != row['batch_provenance']
+                        or not record['applied_learning_rates']
+                        or record['applied_learning_rates'] != [evidence['analytic_effective_learning_rate']]*len(record['applied_learning_rates'])):
+                    raise ConfigError('Applied durable trace differs from own update')
+                chain = stable_hash([chain,record])
+                expected = dict(step=ordinal,last_record_hash=stable_hash(record),chain_hash=chain)
+                if row['applied_schedule_watermark'] != expected:
+                    raise ConfigError('Applied durable trace chain mismatch')
+                last = record
+    except (OSError,StopIteration,ValueError,KeyError,TypeError) as error:
+        raise ConfigError(f'Applied durable trace invalid: {error}') from error
+    if payload['last_applied_schedule_record'] != last or payload['applied_schedule_watermark'] != expected:
+        raise ConfigError('Applied checkpoint/trace watermark mismatch')

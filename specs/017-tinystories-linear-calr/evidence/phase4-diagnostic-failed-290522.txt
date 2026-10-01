@@ -1,0 +1,18 @@
+Traceback (most recent call last):
+  File "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/source/scripts/preflight_tinystories_linear_calr.py", line 377, in <module>
+    if __name__=='__main__':sys.exit(main())
+                                     ^^^^^^
+  File "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/source/scripts/preflight_tinystories_linear_calr.py", line 373, in main
+    else:execute(args.campaign_root,args.mode)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/source/scripts/preflight_tinystories_linear_calr.py", line 286, in execute
+    probes = gpu_real_shapes(root,output)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/source/scripts/preflight_tinystories_linear_calr.py", line 207, in gpu_real_shapes
+    try: run.run_training(resolve_run_config(config_file), device='cuda:0')
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/source/src/utils/config.py", line 348, in resolve_run_config
+    validate_run_config(resolved)
+  File "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/source/src/utils/config.py", line 863, in validate_run_config
+    raise ConfigError(
+src.utils.config.ConfigError: run.output_dir must end with run.run_id: /nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-c241a35ee2fc49d786f814e852571640/runs/calr-gpu-diagnostic-290522-S1-linear-poly vs tinystories-linear-s1-s2-calr-v1-S1-linear-poly-s42

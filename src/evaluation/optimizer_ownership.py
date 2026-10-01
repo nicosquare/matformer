@@ -1899,6 +1899,10 @@ def _read_preflight_manifest(path):
             _require_equal(raw['run'].pop('grid_id'), arm['grid_id'], f'{label}.grid_id')
             _require_equal(stable_hash(manifest['arm_grids'][label]), stable_hash(campaign_topology(5, label)), f'{label}.grid')
             _require_equal(manifest['references'], WARMUP_REFERENCES, 'preflight.references')
+        if manifest['schema_version'] == 6:
+            _require_equal(raw['run'].pop('campaign_schema_version'), 6, f'{label}.schema')
+            _require_equal(raw['run'].pop('grid_id'), 'linear', f'{label}.grid_id')
+            _require_equal(manifest['references'], LINEAR_CALR_REFERENCES, 'preflight.references')
         if manifest['schema_version'] == 4:
             _require_equal(raw['run'].pop('campaign_schema_version'), 4, f'{label}.schema')
             for field, value in campaign_topology(4).items():

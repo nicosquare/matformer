@@ -911,7 +911,7 @@ class GlobalSchedulerClock:
                 training.get("scheduler", {}).get("resolved_warmup_steps", 0),
             )
         )
-        scheduler = get_scheduler(
+        scheduler = build_nominal_polynomial_scheduler(carrier_optimizer, training) if training.get("linear_calr_schedule_contract") else get_scheduler(
             scheduler_name,
             optimizer=carrier_optimizer,
             num_warmup_steps=warmup_steps,
@@ -923,14 +923,23 @@ class GlobalSchedulerClock:
             ),
             scheduler_specific_kwargs=scheduler_kwargs,
         )
-        return cls(carrier_optimizer=carrier_optimizer, scheduler=scheduler)
+        clock = cls(carrier_optimizer=carrier_optimizer, scheduler=scheduler)
+        clock._linear_calr = bool(training.get("linear_calr_schedule_contract"))
+        return clock
 
     @property
     def current_learning_rates(self) -> tuple[float, ...]:
         return tuple(float(group["lr"]) for group in self._carrier_optimizer.param_groups)
 
     def synchronize(self, collection: PerGranularityOptimizerCollection | BlockOptimizerCollection) -> None:
-        collection.synchronize_learning_rates(self.current_learning_rates)
+        if hasattr(collection, "synchronize_learning_rates"):
+            rates = self.current_learning_rates
+            if getattr(self, "_linear_calr", False):
+                rates = rates * len(collection.entries[0].optimizer.param_groups)
+            collection.synchronize_learning_rates(rates)
+        else:
+            for group in collection.param_groups:
+                group["lr"] = self.current_learning_rates[0]
 
     def step(self) -> None:
         self.last_committed_learning_rates = self.current_learning_rates
@@ -1151,3 +1160,14 @@ def measure_optimizer_storage(optimizer, *, step):
         'counter_bytes': sum(r['bytes'] for r in components if r['kind'] == 'counter'),
         'total_bytes': sum(r['bytes'] for r in components),
     }
+
+
+def build_nominal_polynomial_scheduler(optimizer, training):
+    """Exact gamma-one clock, isolated from every historical scheduler branch."""
+    from src.utils.config import parse_linear_calr_schedule_contract
+    from src.training.schedules import warmup_polynomial_learning_rate
+    contract = parse_linear_calr_schedule_contract(training['linear_calr_schedule_contract'])
+    def nominal(position):
+        return warmup_polynomial_learning_rate(position, peak=contract['peak'],
+            warmup_steps=contract['warmup_steps'], horizon=contract['horizon']) / contract['peak']
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, nominal)

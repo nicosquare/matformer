@@ -143,6 +143,11 @@ def build_optimizer_and_scheduler(model, training: Mapping[str, Any], *, _diagno
     else:
         raise ConfigError(f"Unsupported optimizer name: {optimizer_name}")
 
+    if training.get("linear_calr_schedule_contract"):
+        clock = GlobalSchedulerClock.from_training(training)
+        clock.synchronize(optimizer)
+        return optimizer, clock
+
     scheduler = get_scheduler(
         scheduler_name,
         optimizer=optimizer,
@@ -1215,9 +1220,16 @@ def train_for_steps(
                     # so metrics never report the rate prepared for the next update.
                     if isinstance(optimizer, (PerGranularityOptimizerCollection, BlockOptimizerCollection)):
                         optimizer.validate_synchronized_learning_rates()
-                    committed_learning_rates = [
-                        float(group["lr"]) for group in step_optimizer.param_groups
-                    ]
+                    applied_schedule_record = None
+                    nominal_group_rates = None
+                    if training.get("linear_calr_schedule_contract"):
+                        nominal_group_rates, applied_schedule_record = apply_selected_schedule_rates(
+                            config, optimizer, step_optimizer, scheduler, action["granularities"][0],
+                            pending_step - 1, optimizer_batch_provenance, run_state)
+                    committed_learning_rates = (
+                        list(applied_schedule_record['applied_learning_rates']) if applied_schedule_record is not None
+                        else [float(group['lr']) for group in step_optimizer.param_groups]
+                    )
                     if not committed_learning_rates or any(
                         not math.isfinite(value) for value in committed_learning_rates
                     ):
@@ -1237,7 +1249,7 @@ def train_for_steps(
                             action=action,
                         )
                     failure_stage = "optimizer_step"
-                    if (campaign or isinstance(optimizer, BlockOptimizerCollection)) and isinstance(scheduler, GlobalSchedulerClock):
+                    if not training.get("linear_calr_schedule_contract") and (campaign or isinstance(optimizer, BlockOptimizerCollection)) and isinstance(scheduler, GlobalSchedulerClock):
                         if scheduler.current_learning_rates != optimizer.current_learning_rates:
                             raise RuntimeError("Optimizer and global clock rates differ")
                     if campaign:
@@ -1266,11 +1278,24 @@ def train_for_steps(
                             failure_stage = "membership_correction"
                             _apply_concat_lmc_corrections(lmc_snapshots)
                     else:
-                        _maybe_apply_concat_lmc_optimizer_step(
-                            config,
-                            model,
-                            step_optimizer,
-                        )
+                        try:
+                            if applied_schedule_record is not None:
+                                effective = applied_schedule_record['applied_learning_rates'][0]
+                                for group in step_optimizer.param_groups:
+                                    group['lr'] = effective
+                                actual_rates = [float(group['lr']) for group in step_optimizer.param_groups]
+                                if actual_rates != applied_schedule_record['applied_learning_rates']:
+                                    raise ConfigError('Effective optimizer group rates differ from selected schedule')
+                                applied_schedule_record['applied_learning_rates'] = actual_rates
+                            _maybe_apply_concat_lmc_optimizer_step(config, model, step_optimizer)
+                        finally:
+                            if nominal_group_rates is not None:
+                                try:
+                                    restore_nominal_group_rates(step_optimizer, nominal_group_rates)
+                                    validate_nominal_boundary(optimizer, scheduler, nominal_group_rates[0])
+                                except BaseException:
+                                    failure_stage = 'rate_restoration'
+                                    raise
                     # A successful optimizer return is irreversible. Scheduler
                     # and accounting failures after this point are fatal and do
                     # not restore the pre-window transactional snapshots.
@@ -1306,6 +1331,8 @@ def train_for_steps(
                             optimizer.last_active_granularity
                         )
                         run_state["global_scheduler_position"] = scheduler.position
+                    if training.get("linear_calr_schedule_contract") and not isinstance(optimizer, PerGranularityOptimizerCollection):
+                        scheduler.synchronize(optimizer)
                     failure_stage = "accounting" if campaign or isinstance(optimizer, BlockOptimizerCollection) else failure_stage
                     step = pending_step
 
@@ -1407,6 +1434,8 @@ def train_for_steps(
                                          optimizer_last_active_granularity=action['granularities'][0],
                                          last_optimizer_batch_provenance=copy.deepcopy(optimizer_batch_provenance))
                         training_data.validate_campaign_sampler_boundary(config, run_state, train_dataloader=train_dataloader)
+                        if applied_schedule_record is not None:
+                            commit_applied_schedule_record(run_state, applied_schedule_record)
                         run_state['update_in_flight'] = False
                         run_state['pending_optimizer_step'] = None
                         optimizer_committed = True
@@ -1615,17 +1644,11 @@ def train_for_steps(
                             content_tokens_seen=content_tokens_seen,
                         ),
                     ):
-                        validation_results = evaluate_validation_per_granularity(
-                            model,
-                            eval_dataloader,
-                            granularities=granularities,
-                            device=device,
-                            distributed=(
-                                distributed_context is not None
-                                and distributed_context.enabled
-                            ),
-                            config=config,
-                        )
+                        validation_results = measured_ordinary_validation(config, optimizer, run_state,
+                            lambda: evaluate_validation_per_granularity(
+                                model, eval_dataloader, granularities=granularities, device=device,
+                                distributed=(distributed_context is not None and distributed_context.enabled),
+                                config=config))
                     validation_results = _process_portfolio_catchup_validation(
                         config,
                         validation_results,
@@ -2617,3 +2640,61 @@ def _runtime_granularity_artifacts(
         granularity_pattern=runtime_pattern,
     )
     return runtime_pattern_summary, correction_context
+
+
+def validate_nominal_boundary(optimizer, clock, nominal):
+    from src.utils.config import ConfigError
+    if not isinstance(clock, GlobalSchedulerClock) or clock.current_learning_rates != (nominal,):
+        raise ConfigError('Polynomial nominal clock/rate mismatch')
+    owners = [e.optimizer for e in optimizer.entries] if isinstance(optimizer, PerGranularityOptimizerCollection) else [optimizer]
+    if any(float(g['lr']) != nominal for owner in owners for g in owner.param_groups):
+        raise ConfigError('Polynomial optimizer groups differ from nominal clock')
+
+
+def apply_selected_schedule_rates(config, optimizer, owner, clock, width, position, provenance, state):
+    from src.training.schedules import polynomial_schedule_evidence
+    from src.utils.reproducibility import stable_hash
+    contract = config['training']['linear_calr_schedule_contract']
+    if position >= contract['horizon'] or clock.position != position:
+        raise ConfigError('No polynomial update at terminal or mismatched position')
+    evidence = polynomial_schedule_evidence(contract, width, position)
+    nominal = evidence['analytic_nominal_learning_rate']
+    validate_nominal_boundary(optimizer, clock, nominal)
+    rates = [float(g['lr']) for g in owner.param_groups]
+    effective = evidence['analytic_effective_learning_rate']
+    record = dict(evidence_kind='applied', run_id=config['run']['run_id'],
+        arm_id=contract['arm_id'], schedule_contract_hash=stable_hash(contract),
+        step=position+1, pre_update_position=position, width=width,
+        owner=width if contract['optimizer_state_scope']=='per_granularity' else 'shared',
+        complexity=contract['complexity_counts'][width], exponent=contract['exponents'][width],
+        applied_learning_rates=[effective]*len(rates), nominal_learning_rates=rates,
+        action_ordinal=position+1, batch_provenance=copy.deepcopy(provenance),
+        packed_tokens=config['training']['expected_tokens_per_step'])
+    return rates, record
+
+
+def restore_nominal_group_rates(owner, rates):
+    for group, rate in zip(owner.param_groups, rates, strict=True):
+        group['lr'] = rate
+
+
+def commit_applied_schedule_record(state, record):
+    from src.utils.reproducibility import stable_hash
+    previous = state.get('applied_schedule_watermark', {})
+    if previous.get('step', 0) != record['step']-1:
+        raise ConfigError('Applied schedule watermark differs from committed position')
+    state['last_applied_schedule_record'] = record
+    state['applied_schedule_watermark'] = dict(step=record['step'],
+        last_record_hash=stable_hash(record),
+        chain_hash=stable_hash([previous.get('chain_hash'), record]))
+
+
+def measured_ordinary_validation(config, optimizer, state, operation):
+    observer = getattr(optimizer, '_resource_observer', None) if config['training'].get('linear_calr_schedule_contract') else None
+    if observer is None:
+        return operation()
+    observer(run_state=state, boundary='ordinary_validation_start')
+    try:
+        return operation()
+    finally:
+        observer(run_state=state, boundary='ordinary_validation_end')

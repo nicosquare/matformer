@@ -116,6 +116,15 @@ def _validate_restored_optimizer_ownership_runtime(
 ) -> None:
     """Recheck the staged checkpoint install before restoring external cursors."""
 
+    if config.get('training', {}).get('linear_calr_schedule_contract'):
+        from src.training.steps import validate_nominal_boundary
+        from src.training.schedules import warmup_polynomial_learning_rate
+        contract = config['training']['linear_calr_schedule_contract']
+        position = int(run_state.get('last_completed_step', 0))
+        nominal = warmup_polynomial_learning_rate(position, peak=contract['peak'], warmup_steps=contract['warmup_steps'], horizon=contract['horizon'])
+        validate_nominal_boundary(optimizer, scheduler, nominal)
+        if scheduler.position != position or run_state.get('update_in_flight') or run_state.get('optimizer_poisoned'):
+            raise ConfigError('Polynomial restored boundary does not reconcile')
     scope = config.get("training", {}).get("optimizer_state_scope", "shared")
     if scope not in {"per_granularity", "per_ffn_block"}:
         return
@@ -2420,6 +2429,9 @@ class ResourceAttemptLedger:
                 continue
             if type(value) is not int or value < 0:
                 raise ConfigError(f'Resource {field} is invalid')
+        for field in ('training_update_seconds','ordinary_validation_seconds'):
+            if field in record and (isinstance(record[field],bool) or not isinstance(record[field],(int,float)) or not math.isfinite(record[field]) or record[field] < 0):
+                raise ConfigError(f'Resource {field} is invalid')
         if record.get('status') not in {'running', 'failed', 'completed', 'interrupted'}:
             raise ConfigError('Resource attempt status is invalid')
 
@@ -2447,7 +2459,7 @@ class ResourceAttemptLedger:
                 if record != previous:
                     raise ConfigError('Conflicting resource observation sequence')
                 return
-            for field in ('elapsed_seconds', 'attempted_steps', 'peak_allocated_bytes', 'peak_reserved_bytes'):
+            for field in ('elapsed_seconds', 'attempted_steps', 'peak_allocated_bytes', 'peak_reserved_bytes', 'training_update_seconds', 'ordinary_validation_seconds'):
                 if previous.get(field) is not None and (record.get(field) is None or record[field] < previous[field]):
                     raise ConfigError(f'Resource observation regresses: {field}')
             if any(record.get(key) != previous.get(key) for key in ('run_id', 'launch_attempt_id', 'slurm_job_id', 'process_uuid')):
@@ -2474,6 +2486,12 @@ class ResourceAttemptLedger:
             values = [r[field] for r in records if r.get(field) is not None]
             return max(values) if values else None
         return {
+            **({
+                'training_update_seconds': sum(r.get('training_update_seconds',0.) for r in records),
+                'ordinary_validation_seconds': sum(r.get('ordinary_validation_seconds',0.) for r in records),
+                'failed_attempt_seconds': sum(r['elapsed_seconds'] or 0. for r in records if r['status'] in ('failed','interrupted')),
+                'cost_scope': 'Update work, ordinary validation and failed process costs overlap total process time; never added to it',
+            } if any('training_update_seconds' in r for r in records) else {}),
             'elapsed_seconds': sum(r['elapsed_seconds'] for r in records if r['elapsed_seconds'] is not None),
             'attempted_steps': sum(r['attempted_steps'] for r in records if r['attempted_steps'] is not None),
             'peak_allocated_bytes': peak('peak_allocated_bytes'),
@@ -2502,20 +2520,36 @@ def _resource_attempt_observer(config, device, *, started_at, source_checkpoint)
     attempted_steps = 0
     last_observation = 0.0
     terminal_status = None
+    separate_costs = bool(config['training'].get('linear_calr_schedule_contract'))
+    update_started = validation_started = None
+    update_seconds = validation_seconds = 0.0
 
     def observe(*, run_state, boundary):
         nonlocal sequence, attempted_steps, last_observation, terminal_status
+        nonlocal update_started, validation_started, update_seconds, validation_seconds
+        now = time.perf_counter()
+        if separate_costs and boundary == 'ordinary_validation_start':
+            validation_started = now
+            return
+        if separate_costs and boundary == 'ordinary_validation_end':
+            validation_seconds += now - validation_started
+            validation_started = None
+            return
         if boundary == 'attempt':
             attempted_steps += 1
+            if separate_costs: update_started = now
             return
-        now = time.perf_counter()
+        if separate_costs and update_started is not None and boundary in ('committed','failed','interrupted'):
+            update_seconds += now - update_started
+            update_started = None
         if boundary == 'committed' and now - last_observation < 30 and attempted_steps % max(1, config['outputs']['metrics_flush_interval_steps']):
             return
         sequence += 1
         if boundary in {'completed', 'failed', 'interrupted'}:
             terminal_status = boundary
         status = terminal_status or 'running'
-        ledger.observe(attempt_id, **identity, sequence=sequence, elapsed_seconds=now - started_at,
+        costs = dict(training_update_seconds=update_seconds,ordinary_validation_seconds=validation_seconds) if separate_costs else {}
+        ledger.observe(attempt_id, **identity, **costs, sequence=sequence, elapsed_seconds=now - started_at,
                        peak_allocated_bytes=torch.cuda.max_memory_allocated(device) if device.type == 'cuda' else None,
                        peak_reserved_bytes=torch.cuda.max_memory_reserved(device) if device.type == 'cuda' else None,
                        attempted_steps=attempted_steps, status=status, source_checkpoint=source_checkpoint,
@@ -2588,6 +2622,10 @@ def build_ownership_run_summary(config, model, optimizer, state):
             'epoch': state['epoch'], 'batch_index': state['batch_index'],
             'sampler_state': state.get('sampler_state'),
             'scheduler_position': state['global_scheduler_position'],
+            **({'linear_calr_schedule_contract': copy.deepcopy(config['training']['linear_calr_schedule_contract']),
+                'last_applied_schedule_record': copy.deepcopy(state['last_applied_schedule_record']),
+                'applied_schedule_watermark': copy.deepcopy(state['applied_schedule_watermark'])}
+               if config['training'].get('linear_calr_schedule_contract') else {}),
             'width_selection_counts': state['optimizer_width_selection_counts'],
             'quarter_activation_counts': state['optimizer_quarter_activation_counts'],
             'owner_call_counts': state['optimizer_update_counts'],
@@ -2645,6 +2683,11 @@ def complete_ownership_terminal(config, model, optimizer, scheduler, state, eval
     for key, value in expected_identity.items():
         if saved.get(key) != value:
             raise ConfigError(f'Terminal checkpoint identity mismatch: {key}')
+    if config['training'].get('linear_calr_schedule_contract'):
+        training_checkpointing._validate_ownership_payload(saved, config, model, optimizer, scheduler,
+            train_dataloader=getattr(optimizer, '_ownership_dataloader', None))
+        from src.utils.metrics import validate_linear_calr_trace_watermark
+        validate_linear_calr_trace_watermark(config, saved)
     live_model = model.state_dict()
     saved_model = saved.get('model_state_dict', {})
     if set(saved_model) != set(live_model) or any(
@@ -2691,7 +2734,9 @@ def complete_ownership_terminal(config, model, optimizer, scheduler, state, eval
     rng = capture_rng_state()
     was_training = model.training
     try:
-        endpoints = validation.evaluate_ownership_terminal(model, eval_dataloader, config, device)
+        from src.training.steps import measured_ordinary_validation
+        endpoints = measured_ordinary_validation(config, optimizer, state,
+            lambda: validation.evaluate_ownership_terminal(model, eval_dataloader, config, device))
     finally:
         restore_rng_state(rng)
         model.train(was_training)

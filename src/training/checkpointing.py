@@ -1799,6 +1799,9 @@ def _save_model_checkpoint_rank_zero(
             if optimizer is not None else None
         )
         payload.update(_ownership_identity(config, model))
+        if config['training'].get('linear_calr_schedule_contract'):
+            for key in ('last_applied_schedule_record', 'applied_schedule_watermark'):
+                payload[key] = copy.deepcopy(run_state.get(key))
         for key in OWNERSHIP_STATE_FIELDS:
             payload[key] = copy.deepcopy(run_state.get(key))
         payload['resource_ledger_watermark'] = copy.deepcopy(run_state.get('resource_ledger_watermark', {}))
@@ -2343,6 +2346,8 @@ def build_initial_continuation_state(config: dict[str, Any]) -> dict[str, Any]:
         state.update(optimizer_width_selection_counts=counts, optimizer_quarter_activation_counts=quarters,
                      optimizer_update_counts=calls, optimizer_total_successful_updates=0,
                      global_scheduler_position=0, resource_ledger_watermark={}, update_in_flight=False)
+    if training.get('linear_calr_schedule_contract'):
+        state.update(last_applied_schedule_record=None, applied_schedule_watermark={'step': 0, 'last_record_hash': None, 'chain_hash': None})
     return state
 
 
@@ -3824,7 +3829,10 @@ def assert_checkpoint_safe(run_state):
 
 def _ownership_identity(config, model):
     from src.training.optimizer_state import build_parameter_descriptors
+    from src.utils.reproducibility import stable_hash
+    schedule = config['training'].get('linear_calr_schedule_contract')
     return {
+        **({'linear_calr_schedule_contract': copy.deepcopy(schedule), 'linear_calr_schedule_contract_hash': stable_hash(schedule)} if schedule else {}),
         'optimizer_ownership_checkpoint_schema_version': OWNERSHIP_CHECKPOINT_SCHEMA_VERSION,
         'optimizer_ownership_contract': copy.deepcopy(config['optimizer_ownership_contract']),
         'optimizer_ownership_contract_hash': config['optimizer_ownership_contract_hash'],
@@ -3915,7 +3923,7 @@ def _validate_ownership_payload(payload, config, model, optimizer, scheduler, *,
     expected_scheduler.update(last_epoch=step, _step_count=step + 1, _last_lr=rates)
     saved_clock = payload.get('scheduler_state_dict')
     is_collection = isinstance(optimizer, (PerGranularityOptimizerCollection, BlockOptimizerCollection))
-    if is_collection:
+    if is_collection or config["training"].get("linear_calr_schedule_contract"):
         scheduler.validate_state_dict(saved_clock)
         if set(saved_clock) != set(reference.state_dict()) or saved_clock['position'] != step:
             raise ConfigError('Campaign global clock layout/position mismatch')
@@ -3927,9 +3935,14 @@ def _validate_ownership_payload(payload, config, model, optimizer, scheduler, *,
         if saved_clock['carrier_optimizer_state_dict'] != carrier:
             raise ConfigError('Campaign scheduler carrier mismatch')
         scheduler_state = saved_clock['scheduler_state_dict']
-        if payload.get('optimizer_state_dict') is not None:
-            raise ConfigError('Campaign collection contains shared state')
-        saved_optimizer = payload.get('optimizer_state_collection')
+        if is_collection:
+            if payload.get('optimizer_state_dict') is not None:
+                raise ConfigError('Campaign collection contains shared state')
+            saved_optimizer = payload.get('optimizer_state_collection')
+        else:
+            if payload.get('optimizer_state_collection') is not None:
+                raise ConfigError('Campaign shared optimizer contains collection state')
+            saved_optimizer = payload.get('optimizer_state_dict')
     else:
         scheduler_state = saved_clock
         if payload.get('optimizer_state_collection') is not None:
@@ -3937,7 +3950,16 @@ def _validate_ownership_payload(payload, config, model, optimizer, scheduler, *,
         saved_optimizer = payload.get('optimizer_state_dict')
     if scheduler_state != expected_scheduler:
         raise ConfigError('Campaign scheduler state/rates mismatch')
-    validate_campaign_optimizer(model, optimizer, saved_optimizer, widths=widths, width_counts=counts, learning_rates=rates)
+    optimizer_rates = rates
+    if config['training'].get('linear_calr_schedule_contract'):
+        owner = optimizer.entries[0].optimizer if is_collection else optimizer
+        optimizer_rates = rates * len(owner.param_groups)
+    validate_campaign_optimizer(model, optimizer, saved_optimizer, widths=widths, width_counts=counts, learning_rates=optimizer_rates)
+    if config['training'].get('linear_calr_schedule_contract'):
+        validate_applied_schedule_payload(payload, config, step, last_width)
+        if inspect_only:
+            from src.utils.metrics import validate_linear_calr_trace_watermark
+            validate_linear_calr_trace_watermark(config, payload)
     quarter_counts = {f'O-{q}': sum(counts[w] for w in widths[i:]) for i, q in enumerate('ABCD')} if len(widths) == 4 else {}
     expected_calls = ({**quarter_counts, 'O-common': step} if isinstance(optimizer, BlockOptimizerCollection)
                       else counts if isinstance(optimizer, PerGranularityOptimizerCollection) else {'shared': step})
@@ -4005,6 +4027,9 @@ def _load_ownership_checkpoint(payload, path, config, model, optimizer, schedule
     from src.training.data import packed_sampler_state, restore_packed_sampler_state
     saved_optimizer, rng = _validate_ownership_payload(payload, config, model, optimizer, scheduler, train_dataloader=train_dataloader)
     _validate_ownership_action_rng(payload, config, rng)
+    if config['training'].get('linear_calr_schedule_contract'):
+        from src.utils.metrics import validate_linear_calr_trace_watermark
+        validate_linear_calr_trace_watermark(config, payload)
     # Resume-only snapshot: the training hot loop never copies model/history tensors.
     snapshot = (copy.deepcopy(model.state_dict()), copy.deepcopy(optimizer.state_dict()),
                 copy.deepcopy(scheduler.state_dict()), capture_rng_state(),
@@ -4038,6 +4063,8 @@ def _load_ownership_checkpoint(payload, path, config, model, optimizer, schedule
         if metrics is not None else None)
     if validated_sign_dynamics_state is not None:
         state['sign_dynamics_state'] = sign_dynamics_runtime.state_dict(copy_tensors=False)
+    if config['training'].get('linear_calr_schedule_contract'):
+        state.update({key: copy.deepcopy(payload[key]) for key in ('last_applied_schedule_record', 'applied_schedule_watermark')})
     state.update(status='resumed', last_completed_step=payload['step'],
                  latest_checkpoint_step=payload['step'], last_durable_checkpoint_step=payload['step'],
                  latest_checkpoint_path=str(path), continuation_source_checkpoint_path=str(path),
@@ -4075,3 +4102,33 @@ def reconcile_ownership_scientific_rows(output_dir, checkpoint_step):
             _fsync_directory(root)
         finally:
             retained.unlink(missing_ok=True)
+
+
+def validate_applied_schedule_payload(payload, config, step, width):
+    from src.training.schedules import polynomial_schedule_evidence
+    from src.utils.config import parse_linear_calr_schedule_contract
+    from src.utils.reproducibility import stable_hash
+    contract = parse_linear_calr_schedule_contract(payload.get('linear_calr_schedule_contract'))
+    record = payload.get('last_applied_schedule_record')
+    watermark = payload.get('applied_schedule_watermark')
+    if not isinstance(watermark, Mapping) or set(watermark) != {'step', 'last_record_hash', 'chain_hash'} or watermark['step'] != step:
+        raise ConfigError('Applied schedule watermark invalid')
+    if step == 0:
+        if record is not None or watermark != dict(step=0,last_record_hash=None,chain_hash=None):
+            raise ConfigError('Step zero must have no applied evidence')
+        return
+    if not isinstance(record, Mapping) or watermark['last_record_hash'] != stable_hash(record) or not isinstance(watermark['chain_hash'],str) or len(watermark['chain_hash'])!=64:
+        raise ConfigError('Applied schedule record/hash missing or invalid')
+    evidence = polynomial_schedule_evidence(payload['linear_calr_schedule_contract'], width, step-1)
+    expected = dict(evidence_kind='applied', run_id=config['run']['run_id'], arm_id=contract['arm_id'],
+        schedule_contract_hash=payload['linear_calr_schedule_contract_hash'],step=step,
+        pre_update_position=step-1,width=width,complexity=contract['complexity_counts'][width],
+        exponent=contract['exponents'][width],owner=width if contract['optimizer_state_scope']=='per_granularity' else 'shared',
+        action_ordinal=step,packed_tokens=config['training']['expected_tokens_per_step'],
+        batch_provenance=payload.get('last_optimizer_batch_provenance'))
+    if set(record) != set(expected)|{'applied_learning_rates','nominal_learning_rates'} or any(record.get(k)!=v for k,v in expected.items()):
+        raise ConfigError('Applied schedule record differs from own committed update')
+    saved = payload.get('optimizer_state_dict') or payload['optimizer_state_collection']['ordered_entries'][0]['state_dict']
+    groups = len(saved['param_groups'])
+    if record['applied_learning_rates'] != [evidence['analytic_effective_learning_rate']]*groups or record['nominal_learning_rates'] != [evidence['analytic_nominal_learning_rate']]*groups:
+        raise ConfigError('Applied learning rates differ from selected schedule')

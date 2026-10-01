@@ -1,0 +1,11 @@
+....                                                                     [100%]
+=============================== warnings summary ===============================
+tests/test_linear_calr_schedule.py::test_actual_updates_match_all_group_manual_adamw[S1-linear-poly]
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+tests/test_linear_calr_schedule.py::test_actual_updates_match_all_group_manual_adamw[S1-linear-poly]
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+4 passed, 15 deselected, 2 warnings in 10.07s
+sys:1: DeprecationWarning: builtin type swigvarlink has no __module__ attribute

@@ -60,7 +60,7 @@ def main(argv=None):
         if args.command == 'report-s1-warmup':
             report = report_s1_warmup(manifest=args.manifest, linear_reference_root=args.linear_reference_root,
                 geometric_reference_root=args.geometric_reference_root,
-                reference_root=args.reference_root, output_dir=args.output_dir, early_end_step=args.early_end_step)
+                output_dir=args.output_dir, early_end_step=args.early_end_step)
         elif args.command == 'report-matformer-widths':
             report = report_matformer_widths_comparison(manifest=args.manifest, reference_manifest=args.reference_manifest, output_dir=args.output_dir)
         elif args.command == 'report-inverse-membership':
@@ -81,6 +81,7 @@ def main(argv=None):
                 run_output_root=args.run_output_root,
                 linear_reference_root=args.linear_reference_root,
                 geometric_reference_root=args.geometric_reference_root,
+                reference_root=args.reference_root,
             )
     except (ValueError, OSError, RuntimeError) as error:
         parser.exit(1, f"Campaign {args.command} failed: {error}\n")

@@ -1,0 +1,1108 @@
+........................................................................ [  5%]
+........................................................................ [ 11%]
+.................................FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF... [ 17%]
+.ssssssssssssssssssssssssssssssss....................................... [ 23%]
+........................................................................ [ 29%]
+........................................................................ [ 35%]
+........................................................................ [ 41%]
+........................................................................ [ 47%]
+................s....................................................... [ 53%]
+........................................................................ [ 59%]
+..............................................ssssssssssssssssssssssssss [ 64%]
+s....................................................................... [ 70%]
+........................................................................ [ 76%]
+..........................ssssss....................s.s.s.s............. [ 82%]
+........................................................................ [ 88%]
+........................................................................ [ 94%]
+.........................................................FFF.......      [100%]
+=================================== FAILURES ===================================
+______________ test_full_horizon_seeded_resume[63-S1-linear-poly] ______________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+______________ test_full_horizon_seeded_resume[63-S1-linear-CaLR] ______________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+______________ test_full_horizon_seeded_resume[63-S2-linear-poly] ______________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+______________ test_full_horizon_seeded_resume[63-S2-linear-CaLR] ______________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+______________ test_full_horizon_seeded_resume[64-S1-linear-poly] ______________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+______________ test_full_horizon_seeded_resume[64-S1-linear-CaLR] ______________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+______________ test_full_horizon_seeded_resume[64-S2-linear-poly] ______________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+______________ test_full_horizon_seeded_resume[64-S2-linear-CaLR] ______________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+______________ test_full_horizon_seeded_resume[65-S1-linear-poly] ______________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+______________ test_full_horizon_seeded_resume[65-S1-linear-CaLR] ______________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+______________ test_full_horizon_seeded_resume[65-S2-linear-poly] ______________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+______________ test_full_horizon_seeded_resume[65-S2-linear-CaLR] ______________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+____________ test_full_horizon_seeded_resume[174296-S1-linear-poly] ____________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+____________ test_full_horizon_seeded_resume[174296-S1-linear-CaLR] ____________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+____________ test_full_horizon_seeded_resume[174296-S2-linear-poly] ____________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+____________ test_full_horizon_seeded_resume[174296-S2-linear-CaLR] ____________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+____________ test_full_horizon_seeded_resume[87132-S1-linear-poly] _____________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+____________ test_full_horizon_seeded_resume[87132-S1-linear-CaLR] _____________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+____________ test_full_horizon_seeded_resume[87132-S2-linear-poly] _____________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+____________ test_full_horizon_seeded_resume[87132-S2-linear-CaLR] _____________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+____________ test_full_horizon_seeded_resume[174264-S1-linear-poly] ____________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+____________ test_full_horizon_seeded_resume[174264-S1-linear-CaLR] ____________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+____________ test_full_horizon_seeded_resume[174264-S2-linear-poly] ____________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+____________ test_full_horizon_seeded_resume[174264-S2-linear-CaLR] ____________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+____________ test_full_horizon_seeded_resume[261396-S1-linear-poly] ____________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+____________ test_full_horizon_seeded_resume[261396-S1-linear-CaLR] ____________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+____________ test_full_horizon_seeded_resume[261396-S2-linear-poly] ____________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+____________ test_full_horizon_seeded_resume[261396-S2-linear-CaLR] ____________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+____________ test_full_horizon_seeded_resume[348527-S1-linear-poly] ____________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+____________ test_full_horizon_seeded_resume[348527-S1-linear-CaLR] ____________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+____________ test_full_horizon_seeded_resume[348527-S2-linear-poly] ____________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+____________ test_full_horizon_seeded_resume[348527-S2-linear-CaLR] ____________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+____________ test_full_horizon_seeded_resume[348528-S1-linear-poly] ____________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+____________ test_full_horizon_seeded_resume[348528-S1-linear-CaLR] ____________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+____________ test_full_horizon_seeded_resume[348528-S2-linear-poly] ____________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+____________ test_full_horizon_seeded_resume[348528-S2-linear-CaLR] ____________
+tests/test_linear_calr_resume.py:150: in test_full_horizon_seeded_resume
+    path=tmp_path/'seeded.pt';save(bundle,path)
+                              ^^^^^^^^^^^^^^^^^
+tests/test_optimizer_ownership_resume.py:63: in save
+    cp.save_model_checkpoint(config, model, opt, clock, path,
+src/training/checkpointing.py:1991: in save_model_checkpoint
+    raise local_error
+src/training/checkpointing.py:1964: in save_model_checkpoint
+    _save_model_checkpoint_rank_zero(
+src/training/checkpointing.py:1809: in _save_model_checkpoint_rank_zero
+    _validate_ownership_payload(payload, config, model, optimizer, scheduler,
+src/training/checkpointing.py:3970: in _validate_ownership_payload
+    validate_campaign_sampler_boundary(config, payload, train_dataloader=train_dataloader)
+src/training/data.py:1042: in validate_campaign_sampler_boundary
+    raise ConfigError('Campaign packed resume requires its live repeat sampler for staging')
+E   src.utils.config.ConfigError: Campaign packed resume requires its live repeat sampler for staging
+___________________ test_report_only_cli_recovery[reference] ___________________
+tests/test_s1_warmup_queue.py:520: in test_report_only_cli_recovery
+    analyze(['report-s1-warmup','--manifest',str(args['manifest']),
+scripts/analyze_tinystories_optimizer_ownership.py:63: in main
+    reference_root=args.reference_root, output_dir=args.output_dir, early_end_step=args.early_end_step)
+                   ^^^^^^^^^^^^^^^^^^^
+E   AttributeError: 'Namespace' object has no attribute 'reference_root'
+----------------------------- Captured stdout call -----------------------------
+{
+  "campaign_id": "tinystories-optimizer-ownership-s1-warmup-v1",
+  "content_hash": "b6ed2b5010552fdecc91768cc0e27248be4322325ce547c71fc4d08cef3336a3",
+  "evaluation_role": "ordinary_validation",
+  "holdout_evaluated": false,
+  "missing_arms": [],
+  "missing_endpoints": [],
+  "preflight_manifest_hash": "a6fc7f016b90293d0bf781b5a4d8e995cdacee703df9c50e7c88e0a18cdd8918",
+  "preflight_source": {
+    "path": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_1/new/campaign/campaign_manifest.json",
+    "sha256": "d89b807d4e4c3207149c31353e4e17fdd265750efb4f22947c8df93846c78d69"
+  },
+  "runs": [
+    {
+      "arm_id": "S1-linear-w256",
+      "checkpoint_sha256": "7e4a5f20bd1251783d5a2385184939d29de1a034194515ac674f4fe32588bb18",
+      "endpoints": [
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "b6230e9e4dfa1508dfcf67eede585e6b34622a133819decae58bb47ab73d5914",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_target_tokens": 36195,
+          "loss": 1.9,
+          "non_embedding_parameters": 115264,
+          "perplexity": 6.6858944422792685,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g250"
+        },
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "b6230e9e4dfa1508dfcf67eede585e6b34622a133819decae58bb47ab73d5914",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_target_tokens": 36195,
+          "loss": 2.0,
+          "non_embedding_parameters": 164416,
+          "perplexity": 7.38905609893065,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g500"
+        },
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "b6230e9e4dfa1508dfcf67eede585e6b34622a133819decae58bb47ab73d5914",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_target_tokens": 36195,
+          "loss": 2.1,
+          "non_embedding_parameters": 213568,
+          "perplexity": 8.166169912567652,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g750"
+        },
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "b6230e9e4dfa1508dfcf67eede585e6b34622a133819decae58bb47ab73d5914",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_target_tokens": 36195,
+          "loss": 2.2,
+          "non_embedding_parameters": 262720,
+          "perplexity": 9.025013499434122,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g1000"
+        }
+      ],
+      "execution_evidence": {
+        "sources": [],
+        "status": "passed"
+      },
+      "observations": {
+        "action_sha256": "elastic-actions",
+        "clipping_by_width": {},
+        "committed_updates": 348528,
+        "epoch_order_sha256": {
+          "0": "epoch-0",
+          "1": "epoch-1",
+          "2": "epoch-2",
+          "3": "epoch-3"
+        }
+      },
+      "optional_sources": {
+        "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_1/new/runs/S1-linear-w256/resource_attempts.json": false
+      },
+      "run_dir": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_1/new/runs/S1-linear-w256",
+      "run_id": "tinystories-optimizer-ownership-s1-warmup-v1-S1-linear-w256-s42",
+      "sources": [
+        {
+          "path": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_1/new/runs/S1-linear-w256/run_summary.json",
+          "sha256": "6bd6b173decb950c7f9abdd34d7c57914e111477e334e9655be1211c54c6575e"
+        },
+        {
+          "path": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_1/new/runs/S1-linear-w256/terminal_validation_results.json",
+          "sha256": "efafa0c7a929102027102817ced0a42aaf634bdc5e61eff52dac0206e3a909b7"
+        },
+        {
+          "path": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_1/new/runs/S1-linear-w256/latest.pt",
+          "sha256": "7e4a5f20bd1251783d5a2385184939d29de1a034194515ac674f4fe32588bb18"
+        },
+        {
+          "path": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_1/new/runs/S1-linear-w256/optimizer_ownership_trace.jsonl",
+          "sha256": "3a0a8e0c04058e214517cc87f8eacc93f17025fe2b83dad1c22077662d94bd3a"
+        },
+        {
+          "path": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_1/new/runs/S1-linear-w256/metrics.csv",
+          "sha256": "91c3be1610cbd7e20d388b32edfc7f8f6b48153f27cf6f11e7997ced23995340"
+        }
+      ],
+      "terminal_content_hash": "85d4dfe0a3aa2bcd7e16461994a4f6dabe59d0dcc1d858fe314c7c2c8d2de4f6"
+    },
+    {
+      "arm_id": "S1-geometric-w256",
+      "checkpoint_sha256": "48f9678345fb1ab9267142fa7bf877f9d348d60474505014e918c3e845a2b136",
+      "endpoints": [
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "b6230e9e4dfa1508dfcf67eede585e6b34622a133819decae58bb47ab73d5914",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_target_tokens": 36195,
+          "loss": 1.9,
+          "non_embedding_parameters": 90688,
+          "perplexity": 6.6858944422792685,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g125"
+        },
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "b6230e9e4dfa1508dfcf67eede585e6b34622a133819decae58bb47ab73d5914",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_target_tokens": 36195,
+          "loss": 2.0,
+          "non_embedding_parameters": 115264,
+          "perplexity": 7.38905609893065,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g250"
+        },
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "b6230e9e4dfa1508dfcf67eede585e6b34622a133819decae58bb47ab73d5914",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_target_tokens": 36195,
+          "loss": 2.1,
+          "non_embedding_parameters": 164416,
+          "perplexity": 8.166169912567652,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g500"
+        },
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "b6230e9e4dfa1508dfcf67eede585e6b34622a133819decae58bb47ab73d5914",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_target_tokens": 36195,
+          "loss": 2.2,
+          "non_embedding_parameters": 262720,
+          "perplexity": 9.025013499434122,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g1000"
+        }
+      ],
+      "execution_evidence": {
+        "sources": [],
+        "status": "passed"
+      },
+      "observations": {
+        "action_sha256": "elastic-actions",
+        "clipping_by_width": {},
+        "committed_updates": 348528,
+        "epoch_order_sha256": {
+          "0": "epoch-0",
+          "1": "epoch-1",
+          "2": "epoch-2",
+          "3": "epoch-3"
+        }
+      },
+      "optional_sources": {
+        "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_1/new/runs/S1-geometric-w256/resource_attempts.json": false
+      },
+      "run_dir": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_1/new/runs/S1-geometric-w256",
+      "run_id": "tinystories-optimizer-ownership-s1-warmup-v1-S1-geometric-w256-s42",
+      "sources": [
+        {
+          "path": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_1/new/runs/S1-geometric-w256/run_summary.json",
+          "sha256": "a1871bb3c8e7107a4abbaeeb4795c0fc1c47ef52326775428bf8ef251c26741d"
+        },
+        {
+          "path": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_1/new/runs/S1-geometric-w256/terminal_validation_results.json",
+          "sha256": "6c22bf3e8c75f1a30648f122a82e1fd6c94f4505da38ac1762df94e36b635aa0"
+        },
+        {
+          "path": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_1/new/runs/S1-geometric-w256/latest.pt",
+          "sha256": "48f9678345fb1ab9267142fa7bf877f9d348d60474505014e918c3e845a2b136"
+        },
+        {
+          "path": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_1/new/runs/S1-geometric-w256/optimizer_ownership_trace.jsonl",
+          "sha256": "36cc40f39df9938bb4ae322cbb0182b1236c042796bda0d7c4eab57b49921957"
+        },
+        {
+          "path": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_1/new/runs/S1-geometric-w256/metrics.csv",
+          "sha256": "8d1541a78c44136c97735e74d47e1399f0046b8fa24b6ec3ffbbeec3a806e6ec"
+        }
+      ],
+      "terminal_content_hash": "e4a2f02f0b0954f9aab63208cfb6c45491ccbcc296f5218465c8c211a0fc472d"
+    }
+  ],
+  "schema_version": 1,
+  "status": "complete"
+}
+----------------------------- Captured stderr call -----------------------------
+Campaign report incomplete: Incomplete warmup comparison: [Errno 2] No such file or directory: '/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_1/linear/campaign/campaign_manifest.json'
+_____________________ test_report_only_cli_recovery[early] _____________________
+tests/test_s1_warmup_queue.py:520: in test_report_only_cli_recovery
+    analyze(['report-s1-warmup','--manifest',str(args['manifest']),
+scripts/analyze_tinystories_optimizer_ownership.py:63: in main
+    reference_root=args.reference_root, output_dir=args.output_dir, early_end_step=args.early_end_step)
+                   ^^^^^^^^^^^^^^^^^^^
+E   AttributeError: 'Namespace' object has no attribute 'reference_root'
+----------------------------- Captured stdout call -----------------------------
+{
+  "campaign_id": "tinystories-optimizer-ownership-s1-warmup-v1",
+  "content_hash": "474ebc148c15cf6be1c30ebd08d8e957c06dbf5c87828c1fbb8be6151d72291f",
+  "evaluation_role": "ordinary_validation",
+  "holdout_evaluated": false,
+  "missing_arms": [],
+  "missing_endpoints": [],
+  "preflight_manifest_hash": "523ede9309a24c1d44c2a8fdd118e65b9311908371e81d523b548b18c7c1184b",
+  "preflight_source": {
+    "path": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_2/new/campaign/campaign_manifest.json",
+    "sha256": "bf59bc5a3eca4a82b7f9f11d0f2601b52cfa6116f8ab04a00de456f0670e3eaa"
+  },
+  "runs": [
+    {
+      "arm_id": "S1-linear-w256",
+      "checkpoint_sha256": "aaf22f4be10a642c63361394e9ec21e30e5fc973df68abc10b4111161295635a",
+      "endpoints": [
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "b6230e9e4dfa1508dfcf67eede585e6b34622a133819decae58bb47ab73d5914",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_target_tokens": 36195,
+          "loss": 1.9,
+          "non_embedding_parameters": 115264,
+          "perplexity": 6.6858944422792685,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g250"
+        },
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "b6230e9e4dfa1508dfcf67eede585e6b34622a133819decae58bb47ab73d5914",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_target_tokens": 36195,
+          "loss": 2.0,
+          "non_embedding_parameters": 164416,
+          "perplexity": 7.38905609893065,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g500"
+        },
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "b6230e9e4dfa1508dfcf67eede585e6b34622a133819decae58bb47ab73d5914",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_target_tokens": 36195,
+          "loss": 2.1,
+          "non_embedding_parameters": 213568,
+          "perplexity": 8.166169912567652,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g750"
+        },
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "b6230e9e4dfa1508dfcf67eede585e6b34622a133819decae58bb47ab73d5914",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_target_tokens": 36195,
+          "loss": 2.2,
+          "non_embedding_parameters": 262720,
+          "perplexity": 9.025013499434122,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g1000"
+        }
+      ],
+      "execution_evidence": {
+        "sources": [],
+        "status": "passed"
+      },
+      "observations": {
+        "action_sha256": "elastic-actions",
+        "clipping_by_width": {},
+        "committed_updates": 348528,
+        "epoch_order_sha256": {
+          "0": "epoch-0",
+          "1": "epoch-1",
+          "2": "epoch-2",
+          "3": "epoch-3"
+        }
+      },
+      "optional_sources": {
+        "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_2/new/runs/S1-linear-w256/resource_attempts.json": false
+      },
+      "run_dir": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_2/new/runs/S1-linear-w256",
+      "run_id": "tinystories-optimizer-ownership-s1-warmup-v1-S1-linear-w256-s42",
+      "sources": [
+        {
+          "path": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_2/new/runs/S1-linear-w256/run_summary.json",
+          "sha256": "e739f5dd4dfd3f47af3da56e0f34ce196b751700b6a877ea21e590309e0b577d"
+        },
+        {
+          "path": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_2/new/runs/S1-linear-w256/terminal_validation_results.json",
+          "sha256": "220bc993baed58d15ce313ef32cba0c08f007e45a5455cb84c4ddeb52a97cf6a"
+        },
+        {
+          "path": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_2/new/runs/S1-linear-w256/latest.pt",
+          "sha256": "aaf22f4be10a642c63361394e9ec21e30e5fc973df68abc10b4111161295635a"
+        },
+        {
+          "path": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_2/new/runs/S1-linear-w256/optimizer_ownership_trace.jsonl",
+          "sha256": "3a0a8e0c04058e214517cc87f8eacc93f17025fe2b83dad1c22077662d94bd3a"
+        },
+        {
+          "path": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_2/new/runs/S1-linear-w256/metrics.csv",
+          "sha256": "91c3be1610cbd7e20d388b32edfc7f8f6b48153f27cf6f11e7997ced23995340"
+        }
+      ],
+      "terminal_content_hash": "0d1724d864e41577d71b612708ac49241b3a88f91914e2b06b2b51b33651312d"
+    },
+    {
+      "arm_id": "S1-geometric-w256",
+      "checkpoint_sha256": "b90b464c3a08771939d3f14ccaf680e45f6d2f23b42bef26efd5bd9acac80719",
+      "endpoints": [
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "b6230e9e4dfa1508dfcf67eede585e6b34622a133819decae58bb47ab73d5914",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_target_tokens": 36195,
+          "loss": 1.9,
+          "non_embedding_parameters": 90688,
+          "perplexity": 6.6858944422792685,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g125"
+        },
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "b6230e9e4dfa1508dfcf67eede585e6b34622a133819decae58bb47ab73d5914",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_target_tokens": 36195,
+          "loss": 2.0,
+          "non_embedding_parameters": 115264,
+          "perplexity": 7.38905609893065,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g250"
+        },
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "b6230e9e4dfa1508dfcf67eede585e6b34622a133819decae58bb47ab73d5914",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_target_tokens": 36195,
+          "loss": 2.1,
+          "non_embedding_parameters": 164416,
+          "perplexity": 8.166169912567652,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g500"
+        },
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "b6230e9e4dfa1508dfcf67eede585e6b34622a133819decae58bb47ab73d5914",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_target_tokens": 36195,
+          "loss": 2.2,
+          "non_embedding_parameters": 262720,
+          "perplexity": 9.025013499434122,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g1000"
+        }
+      ],
+      "execution_evidence": {
+        "sources": [],
+        "status": "passed"
+      },
+      "observations": {
+        "action_sha256": "elastic-actions",
+        "clipping_by_width": {},
+        "committed_updates": 348528,
+        "epoch_order_sha256": {
+          "0": "epoch-0",
+          "1": "epoch-1",
+          "2": "epoch-2",
+          "3": "epoch-3"
+        }
+      },
+      "optional_sources": {
+        "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_2/new/runs/S1-geometric-w256/resource_attempts.json": false
+      },
+      "run_dir": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_2/new/runs/S1-geometric-w256",
+      "run_id": "tinystories-optimizer-ownership-s1-warmup-v1-S1-geometric-w256-s42",
+      "sources": [
+        {
+          "path": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_2/new/runs/S1-geometric-w256/run_summary.json",
+          "sha256": "95859ad35439dae8c5dfde25781954149b8659ac6173ad20e3c55042580b9c18"
+        },
+        {
+          "path": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_2/new/runs/S1-geometric-w256/terminal_validation_results.json",
+          "sha256": "e958b97a6831ee30a82e26e9d9e0a9c923eecfa039649628914fb8835489c7bc"
+        },
+        {
+          "path": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_2/new/runs/S1-geometric-w256/latest.pt",
+          "sha256": "b90b464c3a08771939d3f14ccaf680e45f6d2f23b42bef26efd5bd9acac80719"
+        },
+        {
+          "path": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_2/new/runs/S1-geometric-w256/optimizer_ownership_trace.jsonl",
+          "sha256": "36cc40f39df9938bb4ae322cbb0182b1236c042796bda0d7c4eab57b49921957"
+        },
+        {
+          "path": "/tmp/pytest-of-ivo.navarrete/pytest-112/test_report_only_cli_recovery_2/new/runs/S1-geometric-w256/metrics.csv",
+          "sha256": "8d1541a78c44136c97735e74d47e1399f0046b8fa24b6ec3ffbbeec3a806e6ec"
+        }
+      ],
+      "terminal_content_hash": "680a53e5f21fd15ad6ec43898cdce6874aa5c956d5bcac9a36e27dd71b0d4db1"
+    }
+  ],
+  "schema_version": 1,
+  "status": "complete"
+}
+----------------------------- Captured stderr call -----------------------------
+Campaign report incomplete: Incomplete warmup comparison: Missing early evidence: required training loss through update 1024
+___________________ test_analyzer_rejects_short_early_window ___________________
+tests/test_s1_warmup_queue.py:529: in test_analyzer_rejects_short_early_window
+    main(['report-s1-warmup','--manifest',str(tmp_path/'absent'),'--linear-reference-root',str(tmp_path/'linear'),
+scripts/analyze_tinystories_optimizer_ownership.py:63: in main
+    reference_root=args.reference_root, output_dir=args.output_dir, early_end_step=args.early_end_step)
+                   ^^^^^^^^^^^^^^^^^^^
+E   AttributeError: 'Namespace' object has no attribute 'reference_root'
+=============================== warnings summary ===============================
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+SKIPPED [32] tests/test_linear_calr_resume.py:182: separately authorized CUDA diagnostic
+SKIPPED [34] tests/test_optimizer_ownership.py:467: CUDA unavailable; bf16 diagnostic requires one GPU
+SKIPPED [4] tests/test_c4_separate_corrections.py:48: CUDA gate only
+39 failed, 1110 passed, 70 skipped, 2 warnings in 238.04s (0:03:58)

@@ -251,3 +251,132 @@ Final source/config/test bindings:
 | `tests/test_linear_calr_foundation.py` | `c7bc077384b12e4e05088a2b78e0acfeb4616467aa0e6f576d6d195c3ffb6e76` |
 | `tests/fixtures/optimizer_ownership_legacy_signatures.json` | `8a3d67fac6f7bc266866bc24b597de71dadb7b5dc1d0af0f54c914ce74201252` |
 | `tests/fixtures/s1_warmup_schema4_signatures.json` | `657031baaf15b720605259799b6ba9b89fcb7e2d721e4fd6b7df3030b1100b19` |
+
+## Phase 4 implementation and CPU verification (2026-10-02)
+
+Scope: **T014–T028 complete**. T029–T031 remain pending their separate external-preparation, diagnostic and production authorizations. This invocation created no external campaign root, authorization record, GPU job or production result. No saved reference was modified. Existing ignore patterns cover this Python project; no additional tool-specific setup was detected.
+
+The implementation uses the existing trainer, GlobalSchedulerClock, optimizer collection layouts, fatal mutation boundary, checkpoint bundle staging, repeat sampler, terminal recovery, source snapshot, locks, submission intents, resource ledger and live Slurm admission helpers. New behavior is conditional on the immutable polynomial schedule contract. Historical signature fixtures were not regenerated.
+
+| Tasks | Completed verification/behavior |
+|---|---|
+| T014 | All four arms match manual AdamW updates with populated moments, decay, two parameter groups, all widths and shared physical parameter identities. p=0 preserves weights while advancing history. Unselected S2 states are unchanged; full-shaped sliced-tail gradients are zero and tails retain inherited decay behavior. Initial/group options are preserved; terminal updates are rejected. |
+| T015 | Exact own-arm continuation before/at/after warmup, representative decay, each 87132-update epoch boundary and terminal T. Full-horizon probes seed synthetic coherent histories and a real repeating sampler over a virtual dataset; only the subsequent diagnostic updates are executed. Weights, histories, counters, RNG, sampler/cursor, nominal clock, applied record and chain watermark match exactly, stricter than rtol=1e-6/atol=1e-7. |
+| T016 | Cross-arm/grid/scope/count/gamma/horizon/record/watermark/clock/RNG corruption is rejected before live mutation. Optimizer, restoration, scheduler and accounting failures poison state and preserve the last durable checkpoint. Missing terminal output recovers with zero optimizer steps. |
+| T017 | Fixture-only lifecycle tests cover source/config/reference/log changes, occupied roots, absent/stale durable authorization, failed/stale/missing gates, CUDA fallback rejection, duplicate/uncertain submission, stricter user-wide limits, worker/Slurm mismatch and completion-only continuation. Four arms are admitted in two conservative waves. |
+| T018–T019 | One exact gamma-one nominal polynomial clock for both scopes; temporary selected effective LR on every stepped group. Actual rates are captured inside the unsafe interval; finally restoration precedes clock advancement and synchronization. Success publishes only reconciled evidence. |
+| T020 | Bounded committed JSONL records carry applied width/owner/count/gamma/position/all-group rates alongside existing action/data/exposure/resource evidence. Checkpoints retain only last record and chain watermark. Ordinary validation, update work and failed-attempt process costs are separately measured, overlap total process time and are never summed into it. |
+| T021–T022 | Entire own-arm bundle validated before installation; nominal reconstruction and step−1 applied evidence are separate. Restore/admission streams the durable trace prefix and validates its chain/watermark. Terminal validation rechecks the own full-budget bundle and recovers missing outputs without training. |
+| T023 | Atomic fresh snapshot, frozen source/config/input bindings, full corpus/control/model/action/data/schedule audits and executed CPU suites. Per-attempt failed records/log hashes are retained. CPU never submits jobs; changed input flags cannot replace an existing snapshot. |
+| T024 | CUDA-required diagnostic worker implemented, **not executed**: every real d64/l4/h4, batch-64/context-128 arm runs 64 inherited real-corpus updates plus own continuation and proves actual BF16, all-width/nonzero-history coverage and measured resource/storage evidence. Separate full-horizon seeded CUDA probes use the same real shape and validate schedule/epoch/terminal continuation; invalid restore and failure tests also run under CUDA. Skips cannot pass the GPU gate. CPU exact tensor assertions are retained for the later same-device probes; no device-specific outcome is claimed. |
+| T025–T027 | Fresh four-run preparation and report dispatch; independent readiness/submission/execution/terminal/comparison states. Durable subsequent authorization is separate from gates. Shared helpers enforce partition/QoS, exclusions, one GPU/no requeue, two-running/four-submitted or stricter limits, reconcile uncertain jobs and validate own continuations. Completion requires both worker and Slurm evidence and exact 348528/2855141376 per-arm and 1394112/11420565504 campaign budgets. Recorded completions are revalidated on restart. |
+| T028 | Focused and historical CPU verification below; source/config bindings retained. |
+
+The launcher dispatches `report-linear-calr`, whose implementation remains T039 in Phase 5; a missing/failed analyzer records incomplete comparison status. CPU evidence deliberately keeps `reporting_fixture_status=pending` until Phase 5 supplies executed reporting acceptance. Production cannot bypass that dependency.
+
+### Exact commands and results
+
+Broad compatibility run:
+
+```bash
+OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest tests/test_linear_calr_foundation.py tests/test_linear_calr_campaign.py tests/test_linear_calr_schedule.py tests/test_linear_calr_resume.py tests/test_linear_calr_queue.py tests/test_config.py tests/test_optimizer_ownership.py tests/test_optimizer_ownership_campaign.py tests/test_optimizer_ownership_resume.py tests/test_optimizer_ownership_reporting.py tests/test_optimizer_ownership_corrections.py tests/test_c4_separate_corrections.py tests/test_c4_separate_reporting_queue.py tests/test_metrics_compact_accounting.py tests/test_reproducibility.py tests/test_s1_warmup_queue.py -q -rs --tb=short
+```
+
+**1171 passed, 70 skipped, 2 warnings in 240.88s; exit 0**. Log: [evidence/phase4-regressions.txt](evidence/phase4-regressions.txt). Skips are 32 separately authorized new CUDA probes, 34 inherited CUDA/BF16 ownership cases and four C4 CUDA gates. Warnings are existing SWIG deprecations.
+
+Final focused run, after the schema-6 saved-manifest reader and restart reconciliation changes:
+
+```bash
+OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest tests/test_linear_calr_foundation.py tests/test_linear_calr_campaign.py tests/test_linear_calr_schedule.py tests/test_linear_calr_resume.py tests/test_linear_calr_queue.py -q -rs --tb=short
+```
+
+**317 passed, 32 skipped, 2 warnings in 102.71s; exit 0**. Log: [evidence/phase4-focused.txt](evidence/phase4-focused.txt). The skipped CUDA probes establish no readiness.
+
+Final affected-file checks:
+
+```bash
+OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest tests/test_linear_calr_queue.py -q -rs --tb=short
+OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest tests/test_linear_calr_schedule.py -k actual --tb=short -q
+/home/ivo.navarrete/.conda/envs/elasticnn/bin/python scripts/preflight_tinystories_linear_calr.py --help
+/home/ivo.navarrete/.conda/envs/elasticnn/bin/python scripts/run_tinystories_linear_calr.py --help
+git diff --check
+```
+
+Queue: **82 passed**, 2 warnings, 7.70s; [evidence/phase4-queue.txt](evidence/phase4-queue.txt). Two-group actual updates: **4 passed, 15 deselected**, 2 warnings, 10.07s; [evidence/phase4-all-groups.txt](evidence/phase4-all-groups.txt). Both CLI help calls, Python syntax checks and whitespace checks passed. These commands operated only on repository/temporary fixtures and contacted no scheduler.
+
+An initial broad run reported **39 failed, 1110 passed, 70 skipped**. Thirty-six newly added seeded fixtures lacked their live sampler attachment when saving; three inherited warmup CLI error cases exposed the Phase 3 misplaced `reference_root` argument. The fixtures and CLI dispatch were corrected; the passing broad/focused checks supersede that run. The failed log is retained as [evidence/phase4-initial-regressions.txt](evidence/phase4-initial-regressions.txt). A final actual saved-manifest fixture additionally identified and corrected schema-6 run-marker handling in the reader; all final focused checks include that correction.
+
+### Final bindings and limitations
+
+[evidence/phase4-bindings.json](evidence/phase4-bindings.json) binds all 236 source/config/test/entry-point files (documentation excluded). Source-set SHA-256: `d737d5e0bab55f71d97e016e389bb83c2d0c501f67905cfa162cb1ef50675fd6`. Schema-6 recipe SHA-256: `9425b2736f8e12ec0c2c0028f96f3a9d39d79c044248e5f319b58e6913374b72`. The broad run preceded the small saved-manifest/restart changes; the affected queue and complete focused suites passed after those changes. A final GPU-only output edit adds an explicit measured diagnostic throughput field; its worker has not been executed. The affected snapshot/diagnostic/GPU gate tests were rechecked separately (see phase4-gate-recheck.txt).
+
+This is code/CPU correctness evidence, not a passing external snapshot gate, all-arm GPU readiness, real terminal training or comparison acceptance. Real corpus/reference reaudits, output reservation and actual CUDA/production execution remain T029–T031; Phase 5 reporting fixtures and terminal/reference provenance remain separate tasks. Synthetic seeded probes do not imply completed epochs or training.
+
+Final GPU-output/gate recheck: `OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest tests/test_linear_calr_queue.py -k 'gpu_gate or snapshot or diagnostic_submission' -q --tb=short`: **5 passed, 77 deselected**, 2 existing warnings, 6.15s; [evidence/phase4-gate-recheck.txt](evidence/phase4-gate-recheck.txt). Python syntax and final whitespace checks passed. This remains mocked gate verification, not GPU execution.
+
+
+## Authorized T029–T031 execution
+
+User instruction: `$speckit-implement authorized for T029–T031`. Separate diagnostic and production records retain this verbatim instruction and source/config bindings. Authorization remains distinct from passing readiness.
+
+### T029 initial preparation
+
+Created `/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1` using the inherited corpus `/nfs-stor/ivo.navarrete/matformer-corpora/tinystories-instruct-packed-full-v1`, tokenizer `/nfs-stor/ivo.navarrete/matformer-tokenizers/tinystories-instruct-sentencepiece-bpe-2k-v1`, and read-only reference root `/nfs-stor/ivo.navarrete/results/elasticnn`. Ran `snapshot`, frozen `cpu`, and frozen `prepare --cpu-evidence ROOT/diagnostics/cpu-gate.json`. The CPU command used `OMP_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1` and the specified interpreter.
+
+Full corpus/tokenizer/model/control/action/data audits passed and exactly four fresh identities were reserved. Eight references reached `config_inspected`, not terminal validation. CPU readiness: **949 passed, 66 skipped, 2 warnings in 153.06s**, exit 0; CUDA skips remain separate. Initial evidence: [phase4-external-preparation.json](evidence/phase4-external-preparation.json).
+
+### T030 retained first failure and correction
+
+Frozen `submit-gpu` admitted job **290522**, `calr-diagnostic-a1-29f1a00f`, with one GPU, declared partition/QoS/exclusions/no-requeue and verified controller limits (two running/four submitted). Scheduler accounting reports **FAILED, exit 1:0, 18 allocation seconds**. The diagnostic stopped before training: its output directory suffix differed from the canonical run ID. The probe now uses a separate diagnostic parent with the canonical run ID as its final path component. The actual campaign configuration test now enables output creation, exercising this invariant; **1 passed, 169 deselected**, 2 warnings, 6.60s.
+
+The default accounting endpoint `localhost:6819` refused connection. Read-only reuse of the preceding campaign's verified `SLURM_CONF=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-matformer-widths-v1/launchers/slurm-client.conf` returned the scheduler proof. No historical or system configuration changed.
+
+The entire initial root, immutable source, gates, authorization, reservation, logs and failure were retained at `/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1-diagnostic-failed-290522`. No production state exists. A fresh corrected snapshot at the canonical root requires fresh CPU and GPU evidence; the initial gates are superseded. Failure evidence: [phase4-diagnostic-failed-290522.json](evidence/phase4-diagnostic-failed-290522.json), [worker traceback](evidence/phase4-diagnostic-failed-290522.txt).
+
+T031 authorization is retained, but production additionally requires passing T030 and executed reporting-fixture acceptance T032–T041. Those Phase 5 tasks remain pending; the current CPU gate intentionally records `reporting_fixture_status: pending`.
+
+
+The server restarted during the corrected snapshot's CPU coordinator. Its surviving subprocess finished **949 passed, 66 skipped, 2 warnings in 153.98s**, but no coordinator gate was published. The retained attempt is `diagnostics/cpu-8cc218d15119473e89b216a2d16e4938`; these test results are not promoted into readiness. After checking for live processes/jobs, a fresh frozen `cpu` invocation was started. The corrected immutable source hash is `0f8005347b1da937d561411e06bbe060fa77da47a92004ec9174cc5f61bda14f`; both authorization records match it.
+
+
+### T029 corrected preparation and T030 complete
+
+The fresh coordinator completed **949 passed, 66 skipped, 2 warnings in 149.21s**, exit 0, and published a passing CPU gate. Frozen `prepare` then reserved exactly the four new runs. Evidence: [corrected preparation](evidence/phase4-external-preparation-corrected.json), [CPU test log](evidence/phase4-corrected-cpu-tests.txt). T029 is complete for this corrected snapshot.
+
+Exact operational commands after snapshot, using `ROOT=/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1` and `PYTHON_BIN=/home/ivo.navarrete/.conda/envs/elasticnn/bin/python`:
+
+```bash
+export SLURM_CONF=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-matformer-widths-v1/launchers/slurm-client.conf
+OMP_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" "$ROOT/source/scripts/preflight_tinystories_linear_calr.py" cpu --campaign-root "$ROOT"
+PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" "$ROOT/source/scripts/run_tinystories_linear_calr.py" prepare --campaign-root "$ROOT" --cpu-evidence "$ROOT/diagnostics/cpu-gate.json"
+PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" "$ROOT/source/scripts/preflight_tinystories_linear_calr.py" submit-gpu --campaign-root "$ROOT"
+```
+
+The final command was repeated after job completion for durable scheduler reconciliation; it returned passing evidence without submitting another job. Job **290529**, `calr-diagnostic-a1-4c37158d`, ran on **gpu-01 / NVIDIA A100-SXM4-40GB** and reports **COMPLETED, exit 0:0, 130 allocation seconds**. Partition/QoS, one GPU, no requeue, excluded nodes and live two-running/four-submitted ceilings were verified by the submitter and worker. The immutable snapshot, configurations, CPU gate, GPU gate, intent, worker and scheduler proof agree.
+
+All four real-corpus probes used d64/l4/h4/vocab2048, batch64/context128 and actual CUDA BF16 forwards. Each performed 32 updates, saved its own checkpoint, resumed and reached64; the full horizon348528 was retained. Every arm observed64 BF16 forwards,524288 committed tokens, and width counts g250=9,g500=17,g750=21,g1000=17. No probe is a production terminal.
+
+| Arm | Optimizer tensor bytes | CUDA peak allocated bytes | CUDA peak reserved bytes | Diagnostic tokens/s |
+| --- | ---: | ---: | ---: | ---: |
+| S1-linear-poly | 4199068 | 453779968 | 528482304 | 170467 |
+| S1-linear-CaLR | 4199068 | 453779968 | 528482304 | 237615 |
+| S2-linear-poly | 16796272 | 466390528 | 541065216 | 181805 |
+| S2-linear-CaLR | 16796272 | 466390528 | 541065216 | 193100 |
+
+Throughput divides64 committed updates by the measured trainer-process time including own resume/setup; it excludes allocation overhead and is not a production speed comparison. Deliberate diagnostic checkpoint stops are retained as interrupted attempts by the resource ledger; their costs are neither discarded nor added a second time to total process/allocation costs. Ordinary validation cost here is zero. The failed initial allocation's18 seconds remain separate.
+
+The CUDA pytest command executed in the same allocated process:
+
+```bash
+"$PYTHON_BIN" -m pytest -q -rs --tb=short -p no:cacheprovider --junitxml=DIAGNOSTIC_OUTPUT/pytest.xml tests/test_linear_calr_resume.py tests/test_linear_calr_schedule.py -k 'not full_horizon and not all_widths_full_horizon'
+```
+
+**151 passed, 38 deselected, zero skips, 1 warning in98.79s**, exit0. The warning concerns an already-imported anyio module's assertion rewriting. Full-horizon analytic checks remain in CPU readiness. CUDA cases include all32 arm/boundary combinations at63/64/65,87132/174264/261396,348527/348528; these use explicitly synthetic state-seeded histories. Continuation weights/moments/clock assertions use exact `torch.equal`, stricter than inherited rtol1e-6/atol1e-7; no tolerance was relaxed for A100. Actual updates, invalid restores, poisoning, terminal recovery and all-group checks passed.
+
+Current source SHA-256: `0f8005347b1da937d561411e06bbe060fa77da47a92004ec9174cc5f61bda14f`. Config-set SHA-256: `416efb09ad596e966aba904942daa8d279562417ec9119016498e9485cf8b6d0`. CPU gate content hash: `bcc8cbaf6a7c88badedf67867f5bbdd43baec5ccd816172294f6830d8d9124ad`. GPU gate content hash: `6fe4b3450bdf607ce770191cc0a41f01a23667cc384a9e6843a065e1eded5ff7`. Complete executed commands, logs/artifact hashes, measurements, environment and scheduler/worker records: [CUDA readiness](evidence/phase4-cuda-readiness.json), [CUDA test log](evidence/phase4-cuda-tests.txt).
+
+### T031 remains pending: reporting prerequisite
+
+With the durable production authorization and both passing gates, `verify_plan(ROOT, gpu=True)` returns **Production requires phase-5 reporting fixture acceptance**. T032–T041 have not been implemented/executed; `reporting_fixture_status` is pending. No production queue/worker invocation or training run has been submitted. This is a prerequisite dependency, not missing user authorization. Reporting implementation changes require a new tested snapshot and matching readiness before production admission; no passing gate may be relabeled. Four production terminals, exact campaign totals, ordinary endpoints and final comparison acceptance remain unproven.
+
+T029/T030 are checked complete in tasks.md; T031 remains unchecked. The optional `/speckit.git.commit` after-implementation hook was not executed. Final `git diff --check` passed.

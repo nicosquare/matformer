@@ -1,0 +1,1025 @@
+{
+  "gpu_gate": {
+    "allocation": "JobId=290529 JobName=calr-diagnostic-a1-4c37158d UserId=ivo.navarrete(2196) GroupId=cscc-users(2012) MCS_label=N/A Priority=2652 Nice=0 Account=cscc-users QOS=cscc-gpu-qos JobState=RUNNING Reason=None Dependency=(null) Requeue=0 Restarts=0 BatchFlag=1 Reboot=0 ExitCode=0:0 RunTime=00:00:06 TimeLimit=1-00:00:00 TimeMin=N/A SubmitTime=2026-10-02T01:31:14 EligibleTime=2026-10-02T01:31:14 AccrueTime=2026-10-02T01:31:14 StartTime=2026-10-02T01:31:14 EndTime=2026-10-03T01:31:14 Deadline=N/A PreemptEligibleTime=2026-10-02T01:31:14 PreemptTime=None SuspendTime=None SecsPreSuspend=0 LastSchedEval=2026-10-02T01:31:14 Scheduler=Main Partition=cscc-gpu-p AllocNode:Sid=ciai-login-1:2709662 ReqNodeList=(null) ExcNodeList=gpu-[05,50-51,54] NodeList=gpu-01 BatchHost=gpu-01 NumNodes=1 NumCPUs=4 NumTasks=1 CPUs/Task=4 ReqB:S:C:T=0:0:*:* ReqTRES=cpu=4,mem=16G,node=1,billing=4,gres/gpu=1 AllocTRES=cpu=4,mem=16G,node=1,billing=4,gres/gpu=1 Socks/Node=* NtasksPerN:B:S:C=0:0:*:* CoreSpec=* MinCPUsNode=4 MinMemoryNode=16G MinTmpDiskNode=0 Features=(null) DelayBoot=00:00:00 OverSubscribe=OK Contiguous=0 Licenses=(null) LicensesAlloc=(null) Network=(null) Command=(null) WorkDir=/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/source StdErr=/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/logs/diagnostic-a1-290529.err StdIn=/dev/null StdOut=/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/logs/diagnostic-a1-290529.out TresPerNode=gres/gpu:1 TresPerTask=cpu=4",
+    "bindings": {
+      "artifacts_sha256": "61d4b568d9bc6504453ecb965a3b7270a71eac549c126a39c10b4c7713ec7d0a",
+      "campaign_id": "tinystories-linear-s1-s2-calr-v1",
+      "campaign_manifest_sha256": "5f7c00280dfd71677757226c67fa418f4efbf986c21be534e197421d3a06e77a",
+      "config_set_sha256": "416efb09ad596e966aba904942daa8d279562417ec9119016498e9485cf8b6d0",
+      "config_sha256": {
+        "S1-linear-CaLR": "8f853b3b53c6386816e3d0221c4623541e196e6143d0d0ce2105bb952b4983da",
+        "S1-linear-poly": "3391f69f58d514d025c632d06085af319fb39de3377f82a4898642288ba62ad2",
+        "S2-linear-CaLR": "2b89c24210678873909dd55280e5f6877ca4f4115d22841332f2071a9eb3cc80",
+        "S2-linear-poly": "5b54dd00273b55f210a2df0320d7566d6ab46250dc3a78043b55342b6d0c7a72"
+      },
+      "contracts": {
+        "S1-linear-CaLR": "bd50fb42cf17164d01dca2de26c82d0d3eb1829cc9b5e8f06e7ca0c675738896",
+        "S1-linear-poly": "e8b971c86e8f540344689c90cdfc21f649ef92cb967a466538a46faf3497cd63",
+        "S2-linear-CaLR": "d75a7be71a3dda985717c8782484683d21e28133129c908559f824b3beec9e15",
+        "S2-linear-poly": "26425bb20e6ef9778ccea46e6361f720190985733a8db34e5cc85002dbef08e4"
+      },
+      "manifest_hash": "a83f4c48181650d986886c1ab19ad068c1cf8da28967eb60d01f80c33bebc90b",
+      "preflight_sha256": "de7912ccfa63bcac9e4d72d952c7e0f7549ef9d9cb1a30edfc874dc83d51b2a6",
+      "recipe_sha256": "9425b2736f8e12ec0c2c0028f96f3a9d39d79c044248e5f319b58e6913374b72",
+      "references_sha256": "58dc54e928d7abec521facc39d7b9ce32514ff7143e73ffdea2889c331ce5f28",
+      "snapshot_inputs_sha256": "a3695ef19ca1ff676c8fc41a2f0b0030eb32776df56ab462d26ead0b62726c84",
+      "source_sha256": "0f8005347b1da937d561411e06bbe060fa77da47a92004ec9174cc5f61bda14f"
+    },
+    "boundary_history": "State-seeded synthetic-history diagnostics; no full-budget training claim",
+    "checks": [
+      {
+        "artifacts": [
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/real-shapes.json",
+            "sha256": "38d4d51d9fd4258a1eff82a45add4af70a85fb19ba83e3afff80e0174b2aa4af"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/S1-linear-poly.yaml",
+            "sha256": "6a81f86c105c24961a2542847d80e4b1a57c8d154cc46a3b7a15e07fd570b567"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S1-linear-poly-s42/checkpoints/latest.pt",
+            "sha256": "72473e0d713058ca48d4fd641cdb2eda249eb367ce31e1b0da27e3be2b24c9cb"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S1-linear-poly-s42/heartbeats.jsonl",
+            "sha256": "7b871a29f72168d26deba859dfd369480c817760088f77365c509da15bd9e90b"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S1-linear-poly-s42/optimizer_ownership_trace.jsonl",
+            "sha256": "f1c20c0ae8a29207f7102274ebfd0d7c0399196f0f03f55d5fb39531c0c0c8c9"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S1-linear-poly-s42/resource_attempts.json",
+            "sha256": "eace5b5e0f3270d66bc59c3d606cc65cf879ab6a42cb8eb0637530c81fe469c4"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S1-linear-poly-s42/config.json",
+            "sha256": "110464fab0c2595bcc9f953b1a190e424933520819093971f600359c60a877b0"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/S1-linear-CaLR.yaml",
+            "sha256": "069d3ca5cfb6191ae6e574f8a2917ad2708c7f2d959d49b9e5d7fa06ed7880bb"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S1-linear-CaLR-s42/checkpoints/latest.pt",
+            "sha256": "6bc411282f377b57ec8e70ca54cf602fdae4878f13d174359f8de50ae283f3eb"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S1-linear-CaLR-s42/heartbeats.jsonl",
+            "sha256": "6d3232ffaad81809fe73b34e66c7def3aac8a3e3be08d4ea995e6a7cbb771ec7"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S1-linear-CaLR-s42/optimizer_ownership_trace.jsonl",
+            "sha256": "3256d91075fe3148c71d9a9351930fd4552dc62eb16b10e4cdc476b3af94ef00"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S1-linear-CaLR-s42/resource_attempts.json",
+            "sha256": "19829b085e2399debfa23a629709f1ccec8917de703c60b5ade25cc674d7baeb"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S1-linear-CaLR-s42/config.json",
+            "sha256": "e768ed3e0802a82361979f184c40fce43c8dd30bc89f11efaa13e28d79e73ae5"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/S2-linear-poly.yaml",
+            "sha256": "e0340aca2be533e634b25be1f89c1c9cfbbba9235d89defcf4b7e248fdfdd79a"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S2-linear-poly-s42/checkpoints/latest.pt",
+            "sha256": "bbcfbfccdd64aad810d912f59ba956ec1c525312eea5f15665fccd068cb83147"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S2-linear-poly-s42/optimizer_ownership_trace.jsonl",
+            "sha256": "9cfe183bb56daba9fcec16d9948c842f512d1f97711ab2d90fec8edd7827f432"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S2-linear-poly-s42/heartbeats.jsonl",
+            "sha256": "0296f97b5763abdc1bdd89986e2bbccf04a357fce8a7d7ef6086bcbd899782bd"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S2-linear-poly-s42/resource_attempts.json",
+            "sha256": "ce791241acb5fc8f4604fefe9120cc6c7003545a424170121ddc2071b3e9f58f"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S2-linear-poly-s42/config.json",
+            "sha256": "94dd46536d25249f4c619ab644d92cd1764aaccf59eafa46bd9a22d4b6cca88c"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/S2-linear-CaLR.yaml",
+            "sha256": "caac8398ec7b31eeaeae4fb7b760619eb0c01f4ac212efc604f9d9e6b82ec58a"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S2-linear-CaLR-s42/checkpoints/latest.pt",
+            "sha256": "2f4063b4b83ff2f2e4e60f4494b60685649fe61d3376e62baebccb09536fc5d3"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S2-linear-CaLR-s42/optimizer_ownership_trace.jsonl",
+            "sha256": "df0b92dea1415356a3c02605e963fb7550674b422f9196ae3d72198cfee94f65"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S2-linear-CaLR-s42/heartbeats.jsonl",
+            "sha256": "8be8bc9017c0f16f66afbcc554d55064a4757eb4045e9146b8af325cbca6ea0c"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S2-linear-CaLR-s42/resource_attempts.json",
+            "sha256": "b866c5b1ab5044cb4bc4975784780b0467be1501772d97217c2940c3589a84a5"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S2-linear-CaLR-s42/config.json",
+            "sha256": "028a53f13f998c7f98f62286a6e99156961e7a0b411bce4c95e8ffe758f258e6"
+          }
+        ],
+        "command": [
+          "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+          "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/source/scripts/preflight_tinystories_linear_calr.py",
+          "gpu",
+          "--campaign-root",
+          "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1"
+        ],
+        "errors": 0,
+        "failures": 0,
+        "returncode": 0,
+        "skipped": 0,
+        "tests": 4
+      },
+      {
+        "artifacts": [
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/pytest.xml",
+            "sha256": "ba4fc0204274a1df13f1ce3f67637bd95e60d9e73e0dea0d517c1878801ae36f"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/pytest.log",
+            "sha256": "82982990b203ec3699107acbfb877c72d26dbd5b1aaf0e8b5307245f6a67e08c"
+          }
+        ],
+        "command": [
+          "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+          "-m",
+          "pytest",
+          "-q",
+          "-rs",
+          "--tb=short",
+          "-p",
+          "no:cacheprovider",
+          "--junitxml=/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/pytest.xml",
+          "tests/test_linear_calr_resume.py",
+          "tests/test_linear_calr_schedule.py",
+          "-k",
+          "not full_horizon and not all_widths_full_horizon"
+        ],
+        "cwd": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/pytest-workspace",
+        "errors": 0,
+        "execution": "in_process_pytest",
+        "failures": 0,
+        "finished_at": 1790890403.2930107,
+        "returncode": 0,
+        "skipped": 0,
+        "source": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/source",
+        "started_at": 1790890303.5563235,
+        "tests": 151
+      }
+    ],
+    "content_hash": "6fe4b3450bdf607ce770191cc0a41f01a23667cc384a9e6843a065e1eded5ff7",
+    "coverage": [
+      "all_widths",
+      "applied_lr",
+      "warmup_resume",
+      "epoch_resume",
+      "terminal_recovery",
+      "invalid_restore",
+      "partial_failure"
+    ],
+    "cpu_gate_hash": "bcc8cbaf6a7c88badedf67867f5bbdd43baec5ccd816172294f6830d8d9124ad",
+    "environment": {
+      "executable": "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+      "packages": {
+        "PyYAML": "6.0.3",
+        "numpy": "2.4.3",
+        "pytest": "9.0.3",
+        "torch": "2.11.0+cu128",
+        "transformers": "5.8.0"
+      },
+      "platform": "Linux-6.12.95-ql-generic-14-12-x86_64-with-glibc2.39",
+      "python": "3.12.13 | packaged by conda-forge | (main, Aug 11 2026, 10:27:28) [GCC 14.4.0]"
+    },
+    "hardware": "NVIDIA A100-SXM4-40GB",
+    "holdout_evaluated": false,
+    "intent_uuid": "4c37158da76f4f2d936e1230919323b5",
+    "job_id": "290529",
+    "mode": "gpu",
+    "precision": "bf16",
+    "probes": [
+      {
+        "actual_cuda_bf16_forwards": 64,
+        "arm_id": "S1-linear-poly",
+        "artifacts": [
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/S1-linear-poly.yaml",
+            "sha256": "6a81f86c105c24961a2542847d80e4b1a57c8d154cc46a3b7a15e07fd570b567"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S1-linear-poly-s42/checkpoints/latest.pt",
+            "sha256": "72473e0d713058ca48d4fd641cdb2eda249eb367ce31e1b0da27e3be2b24c9cb"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S1-linear-poly-s42/heartbeats.jsonl",
+            "sha256": "7b871a29f72168d26deba859dfd369480c817760088f77365c509da15bd9e90b"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S1-linear-poly-s42/optimizer_ownership_trace.jsonl",
+            "sha256": "f1c20c0ae8a29207f7102274ebfd0d7c0399196f0f03f55d5fb39531c0c0c8c9"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S1-linear-poly-s42/resource_attempts.json",
+            "sha256": "eace5b5e0f3270d66bc59c3d606cc65cf879ab6a42cb8eb0637530c81fe469c4"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S1-linear-poly-s42/config.json",
+            "sha256": "110464fab0c2595bcc9f953b1a190e424933520819093971f600359c60a877b0"
+          }
+        ],
+        "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S1-linear-poly-s42/checkpoints/latest.pt",
+        "checkpoint_sha256": "72473e0d713058ca48d4fd641cdb2eda249eb367ce31e1b0da27e3be2b24c9cb",
+        "committed_tokens": 524288,
+        "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/S1-linear-poly.yaml",
+        "config_sha256": "6a81f86c105c24961a2542847d80e4b1a57c8d154cc46a3b7a15e07fd570b567",
+        "horizon": 348528,
+        "optimizer_storage": {
+          "components": [
+            {
+              "bytes": 156,
+              "component": "step",
+              "dtype": "torch.float32",
+              "elements": 39,
+              "kind": "counter",
+              "owner_id": "shared"
+            },
+            {
+              "bytes": 2099456,
+              "component": "exp_avg",
+              "dtype": "torch.float32",
+              "elements": 524864,
+              "kind": "moment",
+              "owner_id": "shared"
+            },
+            {
+              "bytes": 2099456,
+              "component": "exp_avg_sq",
+              "dtype": "torch.float32",
+              "elements": 524864,
+              "kind": "moment",
+              "owner_id": "shared"
+            }
+          ],
+          "counter_bytes": 156,
+          "counter_elements": 39,
+          "method": "allocated tensor numel * element_size",
+          "moment_bytes": 4198912,
+          "moment_elements": 1049728,
+          "owners": [
+            {
+              "allocated_histories": 39,
+              "owner_id": "shared",
+              "registered_parameters": 39
+            }
+          ],
+          "schema_version": 1,
+          "step": 64,
+          "total_bytes": 4199068
+        },
+        "overrides": {
+          "output_dir": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S1-linear-poly-s42",
+          "run_id": "tinystories-linear-s1-s2-calr-v1-S1-linear-poly-s42",
+          "stops": [
+            32,
+            64
+          ]
+        },
+        "resources": {
+          "attempt_count": 2,
+          "attempted_steps": 64,
+          "cost_scope": "Update work, ordinary validation and failed process costs overlap total process time; never added to it",
+          "elapsed_seconds": 3.075598305091262,
+          "elapsed_seconds_is_lower_bound": false,
+          "failed_attempt_seconds": 3.075598305091262,
+          "incomplete_attempts": [],
+          "measurement_complete": true,
+          "ordinary_validation_seconds": 0.0,
+          "peak_allocated_bytes": 453779968,
+          "peak_reserved_bytes": 528482304,
+          "scheduler_allocation_scope": "Reported separately by launcher; overlaps process time and is never added to it",
+          "scheduler_allocation_seconds": null,
+          "training_update_seconds": 1.980031544342637,
+          "unobserved_attempts": []
+        },
+        "status": "passed",
+        "steps": 64,
+        "throughput_scope": "64 committed diagnostic updates divided by measured process time including resume/setup; not production throughput",
+        "useful_committed_tokens_per_second": 170466.99470867438,
+        "widths": {
+          "g1000": 17,
+          "g250": 9,
+          "g500": 17,
+          "g750": 21
+        }
+      },
+      {
+        "actual_cuda_bf16_forwards": 64,
+        "arm_id": "S1-linear-CaLR",
+        "artifacts": [
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/S1-linear-CaLR.yaml",
+            "sha256": "069d3ca5cfb6191ae6e574f8a2917ad2708c7f2d959d49b9e5d7fa06ed7880bb"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S1-linear-CaLR-s42/checkpoints/latest.pt",
+            "sha256": "6bc411282f377b57ec8e70ca54cf602fdae4878f13d174359f8de50ae283f3eb"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S1-linear-CaLR-s42/heartbeats.jsonl",
+            "sha256": "6d3232ffaad81809fe73b34e66c7def3aac8a3e3be08d4ea995e6a7cbb771ec7"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S1-linear-CaLR-s42/optimizer_ownership_trace.jsonl",
+            "sha256": "3256d91075fe3148c71d9a9351930fd4552dc62eb16b10e4cdc476b3af94ef00"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S1-linear-CaLR-s42/resource_attempts.json",
+            "sha256": "19829b085e2399debfa23a629709f1ccec8917de703c60b5ade25cc674d7baeb"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S1-linear-CaLR-s42/config.json",
+            "sha256": "e768ed3e0802a82361979f184c40fce43c8dd30bc89f11efaa13e28d79e73ae5"
+          }
+        ],
+        "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S1-linear-CaLR-s42/checkpoints/latest.pt",
+        "checkpoint_sha256": "6bc411282f377b57ec8e70ca54cf602fdae4878f13d174359f8de50ae283f3eb",
+        "committed_tokens": 524288,
+        "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/S1-linear-CaLR.yaml",
+        "config_sha256": "069d3ca5cfb6191ae6e574f8a2917ad2708c7f2d959d49b9e5d7fa06ed7880bb",
+        "horizon": 348528,
+        "optimizer_storage": {
+          "components": [
+            {
+              "bytes": 156,
+              "component": "step",
+              "dtype": "torch.float32",
+              "elements": 39,
+              "kind": "counter",
+              "owner_id": "shared"
+            },
+            {
+              "bytes": 2099456,
+              "component": "exp_avg",
+              "dtype": "torch.float32",
+              "elements": 524864,
+              "kind": "moment",
+              "owner_id": "shared"
+            },
+            {
+              "bytes": 2099456,
+              "component": "exp_avg_sq",
+              "dtype": "torch.float32",
+              "elements": 524864,
+              "kind": "moment",
+              "owner_id": "shared"
+            }
+          ],
+          "counter_bytes": 156,
+          "counter_elements": 39,
+          "method": "allocated tensor numel * element_size",
+          "moment_bytes": 4198912,
+          "moment_elements": 1049728,
+          "owners": [
+            {
+              "allocated_histories": 39,
+              "owner_id": "shared",
+              "registered_parameters": 39
+            }
+          ],
+          "schema_version": 1,
+          "step": 64,
+          "total_bytes": 4199068
+        },
+        "overrides": {
+          "output_dir": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S1-linear-CaLR-s42",
+          "run_id": "tinystories-linear-s1-s2-calr-v1-S1-linear-CaLR-s42",
+          "stops": [
+            32,
+            64
+          ]
+        },
+        "resources": {
+          "attempt_count": 2,
+          "attempted_steps": 64,
+          "cost_scope": "Update work, ordinary validation and failed process costs overlap total process time; never added to it",
+          "elapsed_seconds": 2.206461813300848,
+          "elapsed_seconds_is_lower_bound": false,
+          "failed_attempt_seconds": 2.206461813300848,
+          "incomplete_attempts": [],
+          "measurement_complete": true,
+          "ordinary_validation_seconds": 0.0,
+          "peak_allocated_bytes": 453779968,
+          "peak_reserved_bytes": 528482304,
+          "scheduler_allocation_scope": "Reported separately by launcher; overlaps process time and is never added to it",
+          "scheduler_allocation_seconds": null,
+          "training_update_seconds": 1.5283445930108428,
+          "unobserved_attempts": []
+        },
+        "status": "passed",
+        "steps": 64,
+        "throughput_scope": "64 committed diagnostic updates divided by measured process time including resume/setup; not production throughput",
+        "useful_committed_tokens_per_second": 237614.80794252662,
+        "widths": {
+          "g1000": 17,
+          "g250": 9,
+          "g500": 17,
+          "g750": 21
+        }
+      },
+      {
+        "actual_cuda_bf16_forwards": 64,
+        "arm_id": "S2-linear-poly",
+        "artifacts": [
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/S2-linear-poly.yaml",
+            "sha256": "e0340aca2be533e634b25be1f89c1c9cfbbba9235d89defcf4b7e248fdfdd79a"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S2-linear-poly-s42/checkpoints/latest.pt",
+            "sha256": "bbcfbfccdd64aad810d912f59ba956ec1c525312eea5f15665fccd068cb83147"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S2-linear-poly-s42/optimizer_ownership_trace.jsonl",
+            "sha256": "9cfe183bb56daba9fcec16d9948c842f512d1f97711ab2d90fec8edd7827f432"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S2-linear-poly-s42/heartbeats.jsonl",
+            "sha256": "0296f97b5763abdc1bdd89986e2bbccf04a357fce8a7d7ef6086bcbd899782bd"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S2-linear-poly-s42/resource_attempts.json",
+            "sha256": "ce791241acb5fc8f4604fefe9120cc6c7003545a424170121ddc2071b3e9f58f"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S2-linear-poly-s42/config.json",
+            "sha256": "94dd46536d25249f4c619ab644d92cd1764aaccf59eafa46bd9a22d4b6cca88c"
+          }
+        ],
+        "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S2-linear-poly-s42/checkpoints/latest.pt",
+        "checkpoint_sha256": "bbcfbfccdd64aad810d912f59ba956ec1c525312eea5f15665fccd068cb83147",
+        "committed_tokens": 524288,
+        "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/S2-linear-poly.yaml",
+        "config_sha256": "e0340aca2be533e634b25be1f89c1c9cfbbba9235d89defcf4b7e248fdfdd79a",
+        "horizon": 348528,
+        "optimizer_storage": {
+          "components": [
+            {
+              "bytes": 156,
+              "component": "step",
+              "dtype": "torch.float32",
+              "elements": 39,
+              "kind": "counter",
+              "owner_id": "g250"
+            },
+            {
+              "bytes": 2099456,
+              "component": "exp_avg",
+              "dtype": "torch.float32",
+              "elements": 524864,
+              "kind": "moment",
+              "owner_id": "g250"
+            },
+            {
+              "bytes": 2099456,
+              "component": "exp_avg_sq",
+              "dtype": "torch.float32",
+              "elements": 524864,
+              "kind": "moment",
+              "owner_id": "g250"
+            },
+            {
+              "bytes": 156,
+              "component": "step",
+              "dtype": "torch.float32",
+              "elements": 39,
+              "kind": "counter",
+              "owner_id": "g500"
+            },
+            {
+              "bytes": 2099456,
+              "component": "exp_avg",
+              "dtype": "torch.float32",
+              "elements": 524864,
+              "kind": "moment",
+              "owner_id": "g500"
+            },
+            {
+              "bytes": 2099456,
+              "component": "exp_avg_sq",
+              "dtype": "torch.float32",
+              "elements": 524864,
+              "kind": "moment",
+              "owner_id": "g500"
+            },
+            {
+              "bytes": 156,
+              "component": "step",
+              "dtype": "torch.float32",
+              "elements": 39,
+              "kind": "counter",
+              "owner_id": "g750"
+            },
+            {
+              "bytes": 2099456,
+              "component": "exp_avg",
+              "dtype": "torch.float32",
+              "elements": 524864,
+              "kind": "moment",
+              "owner_id": "g750"
+            },
+            {
+              "bytes": 2099456,
+              "component": "exp_avg_sq",
+              "dtype": "torch.float32",
+              "elements": 524864,
+              "kind": "moment",
+              "owner_id": "g750"
+            },
+            {
+              "bytes": 156,
+              "component": "step",
+              "dtype": "torch.float32",
+              "elements": 39,
+              "kind": "counter",
+              "owner_id": "g1000"
+            },
+            {
+              "bytes": 2099456,
+              "component": "exp_avg",
+              "dtype": "torch.float32",
+              "elements": 524864,
+              "kind": "moment",
+              "owner_id": "g1000"
+            },
+            {
+              "bytes": 2099456,
+              "component": "exp_avg_sq",
+              "dtype": "torch.float32",
+              "elements": 524864,
+              "kind": "moment",
+              "owner_id": "g1000"
+            }
+          ],
+          "counter_bytes": 624,
+          "counter_elements": 156,
+          "method": "allocated tensor numel * element_size",
+          "moment_bytes": 16795648,
+          "moment_elements": 4198912,
+          "owners": [
+            {
+              "allocated_histories": 39,
+              "owner_id": "g250",
+              "registered_parameters": 39
+            },
+            {
+              "allocated_histories": 39,
+              "owner_id": "g500",
+              "registered_parameters": 39
+            },
+            {
+              "allocated_histories": 39,
+              "owner_id": "g750",
+              "registered_parameters": 39
+            },
+            {
+              "allocated_histories": 39,
+              "owner_id": "g1000",
+              "registered_parameters": 39
+            }
+          ],
+          "schema_version": 1,
+          "step": 64,
+          "total_bytes": 16796272
+        },
+        "overrides": {
+          "output_dir": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S2-linear-poly-s42",
+          "run_id": "tinystories-linear-s1-s2-calr-v1-S2-linear-poly-s42",
+          "stops": [
+            32,
+            64
+          ]
+        },
+        "resources": {
+          "attempt_count": 2,
+          "attempted_steps": 64,
+          "cost_scope": "Update work, ordinary validation and failed process costs overlap total process time; never added to it",
+          "elapsed_seconds": 2.8837868431583047,
+          "elapsed_seconds_is_lower_bound": false,
+          "failed_attempt_seconds": 2.8837868431583047,
+          "incomplete_attempts": [],
+          "measurement_complete": true,
+          "ordinary_validation_seconds": 0.0,
+          "peak_allocated_bytes": 466390528,
+          "peak_reserved_bytes": 541065216,
+          "scheduler_allocation_scope": "Reported separately by launcher; overlaps process time and is never added to it",
+          "scheduler_allocation_seconds": null,
+          "training_update_seconds": 1.5553567362949252,
+          "unobserved_attempts": []
+        },
+        "status": "passed",
+        "steps": 64,
+        "throughput_scope": "64 committed diagnostic updates divided by measured process time including resume/setup; not production throughput",
+        "useful_committed_tokens_per_second": 181805.39287910864,
+        "widths": {
+          "g1000": 17,
+          "g250": 9,
+          "g500": 17,
+          "g750": 21
+        }
+      },
+      {
+        "actual_cuda_bf16_forwards": 64,
+        "arm_id": "S2-linear-CaLR",
+        "artifacts": [
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/S2-linear-CaLR.yaml",
+            "sha256": "caac8398ec7b31eeaeae4fb7b760619eb0c01f4ac212efc604f9d9e6b82ec58a"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S2-linear-CaLR-s42/checkpoints/latest.pt",
+            "sha256": "2f4063b4b83ff2f2e4e60f4494b60685649fe61d3376e62baebccb09536fc5d3"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S2-linear-CaLR-s42/optimizer_ownership_trace.jsonl",
+            "sha256": "df0b92dea1415356a3c02605e963fb7550674b422f9196ae3d72198cfee94f65"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S2-linear-CaLR-s42/heartbeats.jsonl",
+            "sha256": "8be8bc9017c0f16f66afbcc554d55064a4757eb4045e9146b8af325cbca6ea0c"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S2-linear-CaLR-s42/resource_attempts.json",
+            "sha256": "b866c5b1ab5044cb4bc4975784780b0467be1501772d97217c2940c3589a84a5"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S2-linear-CaLR-s42/config.json",
+            "sha256": "028a53f13f998c7f98f62286a6e99156961e7a0b411bce4c95e8ffe758f258e6"
+          }
+        ],
+        "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S2-linear-CaLR-s42/checkpoints/latest.pt",
+        "checkpoint_sha256": "2f4063b4b83ff2f2e4e60f4494b60685649fe61d3376e62baebccb09536fc5d3",
+        "committed_tokens": 524288,
+        "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/S2-linear-CaLR.yaml",
+        "config_sha256": "caac8398ec7b31eeaeae4fb7b760619eb0c01f4ac212efc604f9d9e6b82ec58a",
+        "horizon": 348528,
+        "optimizer_storage": {
+          "components": [
+            {
+              "bytes": 156,
+              "component": "step",
+              "dtype": "torch.float32",
+              "elements": 39,
+              "kind": "counter",
+              "owner_id": "g250"
+            },
+            {
+              "bytes": 2099456,
+              "component": "exp_avg",
+              "dtype": "torch.float32",
+              "elements": 524864,
+              "kind": "moment",
+              "owner_id": "g250"
+            },
+            {
+              "bytes": 2099456,
+              "component": "exp_avg_sq",
+              "dtype": "torch.float32",
+              "elements": 524864,
+              "kind": "moment",
+              "owner_id": "g250"
+            },
+            {
+              "bytes": 156,
+              "component": "step",
+              "dtype": "torch.float32",
+              "elements": 39,
+              "kind": "counter",
+              "owner_id": "g500"
+            },
+            {
+              "bytes": 2099456,
+              "component": "exp_avg",
+              "dtype": "torch.float32",
+              "elements": 524864,
+              "kind": "moment",
+              "owner_id": "g500"
+            },
+            {
+              "bytes": 2099456,
+              "component": "exp_avg_sq",
+              "dtype": "torch.float32",
+              "elements": 524864,
+              "kind": "moment",
+              "owner_id": "g500"
+            },
+            {
+              "bytes": 156,
+              "component": "step",
+              "dtype": "torch.float32",
+              "elements": 39,
+              "kind": "counter",
+              "owner_id": "g750"
+            },
+            {
+              "bytes": 2099456,
+              "component": "exp_avg",
+              "dtype": "torch.float32",
+              "elements": 524864,
+              "kind": "moment",
+              "owner_id": "g750"
+            },
+            {
+              "bytes": 2099456,
+              "component": "exp_avg_sq",
+              "dtype": "torch.float32",
+              "elements": 524864,
+              "kind": "moment",
+              "owner_id": "g750"
+            },
+            {
+              "bytes": 156,
+              "component": "step",
+              "dtype": "torch.float32",
+              "elements": 39,
+              "kind": "counter",
+              "owner_id": "g1000"
+            },
+            {
+              "bytes": 2099456,
+              "component": "exp_avg",
+              "dtype": "torch.float32",
+              "elements": 524864,
+              "kind": "moment",
+              "owner_id": "g1000"
+            },
+            {
+              "bytes": 2099456,
+              "component": "exp_avg_sq",
+              "dtype": "torch.float32",
+              "elements": 524864,
+              "kind": "moment",
+              "owner_id": "g1000"
+            }
+          ],
+          "counter_bytes": 624,
+          "counter_elements": 156,
+          "method": "allocated tensor numel * element_size",
+          "moment_bytes": 16795648,
+          "moment_elements": 4198912,
+          "owners": [
+            {
+              "allocated_histories": 39,
+              "owner_id": "g250",
+              "registered_parameters": 39
+            },
+            {
+              "allocated_histories": 39,
+              "owner_id": "g500",
+              "registered_parameters": 39
+            },
+            {
+              "allocated_histories": 39,
+              "owner_id": "g750",
+              "registered_parameters": 39
+            },
+            {
+              "allocated_histories": 39,
+              "owner_id": "g1000",
+              "registered_parameters": 39
+            }
+          ],
+          "schema_version": 1,
+          "step": 64,
+          "total_bytes": 16796272
+        },
+        "overrides": {
+          "output_dir": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3/runs/calr-gpu-diagnostic-290529/tinystories-linear-s1-s2-calr-v1-S2-linear-CaLR-s42",
+          "run_id": "tinystories-linear-s1-s2-calr-v1-S2-linear-CaLR-s42",
+          "stops": [
+            32,
+            64
+          ]
+        },
+        "resources": {
+          "attempt_count": 2,
+          "attempted_steps": 64,
+          "cost_scope": "Update work, ordinary validation and failed process costs overlap total process time; never added to it",
+          "elapsed_seconds": 2.7151137003675103,
+          "elapsed_seconds_is_lower_bound": false,
+          "failed_attempt_seconds": 2.7151137003675103,
+          "incomplete_attempts": [],
+          "measurement_complete": true,
+          "ordinary_validation_seconds": 0.0,
+          "peak_allocated_bytes": 466390528,
+          "peak_reserved_bytes": 541065216,
+          "scheduler_allocation_scope": "Reported separately by launcher; overlaps process time and is never added to it",
+          "scheduler_allocation_seconds": null,
+          "training_update_seconds": 1.5543337929993868,
+          "unobserved_attempts": []
+        },
+        "status": "passed",
+        "steps": 64,
+        "throughput_scope": "64 committed diagnostic updates divided by measured process time including resume/setup; not production throughput",
+        "useful_committed_tokens_per_second": 193099.83222029847,
+        "widths": {
+          "g1000": 17,
+          "g250": 9,
+          "g500": 17,
+          "g750": 21
+        }
+      }
+    ],
+    "real_shape": {
+      "batch_size": 64,
+      "context_length": 128,
+      "d_model": 64,
+      "num_attention_heads": 4,
+      "num_layers": 4
+    },
+    "real_shape_arms": [
+      "S1-linear-poly",
+      "S1-linear-CaLR",
+      "S2-linear-poly",
+      "S2-linear-CaLR"
+    ],
+    "schema_version": 1,
+    "status": "passed"
+  },
+  "cpu_gate": {
+    "bindings": {
+      "artifacts_sha256": "61d4b568d9bc6504453ecb965a3b7270a71eac549c126a39c10b4c7713ec7d0a",
+      "campaign_id": "tinystories-linear-s1-s2-calr-v1",
+      "campaign_manifest_sha256": "5f7c00280dfd71677757226c67fa418f4efbf986c21be534e197421d3a06e77a",
+      "config_set_sha256": "416efb09ad596e966aba904942daa8d279562417ec9119016498e9485cf8b6d0",
+      "config_sha256": {
+        "S1-linear-CaLR": "8f853b3b53c6386816e3d0221c4623541e196e6143d0d0ce2105bb952b4983da",
+        "S1-linear-poly": "3391f69f58d514d025c632d06085af319fb39de3377f82a4898642288ba62ad2",
+        "S2-linear-CaLR": "2b89c24210678873909dd55280e5f6877ca4f4115d22841332f2071a9eb3cc80",
+        "S2-linear-poly": "5b54dd00273b55f210a2df0320d7566d6ab46250dc3a78043b55342b6d0c7a72"
+      },
+      "contracts": {
+        "S1-linear-CaLR": "bd50fb42cf17164d01dca2de26c82d0d3eb1829cc9b5e8f06e7ca0c675738896",
+        "S1-linear-poly": "e8b971c86e8f540344689c90cdfc21f649ef92cb967a466538a46faf3497cd63",
+        "S2-linear-CaLR": "d75a7be71a3dda985717c8782484683d21e28133129c908559f824b3beec9e15",
+        "S2-linear-poly": "26425bb20e6ef9778ccea46e6361f720190985733a8db34e5cc85002dbef08e4"
+      },
+      "manifest_hash": "a83f4c48181650d986886c1ab19ad068c1cf8da28967eb60d01f80c33bebc90b",
+      "preflight_sha256": "de7912ccfa63bcac9e4d72d952c7e0f7549ef9d9cb1a30edfc874dc83d51b2a6",
+      "recipe_sha256": "9425b2736f8e12ec0c2c0028f96f3a9d39d79c044248e5f319b58e6913374b72",
+      "references_sha256": "58dc54e928d7abec521facc39d7b9ce32514ff7143e73ffdea2889c331ce5f28",
+      "snapshot_inputs_sha256": "a3695ef19ca1ff676c8fc41a2f0b0030eb32776df56ab462d26ead0b62726c84",
+      "source_sha256": "0f8005347b1da937d561411e06bbe060fa77da47a92004ec9174cc5f61bda14f"
+    },
+    "checks": [
+      {
+        "artifacts": [
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/cpu-6b4bb2224b1a40f7ae34e762caa25c32/pytest.xml",
+            "sha256": "12e58e08cf613d99cbf010a277a02dcd9ef07377baf17f3d37a46fa89820f10e"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/cpu-6b4bb2224b1a40f7ae34e762caa25c32/pytest.log",
+            "sha256": "752002f2323ab94aa5d8f3bd7259009647555f74b7eb96cd3e6e52e7b5273624"
+          }
+        ],
+        "command": [
+          "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+          "-m",
+          "pytest",
+          "-q",
+          "-rs",
+          "--tb=short",
+          "-p",
+          "no:cacheprovider",
+          "--junitxml=/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/cpu-6b4bb2224b1a40f7ae34e762caa25c32/pytest.xml",
+          "tests/test_linear_calr_foundation.py",
+          "tests/test_linear_calr_campaign.py",
+          "tests/test_linear_calr_schedule.py",
+          "tests/test_linear_calr_resume.py",
+          "tests/test_linear_calr_queue.py",
+          "tests/test_config.py",
+          "tests/test_optimizer_ownership.py",
+          "tests/test_optimizer_ownership_resume.py",
+          "tests/test_optimizer_ownership_corrections.py",
+          "tests/test_metrics_compact_accounting.py",
+          "tests/test_reproducibility.py"
+        ],
+        "cwd": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/cpu-6b4bb2224b1a40f7ae34e762caa25c32/pytest-workspace",
+        "errors": 0,
+        "execution": "subprocess",
+        "failures": 0,
+        "finished_at": 1790890232.4466732,
+        "reporting_fixture_status": "pending",
+        "returncode": 0,
+        "skipped": 66,
+        "source": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/source",
+        "started_at": 1790890081.0885122,
+        "tests": 1015
+      }
+    ],
+    "content_hash": "bcc8cbaf6a7c88badedf67867f5bbdd43baec5ccd816172294f6830d8d9124ad",
+    "environment": {
+      "executable": "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+      "packages": {
+        "PyYAML": "6.0.3",
+        "numpy": "2.4.3",
+        "pytest": "9.0.3",
+        "torch": "2.11.0+cu128",
+        "transformers": "5.8.0"
+      },
+      "platform": "Linux-6.12.95-ql-generic-14-12-x86_64-with-glibc2.39",
+      "python": "3.12.13 | packaged by conda-forge | (main, Aug 11 2026, 10:27:28) [GCC 14.4.0]"
+    },
+    "holdout_evaluated": false,
+    "mode": "cpu",
+    "reporting_fixture_status": "pending",
+    "schema_version": 1,
+    "status": "passed"
+  },
+  "submissions": {
+    "jobs": [
+      {
+        "attempt_id": 1,
+        "bindings": {
+          "artifacts_sha256": "61d4b568d9bc6504453ecb965a3b7270a71eac549c126a39c10b4c7713ec7d0a",
+          "campaign_id": "tinystories-linear-s1-s2-calr-v1",
+          "campaign_manifest_sha256": "5f7c00280dfd71677757226c67fa418f4efbf986c21be534e197421d3a06e77a",
+          "config_set_sha256": "416efb09ad596e966aba904942daa8d279562417ec9119016498e9485cf8b6d0",
+          "config_sha256": {
+            "S1-linear-CaLR": "8f853b3b53c6386816e3d0221c4623541e196e6143d0d0ce2105bb952b4983da",
+            "S1-linear-poly": "3391f69f58d514d025c632d06085af319fb39de3377f82a4898642288ba62ad2",
+            "S2-linear-CaLR": "2b89c24210678873909dd55280e5f6877ca4f4115d22841332f2071a9eb3cc80",
+            "S2-linear-poly": "5b54dd00273b55f210a2df0320d7566d6ab46250dc3a78043b55342b6d0c7a72"
+          },
+          "contracts": {
+            "S1-linear-CaLR": "bd50fb42cf17164d01dca2de26c82d0d3eb1829cc9b5e8f06e7ca0c675738896",
+            "S1-linear-poly": "e8b971c86e8f540344689c90cdfc21f649ef92cb967a466538a46faf3497cd63",
+            "S2-linear-CaLR": "d75a7be71a3dda985717c8782484683d21e28133129c908559f824b3beec9e15",
+            "S2-linear-poly": "26425bb20e6ef9778ccea46e6361f720190985733a8db34e5cc85002dbef08e4"
+          },
+          "manifest_hash": "a83f4c48181650d986886c1ab19ad068c1cf8da28967eb60d01f80c33bebc90b",
+          "preflight_sha256": "de7912ccfa63bcac9e4d72d952c7e0f7549ef9d9cb1a30edfc874dc83d51b2a6",
+          "recipe_sha256": "9425b2736f8e12ec0c2c0028f96f3a9d39d79c044248e5f319b58e6913374b72",
+          "references_sha256": "58dc54e928d7abec521facc39d7b9ce32514ff7143e73ffdea2889c331ce5f28",
+          "snapshot_inputs_sha256": "a3695ef19ca1ff676c8fc41a2f0b0030eb32776df56ab462d26ead0b62726c84",
+          "source_sha256": "0f8005347b1da937d561411e06bbe060fa77da47a92004ec9174cc5f61bda14f"
+        },
+        "command": [
+          "sbatch",
+          "--parsable",
+          "--job-name=calr-diagnostic-a1-4c37158d",
+          "--partition=cscc-gpu-p",
+          "--qos=cscc-gpu-qos",
+          "--nodes=1",
+          "--ntasks=1",
+          "--cpus-per-task=4",
+          "--gres=gpu:1",
+          "--mem=16G",
+          "--time=24:00:00",
+          "--exclude=gpu-[05,50,51,54]",
+          "--no-requeue",
+          "--chdir=/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/source",
+          "--output=/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/logs/diagnostic-a1-%j.out",
+          "--error=/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/logs/diagnostic-a1-%j.err",
+          "--wrap=env SLURM_CONF=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-matformer-widths-v1/launchers/slurm-client.conf /home/ivo.navarrete/.conda/envs/elasticnn/bin/python /nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/source/scripts/preflight_tinystories_linear_calr.py gpu --campaign-root /nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1"
+        ],
+        "cpu_gate_hash": "bcc8cbaf6a7c88badedf67867f5bbdd43baec5ccd816172294f6830d8d9124ad",
+        "created_date": "2026-10-01",
+        "intent_uuid": "4c37158da76f4f2d936e1230919323b5",
+        "job_id": "290529",
+        "name": "calr-diagnostic-a1-4c37158d",
+        "scheduler_accounting": {
+          "allocation_seconds": "130",
+          "exit_code": "0:0",
+          "job_id": "290529",
+          "name": "calr-diagnostic-a1-4c37158d",
+          "state": "COMPLETED"
+        },
+        "status": "completed"
+      }
+    ]
+  },
+  "worker": {
+    "gate_hash": "6fe4b3450bdf607ce770191cc0a41f01a23667cc384a9e6843a065e1eded5ff7",
+    "job_id": "290529",
+    "name": "calr-diagnostic-a1-4c37158d",
+    "output": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/gpu-417e6aceaed646a294c02af505bfe0e3",
+    "returncode": 0,
+    "status": "passed"
+  },
+  "production_status": "blocked_reporting_fixture_acceptance",
+  "production_submitted": false
+}
