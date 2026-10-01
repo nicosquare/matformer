@@ -14,8 +14,8 @@ This file plans work; generating it does not implement, reserve an external outp
 
 **Purpose**: Establish compatibility evidence and implementation boundaries without altering historical results.
 
-- [ ] T001 Record baseline commands, installed versions, repository/source identity and relevant historical regression outcomes in specs/017-tinystories-linear-calr/verification.md; run existing optimizer ownership, continuation, reporting, queue, metrics and reproducibility tests with the specified Python and distinguish pass/fail/skips.
-- [ ] T002 Capture schema 1–5 resolved configuration/signature and S1/S2/C4 schedule/restore invariants in tests/test_linear_calr_campaign.py using tests/fixtures/optimizer_ownership_legacy_signatures.json without regenerating historical expected signatures; document the tested baseline in specs/017-tinystories-linear-calr/verification.md.
+- [X] T001 Record baseline commands, installed versions, repository/source identity and relevant historical regression outcomes in specs/017-tinystories-linear-calr/verification.md; run existing optimizer ownership, continuation, reporting, queue, metrics and reproducibility tests with the specified Python and distinguish pass/fail/skips.
+- [X] T002 Capture schema 1–5 resolved configuration/signature and S1/S2/C4 schedule/restore invariants in tests/test_linear_calr_campaign.py using tests/fixtures/optimizer_ownership_legacy_signatures.json without regenerating historical expected signatures; document the tested baseline in specs/017-tinystories-linear-calr/verification.md.
 
 ## Phase 2: Foundational (Blocking prerequisites)
 
