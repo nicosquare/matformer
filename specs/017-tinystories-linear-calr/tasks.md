@@ -111,9 +111,9 @@ This file plans work; generating it does not implement, reserve an external outp
 
 ## Phase 6: Polish and cross-cutting acceptance
 
-- [ ] T043 [P] Update specs/017-tinystories-linear-calr/quickstart.md with implemented CLI arguments, exact CPU verification and snapshot/prepare/diagnostic/queue/report commands, independent authorization boundaries and incomplete-evidence behavior; replace proposed-command language only for implemented operations.
-- [ ] T044 Run the complete focused five-file CPU suite and relevant historical schema/config/S1/S2/C4/continuation/accounting/reporting/queue regressions with OMP_NUM_THREADS=1 and the specified Python; validate quickstart commands in temporary roots without GPU submission and record final commands/pass/fail/skips and tested source/config hashes in specs/017-tinystories-linear-calr/verification.md.
-- [ ] T045 Reconcile every FR-001–019, EX-001–006 and SC-001–008 against saved evidence in specs/017-tinystories-linear-calr/experiment-report.md; verify exact totals, all widths, failed-attempt costs, terminal hashes and all figure/table provenance, and leave unmet real-execution/reference/trajectory criteria incomplete rather than treating code tests as final acceptance.
+- [X] T043 [P] Update specs/017-tinystories-linear-calr/quickstart.md with implemented CLI arguments, exact CPU verification and snapshot/prepare/diagnostic/queue/report commands, independent authorization boundaries and incomplete-evidence behavior; replace proposed-command language only for implemented operations.
+- [X] T044 Run the complete focused five-file CPU suite and relevant historical schema/config/S1/S2/C4/continuation/accounting/reporting/queue regressions with OMP_NUM_THREADS=1 and the specified Python; validate quickstart commands in temporary roots without GPU submission and record final commands/pass/fail/skips and tested source/config hashes in specs/017-tinystories-linear-calr/verification.md.
+- [X] T045 Reconcile every FR-001–019, EX-001–006 and SC-001–008 against saved evidence in specs/017-tinystories-linear-calr/experiment-report.md; verify exact totals, all widths, failed-attempt costs, terminal hashes and all figure/table provenance, and leave unmet real-execution/reference/trajectory criteria incomplete rather than treating code tests as final acceptance.
 
 ## Dependencies and execution order
 

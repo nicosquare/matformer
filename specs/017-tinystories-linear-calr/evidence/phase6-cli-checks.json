@@ -1,0 +1,48 @@
+{
+  "status": "passed",
+  "records": [
+    {
+      "command": [
+        "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+        "scripts/preflight_tinystories_linear_calr.py",
+        "snapshot",
+        "--campaign-root",
+        "/tmp/calr-phase6-cli-1d9r1rf1/campaign",
+        "--prepared-corpus-dir",
+        "/nfs-stor/ivo.navarrete/matformer-corpora/tinystories-instruct-packed-full-v1",
+        "--tokenizer-dir",
+        "/nfs-stor/ivo.navarrete/matformer-tokenizers/tinystories-instruct-sentencepiece-bpe-2k-v1",
+        "--reference-root",
+        "/nfs-stor/ivo.navarrete/results/elasticnn"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+        "/tmp/calr-phase6-cli-1d9r1rf1/campaign/source/scripts/preflight_tinystories_linear_calr.py",
+        "snapshot",
+        "--campaign-root",
+        "/tmp/calr-phase6-cli-1d9r1rf1/campaign"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+        "/tmp/calr-phase6-cli-1d9r1rf1/campaign/source/scripts/run_tinystories_linear_calr.py",
+        "prepare",
+        "--campaign-root",
+        "/tmp/calr-phase6-cli-1d9r1rf1/campaign"
+      ],
+      "returncode": 2,
+      "stdout": "",
+      "stderr": "usage: run_tinystories_linear_calr.py [-h] --campaign-root CAMPAIGN_ROOT\n                                      [--cpu-evidence CPU_EVIDENCE]\n                                      [--report-source REPORT_SOURCE]\n                                      [--arm {S1-linear-poly,S1-linear-CaLR,S2-linear-poly,S2-linear-CaLR}]\n                                      [--attempt-id ATTEMPT_ID] [--once]\n                                      {prepare,queue,worker,report}\nrun_tinystories_linear_calr.py: error: prepare requires --cpu-evidence\n"
+    }
+  ],
+  "limitations": "Actual CLI snapshot/idempotency and missing-CPU rejection in a temporary root; successful CPU/prepare/diagnostic/queue/report paths validated by existing temporary-root fixtures with mocked Slurm, not GPU submission."
+}

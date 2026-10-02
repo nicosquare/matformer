@@ -1,75 +1,90 @@
 # Quickstart: Linear S1/S2 CaLR
 
-Phase 4 implements the four-arm runtime, snapshot/CPU checks, CUDA diagnostic worker and gated launcher. T029–T031 execution is authorized; external preparation and CUDA diagnostics are recorded in verification.md. Reporting fixtures remain pending and block production. CPU tests do not establish GPU readiness.
+The four-arm runtime, immutable preparation, CPU/CUDA diagnostics, gated Slurm launcher and reporting CLI are implemented. Production and the real comparison are complete; see [experiment-report.md](experiment-report.md) and [verification.md](verification.md). The commands below describe the implemented lifecycle, not a request to rerun this completed campaign. Continuous monitoring remains stopped.
 
-## 1. Generate tasks and implement
+## CPU verification
 
-Run `/speckit-tasks` using this plan, then authorize implementation. Implement all four arms together, preserve legacy signatures, and complete reporting fixtures before production. Use `/home/ivo.navarrete/.conda/envs/elasticnn/bin/python`; no dependency additions are planned.
-
-Focused CPU verification after implementation:
+Use the installed interpreter; no new dependencies are required:
 
 ```bash
-OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest   tests/test_linear_calr_campaign.py tests/test_linear_calr_schedule.py   tests/test_linear_calr_resume.py tests/test_linear_calr_reporting.py   tests/test_linear_calr_queue.py -q -rs --tb=short
+PYTHON_BIN=/home/ivo.navarrete/.conda/envs/elasticnn/bin/python
+OMP_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" -m pytest \
+  tests/test_linear_calr_campaign.py tests/test_linear_calr_schedule.py \
+  tests/test_linear_calr_resume.py tests/test_linear_calr_reporting.py \
+  tests/test_linear_calr_queue.py -q -rs --tb=short -p no:cacheprovider
 ```
 
-Also run relevant historical config, S1/S2/C4 optimizer/restore, metrics, reporting and queue regressions. Record source/config hashes, outcomes and limitations. Old passing results and GPU skips do not establish new readiness.
+The exact historical regression command and final source/config hashes are recorded in verification.md. CPU fixtures use temporary roots and mocked scheduler calls. CPU passes and CUDA skips establish CPU correctness only; all-arm, real-shape CUDA BF16 readiness is a separate bound gate.
 
-## 2. Snapshot and CPU preparation
+## Snapshot, audit and prepare
 
-After external preparation authorization, set `TASK_CORPUS_DIR` and `TASK_TOKENIZER_DIR` to the inherited audited artifact directories. Implemented commands are:
+External preparation requires its own authorization. Supply the inherited audited packed corpus/tokenizer paths; choose a fresh campaign root. The completed canonical root below is occupied and must not be reused for a new reservation.
 
 ```bash
 TASK_ROOT=/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1
 PYTHON_BIN=/home/ivo.navarrete/.conda/envs/elasticnn/bin/python
-"$PYTHON_BIN" scripts/preflight_tinystories_linear_calr.py snapshot --campaign-root "$TASK_ROOT" \
-  --prepared-corpus-dir "$TASK_CORPUS_DIR" --tokenizer-dir "$TASK_TOKENIZER_DIR" \
+# Set TASK_CORPUS_DIR and TASK_TOKENIZER_DIR to the audited artifact directories.
+"$PYTHON_BIN" scripts/preflight_tinystories_linear_calr.py snapshot \
+  --campaign-root "$TASK_ROOT" --prepared-corpus-dir "$TASK_CORPUS_DIR" \
+  --tokenizer-dir "$TASK_TOKENIZER_DIR" \
   --reference-root /nfs-stor/ivo.navarrete/results/elasticnn
-"$PYTHON_BIN" "$TASK_ROOT/source/scripts/preflight_tinystories_linear_calr.py" cpu --campaign-root "$TASK_ROOT"
-"$PYTHON_BIN" "$TASK_ROOT/source/scripts/run_tinystories_linear_calr.py" prepare   --campaign-root "$TASK_ROOT" --cpu-evidence "$TASK_ROOT/diagnostics/cpu-gate.json"
+OMP_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" \
+  "$TASK_ROOT/source/scripts/preflight_tinystories_linear_calr.py" cpu \
+  --campaign-root "$TASK_ROOT"
+"$PYTHON_BIN" "$TASK_ROOT/source/scripts/run_tinystories_linear_calr.py" prepare \
+  --campaign-root "$TASK_ROOT" --cpu-evidence "$TASK_ROOT/diagnostics/cpu-gate.json"
 ```
 
-Atomic reservation rejects occupied identities. Preparation verifies model counts, exact controls/differences, full-horizon analytic schedules, fresh initialization/streams and reference discovery. Saved references are always read-only. Actual checkpoint/evaluation proof is needed before report acceptance; absence of newer artifacts on .004 runs requires the legacy adapter, not reconstructed evidence.
+`snapshot` creates immutable source/config bytes and `diagnostics/inputs.json` / `source-manifest.json`; repeated snapshot use validates existing identities. `cpu` performs corpus/control/model/count, fresh-weight, complete action/data-stream and analytic schedule audits and executes the frozen CPU suite. `prepare` requires the passing bound CPU record and reserves exactly four resolved runs. None of these operations submits GPU work. Occupied/conflicting identities and modified snapshot/config/input/evidence bindings fail. Saved references remain read-only; discovery alone does not prove terminal provenance.
 
-## 3. Later authorized GPU readiness and production
+## Diagnostic and production admission
 
-Explicit execution authorization is recorded separately for diagnostic sbatch jobs and production. The implemented submission uses existing operational helpers with partition cscc-gpu-p, QoS cscc-gpu-qos and exclusions gpu-[05,50,51,54]. Use the verified accounting client environment for submission and reconciliation:
+Diagnostic and production execution require separate durable explicit user authorizations. Records live in `authorizations/diagnostic.json` and `authorizations/production.json`, with `purpose`, `authorized: true`, verbatim `user_instruction`, `recorded_at`, current launcher `bindings(TASK_ROOT)` and a `sealed()` content hash. A passing gate or CLI flag does not grant authorization. This completed campaign already retains both records; source changes require new matching evidence, without relabeling old gates.
+
+Use the verified scheduler client configuration:
 
 ```bash
 export SLURM_CONF=/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-matformer-widths-v1/launchers/slurm-client.conf
+# Only after diagnostic authorization:
+"$PYTHON_BIN" "$TASK_ROOT/source/scripts/preflight_tinystories_linear_calr.py" \
+  submit-gpu --campaign-root "$TASK_ROOT"
+# Only after production authorization, passing CPU/reporting fixtures and all-arm GPU gates:
+"$PYTHON_BIN" "$TASK_ROOT/source/scripts/run_tinystories_linear_calr.py" \
+  queue --campaign-root "$TASK_ROOT" --once
 ```
 
-After diagnostic authorization is durably recorded, submit from the tested snapshot with `preflight_tinystories_linear_calr.py submit-gpu --campaign-root ROOT`. The GPU worker mode is `preflight_tinystories_linear_calr.py gpu --campaign-root ROOT`; run from the immutable snapshot on the allocated GPU. Cover all four arms at batch 64/context 128 with actual BF16 and bind passing evidence to CPU/source/config identities.
+`submit-gpu` admits/reconciles the diagnostic job; its allocated worker runs `preflight_tinystories_linear_calr.py gpu --campaign-root "$TASK_ROOT"`. Diagnostics cover every arm at d64/l4/h4, batch 64/context 128, actual BF16, all widths, nonzero moments, boundary updates/own continuation and resource measurements. CPU fallback is rejected. Records/logs, including failures, remain under `diagnostics/`; CPU/GPU gates must bind identical tested source/config identities and successful worker/Slurm evidence.
 
-After separate production authorization, passing CPU/all-arm GPU gates and Phase 5 reporting-fixture acceptance, the implemented admission command is:
+`queue` without `--once` repeats admission/reconciliation until completion. It uses cscc-gpu-p/cscc-gpu-qos, one GPU, no requeue, exclusions gpu-[05,50,51,54], user-wide ceilings of two running/four submitted GPU jobs and stricter live limits. Durable locks/intents prevent duplicate or uncertain resubmission. It launches the frozen worker as:
 
 ```bash
-"$PYTHON_BIN" "$TASK_ROOT/source/scripts/run_tinystories_linear_calr.py" queue   --campaign-root "$TASK_ROOT" --once
+"$PYTHON_BIN" "$TASK_ROOT/source/scripts/run_tinystories_linear_calr.py" worker \
+  --campaign-root "$TASK_ROOT" --arm S1-linear-poly --attempt-id 1
 ```
 
-Queue checks user-wide two-running/four-submitted ceilings and stricter live limits, duplicate/uncertain submissions and own-run continuation. Repeat admission as needed; no manual bypass of gates. Terminal recovery at full budget performs zero additional training updates.
+That entry requires its Slurm allocation and revalidates gates; it is not a login-node training command. Legal arms are S1-linear-poly, S1-linear-CaLR, S2-linear-poly and S2-linear-CaLR. Continuation uses only the arm's own durable state. Terminal recovery at the full budget adds zero training updates. Job disappearance alone never proves completion.
 
-## 4. Report and acceptance
+## Reporting and incomplete evidence
+
+The launcher accepts `--report-source` for a separate immutable reporting snapshot, preserving production bindings. The completed campaign uses its corrected final reporting snapshot:
 
 ```bash
-"$PYTHON_BIN" "$TASK_ROOT/source/scripts/run_tinystories_linear_calr.py" report --campaign-root "$TASK_ROOT"
+TASK_REPORT_SOURCE="$TASK_ROOT/reports/reporting-source-final-20261002"
+OMP_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" \
+  "$TASK_REPORT_SOURCE/scripts/run_tinystories_linear_calr.py" report \
+  --campaign-root "$TASK_ROOT" --report-source "$TASK_REPORT_SOURCE"
 ```
 
-Require four complete new terminals, eight validated references, 36 endpoint rows, 48 required differences and four interactions. Check primary/supplemental seven-label panels, PNG/PDF figure families, recorded per-width validation and actual applied rates, resource/provenance manifests and all-width findings. Missing terminal/provenance/trajectory evidence is incomplete; partial runs, analytic schedules and old report tables cannot replace it. Full delivery is SC-001–008, independent of whether CaLR improves quality.
-
-
-## Phase 4 gate records
-
-Snapshot inputs live in `diagnostics/inputs.json`; frozen source hashes in `diagnostics/source-manifest.json`. CPU and GPU gate records are `diagnostics/cpu-gate.json` and `diagnostics/gpu-gate.json`, with retained per-attempt records/logs under `diagnostics/`. Changed source, configurations, inputs, audits or recorded logs invalidate their bindings. `snapshot` requires a fresh root; repeat use validates the existing immutable source. `cpu` runs full corpus/control/model/action/data/schedule audits and CPU tests from those frozen bytes; it never submits a job.
-
-A subsequent explicit user instruction is recorded separately in `authorizations/diagnostic.json` or `authorizations/production.json`. Each record contains `purpose`, `authorized: true`, the verbatim `user_instruction`, `recorded_at`, and the current `bindings(ROOT)` dictionary; use the launcher's `sealed()` helper for its `content_hash`. Passing readiness or a CLI flag does not supply authorization. The T029–T031 authorization has supplied both records for the current snapshot.
-
-The CPU gate runs `tests/test_linear_calr_reporting.py` and records `reporting_fixture_status: passed` only when its executed JUnit cases all pass without skips and the full CPU command succeeds. `report` dispatches the implemented `report-linear-calr` operation and records its return code/incomplete status. Consult tasks.md and verification.md for the actual T029–T031 outcomes.
-
-
-Implemented schema-6 reporting can also be invoked directly from the tested snapshot:
+Direct reporting is also implemented; supply a fresh output directory:
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" "$ROOT/source/scripts/analyze_tinystories_optimizer_ownership.py" report-linear-calr --campaign-manifest "$ROOT/campaign/campaign_manifest.json" --run-root "$ROOT/runs" --reference-root /nfs-stor/ivo.navarrete/results/elasticnn --output-dir "$ROOT/reports/comparison"
+OMP_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" \
+  "$TASK_REPORT_SOURCE/scripts/analyze_tinystories_optimizer_ownership.py" report-linear-calr \
+  --campaign-manifest "$TASK_ROOT/campaign/campaign_manifest.json" \
+  --run-root "$TASK_ROOT/runs" --reference-root /nfs-stor/ivo.navarrete/results/elasticnn \
+  --output-dir "$TASK_ROOT/reports/comparison-new"
 ```
 
-Use a fresh report directory. Complete publication has 36 endpoint rows, 48 required pairs, four interactions, a separate 16-pair supplemental .004 table and 16 PNG/PDF artifacts. Incomplete publication returns exit 1 and retains admitted endpoints with independent new-terminal/reference/trajectory/comparison status. Applied LR exports sample recorded first 65, every 128th global commit and last commit per width after validating all committed evidence; no analytic LR reconstruction is plotted. Historical artifacts are read-only.
+Complete publication requires four full-budget new terminals and eight validated historical runs: 36 endpoints, 48 required pairs, four interactions, 16 separately labeled supplemental .004 pairs and 16 PNG/PDF artifacts. The plot-source manifest binds tables/figures to source/config/checkpoint/evaluation/metric hashes. Primary .008 and supplemental .004 panels stay separate. Standalone progress contains terminal points only at update 87132. Applied LR plots sample recorded first 65, every 128th global commit and last commit per width after validating the complete trace; analytic schedules never substitute for observed rates.
+
+Missing terminal/reference/provenance/trajectory evidence returns nonzero (direct incomplete publication: exit 1), retains admitted evidence and exposes independent new-terminal/reference/trajectory/comparison states. Partial runs, summaries and older aggregate tables cannot replace proof. Full acceptance covers SC-001–008 regardless of whether CaLR improves loss.

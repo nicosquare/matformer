@@ -463,3 +463,40 @@ Continuous queue monitoring remains stopped; this invocation performs only bound
 ### T042 complete: real publication
 
 The launcher report returned0 and atomically published `ROOT/reports/comparison`; all four independent states are complete. Eight historical references and20 endpoints were revalidated read-only. The review copy in `evidence/phase5-final-comparison` has36 endpoints,48 required pairs,4 interactions,16 supplemental pairs and16 PNG/PDF artifacts. Independent CSV checks recomputed exp(loss), every pair difference/ratio/gap and every interaction; all output SHA-256 values match `plot_sources.json`. The final reporting source manifest and code hash are retained alongside the artifacts. See experiment-report.md for measured all-width findings. T042 is checked complete; Phase6 remains pending.
+
+
+## Phase 6 polish and acceptance — 2026-10-02
+
+Scope: T043–T045. Updated quickstart to the implemented snapshot/cpu/gpu/submit-gpu and prepare/queue/worker/report interfaces, including `--report-source`, exact arguments, immutable gates, independent authorizations, incomplete statuses and measured-only plots. Removed stale reporting/production-pending instructions. No GPU submission, training, external write or monitoring restart occurred. Existing production/readiness/reporting snapshots remain authoritative; documentation changes do not relabel them.
+
+Checklist: requirements.md **16 total / 16 complete / 0 incomplete — PASS**. Git and Python ignore rules already cover bytecode, environments, builds, logs, model artifacts and editor/OS files; no additional detected Docker/JS/Terraform/Helm setup requires ignore changes. Constitution review introduces no implementation abstraction or exception.
+
+Executed focused command:
+
+```bash
+OMP_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest tests/test_linear_calr_campaign.py tests/test_linear_calr_schedule.py tests/test_linear_calr_resume.py tests/test_linear_calr_reporting.py tests/test_linear_calr_queue.py -q -rs --tb=short -p no:cacheprovider --junitxml=/tmp/calr-phase6-focused.xml
+```
+
+**353 passed, 32 skipped, 2 existing Swig deprecation warnings in 141.06s**, exit 0. Skips are the separately authorized CUDA continuation cases; the retained real GPU gate supplies their execution evidence rather than treating CPU skips as readiness. [Focused log](evidence/phase6-focused-tests.txt).
+
+Executed historical/schema/foundation/ownership/continuation/accounting/reporting/queue command:
+
+```bash
+OMP_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest tests/test_linear_calr_foundation.py tests/test_config.py tests/test_optimizer_ownership.py tests/test_optimizer_ownership_campaign.py tests/test_optimizer_ownership_resume.py tests/test_optimizer_ownership_corrections.py tests/test_optimizer_ownership_reporting.py tests/test_per_granularity_optimizer.py tests/test_per_granularity_optimizer_resume.py tests/test_c4_selected_block.py tests/test_c4_separate_corrections.py tests/test_c4_separate_reporting_queue.py tests/test_metrics_compact_accounting.py tests/test_reproducibility.py tests/test_s1_warmup_campaign.py tests/test_s1_warmup_queue.py tests/test_s1_warmup_reporting.py tests/test_matformer_resource_reconciliation.py -q -rs --tb=short -p no:cacheprovider --junitxml=/tmp/calr-phase6-historical.xml
+```
+
+**1084 passed, 38 skipped, 2 existing Swig deprecation warnings in 369.69s**, exit 0. Skips: 34 historical CUDA BF16 cases and four C4 CUDA-only cases. [Historical log](evidence/phase6-historical-tests.txt). Combined final CPU result: **1437 passed, 70 skipped, zero failures**. JUnit records are retained as phase6-focused.xml and phase6-historical.xml.
+
+CLI verification executed all three `--help` interfaces (preflight, launcher, direct `report-linear-calr`), exit 0. The [retained smoke driver](evidence/phase6-cli-checks.py) runs the actual snapshot CLI and repeat immutable validation in a temporary root using inherited input paths; both exit 0. Frozen `prepare` without a CPU gate correctly returns nonzero. [Exact commands/results](evidence/phase6-cli-checks.json). Passing CPU/preparation, diagnostic/queue/worker admission and complete/incomplete report dispatch are exercised by existing temporary-root fixtures with mocked subprocess/Slurm evidence in the focused suite. The real full corpus CPU gate and CUDA modes were not rerun; their saved Phase 5 evidence remains separate.
+
+The [retained read-only acceptance driver](evidence/phase6-acceptance-audit.py) was executed with:
+
+```bash
+OMP_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. /home/ivo.navarrete/.conda/envs/elasticnn/bin/python specs/017-tinystories-linear-calr/evidence/phase6-acceptance-audit.py
+```
+
+All checks pass: 36 unique endpoints, 48 required pairs (8/8/16/16), four interactions, 16 supplemental pairs and 16 PNG/PDF outputs. Recomputed exp(loss), pair differences/perplexity ratios/relative gaps and signed interactions; verified exact per-arm and campaign budgets, width selection sums and terminal applied-trace watermarks. Rehashed all output artifacts and **91** distinct saved report/terminal sources, including checkpoints, configs, metrics, full traces, reference artifacts and reporter code. Resource proof retains zero failed production-process seconds, no missing/unobserved attempts and separate ordinary-validation/failed-diagnostic costs. This is a saved-evidence hash/arithmetic audit, not a new whole-bundle GPU diagnostic or training run; prior strict terminal and complete trace admission remains in Phase 5 evidence.
+
+Final tested runtime/script/config/test file set SHA-256: `e0c9347376fc222ec20614d1b09b77d22bf97857a0cc214c6cebc4af6411a18c`; schema-6 recipe SHA-256: `9425b2736f8e12ec0c2c0028f96f3a9d39d79c044248e5f319b58e6913374b72`. The file set uses the snapshot directories `src`, `scripts`, `configs`, `tests` plus trainer/build metadata; excludes documentation/generated output and snapshot-specific provenance. Full path/hash mapping is [saved here](evidence/phase6-acceptance-audit.json), alongside unchanged production source/config bindings. These CPU test bytes are not promoted to new GPU readiness.
+
+All FR-001–019, EX-001–006 and SC-001–008 are reconciled individually in experiment-report.md against saved real evidence and the final suites. No criterion remains incomplete. One-seed conclusions, unequal elastic/standalone horizons, selected-width exposure, cumulative LR/AdamW-decay changes and measured LR export sampling remain explicit. Final `git diff --check` passes. Optional pre/post `/speckit.git.commit` hooks are available and were not executed.

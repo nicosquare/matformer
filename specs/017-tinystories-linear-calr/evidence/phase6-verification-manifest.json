@@ -1,0 +1,24 @@
+{
+  "status": "passed",
+  "artifacts_sha256": {
+    "phase6-acceptance-audit.json": "c1de59f15697e20c0599e40c59caf1b1564ade6080a80949d5624f2944d3dd3d",
+    "phase6-acceptance-audit.py": "f2df11192a8b6ce8f819ff943219bab75eed71cc5dd18568c2d35bd8b97fee6b",
+    "phase6-acceptance-audit.txt": "195833eafff61a948ae1f5ad9dcf50c258f17ef44d4fe04c9d31aec4998f29ea",
+    "phase6-cli-checks.json": "999ba931f2fbb4dd5ae6ff10ffcfd8484fd8d6c0595c462e4cab5b8dfb7cc9e3",
+    "phase6-cli-checks.py": "35b4234195afbae2f9f70fbe963746fb00d1d92fa9e27c7a5f3fde05117a498c",
+    "phase6-focused-tests.txt": "ca161af0ae164d59b1d647b044678cbc2159a1f58999909946b827e74744193d",
+    "phase6-focused.xml": "8a223caba75d78a37ebc01c63584a42111ab4a298e42b6f526c0e69b29a989a4",
+    "phase6-historical-tests.txt": "70e6d91f214de2a2319d4b6fe619d22cb1218287065437eb4777e3e57ed2f49c",
+    "phase6-historical.xml": "12b3fbaf066dd495a5e6a66d59f38269344d0de9c028b56ab489ad9dac74063f"
+  },
+  "focused": {
+    "passed": 353,
+    "skipped": 32,
+    "failed": 0
+  },
+  "historical": {
+    "passed": 1084,
+    "skipped": 38,
+    "failed": 0
+  }
+}
