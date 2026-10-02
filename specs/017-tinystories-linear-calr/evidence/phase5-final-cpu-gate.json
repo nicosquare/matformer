@@ -1,0 +1,95 @@
+{
+  "bindings": {
+    "artifacts_sha256": "5e189abe6efd4901ed26d7677d12eb8a4377834259f03fbeb326eb6bf519ac59",
+    "campaign_id": "tinystories-linear-s1-s2-calr-v1",
+    "campaign_manifest_sha256": "a7e6d2a4ccb433db188fece58c3135487065242ed0713646debe5cfdf4d51d51",
+    "config_set_sha256": "d01dece2a3148506d840224359d7a5fef183650ed028d0b9eda06a93e9028a0e",
+    "config_sha256": {
+      "S1-linear-CaLR": "a9fe4db64ac42b5f06e04ee3e8e020d7cfa2ebf28bdea8adf73589a142bb6d48",
+      "S1-linear-poly": "f69e827b43fcf546f7a9f9193931e5d4d75b73b217cb666a888e9042c37c3fbb",
+      "S2-linear-CaLR": "3742d98ff3109ef13b197e2be3752b6746c7a9fae5d0855f1bfaa9ef2e7f9602",
+      "S2-linear-poly": "7c0a720a9b4936e1fe8d089b0b779c3ce4fb5d6ad6773e8db344b62b9e7076c3"
+    },
+    "contracts": {
+      "S1-linear-CaLR": "e7d9bde23408a301311b44e3e7d2531fed67ff74df060a8b030349dbd260c5b3",
+      "S1-linear-poly": "7f88b5f19741544005edf77e2f4de53faa89cd2d9ef800154e82b102795fa0f2",
+      "S2-linear-CaLR": "d15b9179d25f87ecc525e6ccb40553c02eeb48ec5dc58cecfd310883ffef0905",
+      "S2-linear-poly": "2604438e68d7f6b13b0ed67c5322f13f30ef29c0a27cc92e80bfbbe74589b3fe"
+    },
+    "manifest_hash": "4d977390b4f8c9425d626f1d45b63d97bb067fee58de4879b291435506a3bcc2",
+    "preflight_sha256": "4b838306033d41b926d9c10c571d06bddd0c3278f9ed736213c122be64ba9afb",
+    "recipe_sha256": "9425b2736f8e12ec0c2c0028f96f3a9d39d79c044248e5f319b58e6913374b72",
+    "references_sha256": "58dc54e928d7abec521facc39d7b9ce32514ff7143e73ffdea2889c331ce5f28",
+    "snapshot_inputs_sha256": "a3695ef19ca1ff676c8fc41a2f0b0030eb32776df56ab462d26ead0b62726c84",
+    "source_sha256": "d76fcd353df5be3342cf04d8766eae1fe9aa3a80095a4e1784944d6385701f94"
+  },
+  "checks": [
+    {
+      "artifacts": [
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/cpu-3c8b1340679c48699c269b2b9309085f/pytest.xml",
+          "sha256": "9155955af2ee4e97460f3517856fde756bb5a49458b5856cac3459c3836767f2"
+        },
+        {
+          "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/cpu-3c8b1340679c48699c269b2b9309085f/pytest.log",
+          "sha256": "db585cb52de223a73371dc899c0794e5f1b17876045e55fd7e39fd8c87482334"
+        }
+      ],
+      "command": [
+        "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "-rs",
+        "--tb=short",
+        "-p",
+        "no:cacheprovider",
+        "--junitxml=/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/cpu-3c8b1340679c48699c269b2b9309085f/pytest.xml",
+        "tests/test_linear_calr_foundation.py",
+        "tests/test_linear_calr_campaign.py",
+        "tests/test_linear_calr_schedule.py",
+        "tests/test_linear_calr_resume.py",
+        "tests/test_linear_calr_queue.py",
+        "tests/test_linear_calr_reporting.py",
+        "tests/test_optimizer_ownership_reporting.py",
+        "tests/test_s1_warmup_reporting.py",
+        "tests/test_config.py",
+        "tests/test_optimizer_ownership.py",
+        "tests/test_optimizer_ownership_resume.py",
+        "tests/test_optimizer_ownership_corrections.py",
+        "tests/test_metrics_compact_accounting.py",
+        "tests/test_reproducibility.py"
+      ],
+      "cwd": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/diagnostics/cpu-3c8b1340679c48699c269b2b9309085f/pytest-workspace",
+      "errors": 0,
+      "execution": "subprocess",
+      "failures": 0,
+      "finished_at": 1790899665.034087,
+      "reporting_fixture_status": "passed",
+      "reporting_fixture_tests": 55,
+      "returncode": 0,
+      "skipped": 66,
+      "source": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/source",
+      "started_at": 1790899281.2733297,
+      "tests": 1175
+    }
+  ],
+  "content_hash": "1f8de59c23a41291278312b065f31dd5d2e1161cd6bcf3e744bd49b02b7be48c",
+  "environment": {
+    "executable": "/home/ivo.navarrete/.conda/envs/elasticnn/bin/python",
+    "packages": {
+      "PyYAML": "6.0.3",
+      "numpy": "2.4.3",
+      "pytest": "9.0.3",
+      "torch": "2.11.0+cu128",
+      "transformers": "5.8.0"
+    },
+    "platform": "Linux-6.12.95-ql-generic-14-12-x86_64-with-glibc2.39",
+    "python": "3.12.13 | packaged by conda-forge | (main, Aug 11 2026, 10:27:28) [GCC 14.4.0]"
+  },
+  "holdout_evaluated": false,
+  "mode": "cpu",
+  "reporting_fixture_status": "passed",
+  "schema_version": 1,
+  "status": "passed"
+}

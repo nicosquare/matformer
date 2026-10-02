@@ -12,7 +12,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.evaluation.optimizer_ownership import preflight_campaign, freeze_campaign, report_campaign, report_correction_comparison, report_inverse_membership_comparison, report_matformer_widths_comparison
-from src.evaluation.optimizer_ownership import report_s1_warmup
+from src.evaluation.optimizer_ownership import report_s1_warmup, report_linear_calr
 
 
 def main(argv=None):
@@ -55,9 +55,15 @@ def main(argv=None):
     for option in ('manifest', 'linear-reference-root', 'geometric-reference-root', 'output-dir'):
         warmup.add_argument('--' + option, required=True)
     warmup.add_argument('--early-end-step', type=int, default=1024)
+    calr = subcommands.add_parser('report-linear-calr', help='Validate and report saved linear polynomial/CaLR evidence')
+    for option in ('campaign-manifest', 'run-root', 'reference-root', 'output-dir'):
+        calr.add_argument('--'+option, required=True)
     args = parser.parse_args(argv)
     try:
-        if args.command == 'report-s1-warmup':
+        if args.command == 'report-linear-calr':
+            report = report_linear_calr(campaign_manifest=args.campaign_manifest,run_root=args.run_root,
+                reference_root=args.reference_root,output_dir=args.output_dir)
+        elif args.command == 'report-s1-warmup':
             report = report_s1_warmup(manifest=args.manifest, linear_reference_root=args.linear_reference_root,
                 geometric_reference_root=args.geometric_reference_root,
                 output_dir=args.output_dir, early_end_step=args.early_end_step)
@@ -86,6 +92,8 @@ def main(argv=None):
     except (ValueError, OSError, RuntimeError) as error:
         parser.exit(1, f"Campaign {args.command} failed: {error}\n")
     print(json.dumps(report, indent=2, sort_keys=True))
+    if args.command == 'report-linear-calr' and report['status'] != 'complete':
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

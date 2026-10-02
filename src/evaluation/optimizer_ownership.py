@@ -3562,3 +3562,490 @@ def validate_linear_calr_controls(config):
     _resolve_gradient_interference_defaults(defaults)
     for name in ('sign_dynamics', 'gradient_interference'):
         _require_equal(config['evaluation'][name], defaults['evaluation'][name], f'evaluation.{name}')
+
+
+# Schema-6 reporting is deliberately separate from historical report layouts.
+LINEAR_CALR_PLOT_LABELS = ('standalone-cosine', 'S1-cosine', 'S2-cosine',
+    'S1-polynomial', 'S2-polynomial', 'S1-carl', 'S2-carl')
+LINEAR_CALR_STYLES = dict(zip(LINEAR_CALR_PLOT_LABELS,
+    (('#777777','^'),('#0072B2','o'),('#56B4E9','s'),('#E69F00','o'),
+     ('#D55E00','s'),('#009E73','o'),('#CC79A7','s'))))
+
+
+def _linear_calr_saved_config(run_dir, definition):
+    """Runtime may append observations but cannot change prepared controls."""
+    import copy
+    from pathlib import Path
+    config = _read_json(Path(run_dir)/'config.json')
+    expected = copy.deepcopy(definition['resolved_config'])
+    if config['training'].get('effective_world_size_source') == 'single_process':
+        _require_equal(config['training']['effective_world_size'],1,'saved world size')
+        expected['training']['effective_world_size_source']='single_process'
+    _check_resolved_subset(expected,config,'saved config')
+    return config
+
+
+def _linear_calr_native_terminal(run_dir, definition, traces):
+    """Reuse native terminal admission and the new own-bundle validator read-only."""
+    from pathlib import Path
+    import torch
+    config_source = _source_record(Path(run_dir)/'config.json')
+    config = _linear_calr_saved_config(run_dir,definition)
+    terminal = _inspect_terminal_run(run_dir,definition,traces,allow_partial=False)
+    if definition['optimizer_ownership_contract'].get('campaign_schema_version') == 6:
+        from src.training.modeling import build_model
+        from src.training.steps import build_optimizer_and_scheduler
+        from src.training.checkpointing import _validate_ownership_payload, _validate_model_state_before_load, _validate_ownership_action_rng
+        validate_linear_calr_controls(config)
+        checkpoint = _read_json(Path(run_dir)/'terminal_validation_results.json')['checkpoint_path']
+        payload = torch.load(checkpoint,map_location='cpu',weights_only=False)
+        # Constructor RNG consumption is isolated from the caller's streams.
+        with torch.random.fork_rng(devices=[]):
+            model=build_model(config)
+            optimizer,scheduler=build_optimizer_and_scheduler(model,config['training'])
+            loader = None
+            if config.get('dataset', {}).get('mode') == 'packed_mmap':
+                import copy
+                from src.training.data import build_packed_mmap_dataloaders
+                # Loader preparation recomputes runtime signatures. Keep the
+                # admitted saved configuration intact for checkpoint validation.
+                loader, _, _, _ = build_packed_mmap_dataloaders(copy.deepcopy(config), torch.device('cpu'))
+            _validate_model_state_before_load(model,payload['model_state_dict'])
+            _,saved_rng=_validate_ownership_payload(payload,config,model,optimizer,scheduler,train_dataloader=loader,inspect_only=True)
+            _validate_ownership_action_rng(payload,config,saved_rng)
+        terminal['applied_schedule_watermark']=payload['applied_schedule_watermark']
+    terminal.update(adapter='native',config=config)
+    terminal['sources'].append(config_source)
+    _check_sources(terminal['sources'])
+    return terminal
+
+
+def _linear_calr_legacy_terminal(run_dir, reference, counterpart):
+    """Saved peak-LR schema: terminal steps/tokens, never dormant ownership clocks."""
+    import csv
+    import math
+    from pathlib import Path
+    import torch
+    from src.utils.config import ConfigError
+    root=Path(run_dir).resolve()
+    initial_sources=[_source_record(root/name) for name in ('config.json','run_summary.json','scaling_results.csv','metrics.csv')]
+    config=_read_json(root/'config.json'); summary=_read_json(root/'run_summary.json')
+    scope='shared' if reference['arm_id'].startswith('S1-') else 'per_granularity'
+    expected_id=reference['arm_id']
+    for key,value in dict(run_id=expected_id,arm_id=expected_id,seed=42).items():
+        _require_equal(config['run'].get(key),value,'legacy '+key)
+    training=config['training']; original=counterpart['resolved_config']
+    # Enumerated scientific fields, independent of legacy identity/serialization.
+    for field in ('batch_size_per_process','gradient_accumulation_steps','optimizer_name','optimizer_kwargs',
+                  'resolved_mixed_precision','resolved_activation_checkpointing','gradient_clip_norm','gradient_clipping',
+                  'expected_tokens_per_step','max_steps','token_budget','granularity_sampling'):
+        _require_equal(training.get(field),original['training'].get(field),'legacy training.'+field)
+    for field,value in dict(resolved_learning_rate=.004,resolved_warmup_steps=64,
+                            scheduler_name='cosine',optimizer_state_scope=scope).items():
+        _require_equal(training.get(field),value,'legacy '+field)
+    for section,fields in dict(model=('d_model','num_layers','num_attention_heads','intermediate_size','context_length',
+            'vocab_size','variant','granularities','granularity_prefixes','membership_correction','initializer_range',
+            'tokenizer_manifest_hash','tokenizer_model_sha256'),
+            dataset=('corpus_hash','training_order_sha256','role_manifest_hashes','data_seed','optimizer_iteration')).items():
+        for field in fields:
+            _require_equal(config[section].get(field),original[section].get(field),'legacy '+section+'.'+field)
+    # No unrecognized optimizer hyperparameters may be smuggled into a saved config.
+    for field in ('adam_beta1','adam_beta2','adam_epsilon','weight_decay'):
+        if field in training or field in original['training']:
+            _require_equal(training.get(field),original['training'].get(field),'legacy '+field)
+    _require_equal(config['evaluation']['validation'],
+        {**original['evaluation']['validation'],'manifest_hash':PINNED_DATA['ordinary_validation_manifest_hash']},
+        'legacy ordinary validation protocol')
+    for field,value in dict(status='completed',run_id=expected_id,committed_optimizer_steps=348528,
+            tokens_seen=2855141376,validation_loss_aggregation=VALIDATION_AGGREGATION,
+            validation_manifest_hash=PINNED_DATA['ordinary_validation_manifest_hash'],
+            optimizer_training_manifest_hash=PINNED_DATA['optimizer_training_manifest_hash'],
+            tokenizer_manifest_hash=PINNED_DATA['tokenizer_manifest_hash'],terminal_checkpoint_purpose='resumable_training').items():
+        _require_equal(summary.get(field),value,'legacy summary.'+field)
+    checkpoint=Path(summary['terminal_checkpoint_path'])
+    if not checkpoint.is_absolute() or checkpoint.parent != root/'checkpoints' or checkpoint.name!='latest.pt':
+        raise ConfigError('Legacy terminal must select its own full-budget latest checkpoint')
+    sources=[initial_sources[0],initial_sources[1],_source_record(checkpoint),*initial_sources[2:]]
+    _require_equal(sources[2]['sha256'],summary['terminal_checkpoint_sha256'],'legacy checkpoint hash')
+    import pickle
+    try:
+        saved=torch.load(checkpoint,map_location='cpu',weights_only=False)
+    except (OSError,RuntimeError,EOFError,pickle.UnpicklingError) as error:
+        raise ConfigError('Legacy checkpoint cannot be read: '+str(error)) from error
+    for field,value in dict(checkpoint_kind='resumable_training',checkpoint_schema_version=1,run_id=expected_id,
+            step=348528,tokens_seen=2855141376,
+            ordinary_validation_manifest_hash=PINNED_DATA['ordinary_validation_manifest_hash'],
+            optimizer_training_manifest_hash=PINNED_DATA['optimizer_training_manifest_hash'],
+            tokenizer_manifest_hash=PINNED_DATA['tokenizer_manifest_hash']).items():
+        _require_equal(saved.get(field),value,'legacy checkpoint.'+field)
+    optimizer_key='optimizer_state_dict' if scope=='shared' else 'optimizer_state_collection'
+    for field in ('model_state_dict',optimizer_key,'scheduler_state_dict','reproducibility'):
+        if not isinstance(saved.get(field),dict) or not saved[field]:
+            raise ConfigError('Legacy checkpoint missing '+field)
+    clock=saved['scheduler_state_dict']
+    _require_equal(clock.get('position',clock.get('last_epoch')),348528,'legacy maintained scheduler position')
+    with (root/'scaling_results.csv').open() as stream: rows=list(csv.DictReader(stream))
+    if len(rows)!=4 or {r['granularity'] for r in rows}!=set(WIDTH_LABELS):
+        raise ConfigError('Legacy terminal needs four unique endpoints')
+    endpoints=[]
+    for row in rows:
+        width=row['granularity'];loss=float(row['final_validation_loss']);perplexity=float(row['final_validation_perplexity'])
+        if not math.isfinite(loss) or not math.isfinite(perplexity) or loss>709 or not math.isclose(perplexity,math.exp(loss),rel_tol=1e-10):
+            raise ConfigError('Legacy loss/perplexity invalid (serialization tolerance 1e-10)')
+        count=next(w['non_embedding_parameters'] for w in WIDTHS if w['label']==width)
+        _require_equal(int(row['non_embedding_parameters']),count,'legacy active count')
+        _require_equal(int(row['evaluation_target_tokens']),VALIDATION_TARGET_TOKENS,'legacy targets')
+        _require_equal(row['validation_manifest_hash'],PINNED_DATA['ordinary_validation_manifest_hash'],'legacy endpoint manifest')
+        endpoints.append(dict(width=width,loss=loss,perplexity=perplexity,non_embedding_parameters=count,
+            evaluation_role=EVALUATION_ROLE,validation_manifest_hash=row['validation_manifest_hash'],
+            evaluation_target_tokens=VALIDATION_TARGET_TOKENS,validation_loss_aggregation=VALIDATION_AGGREGATION))
+    # Bind the endpoint to measured terminal ordinary rows, not a trailing average.
+    last={}; seen=set()
+    with (root/'metrics.csv').open() as stream:
+        for row in csv.DictReader(stream):
+            if row['split']!='validation':continue
+            width=row['granularity'];step=int(row['step']);key=(width,step)
+            if width not in WIDTH_LABELS or key in seen or step>348528 or step<0:
+                raise ConfigError('Legacy ordinary metrics duplicate/invalid position')
+            seen.add(key)
+            for field,value in dict(run_id=expected_id,validation_manifest_hash=PINNED_DATA['ordinary_validation_manifest_hash'],
+                                    validation_loss_aggregation=VALIDATION_AGGREGATION).items():
+                _require_equal(row.get(field),value,'legacy metric '+field)
+            _require_equal(int(row['evaluation_target_tokens']),VALIDATION_TARGET_TOKENS,'legacy metric targets')
+            loss=float(row['loss'])
+            if not math.isfinite(loss):raise ConfigError('Legacy metric loss nonfinite')
+            last[width]=(step,loss)
+    for endpoint in endpoints:
+        if endpoint['width'] not in last or last[endpoint['width']][0]!=348528 or not math.isclose(last[endpoint['width']][1],endpoint['loss'],rel_tol=0,abs_tol=1e-12):
+            raise ConfigError('Legacy terminal ordinary metrics differ from endpoint')
+    _check_sources(sources)
+    return dict(adapter='legacy_peak_lr_v1',run_id=expected_id,arm_id=expected_id,run_dir=str(root),
+        config=config,endpoints=endpoints,sources=sources,checkpoint_sha256=sources[2]['sha256'],
+        checkpoint_path=str(checkpoint),evaluation_path=str(root/'scaling_results.csv'),
+        source_identity={k:v for k,v in saved['reproducibility'].items() if k not in ('rng_state','rng_states_by_rank')},legacy_counter_disclosure='Dormant ownership counters are not exposure evidence')
+
+
+def validate_linear_calr_references(reference_root):
+    """Admit the eight explicitly selected references without writes/retraining."""
+    from pathlib import Path
+    base=Path(reference_root).resolve(); selected=inspect_linear_calr_references(base)
+    manifest_path=base/'optimizer-ownership-v1/campaign/campaign_manifest.json'
+    manifest_source=_source_record(manifest_path); manifest=_read_preflight_manifest(manifest_path)
+    _require_equal(manifest['schema_version'],1,'linear native reference schema')
+    definitions={r['arm_id']:r for r in manifest['runs']};terminals=[]
+    for label,reference in LINEAR_CALR_REFERENCES.items():
+        root=base/reference['path']
+        if label.endswith('-004'):
+            terminal=_linear_calr_legacy_terminal(root,reference,definitions[label[:2]])
+        else:
+            run=definitions[reference['arm_id']]
+            terminal=_linear_calr_native_terminal(root,run,manifest['expected_traces'][run['arm_id']])
+        terminal.update(series='standalone-cosine' if label.startswith('ST-') else label.removesuffix('-004'),
+                        peak_lr=reference['peak'],historical_reference=True)
+        terminals.append(terminal)
+    sources=[manifest_source,*selected['sources'],*[s for t in terminals for s in t['sources']]]
+    _check_sources(sources)
+    return dict(status='complete',runs=terminals,sources=sources)
+
+
+def _linear_calr_endpoint_rows(terminal):
+    """Lossless provenance projection with technical CaLR naming in table fields."""
+    from pathlib import Path
+    config=terminal['config'];training=config['training']; root=Path(terminal['run_dir'])
+    schedule=training.get('linear_calr_schedule_contract');rows=[]
+    summary=_read_json(root/'run_summary.json');audit=summary.get('optimizer_ownership',{})
+    evaluation=Path(terminal.get('evaluation_path',root/'terminal_validation_results.json'))
+    checkpoint=terminal.get('checkpoint_path')
+    if checkpoint is None:checkpoint=_read_json(evaluation)['checkpoint_path']
+    for endpoint in terminal['endpoints']:
+        width=endpoint['width'];physical=next(w for w in WIDTHS if w['label']==width)
+        updates=87132 if terminal['series']=='standalone-cosine' else 348528
+        row=dict(**endpoint,series=terminal['series'],endpoint_id=stable_hash([terminal['run_id'],width,
+            _source_record(evaluation)['sha256']]),run_id=terminal['run_id'],arm_id=terminal['arm_id'],
+            campaign_id=config['run'].get('campaign_id'),seed=42,grid_id='linear',ffn_dimension=physical['active_ffn_dimension'],
+            active_trainable_parameters=LINEAR_CALR_COUNTS[width],width_fraction=physical['source_fraction'],
+            schedule='CaLR' if schedule and schedule['exponent_policy']=='complexity_log' else 'warmup_polynomial' if schedule else 'cosine',
+            exponent_policy=schedule['exponent_policy'] if schedule else 'cosine',gamma=schedule['exponents'][width] if schedule else None,
+            optimizer_state_scope=training['optimizer_state_scope'],peak_lr=terminal['peak_lr'],warmup_updates=64,horizon=updates,
+            assigned_updates=updates,actual_updates=updates,assigned_tokens=updates*TOKENS_PER_UPDATE,actual_tokens=updates*TOKENS_PER_UPDATE,
+            config_path=str(root/'config.json'),config_sha256=_source_record(root/'config.json')['sha256'],
+            checkpoint_path=checkpoint,checkpoint_sha256=terminal['checkpoint_sha256'],
+            evaluation_path=str(evaluation),evaluation_sha256=_source_record(evaluation)['sha256'],
+            metric_path=str(root/'metrics.csv'),metric_sha256=_source_record(root/'metrics.csv')['sha256'],
+            adapter=terminal['adapter'],historical_reference=terminal.get('historical_reference',False),
+            source_identity=terminal.get('source_identity',config.get('optimizer_ownership_contract',{}).get('initialization')),
+            source_records=terminal['sources'],legacy_counter_disclosure=terminal.get('legacy_counter_disclosure'),
+            applied_schedule_watermark=terminal.get('applied_schedule_watermark'),
+            width_selection_counts=audit.get('width_selection_counts'),owner_call_counts=audit.get('owner_call_counts'),
+            expected_exposure=audit.get('expected_exposure'),resources=audit.get('resources'),
+            legacy_training_wall_time_seconds=summary.get('training_wall_time_seconds') if terminal['adapter']!='native' else None)
+        rows.append(row)
+    return rows
+
+
+def collect_linear_calr_report(*,campaign_manifest,run_root,reference_root):
+    from pathlib import Path
+    manifest_source=_source_record(Path(campaign_manifest));manifest=_read_preflight_manifest(campaign_manifest)
+    _require_equal(manifest['schema_version'],6,'linear report schema')
+    terminals=[];sources=[manifest_source];reasons=[];statuses={}
+    for run in manifest['runs']:
+        try:
+            terminal=_linear_calr_native_terminal(Path(run_root)/run['arm_id'],run,manifest['expected_traces'][run['arm_id']])
+            terminal.update(series=run['arm_id'][:2]+('-carl' if run['arm_id'].endswith('CaLR') else '-polynomial'),
+                            peak_lr=.008,historical_reference=False)
+            terminals.append(terminal);sources.extend(terminal['sources'])
+        except (ValueError,OSError,RuntimeError,KeyError) as error:
+            reasons.append(f"{run['arm_id']}: {error}")
+    statuses['new_terminals']='complete' if len(terminals)==4 else 'incomplete'
+    try:
+        refs=validate_linear_calr_references(reference_root);terminals.extend(refs['runs']);sources.extend(refs['sources'])
+        statuses['references']='complete'
+    except (ValueError,OSError,RuntimeError,KeyError) as error:
+        statuses['references']='incomplete';reasons.append('references: '+str(error))
+    rows=[row for terminal in terminals for row in _linear_calr_endpoint_rows(terminal)]
+    _check_sources(sources)
+    return dict(endpoints=rows,runs=terminals,sources=sources,statuses=statuses,reasons=reasons)
+
+
+def linear_calr_comparisons(rows):
+    import math
+    from src.utils.config import ConfigError
+    index={}
+    for row in rows:
+        key=(row['series'],row['peak_lr'],row['width'])
+        if key in index or not math.isfinite(row['loss']) or not math.isfinite(row['perplexity']):
+            raise ConfigError('Duplicate/nonfinite comparison endpoint')
+        if not math.isclose(row['perplexity'],math.exp(row['loss']),rel_tol=1e-10):
+            raise ConfigError('Comparison endpoint perplexity inconsistent')
+        index[key]=row
+    required={(s,.008,w) for s in LINEAR_CALR_PLOT_LABELS for w in WIDTH_LABELS}|{(s,.004,w) for s in ('S1-cosine','S2-cosine') for w in WIDTH_LABELS}
+    if set(index)!=required or len({r['endpoint_id'] for r in rows})!=36:
+        raise ConfigError('Comparison requires exactly 36 unique terminal endpoints')
+    pairs=[];interactions=[];supplemental=[]
+    def pair(family,left,right,target=pairs):
+        a,b=index[left],index[right];ratio=a['perplexity']/b['perplexity']
+        target.append(dict(family=family,width=a['width'],left_endpoint_id=a['endpoint_id'],right_endpoint_id=b['endpoint_id'],
+            delta_loss=a['loss']-b['loss'],perplexity_ratio=ratio,relative_gap=ratio-1))
+    for w in WIDTH_LABELS:
+        for scope in ('S1','S2'):
+            pair('CaLR-minus-polynomial',(scope+'-carl',.008,w),(scope+'-polynomial',.008,w))
+            for policy in ('polynomial','carl'):
+                left=(scope+'-'+policy,.008,w)
+                pair('new-minus-cosine-008',left,(scope+'-cosine',.008,w))
+                pair('new-minus-standalone',left,('standalone-cosine',.008,w))
+                pair('supplemental-new-minus-cosine-004',left,(scope+'-cosine',.004,w),supplemental)
+        for policy in ('polynomial','carl'):
+            pair('S2-minus-S1',('S2-'+policy,.008,w),('S1-'+policy,.008,w))
+        four=[index[s,.008,w] for s in ('S2-carl','S2-polynomial','S1-carl','S1-polynomial')]
+        interactions.append(dict(width=w,**{s+'_endpoint_id':r['endpoint_id'] for s,r in zip(
+            ('S2_CaLR','S2_poly','S1_CaLR','S1_poly'),four)},
+            interaction_loss=(four[0]['loss']-four[1]['loss'])-(four[2]['loss']-four[3]['loss'])))
+    return pairs,interactions,supplemental
+
+
+def _linear_calr_panel_rows(rows,cosine_peak):
+    return [r for r in rows if r['peak_lr']==(cosine_peak if r['series'] in ('S1-cosine','S2-cosine') else .008)]
+
+
+def _linear_calr_caption(cosine_peak):
+    return (f'Cosine S1/S2 peak {cosine_peak}; new and standalone peak 0.008; warmup=64; seed=42.\n'
+        'Elastic: 348528 global updates; standalone: 87132. Elastic width exposure is selected, not full global exposure.')
+
+
+def linear_calr_endpoint_figure(rows,*,metric,cosine_peak):
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    fig,ax=plt.subplots(figsize=(10,6));selected=_linear_calr_panel_rows(rows,cosine_peak)
+    for series in LINEAR_CALR_PLOT_LABELS:
+        subset=sorted((r for r in selected if r['series']==series),key=lambda r:r['non_embedding_parameters'])
+        color,marker=LINEAR_CALR_STYLES[series]
+        x=[r['non_embedding_parameters'] for r in subset];y=[r[metric] for r in subset]
+        if series=='standalone-cosine':ax.scatter(x,y,label=series,color=color,marker=marker,zorder=4)
+        else:ax.plot(x,y,label=series,color=color,marker=marker)
+    ax.set(xlabel='Active non-embedding parameters',ylabel='Terminal ordinary-validation '+metric,title='TinyStories-Instruct · linear widths')
+    ax.grid(alpha=.2);ax.legend(fontsize=8);fig.text(.5,.015,_linear_calr_caption(cosine_peak),ha='center',fontsize=8)
+    fig.tight_layout(rect=(0,.09,1,1));return fig
+
+
+def linear_calr_measured_trajectories(run):
+    """Read recorded ordinary loss and verified applied records; never reconstruct LR."""
+    import csv
+    import json
+    import math
+    from pathlib import Path
+    from src.utils.config import ConfigError
+    root=Path(run['run_dir']);validation={};rates=[];sources=[]
+    metrics=root/'metrics.csv';sources.append(_source_record(metrics));scalar_count=0;scalar_last={};scalar_missing=False
+    endpoints={e['width']:e for e in run['endpoints']}
+    horizon=87132 if run['series']=='standalone-cosine' else 348528
+    with metrics.open() as stream:
+        for row in csv.DictReader(stream):
+            if row.get('split')=='train' and run['series'] in ('S1-cosine','S2-cosine'):
+                if row.get('optimizer_step_committed') not in ('True','true','1'):continue
+                scalar_count+=1;step=int(row['step']);width=row['granularity']
+                if (step!=scalar_count or row.get('run_id')!=run['run_id'] or width not in endpoints
+                        or row.get('selected_optimizer_granularity')!=width or not row.get('optimizer_action_id')
+                        or int(row.get('scheduler_position', '-1'))!=step-1):
+                    raise ConfigError('Historical committed applied scalar identity/position mismatch')
+                if row.get('learning_rate') in (None,''):scalar_missing=True;continue
+                value=float(row['learning_rate'])
+                if not math.isfinite(value) or value<0:raise ConfigError('Historical applied scalar nonfinite/negative')
+                measured=dict(series=run['series'],peak_lr=run['peak_lr'],width=width,
+                    pre_update_position=step-1,learning_rate=value)
+                scalar_last[width]=measured
+                if step<=65 or step%128==0:rates.append(measured)
+                continue
+            if row.get('split')!='validation':continue
+            step=int(row['step']);width=row['granularity'];key=(step,width)
+            if row.get('run_id') not in (None,'',run['run_id']) or width not in endpoints or step<0 or step>horizon or key in validation:
+                raise ConfigError('Measured validation identity/position/duplicate mismatch')
+            loss=float(row['loss'])
+            if not math.isfinite(loss):raise ConfigError('Measured validation loss nonfinite')
+            validation[key]=dict(series=run['series'],peak_lr=run['peak_lr'],width=width,step=step,loss=loss)
+    missing_validation=any((horizon,w) not in validation or not math.isclose(validation[horizon,w]['loss'],e['loss'],abs_tol=1e-12,rel_tol=0)
+        for w,e in endpoints.items())
+    if scalar_count:
+        existing={(r['width'],r['pre_update_position']) for r in rates}
+        rates.extend(r for r in scalar_last.values() if (r['width'],r['pre_update_position']) not in existing)
+        scalar_missing=scalar_missing or scalar_count!=horizon
+    trace=root/'optimizer_ownership_trace.jsonl'
+    if trace.is_file() and run['series']!='standalone-cosine':
+        sources.append(_source_record(trace));chain=None;count=0;last_rates={}
+        with trace.open() as stream:
+            for line in stream:
+                row=json.loads(line);record=row.get('applied_schedule_record')
+                if record is None:continue  # Historical nominal fields are not applied evidence.
+                count+=1;position=record.get('pre_update_position');width=record.get('width')
+                values=record.get('applied_learning_rates');watermark=row.get('applied_schedule_watermark')
+                if (record.get('evidence_kind')!='applied' or record.get('run_id')!=run['run_id']
+                        or record.get('step')!=count or position!=count-1 or width not in endpoints
+                        or row.get('step')!=count or row.get('width')!=width
+                        or not isinstance(values,list) or not values or len(set(values))!=1
+                        or any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or v<0 for v in values)):
+                    raise ConfigError('Measured applied record mismatch')
+                digest=stable_hash(record);chain=stable_hash([chain,record])
+                # The trainer's chain encoding is authoritative, checked by its validator.
+                if watermark != dict(step=count,last_record_hash=digest,chain_hash=chain):
+                    raise ConfigError('Measured applied watermark mismatch')
+                measured=dict(series=run['series'],peak_lr=run['peak_lr'],width=width,
+                    pre_update_position=position,learning_rate=values[0])
+                last_rates[width]=measured
+                if count<=65 or count%128==0:rates.append(measured)
+        if count and count!=horizon:raise ConfigError('Measured applied trace lacks terminal coverage')
+        existing={(r['width'],r['pre_update_position']) for r in rates}
+        rates.extend(r for r in last_rates.values() if (r['width'],r['pre_update_position']) not in existing)
+    _check_sources(sources)
+    return list(validation.values()),rates,dict(missing_validation=missing_validation,
+        missing_applied_lr=(not bool(rates) or scalar_missing) and run['series']!='standalone-cosine',sources=sources,
+        applied_plot_sampling='Recorded first 65, every 128th global commit and last commit per width; all records validated')
+
+
+def linear_calr_progress_figure(rows,observations,*,cosine_peak):
+    import matplotlib.pyplot as plt
+    fig,axes=plt.subplots(2,2,figsize=(12,8),sharex=True)
+    for ax,width in zip(axes.flat,WIDTH_LABELS):
+        for series in LINEAR_CALR_PLOT_LABELS:
+            color,marker=LINEAR_CALR_STYLES[series]
+            if series=='standalone-cosine':
+                subset=[r for r in rows if r['series']==series and r['width']==width]
+                ax.scatter([87132]*len(subset),[r['loss'] for r in subset],color=color,marker=marker,label=series)
+            else:
+                peak=cosine_peak if series in ('S1-cosine','S2-cosine') else .008
+                subset=sorted((r for r in observations if r['series']==series and r['peak_lr']==peak and r['width']==width),key=lambda r:r['step'])
+                if subset:ax.plot([r['step'] for r in subset],[r['loss'] for r in subset],color=color,label=series,linewidth=.8)
+        ax.set(title=width,xlabel='Global optimizer updates',ylabel='Recorded ordinary-validation loss');ax.grid(alpha=.2)
+    axes.flat[0].legend(fontsize=7);fig.text(.5,.015,_linear_calr_caption(cosine_peak),ha='center',fontsize=8)
+    fig.tight_layout(rect=(0,.09,1,1));return fig
+
+
+def linear_calr_lr_figure(observations,*,cosine_peak,missing):
+    import matplotlib.pyplot as plt
+    fig,axes=plt.subplots(2,2,figsize=(12,8),sharex=True)
+    for ax,width in zip(axes.flat,WIDTH_LABELS):
+        for series in LINEAR_CALR_PLOT_LABELS[1:]:
+            peak=cosine_peak if series in ('S1-cosine','S2-cosine') else .008
+            subset=sorted((r for r in observations if r['series']==series and r['peak_lr']==peak and r['width']==width),key=lambda r:r['pre_update_position'])
+            if subset:ax.plot([r['pre_update_position'] for r in subset],[r['learning_rate'] for r in subset],
+                             label=series,color=LINEAR_CALR_STYLES[series][0],linewidth=.7)
+        ax.set(title=width,xlabel='Global pre-update position',ylabel='Recorded applied LR');ax.grid(alpha=.2)
+    handles,_=axes.flat[0].get_legend_handles_labels()
+    if handles:axes.flat[0].legend(fontsize=7)
+    fig.text(.5,.015,_linear_calr_caption(cosine_peak)+'\nMissing measured LR: '+(', '.join(missing) or 'none'),ha='center',fontsize=7)
+    fig.tight_layout(rect=(0,.12,1,1));return fig
+
+
+def linear_calr_findings(rows,pairs,interactions):
+    index={(r['series'],r['peak_lr'],r['width']):r for r in rows}
+    lines=['Seed-42 descriptive ordinary-validation results. Negative loss differences favor the left endpoint.']
+    for width in WIDTH_LABELS:
+        lines.append('\n'+width+':')
+        for scope in ('S1','S2'):
+            a=index[scope+'-carl',.008,width];b=index[scope+'-polynomial',.008,width]
+            cosine=index[scope+'-cosine',.008,width];practical=index[scope+'-cosine',.004 if scope=='S1' else .008,width]
+            standalone=index['standalone-cosine',.008,width]
+            lines.append(f"{scope}: CaLR−polynomial {a['loss']-b['loss']:+.6f}; CaLR−cosine .008 {a['loss']-cosine['loss']:+.6f}; "
+                f"polynomial−cosine .008 {b['loss']-cosine['loss']:+.6f}; CaLR−practical cosine peak {practical['peak_lr']} "
+                f"{a['loss']-practical['loss']:+.6f}; polynomial−practical cosine {b['loss']-practical['loss']:+.6f}; CaLR−standalone {a['loss']-standalone['loss']:+.6f}; "
+                f"polynomial−standalone {b['loss']-standalone['loss']:+.6f}.")
+        effects=[p for p in pairs if p['width']==width and p['family']=='S2-minus-S1']
+        lines.append('Ownership S2−S1: '+', '.join(f"{p['delta_loss']:+.6f}" for p in effects)+
+            f"; interaction {next(r['interaction_loss'] for r in interactions if r['width']==width):+.6f}.")
+    lines.append('\nThe g1000 standalone gaps above describe full-width parity; the smaller-width gaps describe elastic sharing costs. '
+        'Elastic runs have 348528 global updates versus 87132 standalone updates; selected-width exposure differs from global exposure. '
+        'Changing exponents changes cumulative LR and AdamW decay as well as update timing. One seed cannot establish robustness, '
+        'guaranteed improvement, resolved interference or transfer of the CNN paper mechanism.')
+    return '\n'.join(lines)+'\n'
+
+
+def report_linear_calr(*,campaign_manifest,run_root,reference_root,output_dir):
+    """Publish a reconciled set atomically; incomplete sets retain admitted endpoints."""
+    from pathlib import Path
+    from src.utils.config import ConfigError
+    collected=collect_linear_calr_report(campaign_manifest=campaign_manifest,run_root=run_root,reference_root=reference_root)
+    rows=collected['endpoints'];sources=collected['sources'];reasons=list(collected['reasons'])
+    statuses=collected['statuses'];progress=[];rates=[];missing=[]
+    for terminal in collected['runs']:
+        try:
+            p,lr,notes=linear_calr_measured_trajectories(terminal);progress.extend(p);rates.extend(lr);sources.extend(notes.get('sources',[]))
+            if notes['missing_validation']:reasons.append(terminal['run_id']+': missing terminal validation trajectory')
+            if notes['missing_applied_lr']:missing.append(terminal['series']+' peak '+str(terminal['peak_lr']))
+        except (ValueError,OSError,RuntimeError,KeyError) as error:
+            reasons.append(terminal['run_id']+': trajectories: '+str(error))
+    statuses['trajectories']='incomplete' if reasons or missing else 'complete'
+    if missing:reasons.append('Missing measured applied LR: '+', '.join(missing))
+    try:
+        pairs,interactions,supplemental=linear_calr_comparisons(rows)
+        statuses['comparison']='complete'
+    except (ValueError,KeyError) as error:
+        pairs=interactions=supplemental=[];statuses['comparison']='incomplete';reasons.append(str(error))
+    overall='complete' if all(s=='complete' for s in statuses.values()) else 'incomplete'
+    def publish(stage,output):
+        import matplotlib.pyplot as plt
+        figures=[]
+        for stem,key,values in [('endpoints','endpoints',rows),('paired_differences','pairs',pairs),
+            ('interactions','interactions',interactions),('supplemental_004_differences','pairs',supplemental),
+            ('validation_progress','observations',progress),('applied_learning_rates','observations',rates)]:
+            if values:_write_warmup_table(stage,stem,key,values)
+        if pairs:
+            for peak,panel in ((.008,'primary'),(.004,'supplemental')):
+                for name,fig in [(metric,linear_calr_endpoint_figure(rows,metric=metric,cosine_peak=peak)) for metric in ('loss','perplexity')]+[
+                    ('validation_progress',linear_calr_progress_figure(rows,progress,cosine_peak=peak)),
+                    ('applied_lr',linear_calr_lr_figure(rates,cosine_peak=peak,missing=missing))]:
+                    for suffix in ('png','pdf'):
+                        filename=f'{panel}_{name}.{suffix}';fig.savefig(stage/filename,dpi=160,bbox_inches='tight');figures.append(str(output/filename))
+                    plt.close(fig)
+            (stage/'findings.md').write_text(linear_calr_findings(rows,pairs,interactions))
+        _check_sources(sources)
+        output_hashes={p.name:_source_record(p)['sha256'] for p in stage.iterdir() if p.is_file()}
+        manifest=dict(schema_version=1,status=overall,**statuses,sources=sources,output_sha256=output_hashes,
+            plot_labels=list(LINEAR_CALR_PLOT_LABELS),missing_applied_lr=missing,
+            applied_plot_sampling='Recorded first 65, every 128th global commit and last per width; full applied evidence validated',
+            code_source=_source_record(Path(__file__)),serialization_perplexity_rtol=1e-10)
+        write_json_artifact(stage/'plot_sources.json',manifest)
+        result=dict(schema_version=1,status=overall,**statuses,reasons=reasons,figures=figures,
+                    endpoint_count=len(rows),pair_count=len(pairs),interaction_count=len(interactions))
+        write_json_artifact(stage/'comparison_report.json',result)
+        _check_sources(sources)
+        return result
+    return _publish_directory(output_dir,publish)

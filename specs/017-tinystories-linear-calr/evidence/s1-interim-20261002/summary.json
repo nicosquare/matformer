@@ -1,0 +1,43 @@
+{
+  "endpoint_loss_table": [
+    {
+      "S1-carl": 2.081179870220653,
+      "S1-cosine": 2.0681570759990757,
+      "S1-polynomial": 2.0719639171633806,
+      "standalone-cosine": 2.062977141246461,
+      "width": "g250"
+    },
+    {
+      "S1-carl": 2.007385330451162,
+      "S1-cosine": 1.9959134925875748,
+      "S1-polynomial": 2.0003654530173853,
+      "standalone-cosine": 1.9919419690182334,
+      "width": "g500"
+    },
+    {
+      "S1-carl": 1.977641703371416,
+      "S1-cosine": 1.966166363264385,
+      "S1-polynomial": 1.9737035086280421,
+      "standalone-cosine": 1.9433632578766138,
+      "width": "g750"
+    },
+    {
+      "S1-carl": 1.9680718802569206,
+      "S1-cosine": 1.9538724250960768,
+      "S1-polynomial": 1.9628061733747784,
+      "standalone-cosine": 1.9090565852951584,
+      "width": "g1000"
+    }
+  ],
+  "figures": [
+    "primary_terminal_loss_perplexity.png",
+    "primary_terminal_loss_perplexity.pdf",
+    "primary_validation_progress.png",
+    "primary_validation_progress.pdf",
+    "supplemental_004_terminal_loss_perplexity.png",
+    "supplemental_004_terminal_loss_perplexity.pdf",
+    "supplemental_004_validation_progress.png",
+    "supplemental_004_validation_progress.pdf"
+  ],
+  "output_dir": "/home/ivo.navarrete/ElasticNN/matformer/specs/017-tinystories-linear-calr/evidence/s1-interim-20261002"
+}

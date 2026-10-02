@@ -557,3 +557,48 @@ def test_saved_schema6_manifest_roundtrip_uses_real_validator(calr_runs,tmp_path
 
 from test_linear_calr_campaign import calr_runs
 from test_optimizer_ownership_campaign import audited_inputs
+
+
+def test_completed_continuation_uses_admitted_saved_runtime(tmp_path,monkeypatch):
+    arm=ops.ARMS[0]
+    ops.save(tmp_path/'runs'/arm/'config.json',{'comparison_control_signature':'saved'})
+    ops.save(tmp_path/'runs'/arm/'run_summary.json',{'status':'completed'})
+    definition={'arm_id':arm,'assigned_updates':348528}
+    monkeypatch.setattr(ops.campaign,'_read_preflight_manifest',lambda *a:dict(runs=[definition],expected_traces={arm:{}}))
+    admitted=[]
+    def validate(root,run,traces):
+        admitted.append(root)
+        return {'checkpoint_sha256':'validated-full-bundle'}
+    monkeypatch.setattr(ops.campaign,'_linear_calr_native_terminal',validate)
+    monkeypatch.setattr(ops.shared,'continuation',lambda *a:pytest.fail('Must retain admitted saved runtime signature'))
+    result=ops.continuation(tmp_path,arm)
+    assert result['mode']=='completion_only' and result['step']==348528
+    assert result['checkpoint']['sha256']=='validated-full-bundle'
+    assert admitted==[tmp_path/'runs'/arm]
+
+
+def test_report_dispatch_uses_separate_source_and_keeps_production_binding(tmp_path,monkeypatch):
+    source=tmp_path/'report-source';source.mkdir()
+    monkeypatch.setattr(ops,'verify_plan',lambda *a,**k:{'reference_root':'read-only-references'})
+    calls=[]
+    def run(cmd,**kwargs):
+        calls.append((cmd,kwargs))
+        return subprocess.CompletedProcess(cmd,0)
+    monkeypatch.setattr(ops.subprocess,'run',run)
+    assert ops.report(tmp_path,source)==0
+    assert calls[0][0][1]==str(source/'scripts/analyze_tinystories_optimizer_ownership.py')
+    assert calls[0][1]['cwd']==source
+    assert str(tmp_path/'campaign/campaign_manifest.json') in calls[0][0]
+    assert ops.read(tmp_path/'launchers/status.json')['comparison']=='complete'
+
+
+def test_scheduler_reconciliation_queries_known_job_id(monkeypatch,tmp_path):
+    calls=[]
+    def query(args):
+        calls.append(args)
+        return '123|expected-name|COMPLETED|13096|0:0\n'
+    monkeypatch.setattr(ops,'command',query)
+    result=ops.scheduler_history(tmp_path,dict(job_id='123',name='expected-name',created_date='2026-10-02'))
+    assert result['state']=='COMPLETED' and result['job_id']=='123'
+    assert '--jobs=123' in calls[0]
+    assert not any(arg.startswith('--name=') for arg in calls[0])

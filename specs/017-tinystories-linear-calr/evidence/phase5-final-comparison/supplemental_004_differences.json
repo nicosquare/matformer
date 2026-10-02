@@ -1,0 +1,149 @@
+{
+  "pairs": [
+    {
+      "delta_loss": 0.008997965695565213,
+      "family": "supplemental-new-minus-cosine-004",
+      "left_endpoint_id": "b56df6e41d5f7102264b3b42ddd69bf7c523aaed77bff2d756581d0972a94964",
+      "perplexity_ratio": 1.009038569080144,
+      "relative_gap": 0.009038569080143999,
+      "right_endpoint_id": "262b6e2a28f03fac36e4d964344ad128da9b9a8d3410a759835e902aec656c31",
+      "width": "g250"
+    },
+    {
+      "delta_loss": 0.01821391875283762,
+      "family": "supplemental-new-minus-cosine-004",
+      "left_endpoint_id": "fa24f23553e8a4e9fd5cd61bc8d070b598695e1b285298dcd3fbe3f65b72e03e",
+      "perplexity_ratio": 1.0183808038417463,
+      "relative_gap": 0.01838080384174634,
+      "right_endpoint_id": "262b6e2a28f03fac36e4d964344ad128da9b9a8d3410a759835e902aec656c31",
+      "width": "g250"
+    },
+    {
+      "delta_loss": 0.0068345417056168145,
+      "family": "supplemental-new-minus-cosine-004",
+      "left_endpoint_id": "5f2a0453bc2b198b7e5b8fe552ecd8e4e4af45d4ca2ee14804ba224e26a5ca43",
+      "perplexity_ratio": 1.0068579504848183,
+      "relative_gap": 0.006857950484818298,
+      "right_endpoint_id": "8174c4fb38aa32dfc7ab93ec59931e8f9c126f5ca400ded768992b3748783eb5",
+      "width": "g250"
+    },
+    {
+      "delta_loss": 0.3750622674038535,
+      "family": "supplemental-new-minus-cosine-004",
+      "left_endpoint_id": "d94feb75294abc53419a1d27a1824f82dafea356685095944dae4e82d090d5f3",
+      "perplexity_ratio": 1.455082015976945,
+      "relative_gap": 0.4550820159769451,
+      "right_endpoint_id": "8174c4fb38aa32dfc7ab93ec59931e8f9c126f5ca400ded768992b3748783eb5",
+      "width": "g250"
+    },
+    {
+      "delta_loss": 0.008823438694602448,
+      "family": "supplemental-new-minus-cosine-004",
+      "left_endpoint_id": "78b55ef93c8f7a957b1148e33cdef830c4a2189eb1fa2ffe932f866bf3a07f9b",
+      "perplexity_ratio": 1.0088624799714256,
+      "relative_gap": 0.00886247997142564,
+      "right_endpoint_id": "74730353a5e605772add605a2bd919fcbd0a478160174e82ee6a5eac557226a2",
+      "width": "g500"
+    },
+    {
+      "delta_loss": 0.015843316128379303,
+      "family": "supplemental-new-minus-cosine-004",
+      "left_endpoint_id": "e9c9ef517a6a0940344ed801074693213f6d235b24fd3f83234abedc108ae17e",
+      "perplexity_ratio": 1.0159694869018452,
+      "relative_gap": 0.015969486901845187,
+      "right_endpoint_id": "74730353a5e605772add605a2bd919fcbd0a478160174e82ee6a5eac557226a2",
+      "width": "g500"
+    },
+    {
+      "delta_loss": 0.002570718631409896,
+      "family": "supplemental-new-minus-cosine-004",
+      "left_endpoint_id": "d23ee0981a810274fab112af2b6a9eafd8aa94df5c108020aa20416652749894",
+      "perplexity_ratio": 1.0025740257618443,
+      "relative_gap": 0.0025740257618442897,
+      "right_endpoint_id": "abed52e93050ed72f2f0f4ded97aa113681c05af5c7689f44aa25c1d03f14f72",
+      "width": "g500"
+    },
+    {
+      "delta_loss": 0.12171830085285906,
+      "family": "supplemental-new-minus-cosine-004",
+      "left_endpoint_id": "4b31710df1089516ff25065d67f5b027ce84bf20f9145073e64e45e61b88e06d",
+      "perplexity_ratio": 1.1294358958346442,
+      "relative_gap": 0.1294358958346442,
+      "right_endpoint_id": "abed52e93050ed72f2f0f4ded97aa113681c05af5c7689f44aa25c1d03f14f72",
+      "width": "g500"
+    },
+    {
+      "delta_loss": 0.011593525451526254,
+      "family": "supplemental-new-minus-cosine-004",
+      "left_endpoint_id": "852fcdc7c897e74f1f0594b07178b4c3fae0226ff098e32c4688eecbc023e649",
+      "perplexity_ratio": 1.0116609908361915,
+      "relative_gap": 0.011660990836191543,
+      "right_endpoint_id": "b6f0863c438a285736a68203fe4488eb74827adcc9146d9ea69a853031666da6",
+      "width": "g750"
+    },
+    {
+      "delta_loss": 0.015531720194900123,
+      "family": "supplemental-new-minus-cosine-004",
+      "left_endpoint_id": "cc552bbf374563ccc9cadcf597d931cbddbbb44b3db18f21083f08e103a0af75",
+      "perplexity_ratio": 1.015652964257333,
+      "relative_gap": 0.01565296425733309,
+      "right_endpoint_id": "b6f0863c438a285736a68203fe4488eb74827adcc9146d9ea69a853031666da6",
+      "width": "g750"
+    },
+    {
+      "delta_loss": 0.005132626650626193,
+      "family": "supplemental-new-minus-cosine-004",
+      "left_endpoint_id": "5c772a4db68f3fbe2c95f5c0d236ca750530ade0a077fb0419e728ee7283009e",
+      "perplexity_ratio": 1.0051458211432698,
+      "relative_gap": 0.00514582114326978,
+      "right_endpoint_id": "67151703c3170cefaf7432d5561ae2692388cfc9ca072fda9bfe51e73fbe4787",
+      "width": "g750"
+    },
+    {
+      "delta_loss": 0.01788031009205615,
+      "family": "supplemental-new-minus-cosine-004",
+      "left_endpoint_id": "fca6c70faf3ba11d5f128153457755917dd681afbb22a943c1025adfff84dd36",
+      "perplexity_ratio": 1.0180411198495223,
+      "relative_gap": 0.01804111984952228,
+      "right_endpoint_id": "67151703c3170cefaf7432d5561ae2692388cfc9ca072fda9bfe51e73fbe4787",
+      "width": "g750"
+    },
+    {
+      "delta_loss": 0.011788128969962175,
+      "family": "supplemental-new-minus-cosine-004",
+      "left_endpoint_id": "aa29f5eb7040046c0922c394e3cf4e872804193cd39c61e0878cd5217c0b7456",
+      "perplexity_ratio": 1.0118578827817841,
+      "relative_gap": 0.011857882781784124,
+      "right_endpoint_id": "ee1f6c597be58761cdc227ead6eb99b9da6e9ce081e050886008384199a3286f",
+      "width": "g1000"
+    },
+    {
+      "delta_loss": 0.017053835852104404,
+      "family": "supplemental-new-minus-cosine-004",
+      "left_endpoint_id": "1ef6630af329d36075846144214080abdcb2d942a378afdb2faa3f634e826c7e",
+      "perplexity_ratio": 1.0172000826844043,
+      "relative_gap": 0.017200082684404316,
+      "right_endpoint_id": "ee1f6c597be58761cdc227ead6eb99b9da6e9ce081e050886008384199a3286f",
+      "width": "g1000"
+    },
+    {
+      "delta_loss": 0.006591645876566465,
+      "family": "supplemental-new-minus-cosine-004",
+      "left_endpoint_id": "4f62e53af2d6c0481c394a730333b97331ad90d4ffd4031d2723b8400de1e1f7",
+      "perplexity_ratio": 1.0066134185872906,
+      "relative_gap": 0.006613418587290587,
+      "right_endpoint_id": "0c2a19e8eb3997a0387466cae18cf5a59606ca95ec906db11b960b3136d0889f",
+      "width": "g1000"
+    },
+    {
+      "delta_loss": 0.0006668019713016449,
+      "family": "supplemental-new-minus-cosine-004",
+      "left_endpoint_id": "2c71ff5dbcdd8959bbe93833e5f433fbd511df505fb137a3c3b6e766c173b3ee",
+      "perplexity_ratio": 1.0006670243331572,
+      "relative_gap": 0.0006670243331572401,
+      "right_endpoint_id": "0c2a19e8eb3997a0387466cae18cf5a59606ca95ec906db11b960b3136d0889f",
+      "width": "g1000"
+    }
+  ],
+  "schema_version": 1
+}

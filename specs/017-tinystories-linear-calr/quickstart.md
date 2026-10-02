@@ -63,4 +63,13 @@ Snapshot inputs live in `diagnostics/inputs.json`; frozen source hashes in `diag
 
 A subsequent explicit user instruction is recorded separately in `authorizations/diagnostic.json` or `authorizations/production.json`. Each record contains `purpose`, `authorized: true`, the verbatim `user_instruction`, `recorded_at`, and the current `bindings(ROOT)` dictionary; use the launcher's `sealed()` helper for its `content_hash`. Passing readiness or a CLI flag does not supply authorization. The T029–T031 authorization has supplied both records for the current snapshot.
 
-Phase 4's CPU gate keeps `reporting_fixture_status: pending` until Phase 5 provides its executed reporting-fixture proof. `report` dispatches the Phase 5 `report-linear-calr` operation and records its return code/incomplete status; that analyzer operation remains a Phase 5 task. Consult tasks.md and verification.md for the actual T029–T031 outcomes.
+The CPU gate runs `tests/test_linear_calr_reporting.py` and records `reporting_fixture_status: passed` only when its executed JUnit cases all pass without skips and the full CPU command succeeds. `report` dispatches the implemented `report-linear-calr` operation and records its return code/incomplete status. Consult tasks.md and verification.md for the actual T029–T031 outcomes.
+
+
+Implemented schema-6 reporting can also be invoked directly from the tested snapshot:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" "$ROOT/source/scripts/analyze_tinystories_optimizer_ownership.py" report-linear-calr --campaign-manifest "$ROOT/campaign/campaign_manifest.json" --run-root "$ROOT/runs" --reference-root /nfs-stor/ivo.navarrete/results/elasticnn --output-dir "$ROOT/reports/comparison"
+```
+
+Use a fresh report directory. Complete publication has 36 endpoint rows, 48 required pairs, four interactions, a separate 16-pair supplemental .004 table and 16 PNG/PDF artifacts. Incomplete publication returns exit 1 and retains admitted endpoints with independent new-terminal/reference/trajectory/comparison status. Applied LR exports sample recorded first 65, every 128th global commit and last commit per width after validating all committed evidence; no analytic LR reconstruction is plotted. Historical artifacts are read-only.

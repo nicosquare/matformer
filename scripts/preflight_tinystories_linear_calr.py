@@ -22,6 +22,7 @@ GPU_COVERAGE = ops.GPU_COVERAGE
 CPU_SUITES = (
     'test_linear_calr_foundation.py', 'test_linear_calr_campaign.py',
     'test_linear_calr_schedule.py', 'test_linear_calr_resume.py', 'test_linear_calr_queue.py',
+    'test_linear_calr_reporting.py', 'test_optimizer_ownership_reporting.py', 'test_s1_warmup_reporting.py',
     'test_config.py', 'test_optimizer_ownership.py', 'test_optimizer_ownership_resume.py',
     'test_optimizer_ownership_corrections.py', 'test_metrics_compact_accounting.py',
     'test_reproducibility.py',
@@ -129,7 +130,12 @@ def pytest_check(source, output, *, gpu=False):
         for key in counts: counts[key] += int(suite.get(key,0))
     record.update(counts)
     if not gpu:
-        record['reporting_fixture_status'] = 'pending'
+        reporting = [case for case in ET.parse(junit).getroot().iter('testcase')
+                     if 'test_linear_calr_reporting' in case.get('classname', '').split('.')]
+        accepted = bool(reporting) and all(not any(case.find(tag) is not None
+            for tag in ('failure', 'error', 'skipped')) for case in reporting)
+        record['reporting_fixture_status'] = 'passed' if accepted and returncode == 0 else 'pending'
+        record['reporting_fixture_tests'] = len(reporting)
     record['artifacts'] = [dict(path=str(p),sha256=ops.digest(p)) for p in (junit,output/'pytest.log')]
     return record
 

@@ -163,6 +163,16 @@ def prepare(root, cpu_evidence):
 
 def continuation(root, arm):
     if arm not in ARMS: raise ConfigError(f'Unknown linear CaLR arm: {arm}')
+    root = Path(root)
+    runtime = root/'runs'/arm/'config.json'
+    summary = root/'runs'/arm/'run_summary.json'
+    if runtime.is_file() and summary.is_file() and read(summary).get('status') == 'completed':
+        manifest = campaign._read_preflight_manifest(root/'campaign/campaign_manifest.json')
+        definition = next(run for run in manifest['runs'] if run['arm_id'] == arm)
+        terminal = campaign._linear_calr_native_terminal(root/'runs'/arm, definition, manifest['expected_traces'][arm])
+        return dict(mode='completion_only', step=definition['assigned_updates'],
+            checkpoint=dict(path=str(root/'runs'/arm/'checkpoints/latest.pt'),
+                step=definition['assigned_updates'], sha256=terminal['checkpoint_sha256']))
     return shared.continuation(root, arm)
 
 
@@ -171,6 +181,11 @@ def scheduler_history(root, intent):
     args = ['sacct', '-X', '--noheader', '--parsable2', '--user='+getpass.getuser(),
         '--starttime='+intent['created_date'], '--name='+intent['name'],
         '--format=JobIDRaw,JobName%100,State,ElapsedRaw,ExitCode']
+    if intent.get('job_id'):
+        # Once submission is durable, query its exact ID. Name/time filtering
+        # can omit an otherwise available completed accounting record.
+        args = ['sacct', '-X', '--noheader', '--parsable2', '--jobs='+str(intent['job_id']),
+            '--format=JobIDRaw,JobName%100,State,ElapsedRaw,ExitCode']
     try: raw = command(args)
     except (OSError, subprocess.SubprocessError): return None
     rows = [dict(zip(('job_id','name','state','allocation_seconds','exit_code'), line.split('|'))) for line in raw.splitlines()]
@@ -393,15 +408,16 @@ def worker(root,arm,attempt_id):
             record.update(status='failed',error=str(error),finished_at=time.time());save(path,record);raise
 
 
-def report(root):
+def report(root, report_source=None):
     """Dispatch the reporting operation without queueing or training."""
     root = Path(root).resolve()
     plan = verify_plan(root, gpu=False)
-    cmd = [PYTHON, str(root/'source/scripts/analyze_tinystories_optimizer_ownership.py'),
+    source = Path(report_source).resolve() if report_source else root/'source'
+    cmd = [PYTHON, str(source/'scripts/analyze_tinystories_optimizer_ownership.py'),
         'report-linear-calr', '--campaign-manifest', str(root/'campaign/campaign_manifest.json'),
         '--run-root', str(root/'runs'), '--reference-root', plan['reference_root'],
         '--output-dir', str(root/'reports/comparison')]
-    result = subprocess.run(cmd,cwd=root/'source')
+    result = subprocess.run(cmd,cwd=source)
     status_path=root/'launchers/status.json'
     status=read(status_path) if status_path.exists() else {}
     status.update(comparison='complete' if result.returncode==0 else 'incomplete',
@@ -429,10 +445,12 @@ def main(argv=None):
     parser.add_argument('mode',choices=('prepare','queue','worker','report'))
     parser.add_argument('--campaign-root',type=Path,required=True)
     parser.add_argument('--cpu-evidence',type=Path)
+    parser.add_argument('--report-source',type=Path,help='Separate immutable reporting snapshot; never used for training')
     parser.add_argument('--arm',choices=ARMS);parser.add_argument('--attempt-id',type=int)
     parser.add_argument('--once',action='store_true');args=parser.parse_args(argv)
     root=args.campaign_root.resolve()
-    if REPO!=root/'source':
+    if args.report_source is not None and args.mode != 'report':parser.error('--report-source is only valid for report')
+    if REPO!=root/'source' and not (args.mode=='report' and args.report_source is not None and REPO==args.report_source.resolve()):
         if args.mode!='prepare':parser.error('Execute queue/worker/report from the tested source snapshot')
         # Convenience prepare command still runs the exact tested executable.
         return subprocess.call([PYTHON,str(root/'source/scripts/run_tinystories_linear_calr.py'),*(sys.argv[1:] if argv is None else argv)])
@@ -441,7 +459,7 @@ def main(argv=None):
         prepare(root,args.cpu_evidence)
     elif args.mode=='report':
         try:
-            return report(root)
+            return report(root,args.report_source)
         except (ValueError, OSError, RuntimeError) as error:
             print(f'Campaign report incomplete: {error}', file=sys.stderr)
             return 1

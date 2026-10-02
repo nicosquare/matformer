@@ -1,0 +1,66 @@
+Reconciling full terminal S1-linear-poly
+Reconciling full terminal S1-linear-CaLR
+Reconciling full terminal S2-linear-poly
+Reconciling full terminal S2-linear-CaLR
+T031 terminal reconciliation complete; publishing comparison
+{
+  "comparison": "complete",
+  "endpoint_count": 36,
+  "figures": [
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/primary_loss.png",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/primary_loss.pdf",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/primary_perplexity.png",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/primary_perplexity.pdf",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/primary_validation_progress.png",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/primary_validation_progress.pdf",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/primary_applied_lr.png",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/primary_applied_lr.pdf",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/supplemental_loss.png",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/supplemental_loss.pdf",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/supplemental_perplexity.png",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/supplemental_perplexity.pdf",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/supplemental_validation_progress.png",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/supplemental_validation_progress.pdf",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/supplemental_applied_lr.png",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/supplemental_applied_lr.pdf"
+  ],
+  "interaction_count": 4,
+  "new_terminals": "complete",
+  "pair_count": 48,
+  "reasons": [],
+  "references": "complete",
+  "schema_version": 1,
+  "status": "complete",
+  "trajectories": "complete"
+}
+Report return code 0
+{
+  "comparison": "complete",
+  "endpoint_count": 36,
+  "figures": [
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/primary_loss.png",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/primary_loss.pdf",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/primary_perplexity.png",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/primary_perplexity.pdf",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/primary_validation_progress.png",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/primary_validation_progress.pdf",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/primary_applied_lr.png",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/primary_applied_lr.pdf",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/supplemental_loss.png",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/supplemental_loss.pdf",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/supplemental_perplexity.png",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/supplemental_perplexity.pdf",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/supplemental_validation_progress.png",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/supplemental_validation_progress.pdf",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/supplemental_applied_lr.png",
+    "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/comparison/supplemental_applied_lr.pdf"
+  ],
+  "interaction_count": 4,
+  "new_terminals": "complete",
+  "pair_count": 48,
+  "reasons": [],
+  "references": "complete",
+  "schema_version": 1,
+  "status": "complete",
+  "trajectories": "complete"
+}

@@ -1,0 +1,380 @@
+{
+  "endpoint_sha256": "a085f1d5d60a64a48066c787a2ec0ed1e22528683d9d13ada24be390c0a0e99f",
+  "execution": [
+    {
+      "arm_id": "S1-linear-poly",
+      "job_id": "290635",
+      "resources": {
+        "attempt_count": 1,
+        "attempted_steps": 348528,
+        "cost_scope": "Update work, ordinary validation and failed process costs overlap total process time; never added to it",
+        "elapsed_seconds": 12019.518763258122,
+        "elapsed_seconds_is_lower_bound": false,
+        "failed_attempt_seconds": 0,
+        "incomplete_attempts": [],
+        "measurement_complete": true,
+        "ordinary_validation_seconds": 880.346736419946,
+        "peak_allocated_bytes": 453779968,
+        "peak_reserved_bytes": 528482304,
+        "scheduler_allocation_scope": "Reported separately by launcher; overlaps process time and is never added to it",
+        "scheduler_allocation_seconds": null,
+        "training_update_seconds": 8334.068442084827,
+        "unobserved_attempts": []
+      },
+      "scheduler": {
+        "allocation_seconds": "12042",
+        "exit_code": "0:0",
+        "job_id": "290635",
+        "name": "calr-S1-linear-poly-a1-5212dfe7",
+        "state": "COMPLETED"
+      }
+    },
+    {
+      "arm_id": "S1-linear-CaLR",
+      "job_id": "290636",
+      "resources": {
+        "attempt_count": 1,
+        "attempted_steps": 348528,
+        "cost_scope": "Update work, ordinary validation and failed process costs overlap total process time; never added to it",
+        "elapsed_seconds": 12048.30986468494,
+        "elapsed_seconds_is_lower_bound": false,
+        "failed_attempt_seconds": 0,
+        "incomplete_attempts": [],
+        "measurement_complete": true,
+        "ordinary_validation_seconds": 883.5625291392207,
+        "peak_allocated_bytes": 453779968,
+        "peak_reserved_bytes": 528482304,
+        "scheduler_allocation_scope": "Reported separately by launcher; overlaps process time and is never added to it",
+        "scheduler_allocation_seconds": null,
+        "training_update_seconds": 8300.499638598412,
+        "unobserved_attempts": []
+      },
+      "scheduler": {
+        "allocation_seconds": "12078",
+        "exit_code": "0:0",
+        "job_id": "290636",
+        "name": "calr-S1-linear-CaLR-a1-f33d4014",
+        "state": "COMPLETED"
+      }
+    }
+  ],
+  "figure_sha256": {
+    "primary_terminal_loss_perplexity.pdf": "48a0e3aaaeec993783056f9c4b70d15fa4f2270e72f025ae8242298fbc28fa07",
+    "primary_terminal_loss_perplexity.png": "90b5620385a19e7b3899534f3df587aacf692a3b24f4fc998749a99ed3c6763e",
+    "primary_validation_progress.pdf": "a18637b8d18c41eb6a041a43bcb45ed30ef09fed2d1ca48461042b809949baa7",
+    "primary_validation_progress.png": "5c5cc14ab11ad78e2b2fe7bda3e279071dd70aac49f589ff89b9bd7ac7e3c3a3",
+    "supplemental_004_terminal_loss_perplexity.pdf": "3ee228bd583bf9ce6fb230269839b2cac5ce1e51bb8a5e3cd0b8c0cac45203cb",
+    "supplemental_004_terminal_loss_perplexity.png": "83a4a1ab5b750fbccf274414f1d62f8c6e1587616dbb609f172a6873a3cdca54",
+    "supplemental_004_validation_progress.pdf": "9cb03b4f7866794fa7dfb1af94e3061799f2901221fe4bd56e2f51a1b7b6361a",
+    "supplemental_004_validation_progress.png": "020bcb98c23592a747baa8acf6b5b25a43efb2a07529555f49be7061bbde2b54"
+  },
+  "full_campaign_status": "incomplete",
+  "generator_source": {
+    "path": "/tmp/calr-s1-interim-plots.py",
+    "sha256": "a96cc39851a8646ca08cd8e06199e05ca4cd7fb4f81ce801eeb4318e458dbff4"
+  },
+  "new_s1_terminal_status": "complete",
+  "scope": "S1-only interim",
+  "sources": [
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/campaign/campaign_manifest.json",
+      "sha256": "a7e6d2a4ccb433db188fece58c3135487065242ed0713646debe5cfdf4d51d51"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/campaign/campaign_manifest.json",
+      "sha256": "28b33f33a313914976e22fef6fddc8e7cad58007cfca15e983f118b42c950f54"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/launchers/worker-S1-linear-poly-1.json",
+      "sha256": "9fa2b8295c114bf1b09d1142139650999af9d0cf4534433bc096a06422e7cc13"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/launchers/cuda-entry-S1-linear-poly-1.json",
+      "sha256": "a1b4e0c2eeb41e5e288981de08b64f9b9b775868dec7555bafa4cb58a92ec9eb"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/runs/S1-linear-poly/config.json",
+      "sha256": "67ecbeff4663eda6cf71423ff48281db7a70c92b03fe4c7d7f59ce47e326bc1e"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/runs/S1-linear-poly/resource_attempts.json",
+      "sha256": "4084bbefa3623140524491e92ca6de118113d71794af8d37bba55c92480a6b7e"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/runs/S1-linear-poly/run_summary.json",
+      "sha256": "c645c6d1a4f28643f5e1549125ee92348548204ed9d72f2d5ee37fefbdbda7d5"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/runs/S1-linear-poly/terminal_validation_results.json",
+      "sha256": "7786da30c30569c87a41218983023db19200212710cb5831b63d5980a1c62ad8"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/runs/S1-linear-poly/checkpoints/latest.pt",
+      "sha256": "d13a281a19cd6caba5526379078162476ab05721ecc644c769710527da5374db"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/runs/S1-linear-poly/optimizer_ownership_trace.jsonl",
+      "sha256": "de5e142ab1cf46252dec2b512fca85a76da1f7952e1b63879dc26e2486593180"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/runs/S1-linear-poly/metrics.csv",
+      "sha256": "98a8dec77b74cce20f554ad0d856d19567192b0918516fd85c8c3721219e36ae"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/runs/S1-linear-poly/resource_attempts.json",
+      "sha256": "4084bbefa3623140524491e92ca6de118113d71794af8d37bba55c92480a6b7e"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/runs/S1-linear-poly/config.json",
+      "sha256": "67ecbeff4663eda6cf71423ff48281db7a70c92b03fe4c7d7f59ce47e326bc1e"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/launchers/worker-S1-linear-CaLR-1.json",
+      "sha256": "846f44315be5f58f687e3c2f622e5998d622baf271ae815adb725cb97dbc11c1"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/launchers/cuda-entry-S1-linear-CaLR-1.json",
+      "sha256": "7a6082fec4ead0182a4149b09c996862ee4d7eceef24af2a292690962eb5f0c5"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/runs/S1-linear-CaLR/config.json",
+      "sha256": "9e8612d66e71fa791a289dc1aef1cdd7cec70336b6f54c8dfcfabd0012f61cc8"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/runs/S1-linear-CaLR/resource_attempts.json",
+      "sha256": "ff5c9600f5520fae38e0c09c9af34ec406d72e4cfe7ecc721eafb93bdaf54a48"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/runs/S1-linear-CaLR/run_summary.json",
+      "sha256": "dd6b80382c2406e9829f93eac492b2853b6820dd3b99f5bd91af75e4910fa5ca"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/runs/S1-linear-CaLR/terminal_validation_results.json",
+      "sha256": "c3e9f13ee020ffb97dba3a2f4e547c5dfe477abda9039ee23e7e4de723693d40"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/runs/S1-linear-CaLR/checkpoints/latest.pt",
+      "sha256": "f542e154ed0492714dbc6e9a8a3498647fbaa2bc71393700dcc0e14858b0b602"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/runs/S1-linear-CaLR/optimizer_ownership_trace.jsonl",
+      "sha256": "564d10d92e199867b8581107d82347fbb0d259cdf456895766b3b00ce607d3d0"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/runs/S1-linear-CaLR/metrics.csv",
+      "sha256": "d1514c73d9a9886dc2cbd41c4d05d97fd14b4d3c45c23ceb70254f111c40dce9"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/runs/S1-linear-CaLR/resource_attempts.json",
+      "sha256": "ff5c9600f5520fae38e0c09c9af34ec406d72e4cfe7ecc721eafb93bdaf54a48"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/runs/S1-linear-CaLR/config.json",
+      "sha256": "9e8612d66e71fa791a289dc1aef1cdd7cec70336b6f54c8dfcfabd0012f61cc8"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/run_summary.json",
+      "sha256": "65aa60d85e26c921b78f026cdcb3e97723f684d8b53804d054a451c9292b682c"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/terminal_validation_results.json",
+      "sha256": "a95fbfb213cb93c89938612bdcad2906750494bb0bb25b709ca56d75c06f8b93"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/checkpoints/latest.pt",
+      "sha256": "0dd076aff6e98f578469d6d09318b2fca9a18834fdd7cf79d7e2818826c20de5"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/optimizer_ownership_trace.jsonl",
+      "sha256": "50cf2f90be00bbc165289debc832c04274480ed025e33254fbdf1376508d23d9"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/metrics.csv",
+      "sha256": "91414f8dd65e434da3e4e88d6c904069e82d96878950a6263cdaebbe3bfd8d6c"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/resource_attempts.json",
+      "sha256": "da5ce888183822aad2f01d5853eb7bbcd1b948f11b58886c46c2f1a180688074"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/config.json",
+      "sha256": "64c3f6c4309b114776a93a58f9b794be7d77e7902ccdcef53eb004802ef799e3"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/run_summary.json",
+      "sha256": "0ff09c6cb3cae707d51a4118f68708dfabc43d456ef23f2ae107089ad5b75ae7"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/terminal_validation_results.json",
+      "sha256": "51e911ef1cda6b34ded84d5c5ca2670e7007e9258bd73c704e1e43ed857f738f"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/checkpoints/latest.pt",
+      "sha256": "1648954fe9541787ec10ea2e12560012b8c1e9fcbec50ceeb3f6109ded833472"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/optimizer_ownership_trace.jsonl",
+      "sha256": "d76555131e8932a4b60d70d01f32ba9213e215a4e6b023aca6a867fb93446fcf"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/metrics.csv",
+      "sha256": "b3442f1c6ca87a7601eb0f172ce00f2fc1fddd657dca141e23fa62a96d486057"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/resource_attempts.json",
+      "sha256": "7c6198d7ccdccab45e71ca7b2b89be2962ea41327c98f5d5cf1e0498de73292e"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/config.json",
+      "sha256": "015922e7a6496d7ebfdaff07b3bf31968fcc5fdf7920b22491b056e93787ea58"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/run_summary.json",
+      "sha256": "65654bc8d48ddd979670e17eaa4e3f1135b059bea47b4df03e0ce5bfe77fb013"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/terminal_validation_results.json",
+      "sha256": "ea1665ff9dd63e9654e7a3bf7748b3ec42359ae374a7782c0b446d42d7c0c5e2"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/checkpoints/latest.pt",
+      "sha256": "e8a29be655e74e9d354307f8d90d77bfc465f58e9c6154a63eefdaf8908ce283"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/optimizer_ownership_trace.jsonl",
+      "sha256": "7cc832b1039b549d731691fe3bad46fdbe177c1f6e3271c64f81611e103f0427"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/metrics.csv",
+      "sha256": "847ca9dce769fe8e1c2c77e14dfa3d9c1116d1c1689d1c52dca1d4a68cd7e795"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/resource_attempts.json",
+      "sha256": "8c0f75b03ccc8cb562299f0704025fec16e4fae73b0683be0159218978e1db6c"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/config.json",
+      "sha256": "b0ceddabf8bbb6cc7ff69a9cf042dd34a9330fee538d6d26b6024b46368ce5fd"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/run_summary.json",
+      "sha256": "c8d1cba9230692eb2edd540f943afc05f86d3ce82744008b1a8dbc29aaf677bb"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/terminal_validation_results.json",
+      "sha256": "f91573257c8dd8277fbee8263c4640358d4d3dc4b9435452de102572e0ce8fc1"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/checkpoints/latest.pt",
+      "sha256": "b601611dd30488ad6209a8de12b007c97daf2d7dda7a15cf0c3f142c46e3f77b"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/optimizer_ownership_trace.jsonl",
+      "sha256": "841bbdf1dcfc663e369689d1a3c3d53e3e4c8451657245cc48817520ab6ed1de"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/metrics.csv",
+      "sha256": "8c85241cdd34fb1dd4e2ff85fa67cf4317e0383ed1312d562af1d35b1f40a67a"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/resource_attempts.json",
+      "sha256": "f7f6b1b829b184efa85f57f88987283b4ac0c23383122b820d37d4c9b4dc20c5"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/config.json",
+      "sha256": "8f315505ab2da0c6868ed3bd3d7e83e9576a7bd9f9e4972fa08e7c0e25e449d2"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/run_summary.json",
+      "sha256": "ccbaa8a07686008caf3f8f0d0f515becaebf6fe9fca26b6f36b3664f8040a8da"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/terminal_validation_results.json",
+      "sha256": "a2fd73e504c012411e05199bbeea7747adde1df93a05fc3f62798c5a764241ea"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/checkpoints/latest.pt",
+      "sha256": "e3a5d109485c075c8535c878ad9a750910a995d0f648636b09a505ddb3b267ad"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/optimizer_ownership_trace.jsonl",
+      "sha256": "e46c58784e6a6e63aa207445ff05a1380f355324b8577334fe60276dcae1d683"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/metrics.csv",
+      "sha256": "6800c561b2f63119fea6fc0084be7b913ea9f260380b116aa55f5fa20f0d606c"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/resource_attempts.json",
+      "sha256": "2b7e8a9c973b1be2047d20ef4632cf235b0f561b123b914ab48ed8f5a2371cbd"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/config.json",
+      "sha256": "58925b02b331f9aaf7ab566dd52060390ed11f4c949dc4c43666080e786064e6"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/config.json",
+      "sha256": "f15871ca6b6b0c4743595276adcdebfa43c55a570bafccc8ff00904977ddd32a"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/run_summary.json",
+      "sha256": "6c605c05e6f7ce4f183dc3d7a73bb689d4cfbd2ba8fbb58bc6a556259129fb56"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/checkpoints/latest.pt",
+      "sha256": "21e08f18362b9cbddf1b21ead0c9fc31a618e57025b8585bf3d7cce42504efd2"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/scaling_results.csv",
+      "sha256": "a3881f7328a5b6404839b4c59bfcb8e0e63f50c53828318b79a4cd261e3d2e88"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/metrics.csv",
+      "sha256": "63a6d19666fca4d2a2b4d873d065655259bc34e8fec880e0707c2d521d63f0f9"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/runs/S1-linear-poly/metrics.csv",
+      "sha256": "98a8dec77b74cce20f554ad0d856d19567192b0918516fd85c8c3721219e36ae"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/runs/S1-linear-poly/optimizer_ownership_trace.jsonl",
+      "sha256": "de5e142ab1cf46252dec2b512fca85a76da1f7952e1b63879dc26e2486593180"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/runs/S1-linear-CaLR/metrics.csv",
+      "sha256": "d1514c73d9a9886dc2cbd41c4d05d97fd14b4d3c45c23ceb70254f111c40dce9"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/runs/S1-linear-CaLR/optimizer_ownership_trace.jsonl",
+      "sha256": "564d10d92e199867b8581107d82347fbb0d259cdf456895766b3b00ce607d3d0"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/metrics.csv",
+      "sha256": "91414f8dd65e434da3e4e88d6c904069e82d96878950a6263cdaebbe3bfd8d6c"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/optimizer_ownership_trace.jsonl",
+      "sha256": "50cf2f90be00bbc165289debc832c04274480ed025e33254fbdf1376508d23d9"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/metrics.csv",
+      "sha256": "b3442f1c6ca87a7601eb0f172ce00f2fc1fddd657dca141e23fa62a96d486057"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/metrics.csv",
+      "sha256": "847ca9dce769fe8e1c2c77e14dfa3d9c1116d1c1689d1c52dca1d4a68cd7e795"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/metrics.csv",
+      "sha256": "8c85241cdd34fb1dd4e2ff85fa67cf4317e0383ed1312d562af1d35b1f40a67a"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/metrics.csv",
+      "sha256": "6800c561b2f63119fea6fc0084be7b913ea9f260380b116aa55f5fa20f0d606c"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/metrics.csv",
+      "sha256": "63a6d19666fca4d2a2b4d873d065655259bc34e8fec880e0707c2d521d63f0f9"
+    }
+  ]
+}

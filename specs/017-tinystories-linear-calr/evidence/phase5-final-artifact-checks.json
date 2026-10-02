@@ -1,0 +1,13 @@
+{
+  "status": "complete",
+  "counts": {
+    "endpoints": 36,
+    "pairs": 48,
+    "interactions": 4,
+    "supplemental_pairs": 16,
+    "figures": 16
+  },
+  "output_hashes_verified": true,
+  "arithmetic_verified": true,
+  "reporting_snapshot": "86e5072fe825bfeef6f256ac1214923c0852f93b18ad9f8fe02b9caa8847a1cb"
+}

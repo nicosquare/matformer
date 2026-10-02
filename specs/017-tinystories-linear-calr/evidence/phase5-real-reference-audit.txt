@@ -1,0 +1,9 @@
+references complete 8
+tinystories-optimizer-ownership-v1-S1-s42 4 21784 2791 False False
+tinystories-optimizer-ownership-v1-S2-s42 4 21784 2791 False False
+S1-linear-lr0004 4 21784 2791 False False
+S2-linear-lr0004 4 21784 2791 False False
+tinystories-optimizer-ownership-v1-ST-g250-s42 1 1362 0 False False
+tinystories-optimizer-ownership-v1-ST-g500-s42 1 1362 0 False False
+tinystories-optimizer-ownership-v1-ST-g750-s42 1 1362 0 False False
+tinystories-optimizer-ownership-v1-ST-g1000-s42 1 1362 0 False False

@@ -1,0 +1,11 @@
+Reconciling full terminal S1-linear-poly
+Reconciling full terminal S1-linear-CaLR
+Reconciling full terminal S2-linear-poly
+Traceback (most recent call last):
+  File "/tmp/calr-phase5-finalize.py", line 25, in <module>
+    proof=ops.execution_evidence(root,intent,plan)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1/reports/reporting-source-20261002/scripts/run_tinystories_linear_calr.py", line 238, in execution_evidence
+    if account['state'].split()[0].rstrip('+') != 'COMPLETED' or account.get('exit_code') != '0:0':
+       ~~~~~~~^^^^^^^^^
+TypeError: 'NoneType' object is not subscriptable

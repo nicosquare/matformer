@@ -1,0 +1,2991 @@
+{
+  "records": [
+    {
+      "run_id": "tinystories-optimizer-ownership-v1-S1-s42",
+      "adapter": "native",
+      "endpoints": [
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_batches": 5,
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "c86a902db8fbff953552e112c1086b2a9ef203c55ad6494bb39f8867b3b3dd01",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_skipped_batches": 0,
+          "evaluation_target_tokens": 36195,
+          "granularity": "g250",
+          "loss": 2.0681570759990757,
+          "non_embedding_parameters": 115264,
+          "perplexity": 7.910231720670371,
+          "tokens_seen": 36195,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g250",
+          "series": "S1-cosine",
+          "endpoint_id": "87e191e0833c00b9299e751731c8db416c915eb0845c3c35797eaf32e15ed4a3",
+          "run_id": "tinystories-optimizer-ownership-v1-S1-s42",
+          "arm_id": "S1",
+          "campaign_id": "tinystories-optimizer-ownership-v1",
+          "seed": 42,
+          "grid_id": "linear",
+          "ffn_dimension": 64,
+          "active_trainable_parameters": 377408,
+          "width_fraction": 0.25,
+          "schedule": "cosine",
+          "exponent_policy": "cosine",
+          "gamma": null,
+          "optimizer_state_scope": "shared",
+          "peak_lr": 0.008,
+          "warmup_updates": 64,
+          "horizon": 348528,
+          "assigned_updates": 348528,
+          "actual_updates": 348528,
+          "assigned_tokens": 2855141376,
+          "actual_tokens": 2855141376,
+          "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/config.json",
+          "config_sha256": "64c3f6c4309b114776a93a58f9b794be7d77e7902ccdcef53eb004802ef799e3",
+          "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/checkpoints/latest.pt",
+          "checkpoint_sha256": "0dd076aff6e98f578469d6d09318b2fca9a18834fdd7cf79d7e2818826c20de5",
+          "evaluation_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/terminal_validation_results.json",
+          "evaluation_sha256": "a95fbfb213cb93c89938612bdcad2906750494bb0bb25b709ca56d75c06f8b93",
+          "metric_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/metrics.csv",
+          "metric_sha256": "91414f8dd65e434da3e4e88d6c904069e82d96878950a6263cdaebbe3bfd8d6c",
+          "adapter": "native",
+          "historical_reference": true,
+          "source_identity": {
+            "code_revision": "84772bcaa87a4dac446cd5a6a0f23b5f52aa32bd",
+            "constructor": "ModifiedLlamaForCausalLM",
+            "cross_model_tensor_equality_required": false,
+            "dependency_versions": {
+              "PyYAML": "6.0.3",
+              "datasets": "4.8.5",
+              "matplotlib": "3.10.9",
+              "numpy": "2.4.3",
+              "pandas": "3.0.2",
+              "torch": "2.11.0+cu128",
+              "transformers": "5.8.0"
+            },
+            "derived_seed": 9177830445524338247,
+            "initializer_range": 0.02,
+            "method": "fresh_normal_constructor",
+            "seed": 42,
+            "seed_stream": "model_initialization",
+            "source_files_sha256": {
+              "scripts/analyze_tinystories_optimizer_ownership.py": "424e15b8766ad63c3ae281f0f1c1471ca7de88e36e2b49204c1a77fe289eb1f8",
+              "src/__init__.py": "981a0840b0aeb0a81b4453143e2333e6026d57b945ad8e01b3740c70472fd36c",
+              "src/evaluation/__init__.py": "d7000d1a9a855a5a0968dd8aab9f64d3650735a658691bbd2633b602229ee4c2",
+              "src/evaluation/consistency.py": "c5f2becef2abfb651fbcbc07d0c654ec86d6e85128dc58365de071d787f599a2",
+              "src/evaluation/downstream.py": "ff99ed8cb2a93f7aaa25df269bf4db6d36821aa5828a82f13e501815abddc526",
+              "src/evaluation/final_holdout.py": "f9579689c69cc578f99ec9c60f20d8800205a3fb350a1d17d888e6c59e23eebd",
+              "src/evaluation/optimizer_ownership.py": "5576fd74ff297d06ff6575a62bf253b5ee5556370985c1654cd411c30308ff02",
+              "src/evaluation/reporting.py": "8d45ad64404d4e8751d7ffe344c6414f8e0ba4bad6adeed415fc393bfc5048ef",
+              "src/evaluation/reporting_impl.py": "dafebf4046e13dc4c62cb96fe68d33057ea564683e2281a3d3704fa800ed7b7e",
+              "src/evaluation/reporting_io.py": "e776332fa5b519509c393ab8b0e52faec03d6e815cba0a83caaa1212ead3ea99",
+              "src/evaluation/reporting_styles.py": "704e52af0cad6389466c41678cf924c29a0932cad4f766efcbda25b8e5e02182",
+              "src/evaluation/speculative.py": "3f9f67cdacceb52e0bd190d5101837d05039d4d5dd8a500a9ac4911da02529f8",
+              "src/evaluation/validation.py": "452ae96a62699b99c9818c112a2c7573bb69cac30ea93abc1ba5c9ba695b301c",
+              "src/models/__init__.py": "178ac182a914f43b326471c1543334b2445625ba93537ba946bc13f89892e0fc",
+              "src/models/adaptive_sampler.py": "1b300fb3b4fd9b5e98fd0bce58b634bf5fcfcd87107e292234a9efb425486429",
+              "src/models/correction.py": "9325dbe7f1455df56dfe48b3d82d01f0222b7805c358b693fc047b8b0b9ecc8a",
+              "src/models/ffn.py": "e568ae79bb8cb14cd325d12bf099695265b8240a4370afbd9d2f81dd7cfa00ad",
+              "src/models/granularity.py": "88b31e0c6f60e03f49ac2b52777bd8be325e5c0ceb8727eb6743a9d63080a439",
+              "src/models/wiring.py": "b6d4381fe313f1343987cbcafc509b8f54d43ab12922bcb5d54ca06a750858aa",
+              "src/training/__init__.py": "c9992966495aee9958246dfd25f1d6692b61bb26a4804c27c588e108cf84b6d1",
+              "src/training/baselines.py": "6f3e29d7e4d0966319697b3a6b5a478e0c03b1efcff40fd783a6bc0cfa2296f7",
+              "src/training/checkpointing.py": "9cbf107ee540effb4961dc1f660bb86dbbee08f82dff50e00c551932068b7aba",
+              "src/training/data.py": "3c4248808207c38926081ac4c01bd6bde55010bdef00316cd3dfe9195d560158",
+              "src/training/distributed.py": "7dcd22de96124f5e423bdbea8cc3a8ed210d0de8c0fd90d8fa4aa80248e98c6b",
+              "src/training/fineweb_tokenizer.py": "7dac28fbd921b65ed91853b56442fbfe4d35ed46ac70d6cf138ad422b2dd07c9",
+              "src/training/gradient_interference.py": "44613fb78ee4926b47f67df9c9a1f8abf22e01ea8f26bcf65258d1e607c31ea2",
+              "src/training/gradient_probe.py": "15371e485fb3c18c7ffb9495875ecb60a13345c34230016ba22c42f2365ff81c",
+              "src/training/modeling.py": "6ba1672862b90ad2924b064d215d2f925550db153dc9f834da979228b0fa5048",
+              "src/training/monitoring.py": "e32ac302bd3364e2a769b6824518a240b607cc9870518f17f3e88b83307023df",
+              "src/training/optimizer_state.py": "ba01a8c87ba64bc58ce88a76e42f72dd774775b9e7170a683379e476b7029cdd",
+              "src/training/packed_corpus.py": "238e83ec334ee56ae964ad3c555ef86e783905573637bbb372bcb2355757965c",
+              "src/training/panelgrad.py": "f23dd3ec031fbbd6219b89827ac93f7ae7899ed82f05d914f8d4113e2bc756ab",
+              "src/training/portfolio_catchup.py": "b5f24aff8163e66cce22aa768ae435cb0cbaaedfbc7943b4e2704f21ba750b8d",
+              "src/training/probabilistic_controller.py": "ef266191fdec1f69170b7c6151d07ed462e31ac057f8d8e737c11254a60bc4e3",
+              "src/training/run.py": "b5534c175bf96e857a8bc2316338b19e545e22bf60b1118a3e8bd3c303ea3b00",
+              "src/training/schedules.py": "dde7be2a550fb1809e9532b732514acc2583b04eb160e13a7a231ea64653a5c7",
+              "src/training/steps.py": "9ce858f8a3214601316b3050d45b68a7f0211aa39b5b32fcb2c73eef794f23e1",
+              "src/training/tinystories.py": "7413ca22e719ee59b20bdb935b084050daad093ef9036574eb2eb731d98c57a9",
+              "src/training/tinystories_instruct.py": "b7418a8d55c2662c79f4a31c3e02c4c002f24c167a9be50542e2c67679e16be4",
+              "src/training/tinystories_preparation.py": "0e3960e3fcb8bb22772933a4c4f41d9bf1eff04a3868ee36e9c30528b232024a",
+              "src/training/warmup.py": "90d5efc57944db9bd2bf11f430d03dd62e605a83f04ef05a5612a8247ecfdd8d",
+              "src/utils/__init__.py": "29d28af6cfe9fff76c572dc6362cb5c74e13affc464c057ea8efc5ea54703634",
+              "src/utils/artifact_io.py": "477a8669c48e1be19166a708ed3ab58fe6dc21f550f5d6144ee6ef3bc9b896b7",
+              "src/utils/config.py": "49186b5bb214a1e010e4c2cb68f679440d490d6fb650efeb67548f4201f05105",
+              "src/utils/heartbeats.py": "6d10b71b812942898ad3f10d8fa0403ba2ea12d2e11b0fecd9518f6b084c5006",
+              "src/utils/metrics.py": "a268810898cb2144a83745c4158f972110c14d1659d30257376460b8b24ec5cd",
+              "src/utils/model_size.py": "6642b1875e3e9591f1addc02bcc3535f0b96edfa7b1df08327c3f8694c8c593e",
+              "src/utils/monitoring.py": "d973413540e586ce1f6c2de504d56eebfa7dca366ded2f44395c039ac2911c3b",
+              "src/utils/reproducibility.py": "b54771768da5a9ba7d093d73828e71bdfa943c2fbad55fd3f1613b1be094ecc1",
+              "train.py": "930504810f0c6a4e7ea6d12e2660ab6e672edddd69818aaf864459e35ff7bfbd"
+            },
+            "tracked_code_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "working_tree_dirty": false
+          },
+          "source_records": [
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/run_summary.json",
+              "sha256": "65aa60d85e26c921b78f026cdcb3e97723f684d8b53804d054a451c9292b682c"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/terminal_validation_results.json",
+              "sha256": "a95fbfb213cb93c89938612bdcad2906750494bb0bb25b709ca56d75c06f8b93"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/checkpoints/latest.pt",
+              "sha256": "0dd076aff6e98f578469d6d09318b2fca9a18834fdd7cf79d7e2818826c20de5"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/optimizer_ownership_trace.jsonl",
+              "sha256": "50cf2f90be00bbc165289debc832c04274480ed025e33254fbdf1376508d23d9"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/metrics.csv",
+              "sha256": "91414f8dd65e434da3e4e88d6c904069e82d96878950a6263cdaebbe3bfd8d6c"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/resource_attempts.json",
+              "sha256": "da5ce888183822aad2f01d5853eb7bbcd1b948f11b58886c46c2f1a180688074"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/config.json",
+              "sha256": "64c3f6c4309b114776a93a58f9b794be7d77e7902ccdcef53eb004802ef799e3"
+            }
+          ],
+          "legacy_counter_disclosure": null,
+          "applied_schedule_watermark": null
+        },
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_batches": 5,
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "c86a902db8fbff953552e112c1086b2a9ef203c55ad6494bb39f8867b3b3dd01",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_skipped_batches": 0,
+          "evaluation_target_tokens": 36195,
+          "granularity": "g500",
+          "loss": 1.9959134925875748,
+          "non_embedding_parameters": 164416,
+          "perplexity": 7.3589222793850855,
+          "tokens_seen": 36195,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g500",
+          "series": "S1-cosine",
+          "endpoint_id": "3ac3900b30dc74a029ea9b70f12194191ba8632373616899c0e74bb540962c6e",
+          "run_id": "tinystories-optimizer-ownership-v1-S1-s42",
+          "arm_id": "S1",
+          "campaign_id": "tinystories-optimizer-ownership-v1",
+          "seed": 42,
+          "grid_id": "linear",
+          "ffn_dimension": 128,
+          "active_trainable_parameters": 426560,
+          "width_fraction": 0.5,
+          "schedule": "cosine",
+          "exponent_policy": "cosine",
+          "gamma": null,
+          "optimizer_state_scope": "shared",
+          "peak_lr": 0.008,
+          "warmup_updates": 64,
+          "horizon": 348528,
+          "assigned_updates": 348528,
+          "actual_updates": 348528,
+          "assigned_tokens": 2855141376,
+          "actual_tokens": 2855141376,
+          "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/config.json",
+          "config_sha256": "64c3f6c4309b114776a93a58f9b794be7d77e7902ccdcef53eb004802ef799e3",
+          "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/checkpoints/latest.pt",
+          "checkpoint_sha256": "0dd076aff6e98f578469d6d09318b2fca9a18834fdd7cf79d7e2818826c20de5",
+          "evaluation_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/terminal_validation_results.json",
+          "evaluation_sha256": "a95fbfb213cb93c89938612bdcad2906750494bb0bb25b709ca56d75c06f8b93",
+          "metric_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/metrics.csv",
+          "metric_sha256": "91414f8dd65e434da3e4e88d6c904069e82d96878950a6263cdaebbe3bfd8d6c",
+          "adapter": "native",
+          "historical_reference": true,
+          "source_identity": {
+            "code_revision": "84772bcaa87a4dac446cd5a6a0f23b5f52aa32bd",
+            "constructor": "ModifiedLlamaForCausalLM",
+            "cross_model_tensor_equality_required": false,
+            "dependency_versions": {
+              "PyYAML": "6.0.3",
+              "datasets": "4.8.5",
+              "matplotlib": "3.10.9",
+              "numpy": "2.4.3",
+              "pandas": "3.0.2",
+              "torch": "2.11.0+cu128",
+              "transformers": "5.8.0"
+            },
+            "derived_seed": 9177830445524338247,
+            "initializer_range": 0.02,
+            "method": "fresh_normal_constructor",
+            "seed": 42,
+            "seed_stream": "model_initialization",
+            "source_files_sha256": {
+              "scripts/analyze_tinystories_optimizer_ownership.py": "424e15b8766ad63c3ae281f0f1c1471ca7de88e36e2b49204c1a77fe289eb1f8",
+              "src/__init__.py": "981a0840b0aeb0a81b4453143e2333e6026d57b945ad8e01b3740c70472fd36c",
+              "src/evaluation/__init__.py": "d7000d1a9a855a5a0968dd8aab9f64d3650735a658691bbd2633b602229ee4c2",
+              "src/evaluation/consistency.py": "c5f2becef2abfb651fbcbc07d0c654ec86d6e85128dc58365de071d787f599a2",
+              "src/evaluation/downstream.py": "ff99ed8cb2a93f7aaa25df269bf4db6d36821aa5828a82f13e501815abddc526",
+              "src/evaluation/final_holdout.py": "f9579689c69cc578f99ec9c60f20d8800205a3fb350a1d17d888e6c59e23eebd",
+              "src/evaluation/optimizer_ownership.py": "5576fd74ff297d06ff6575a62bf253b5ee5556370985c1654cd411c30308ff02",
+              "src/evaluation/reporting.py": "8d45ad64404d4e8751d7ffe344c6414f8e0ba4bad6adeed415fc393bfc5048ef",
+              "src/evaluation/reporting_impl.py": "dafebf4046e13dc4c62cb96fe68d33057ea564683e2281a3d3704fa800ed7b7e",
+              "src/evaluation/reporting_io.py": "e776332fa5b519509c393ab8b0e52faec03d6e815cba0a83caaa1212ead3ea99",
+              "src/evaluation/reporting_styles.py": "704e52af0cad6389466c41678cf924c29a0932cad4f766efcbda25b8e5e02182",
+              "src/evaluation/speculative.py": "3f9f67cdacceb52e0bd190d5101837d05039d4d5dd8a500a9ac4911da02529f8",
+              "src/evaluation/validation.py": "452ae96a62699b99c9818c112a2c7573bb69cac30ea93abc1ba5c9ba695b301c",
+              "src/models/__init__.py": "178ac182a914f43b326471c1543334b2445625ba93537ba946bc13f89892e0fc",
+              "src/models/adaptive_sampler.py": "1b300fb3b4fd9b5e98fd0bce58b634bf5fcfcd87107e292234a9efb425486429",
+              "src/models/correction.py": "9325dbe7f1455df56dfe48b3d82d01f0222b7805c358b693fc047b8b0b9ecc8a",
+              "src/models/ffn.py": "e568ae79bb8cb14cd325d12bf099695265b8240a4370afbd9d2f81dd7cfa00ad",
+              "src/models/granularity.py": "88b31e0c6f60e03f49ac2b52777bd8be325e5c0ceb8727eb6743a9d63080a439",
+              "src/models/wiring.py": "b6d4381fe313f1343987cbcafc509b8f54d43ab12922bcb5d54ca06a750858aa",
+              "src/training/__init__.py": "c9992966495aee9958246dfd25f1d6692b61bb26a4804c27c588e108cf84b6d1",
+              "src/training/baselines.py": "6f3e29d7e4d0966319697b3a6b5a478e0c03b1efcff40fd783a6bc0cfa2296f7",
+              "src/training/checkpointing.py": "9cbf107ee540effb4961dc1f660bb86dbbee08f82dff50e00c551932068b7aba",
+              "src/training/data.py": "3c4248808207c38926081ac4c01bd6bde55010bdef00316cd3dfe9195d560158",
+              "src/training/distributed.py": "7dcd22de96124f5e423bdbea8cc3a8ed210d0de8c0fd90d8fa4aa80248e98c6b",
+              "src/training/fineweb_tokenizer.py": "7dac28fbd921b65ed91853b56442fbfe4d35ed46ac70d6cf138ad422b2dd07c9",
+              "src/training/gradient_interference.py": "44613fb78ee4926b47f67df9c9a1f8abf22e01ea8f26bcf65258d1e607c31ea2",
+              "src/training/gradient_probe.py": "15371e485fb3c18c7ffb9495875ecb60a13345c34230016ba22c42f2365ff81c",
+              "src/training/modeling.py": "6ba1672862b90ad2924b064d215d2f925550db153dc9f834da979228b0fa5048",
+              "src/training/monitoring.py": "e32ac302bd3364e2a769b6824518a240b607cc9870518f17f3e88b83307023df",
+              "src/training/optimizer_state.py": "ba01a8c87ba64bc58ce88a76e42f72dd774775b9e7170a683379e476b7029cdd",
+              "src/training/packed_corpus.py": "238e83ec334ee56ae964ad3c555ef86e783905573637bbb372bcb2355757965c",
+              "src/training/panelgrad.py": "f23dd3ec031fbbd6219b89827ac93f7ae7899ed82f05d914f8d4113e2bc756ab",
+              "src/training/portfolio_catchup.py": "b5f24aff8163e66cce22aa768ae435cb0cbaaedfbc7943b4e2704f21ba750b8d",
+              "src/training/probabilistic_controller.py": "ef266191fdec1f69170b7c6151d07ed462e31ac057f8d8e737c11254a60bc4e3",
+              "src/training/run.py": "b5534c175bf96e857a8bc2316338b19e545e22bf60b1118a3e8bd3c303ea3b00",
+              "src/training/schedules.py": "dde7be2a550fb1809e9532b732514acc2583b04eb160e13a7a231ea64653a5c7",
+              "src/training/steps.py": "9ce858f8a3214601316b3050d45b68a7f0211aa39b5b32fcb2c73eef794f23e1",
+              "src/training/tinystories.py": "7413ca22e719ee59b20bdb935b084050daad093ef9036574eb2eb731d98c57a9",
+              "src/training/tinystories_instruct.py": "b7418a8d55c2662c79f4a31c3e02c4c002f24c167a9be50542e2c67679e16be4",
+              "src/training/tinystories_preparation.py": "0e3960e3fcb8bb22772933a4c4f41d9bf1eff04a3868ee36e9c30528b232024a",
+              "src/training/warmup.py": "90d5efc57944db9bd2bf11f430d03dd62e605a83f04ef05a5612a8247ecfdd8d",
+              "src/utils/__init__.py": "29d28af6cfe9fff76c572dc6362cb5c74e13affc464c057ea8efc5ea54703634",
+              "src/utils/artifact_io.py": "477a8669c48e1be19166a708ed3ab58fe6dc21f550f5d6144ee6ef3bc9b896b7",
+              "src/utils/config.py": "49186b5bb214a1e010e4c2cb68f679440d490d6fb650efeb67548f4201f05105",
+              "src/utils/heartbeats.py": "6d10b71b812942898ad3f10d8fa0403ba2ea12d2e11b0fecd9518f6b084c5006",
+              "src/utils/metrics.py": "a268810898cb2144a83745c4158f972110c14d1659d30257376460b8b24ec5cd",
+              "src/utils/model_size.py": "6642b1875e3e9591f1addc02bcc3535f0b96edfa7b1df08327c3f8694c8c593e",
+              "src/utils/monitoring.py": "d973413540e586ce1f6c2de504d56eebfa7dca366ded2f44395c039ac2911c3b",
+              "src/utils/reproducibility.py": "b54771768da5a9ba7d093d73828e71bdfa943c2fbad55fd3f1613b1be094ecc1",
+              "train.py": "930504810f0c6a4e7ea6d12e2660ab6e672edddd69818aaf864459e35ff7bfbd"
+            },
+            "tracked_code_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "working_tree_dirty": false
+          },
+          "source_records": [
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/run_summary.json",
+              "sha256": "65aa60d85e26c921b78f026cdcb3e97723f684d8b53804d054a451c9292b682c"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/terminal_validation_results.json",
+              "sha256": "a95fbfb213cb93c89938612bdcad2906750494bb0bb25b709ca56d75c06f8b93"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/checkpoints/latest.pt",
+              "sha256": "0dd076aff6e98f578469d6d09318b2fca9a18834fdd7cf79d7e2818826c20de5"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/optimizer_ownership_trace.jsonl",
+              "sha256": "50cf2f90be00bbc165289debc832c04274480ed025e33254fbdf1376508d23d9"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/metrics.csv",
+              "sha256": "91414f8dd65e434da3e4e88d6c904069e82d96878950a6263cdaebbe3bfd8d6c"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/resource_attempts.json",
+              "sha256": "da5ce888183822aad2f01d5853eb7bbcd1b948f11b58886c46c2f1a180688074"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/config.json",
+              "sha256": "64c3f6c4309b114776a93a58f9b794be7d77e7902ccdcef53eb004802ef799e3"
+            }
+          ],
+          "legacy_counter_disclosure": null,
+          "applied_schedule_watermark": null
+        },
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_batches": 5,
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "c86a902db8fbff953552e112c1086b2a9ef203c55ad6494bb39f8867b3b3dd01",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_skipped_batches": 0,
+          "evaluation_target_tokens": 36195,
+          "granularity": "g750",
+          "loss": 1.966166363264385,
+          "non_embedding_parameters": 213568,
+          "perplexity": 7.1432393451647975,
+          "tokens_seen": 36195,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g750",
+          "series": "S1-cosine",
+          "endpoint_id": "4a9299ea70166493df9674a61076d736748fae45cdc8c61c6bde01094bba8c5d",
+          "run_id": "tinystories-optimizer-ownership-v1-S1-s42",
+          "arm_id": "S1",
+          "campaign_id": "tinystories-optimizer-ownership-v1",
+          "seed": 42,
+          "grid_id": "linear",
+          "ffn_dimension": 192,
+          "active_trainable_parameters": 475712,
+          "width_fraction": 0.75,
+          "schedule": "cosine",
+          "exponent_policy": "cosine",
+          "gamma": null,
+          "optimizer_state_scope": "shared",
+          "peak_lr": 0.008,
+          "warmup_updates": 64,
+          "horizon": 348528,
+          "assigned_updates": 348528,
+          "actual_updates": 348528,
+          "assigned_tokens": 2855141376,
+          "actual_tokens": 2855141376,
+          "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/config.json",
+          "config_sha256": "64c3f6c4309b114776a93a58f9b794be7d77e7902ccdcef53eb004802ef799e3",
+          "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/checkpoints/latest.pt",
+          "checkpoint_sha256": "0dd076aff6e98f578469d6d09318b2fca9a18834fdd7cf79d7e2818826c20de5",
+          "evaluation_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/terminal_validation_results.json",
+          "evaluation_sha256": "a95fbfb213cb93c89938612bdcad2906750494bb0bb25b709ca56d75c06f8b93",
+          "metric_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/metrics.csv",
+          "metric_sha256": "91414f8dd65e434da3e4e88d6c904069e82d96878950a6263cdaebbe3bfd8d6c",
+          "adapter": "native",
+          "historical_reference": true,
+          "source_identity": {
+            "code_revision": "84772bcaa87a4dac446cd5a6a0f23b5f52aa32bd",
+            "constructor": "ModifiedLlamaForCausalLM",
+            "cross_model_tensor_equality_required": false,
+            "dependency_versions": {
+              "PyYAML": "6.0.3",
+              "datasets": "4.8.5",
+              "matplotlib": "3.10.9",
+              "numpy": "2.4.3",
+              "pandas": "3.0.2",
+              "torch": "2.11.0+cu128",
+              "transformers": "5.8.0"
+            },
+            "derived_seed": 9177830445524338247,
+            "initializer_range": 0.02,
+            "method": "fresh_normal_constructor",
+            "seed": 42,
+            "seed_stream": "model_initialization",
+            "source_files_sha256": {
+              "scripts/analyze_tinystories_optimizer_ownership.py": "424e15b8766ad63c3ae281f0f1c1471ca7de88e36e2b49204c1a77fe289eb1f8",
+              "src/__init__.py": "981a0840b0aeb0a81b4453143e2333e6026d57b945ad8e01b3740c70472fd36c",
+              "src/evaluation/__init__.py": "d7000d1a9a855a5a0968dd8aab9f64d3650735a658691bbd2633b602229ee4c2",
+              "src/evaluation/consistency.py": "c5f2becef2abfb651fbcbc07d0c654ec86d6e85128dc58365de071d787f599a2",
+              "src/evaluation/downstream.py": "ff99ed8cb2a93f7aaa25df269bf4db6d36821aa5828a82f13e501815abddc526",
+              "src/evaluation/final_holdout.py": "f9579689c69cc578f99ec9c60f20d8800205a3fb350a1d17d888e6c59e23eebd",
+              "src/evaluation/optimizer_ownership.py": "5576fd74ff297d06ff6575a62bf253b5ee5556370985c1654cd411c30308ff02",
+              "src/evaluation/reporting.py": "8d45ad64404d4e8751d7ffe344c6414f8e0ba4bad6adeed415fc393bfc5048ef",
+              "src/evaluation/reporting_impl.py": "dafebf4046e13dc4c62cb96fe68d33057ea564683e2281a3d3704fa800ed7b7e",
+              "src/evaluation/reporting_io.py": "e776332fa5b519509c393ab8b0e52faec03d6e815cba0a83caaa1212ead3ea99",
+              "src/evaluation/reporting_styles.py": "704e52af0cad6389466c41678cf924c29a0932cad4f766efcbda25b8e5e02182",
+              "src/evaluation/speculative.py": "3f9f67cdacceb52e0bd190d5101837d05039d4d5dd8a500a9ac4911da02529f8",
+              "src/evaluation/validation.py": "452ae96a62699b99c9818c112a2c7573bb69cac30ea93abc1ba5c9ba695b301c",
+              "src/models/__init__.py": "178ac182a914f43b326471c1543334b2445625ba93537ba946bc13f89892e0fc",
+              "src/models/adaptive_sampler.py": "1b300fb3b4fd9b5e98fd0bce58b634bf5fcfcd87107e292234a9efb425486429",
+              "src/models/correction.py": "9325dbe7f1455df56dfe48b3d82d01f0222b7805c358b693fc047b8b0b9ecc8a",
+              "src/models/ffn.py": "e568ae79bb8cb14cd325d12bf099695265b8240a4370afbd9d2f81dd7cfa00ad",
+              "src/models/granularity.py": "88b31e0c6f60e03f49ac2b52777bd8be325e5c0ceb8727eb6743a9d63080a439",
+              "src/models/wiring.py": "b6d4381fe313f1343987cbcafc509b8f54d43ab12922bcb5d54ca06a750858aa",
+              "src/training/__init__.py": "c9992966495aee9958246dfd25f1d6692b61bb26a4804c27c588e108cf84b6d1",
+              "src/training/baselines.py": "6f3e29d7e4d0966319697b3a6b5a478e0c03b1efcff40fd783a6bc0cfa2296f7",
+              "src/training/checkpointing.py": "9cbf107ee540effb4961dc1f660bb86dbbee08f82dff50e00c551932068b7aba",
+              "src/training/data.py": "3c4248808207c38926081ac4c01bd6bde55010bdef00316cd3dfe9195d560158",
+              "src/training/distributed.py": "7dcd22de96124f5e423bdbea8cc3a8ed210d0de8c0fd90d8fa4aa80248e98c6b",
+              "src/training/fineweb_tokenizer.py": "7dac28fbd921b65ed91853b56442fbfe4d35ed46ac70d6cf138ad422b2dd07c9",
+              "src/training/gradient_interference.py": "44613fb78ee4926b47f67df9c9a1f8abf22e01ea8f26bcf65258d1e607c31ea2",
+              "src/training/gradient_probe.py": "15371e485fb3c18c7ffb9495875ecb60a13345c34230016ba22c42f2365ff81c",
+              "src/training/modeling.py": "6ba1672862b90ad2924b064d215d2f925550db153dc9f834da979228b0fa5048",
+              "src/training/monitoring.py": "e32ac302bd3364e2a769b6824518a240b607cc9870518f17f3e88b83307023df",
+              "src/training/optimizer_state.py": "ba01a8c87ba64bc58ce88a76e42f72dd774775b9e7170a683379e476b7029cdd",
+              "src/training/packed_corpus.py": "238e83ec334ee56ae964ad3c555ef86e783905573637bbb372bcb2355757965c",
+              "src/training/panelgrad.py": "f23dd3ec031fbbd6219b89827ac93f7ae7899ed82f05d914f8d4113e2bc756ab",
+              "src/training/portfolio_catchup.py": "b5f24aff8163e66cce22aa768ae435cb0cbaaedfbc7943b4e2704f21ba750b8d",
+              "src/training/probabilistic_controller.py": "ef266191fdec1f69170b7c6151d07ed462e31ac057f8d8e737c11254a60bc4e3",
+              "src/training/run.py": "b5534c175bf96e857a8bc2316338b19e545e22bf60b1118a3e8bd3c303ea3b00",
+              "src/training/schedules.py": "dde7be2a550fb1809e9532b732514acc2583b04eb160e13a7a231ea64653a5c7",
+              "src/training/steps.py": "9ce858f8a3214601316b3050d45b68a7f0211aa39b5b32fcb2c73eef794f23e1",
+              "src/training/tinystories.py": "7413ca22e719ee59b20bdb935b084050daad093ef9036574eb2eb731d98c57a9",
+              "src/training/tinystories_instruct.py": "b7418a8d55c2662c79f4a31c3e02c4c002f24c167a9be50542e2c67679e16be4",
+              "src/training/tinystories_preparation.py": "0e3960e3fcb8bb22772933a4c4f41d9bf1eff04a3868ee36e9c30528b232024a",
+              "src/training/warmup.py": "90d5efc57944db9bd2bf11f430d03dd62e605a83f04ef05a5612a8247ecfdd8d",
+              "src/utils/__init__.py": "29d28af6cfe9fff76c572dc6362cb5c74e13affc464c057ea8efc5ea54703634",
+              "src/utils/artifact_io.py": "477a8669c48e1be19166a708ed3ab58fe6dc21f550f5d6144ee6ef3bc9b896b7",
+              "src/utils/config.py": "49186b5bb214a1e010e4c2cb68f679440d490d6fb650efeb67548f4201f05105",
+              "src/utils/heartbeats.py": "6d10b71b812942898ad3f10d8fa0403ba2ea12d2e11b0fecd9518f6b084c5006",
+              "src/utils/metrics.py": "a268810898cb2144a83745c4158f972110c14d1659d30257376460b8b24ec5cd",
+              "src/utils/model_size.py": "6642b1875e3e9591f1addc02bcc3535f0b96edfa7b1df08327c3f8694c8c593e",
+              "src/utils/monitoring.py": "d973413540e586ce1f6c2de504d56eebfa7dca366ded2f44395c039ac2911c3b",
+              "src/utils/reproducibility.py": "b54771768da5a9ba7d093d73828e71bdfa943c2fbad55fd3f1613b1be094ecc1",
+              "train.py": "930504810f0c6a4e7ea6d12e2660ab6e672edddd69818aaf864459e35ff7bfbd"
+            },
+            "tracked_code_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "working_tree_dirty": false
+          },
+          "source_records": [
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/run_summary.json",
+              "sha256": "65aa60d85e26c921b78f026cdcb3e97723f684d8b53804d054a451c9292b682c"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/terminal_validation_results.json",
+              "sha256": "a95fbfb213cb93c89938612bdcad2906750494bb0bb25b709ca56d75c06f8b93"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/checkpoints/latest.pt",
+              "sha256": "0dd076aff6e98f578469d6d09318b2fca9a18834fdd7cf79d7e2818826c20de5"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/optimizer_ownership_trace.jsonl",
+              "sha256": "50cf2f90be00bbc165289debc832c04274480ed025e33254fbdf1376508d23d9"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/metrics.csv",
+              "sha256": "91414f8dd65e434da3e4e88d6c904069e82d96878950a6263cdaebbe3bfd8d6c"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/resource_attempts.json",
+              "sha256": "da5ce888183822aad2f01d5853eb7bbcd1b948f11b58886c46c2f1a180688074"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/config.json",
+              "sha256": "64c3f6c4309b114776a93a58f9b794be7d77e7902ccdcef53eb004802ef799e3"
+            }
+          ],
+          "legacy_counter_disclosure": null,
+          "applied_schedule_watermark": null
+        },
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_batches": 5,
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "c86a902db8fbff953552e112c1086b2a9ef203c55ad6494bb39f8867b3b3dd01",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_skipped_batches": 0,
+          "evaluation_target_tokens": 36195,
+          "granularity": "g1000",
+          "loss": 1.9538724250960768,
+          "non_embedding_parameters": 262720,
+          "perplexity": 7.055958414821579,
+          "tokens_seen": 36195,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g1000",
+          "series": "S1-cosine",
+          "endpoint_id": "3ae2c9a4c02966b65eabc29b1dd4d5d1c3fcab7532f8f416e8a60f123e037480",
+          "run_id": "tinystories-optimizer-ownership-v1-S1-s42",
+          "arm_id": "S1",
+          "campaign_id": "tinystories-optimizer-ownership-v1",
+          "seed": 42,
+          "grid_id": "linear",
+          "ffn_dimension": 256,
+          "active_trainable_parameters": 524864,
+          "width_fraction": 1.0,
+          "schedule": "cosine",
+          "exponent_policy": "cosine",
+          "gamma": null,
+          "optimizer_state_scope": "shared",
+          "peak_lr": 0.008,
+          "warmup_updates": 64,
+          "horizon": 348528,
+          "assigned_updates": 348528,
+          "actual_updates": 348528,
+          "assigned_tokens": 2855141376,
+          "actual_tokens": 2855141376,
+          "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/config.json",
+          "config_sha256": "64c3f6c4309b114776a93a58f9b794be7d77e7902ccdcef53eb004802ef799e3",
+          "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/checkpoints/latest.pt",
+          "checkpoint_sha256": "0dd076aff6e98f578469d6d09318b2fca9a18834fdd7cf79d7e2818826c20de5",
+          "evaluation_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/terminal_validation_results.json",
+          "evaluation_sha256": "a95fbfb213cb93c89938612bdcad2906750494bb0bb25b709ca56d75c06f8b93",
+          "metric_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/metrics.csv",
+          "metric_sha256": "91414f8dd65e434da3e4e88d6c904069e82d96878950a6263cdaebbe3bfd8d6c",
+          "adapter": "native",
+          "historical_reference": true,
+          "source_identity": {
+            "code_revision": "84772bcaa87a4dac446cd5a6a0f23b5f52aa32bd",
+            "constructor": "ModifiedLlamaForCausalLM",
+            "cross_model_tensor_equality_required": false,
+            "dependency_versions": {
+              "PyYAML": "6.0.3",
+              "datasets": "4.8.5",
+              "matplotlib": "3.10.9",
+              "numpy": "2.4.3",
+              "pandas": "3.0.2",
+              "torch": "2.11.0+cu128",
+              "transformers": "5.8.0"
+            },
+            "derived_seed": 9177830445524338247,
+            "initializer_range": 0.02,
+            "method": "fresh_normal_constructor",
+            "seed": 42,
+            "seed_stream": "model_initialization",
+            "source_files_sha256": {
+              "scripts/analyze_tinystories_optimizer_ownership.py": "424e15b8766ad63c3ae281f0f1c1471ca7de88e36e2b49204c1a77fe289eb1f8",
+              "src/__init__.py": "981a0840b0aeb0a81b4453143e2333e6026d57b945ad8e01b3740c70472fd36c",
+              "src/evaluation/__init__.py": "d7000d1a9a855a5a0968dd8aab9f64d3650735a658691bbd2633b602229ee4c2",
+              "src/evaluation/consistency.py": "c5f2becef2abfb651fbcbc07d0c654ec86d6e85128dc58365de071d787f599a2",
+              "src/evaluation/downstream.py": "ff99ed8cb2a93f7aaa25df269bf4db6d36821aa5828a82f13e501815abddc526",
+              "src/evaluation/final_holdout.py": "f9579689c69cc578f99ec9c60f20d8800205a3fb350a1d17d888e6c59e23eebd",
+              "src/evaluation/optimizer_ownership.py": "5576fd74ff297d06ff6575a62bf253b5ee5556370985c1654cd411c30308ff02",
+              "src/evaluation/reporting.py": "8d45ad64404d4e8751d7ffe344c6414f8e0ba4bad6adeed415fc393bfc5048ef",
+              "src/evaluation/reporting_impl.py": "dafebf4046e13dc4c62cb96fe68d33057ea564683e2281a3d3704fa800ed7b7e",
+              "src/evaluation/reporting_io.py": "e776332fa5b519509c393ab8b0e52faec03d6e815cba0a83caaa1212ead3ea99",
+              "src/evaluation/reporting_styles.py": "704e52af0cad6389466c41678cf924c29a0932cad4f766efcbda25b8e5e02182",
+              "src/evaluation/speculative.py": "3f9f67cdacceb52e0bd190d5101837d05039d4d5dd8a500a9ac4911da02529f8",
+              "src/evaluation/validation.py": "452ae96a62699b99c9818c112a2c7573bb69cac30ea93abc1ba5c9ba695b301c",
+              "src/models/__init__.py": "178ac182a914f43b326471c1543334b2445625ba93537ba946bc13f89892e0fc",
+              "src/models/adaptive_sampler.py": "1b300fb3b4fd9b5e98fd0bce58b634bf5fcfcd87107e292234a9efb425486429",
+              "src/models/correction.py": "9325dbe7f1455df56dfe48b3d82d01f0222b7805c358b693fc047b8b0b9ecc8a",
+              "src/models/ffn.py": "e568ae79bb8cb14cd325d12bf099695265b8240a4370afbd9d2f81dd7cfa00ad",
+              "src/models/granularity.py": "88b31e0c6f60e03f49ac2b52777bd8be325e5c0ceb8727eb6743a9d63080a439",
+              "src/models/wiring.py": "b6d4381fe313f1343987cbcafc509b8f54d43ab12922bcb5d54ca06a750858aa",
+              "src/training/__init__.py": "c9992966495aee9958246dfd25f1d6692b61bb26a4804c27c588e108cf84b6d1",
+              "src/training/baselines.py": "6f3e29d7e4d0966319697b3a6b5a478e0c03b1efcff40fd783a6bc0cfa2296f7",
+              "src/training/checkpointing.py": "9cbf107ee540effb4961dc1f660bb86dbbee08f82dff50e00c551932068b7aba",
+              "src/training/data.py": "3c4248808207c38926081ac4c01bd6bde55010bdef00316cd3dfe9195d560158",
+              "src/training/distributed.py": "7dcd22de96124f5e423bdbea8cc3a8ed210d0de8c0fd90d8fa4aa80248e98c6b",
+              "src/training/fineweb_tokenizer.py": "7dac28fbd921b65ed91853b56442fbfe4d35ed46ac70d6cf138ad422b2dd07c9",
+              "src/training/gradient_interference.py": "44613fb78ee4926b47f67df9c9a1f8abf22e01ea8f26bcf65258d1e607c31ea2",
+              "src/training/gradient_probe.py": "15371e485fb3c18c7ffb9495875ecb60a13345c34230016ba22c42f2365ff81c",
+              "src/training/modeling.py": "6ba1672862b90ad2924b064d215d2f925550db153dc9f834da979228b0fa5048",
+              "src/training/monitoring.py": "e32ac302bd3364e2a769b6824518a240b607cc9870518f17f3e88b83307023df",
+              "src/training/optimizer_state.py": "ba01a8c87ba64bc58ce88a76e42f72dd774775b9e7170a683379e476b7029cdd",
+              "src/training/packed_corpus.py": "238e83ec334ee56ae964ad3c555ef86e783905573637bbb372bcb2355757965c",
+              "src/training/panelgrad.py": "f23dd3ec031fbbd6219b89827ac93f7ae7899ed82f05d914f8d4113e2bc756ab",
+              "src/training/portfolio_catchup.py": "b5f24aff8163e66cce22aa768ae435cb0cbaaedfbc7943b4e2704f21ba750b8d",
+              "src/training/probabilistic_controller.py": "ef266191fdec1f69170b7c6151d07ed462e31ac057f8d8e737c11254a60bc4e3",
+              "src/training/run.py": "b5534c175bf96e857a8bc2316338b19e545e22bf60b1118a3e8bd3c303ea3b00",
+              "src/training/schedules.py": "dde7be2a550fb1809e9532b732514acc2583b04eb160e13a7a231ea64653a5c7",
+              "src/training/steps.py": "9ce858f8a3214601316b3050d45b68a7f0211aa39b5b32fcb2c73eef794f23e1",
+              "src/training/tinystories.py": "7413ca22e719ee59b20bdb935b084050daad093ef9036574eb2eb731d98c57a9",
+              "src/training/tinystories_instruct.py": "b7418a8d55c2662c79f4a31c3e02c4c002f24c167a9be50542e2c67679e16be4",
+              "src/training/tinystories_preparation.py": "0e3960e3fcb8bb22772933a4c4f41d9bf1eff04a3868ee36e9c30528b232024a",
+              "src/training/warmup.py": "90d5efc57944db9bd2bf11f430d03dd62e605a83f04ef05a5612a8247ecfdd8d",
+              "src/utils/__init__.py": "29d28af6cfe9fff76c572dc6362cb5c74e13affc464c057ea8efc5ea54703634",
+              "src/utils/artifact_io.py": "477a8669c48e1be19166a708ed3ab58fe6dc21f550f5d6144ee6ef3bc9b896b7",
+              "src/utils/config.py": "49186b5bb214a1e010e4c2cb68f679440d490d6fb650efeb67548f4201f05105",
+              "src/utils/heartbeats.py": "6d10b71b812942898ad3f10d8fa0403ba2ea12d2e11b0fecd9518f6b084c5006",
+              "src/utils/metrics.py": "a268810898cb2144a83745c4158f972110c14d1659d30257376460b8b24ec5cd",
+              "src/utils/model_size.py": "6642b1875e3e9591f1addc02bcc3535f0b96edfa7b1df08327c3f8694c8c593e",
+              "src/utils/monitoring.py": "d973413540e586ce1f6c2de504d56eebfa7dca366ded2f44395c039ac2911c3b",
+              "src/utils/reproducibility.py": "b54771768da5a9ba7d093d73828e71bdfa943c2fbad55fd3f1613b1be094ecc1",
+              "train.py": "930504810f0c6a4e7ea6d12e2660ab6e672edddd69818aaf864459e35ff7bfbd"
+            },
+            "tracked_code_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "working_tree_dirty": false
+          },
+          "source_records": [
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/run_summary.json",
+              "sha256": "65aa60d85e26c921b78f026cdcb3e97723f684d8b53804d054a451c9292b682c"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/terminal_validation_results.json",
+              "sha256": "a95fbfb213cb93c89938612bdcad2906750494bb0bb25b709ca56d75c06f8b93"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/checkpoints/latest.pt",
+              "sha256": "0dd076aff6e98f578469d6d09318b2fca9a18834fdd7cf79d7e2818826c20de5"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/optimizer_ownership_trace.jsonl",
+              "sha256": "50cf2f90be00bbc165289debc832c04274480ed025e33254fbdf1376508d23d9"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/metrics.csv",
+              "sha256": "91414f8dd65e434da3e4e88d6c904069e82d96878950a6263cdaebbe3bfd8d6c"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/resource_attempts.json",
+              "sha256": "da5ce888183822aad2f01d5853eb7bbcd1b948f11b58886c46c2f1a180688074"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/config.json",
+              "sha256": "64c3f6c4309b114776a93a58f9b794be7d77e7902ccdcef53eb004802ef799e3"
+            }
+          ],
+          "legacy_counter_disclosure": null,
+          "applied_schedule_watermark": null
+        }
+      ],
+      "validation_points": 21784,
+      "applied_lr_points": 2791,
+      "notes": {
+        "missing_validation": false,
+        "missing_applied_lr": false,
+        "sources": [
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/metrics.csv",
+            "sha256": "91414f8dd65e434da3e4e88d6c904069e82d96878950a6263cdaebbe3bfd8d6c"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/optimizer_ownership_trace.jsonl",
+            "sha256": "50cf2f90be00bbc165289debc832c04274480ed025e33254fbdf1376508d23d9"
+          }
+        ],
+        "applied_plot_sampling": "Recorded first 65, every 128th global commit and last commit per width; all records validated"
+      }
+    },
+    {
+      "run_id": "tinystories-optimizer-ownership-v1-S2-s42",
+      "adapter": "native",
+      "endpoints": [
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_batches": 5,
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "c86a902db8fbff953552e112c1086b2a9ef203c55ad6494bb39f8867b3b3dd01",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_skipped_batches": 0,
+          "evaluation_target_tokens": 36195,
+          "granularity": "g250",
+          "loss": 2.067588810335126,
+          "non_embedding_parameters": 115264,
+          "perplexity": 7.90573788455694,
+          "tokens_seen": 36195,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g250",
+          "series": "S2-cosine",
+          "endpoint_id": "e46c9a197278e1ca0cfe6b8a99d91bc768c086a7002c633cc157241a589e44cb",
+          "run_id": "tinystories-optimizer-ownership-v1-S2-s42",
+          "arm_id": "S2",
+          "campaign_id": "tinystories-optimizer-ownership-v1",
+          "seed": 42,
+          "grid_id": "linear",
+          "ffn_dimension": 64,
+          "active_trainable_parameters": 377408,
+          "width_fraction": 0.25,
+          "schedule": "cosine",
+          "exponent_policy": "cosine",
+          "gamma": null,
+          "optimizer_state_scope": "per_granularity",
+          "peak_lr": 0.008,
+          "warmup_updates": 64,
+          "horizon": 348528,
+          "assigned_updates": 348528,
+          "actual_updates": 348528,
+          "assigned_tokens": 2855141376,
+          "actual_tokens": 2855141376,
+          "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/config.json",
+          "config_sha256": "3d7eb97093c9f6175ae4cc600bcb539481ebf2f3edd655d7e5fd85f6e6a7488a",
+          "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/checkpoints/latest.pt",
+          "checkpoint_sha256": "bfbbd111d4d6eafa234d0985fe29c01a16043a2d30ba5cae48c5ef8e6355c3f2",
+          "evaluation_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/terminal_validation_results.json",
+          "evaluation_sha256": "8e3e9e8862b2e7e35cb05492c4995c6b481f1aea1fd538d58133ea543eb3be7a",
+          "metric_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/metrics.csv",
+          "metric_sha256": "0e6774df45b7c8576961379ba0bc0aeb05b00e16617d92508d734d4364650ddd",
+          "adapter": "native",
+          "historical_reference": true,
+          "source_identity": {
+            "code_revision": "84772bcaa87a4dac446cd5a6a0f23b5f52aa32bd",
+            "constructor": "ModifiedLlamaForCausalLM",
+            "cross_model_tensor_equality_required": false,
+            "dependency_versions": {
+              "PyYAML": "6.0.3",
+              "datasets": "4.8.5",
+              "matplotlib": "3.10.9",
+              "numpy": "2.4.3",
+              "pandas": "3.0.2",
+              "torch": "2.11.0+cu128",
+              "transformers": "5.8.0"
+            },
+            "derived_seed": 9177830445524338247,
+            "initializer_range": 0.02,
+            "method": "fresh_normal_constructor",
+            "seed": 42,
+            "seed_stream": "model_initialization",
+            "source_files_sha256": {
+              "scripts/analyze_tinystories_optimizer_ownership.py": "424e15b8766ad63c3ae281f0f1c1471ca7de88e36e2b49204c1a77fe289eb1f8",
+              "src/__init__.py": "981a0840b0aeb0a81b4453143e2333e6026d57b945ad8e01b3740c70472fd36c",
+              "src/evaluation/__init__.py": "d7000d1a9a855a5a0968dd8aab9f64d3650735a658691bbd2633b602229ee4c2",
+              "src/evaluation/consistency.py": "c5f2becef2abfb651fbcbc07d0c654ec86d6e85128dc58365de071d787f599a2",
+              "src/evaluation/downstream.py": "ff99ed8cb2a93f7aaa25df269bf4db6d36821aa5828a82f13e501815abddc526",
+              "src/evaluation/final_holdout.py": "f9579689c69cc578f99ec9c60f20d8800205a3fb350a1d17d888e6c59e23eebd",
+              "src/evaluation/optimizer_ownership.py": "5576fd74ff297d06ff6575a62bf253b5ee5556370985c1654cd411c30308ff02",
+              "src/evaluation/reporting.py": "8d45ad64404d4e8751d7ffe344c6414f8e0ba4bad6adeed415fc393bfc5048ef",
+              "src/evaluation/reporting_impl.py": "dafebf4046e13dc4c62cb96fe68d33057ea564683e2281a3d3704fa800ed7b7e",
+              "src/evaluation/reporting_io.py": "e776332fa5b519509c393ab8b0e52faec03d6e815cba0a83caaa1212ead3ea99",
+              "src/evaluation/reporting_styles.py": "704e52af0cad6389466c41678cf924c29a0932cad4f766efcbda25b8e5e02182",
+              "src/evaluation/speculative.py": "3f9f67cdacceb52e0bd190d5101837d05039d4d5dd8a500a9ac4911da02529f8",
+              "src/evaluation/validation.py": "452ae96a62699b99c9818c112a2c7573bb69cac30ea93abc1ba5c9ba695b301c",
+              "src/models/__init__.py": "178ac182a914f43b326471c1543334b2445625ba93537ba946bc13f89892e0fc",
+              "src/models/adaptive_sampler.py": "1b300fb3b4fd9b5e98fd0bce58b634bf5fcfcd87107e292234a9efb425486429",
+              "src/models/correction.py": "9325dbe7f1455df56dfe48b3d82d01f0222b7805c358b693fc047b8b0b9ecc8a",
+              "src/models/ffn.py": "e568ae79bb8cb14cd325d12bf099695265b8240a4370afbd9d2f81dd7cfa00ad",
+              "src/models/granularity.py": "88b31e0c6f60e03f49ac2b52777bd8be325e5c0ceb8727eb6743a9d63080a439",
+              "src/models/wiring.py": "b6d4381fe313f1343987cbcafc509b8f54d43ab12922bcb5d54ca06a750858aa",
+              "src/training/__init__.py": "c9992966495aee9958246dfd25f1d6692b61bb26a4804c27c588e108cf84b6d1",
+              "src/training/baselines.py": "6f3e29d7e4d0966319697b3a6b5a478e0c03b1efcff40fd783a6bc0cfa2296f7",
+              "src/training/checkpointing.py": "9cbf107ee540effb4961dc1f660bb86dbbee08f82dff50e00c551932068b7aba",
+              "src/training/data.py": "3c4248808207c38926081ac4c01bd6bde55010bdef00316cd3dfe9195d560158",
+              "src/training/distributed.py": "7dcd22de96124f5e423bdbea8cc3a8ed210d0de8c0fd90d8fa4aa80248e98c6b",
+              "src/training/fineweb_tokenizer.py": "7dac28fbd921b65ed91853b56442fbfe4d35ed46ac70d6cf138ad422b2dd07c9",
+              "src/training/gradient_interference.py": "44613fb78ee4926b47f67df9c9a1f8abf22e01ea8f26bcf65258d1e607c31ea2",
+              "src/training/gradient_probe.py": "15371e485fb3c18c7ffb9495875ecb60a13345c34230016ba22c42f2365ff81c",
+              "src/training/modeling.py": "6ba1672862b90ad2924b064d215d2f925550db153dc9f834da979228b0fa5048",
+              "src/training/monitoring.py": "e32ac302bd3364e2a769b6824518a240b607cc9870518f17f3e88b83307023df",
+              "src/training/optimizer_state.py": "ba01a8c87ba64bc58ce88a76e42f72dd774775b9e7170a683379e476b7029cdd",
+              "src/training/packed_corpus.py": "238e83ec334ee56ae964ad3c555ef86e783905573637bbb372bcb2355757965c",
+              "src/training/panelgrad.py": "f23dd3ec031fbbd6219b89827ac93f7ae7899ed82f05d914f8d4113e2bc756ab",
+              "src/training/portfolio_catchup.py": "b5f24aff8163e66cce22aa768ae435cb0cbaaedfbc7943b4e2704f21ba750b8d",
+              "src/training/probabilistic_controller.py": "ef266191fdec1f69170b7c6151d07ed462e31ac057f8d8e737c11254a60bc4e3",
+              "src/training/run.py": "b5534c175bf96e857a8bc2316338b19e545e22bf60b1118a3e8bd3c303ea3b00",
+              "src/training/schedules.py": "dde7be2a550fb1809e9532b732514acc2583b04eb160e13a7a231ea64653a5c7",
+              "src/training/steps.py": "9ce858f8a3214601316b3050d45b68a7f0211aa39b5b32fcb2c73eef794f23e1",
+              "src/training/tinystories.py": "7413ca22e719ee59b20bdb935b084050daad093ef9036574eb2eb731d98c57a9",
+              "src/training/tinystories_instruct.py": "b7418a8d55c2662c79f4a31c3e02c4c002f24c167a9be50542e2c67679e16be4",
+              "src/training/tinystories_preparation.py": "0e3960e3fcb8bb22772933a4c4f41d9bf1eff04a3868ee36e9c30528b232024a",
+              "src/training/warmup.py": "90d5efc57944db9bd2bf11f430d03dd62e605a83f04ef05a5612a8247ecfdd8d",
+              "src/utils/__init__.py": "29d28af6cfe9fff76c572dc6362cb5c74e13affc464c057ea8efc5ea54703634",
+              "src/utils/artifact_io.py": "477a8669c48e1be19166a708ed3ab58fe6dc21f550f5d6144ee6ef3bc9b896b7",
+              "src/utils/config.py": "49186b5bb214a1e010e4c2cb68f679440d490d6fb650efeb67548f4201f05105",
+              "src/utils/heartbeats.py": "6d10b71b812942898ad3f10d8fa0403ba2ea12d2e11b0fecd9518f6b084c5006",
+              "src/utils/metrics.py": "a268810898cb2144a83745c4158f972110c14d1659d30257376460b8b24ec5cd",
+              "src/utils/model_size.py": "6642b1875e3e9591f1addc02bcc3535f0b96edfa7b1df08327c3f8694c8c593e",
+              "src/utils/monitoring.py": "d973413540e586ce1f6c2de504d56eebfa7dca366ded2f44395c039ac2911c3b",
+              "src/utils/reproducibility.py": "b54771768da5a9ba7d093d73828e71bdfa943c2fbad55fd3f1613b1be094ecc1",
+              "train.py": "930504810f0c6a4e7ea6d12e2660ab6e672edddd69818aaf864459e35ff7bfbd"
+            },
+            "tracked_code_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "working_tree_dirty": false
+          },
+          "source_records": [
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/run_summary.json",
+              "sha256": "40e3d89fbb9b303cdd992e93fb497c4a5e52e1a24a7ef6f2047ca086f99fae01"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/terminal_validation_results.json",
+              "sha256": "8e3e9e8862b2e7e35cb05492c4995c6b481f1aea1fd538d58133ea543eb3be7a"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/checkpoints/latest.pt",
+              "sha256": "bfbbd111d4d6eafa234d0985fe29c01a16043a2d30ba5cae48c5ef8e6355c3f2"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/optimizer_ownership_trace.jsonl",
+              "sha256": "3891e9ed5308e75e815c48f81aab0c5a61f4b6cd9aca2d7447bfd760e8bffde0"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/metrics.csv",
+              "sha256": "0e6774df45b7c8576961379ba0bc0aeb05b00e16617d92508d734d4364650ddd"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/resource_attempts.json",
+              "sha256": "4b469a95e328290b944ee4f8a7e79dfb65ca505d7f8665f078ff8777f7d1cd13"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/config.json",
+              "sha256": "3d7eb97093c9f6175ae4cc600bcb539481ebf2f3edd655d7e5fd85f6e6a7488a"
+            }
+          ],
+          "legacy_counter_disclosure": null,
+          "applied_schedule_watermark": null
+        },
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_batches": 5,
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "c86a902db8fbff953552e112c1086b2a9ef203c55ad6494bb39f8867b3b3dd01",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_skipped_batches": 0,
+          "evaluation_target_tokens": 36195,
+          "granularity": "g500",
+          "loss": 1.9915782698413782,
+          "non_embedding_parameters": 164416,
+          "perplexity": 7.327088764677517,
+          "tokens_seen": 36195,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g500",
+          "series": "S2-cosine",
+          "endpoint_id": "08fe8b22cd025486658e86b1365fd3e7c41c576f22d19396cade8447b40c3918",
+          "run_id": "tinystories-optimizer-ownership-v1-S2-s42",
+          "arm_id": "S2",
+          "campaign_id": "tinystories-optimizer-ownership-v1",
+          "seed": 42,
+          "grid_id": "linear",
+          "ffn_dimension": 128,
+          "active_trainable_parameters": 426560,
+          "width_fraction": 0.5,
+          "schedule": "cosine",
+          "exponent_policy": "cosine",
+          "gamma": null,
+          "optimizer_state_scope": "per_granularity",
+          "peak_lr": 0.008,
+          "warmup_updates": 64,
+          "horizon": 348528,
+          "assigned_updates": 348528,
+          "actual_updates": 348528,
+          "assigned_tokens": 2855141376,
+          "actual_tokens": 2855141376,
+          "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/config.json",
+          "config_sha256": "3d7eb97093c9f6175ae4cc600bcb539481ebf2f3edd655d7e5fd85f6e6a7488a",
+          "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/checkpoints/latest.pt",
+          "checkpoint_sha256": "bfbbd111d4d6eafa234d0985fe29c01a16043a2d30ba5cae48c5ef8e6355c3f2",
+          "evaluation_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/terminal_validation_results.json",
+          "evaluation_sha256": "8e3e9e8862b2e7e35cb05492c4995c6b481f1aea1fd538d58133ea543eb3be7a",
+          "metric_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/metrics.csv",
+          "metric_sha256": "0e6774df45b7c8576961379ba0bc0aeb05b00e16617d92508d734d4364650ddd",
+          "adapter": "native",
+          "historical_reference": true,
+          "source_identity": {
+            "code_revision": "84772bcaa87a4dac446cd5a6a0f23b5f52aa32bd",
+            "constructor": "ModifiedLlamaForCausalLM",
+            "cross_model_tensor_equality_required": false,
+            "dependency_versions": {
+              "PyYAML": "6.0.3",
+              "datasets": "4.8.5",
+              "matplotlib": "3.10.9",
+              "numpy": "2.4.3",
+              "pandas": "3.0.2",
+              "torch": "2.11.0+cu128",
+              "transformers": "5.8.0"
+            },
+            "derived_seed": 9177830445524338247,
+            "initializer_range": 0.02,
+            "method": "fresh_normal_constructor",
+            "seed": 42,
+            "seed_stream": "model_initialization",
+            "source_files_sha256": {
+              "scripts/analyze_tinystories_optimizer_ownership.py": "424e15b8766ad63c3ae281f0f1c1471ca7de88e36e2b49204c1a77fe289eb1f8",
+              "src/__init__.py": "981a0840b0aeb0a81b4453143e2333e6026d57b945ad8e01b3740c70472fd36c",
+              "src/evaluation/__init__.py": "d7000d1a9a855a5a0968dd8aab9f64d3650735a658691bbd2633b602229ee4c2",
+              "src/evaluation/consistency.py": "c5f2becef2abfb651fbcbc07d0c654ec86d6e85128dc58365de071d787f599a2",
+              "src/evaluation/downstream.py": "ff99ed8cb2a93f7aaa25df269bf4db6d36821aa5828a82f13e501815abddc526",
+              "src/evaluation/final_holdout.py": "f9579689c69cc578f99ec9c60f20d8800205a3fb350a1d17d888e6c59e23eebd",
+              "src/evaluation/optimizer_ownership.py": "5576fd74ff297d06ff6575a62bf253b5ee5556370985c1654cd411c30308ff02",
+              "src/evaluation/reporting.py": "8d45ad64404d4e8751d7ffe344c6414f8e0ba4bad6adeed415fc393bfc5048ef",
+              "src/evaluation/reporting_impl.py": "dafebf4046e13dc4c62cb96fe68d33057ea564683e2281a3d3704fa800ed7b7e",
+              "src/evaluation/reporting_io.py": "e776332fa5b519509c393ab8b0e52faec03d6e815cba0a83caaa1212ead3ea99",
+              "src/evaluation/reporting_styles.py": "704e52af0cad6389466c41678cf924c29a0932cad4f766efcbda25b8e5e02182",
+              "src/evaluation/speculative.py": "3f9f67cdacceb52e0bd190d5101837d05039d4d5dd8a500a9ac4911da02529f8",
+              "src/evaluation/validation.py": "452ae96a62699b99c9818c112a2c7573bb69cac30ea93abc1ba5c9ba695b301c",
+              "src/models/__init__.py": "178ac182a914f43b326471c1543334b2445625ba93537ba946bc13f89892e0fc",
+              "src/models/adaptive_sampler.py": "1b300fb3b4fd9b5e98fd0bce58b634bf5fcfcd87107e292234a9efb425486429",
+              "src/models/correction.py": "9325dbe7f1455df56dfe48b3d82d01f0222b7805c358b693fc047b8b0b9ecc8a",
+              "src/models/ffn.py": "e568ae79bb8cb14cd325d12bf099695265b8240a4370afbd9d2f81dd7cfa00ad",
+              "src/models/granularity.py": "88b31e0c6f60e03f49ac2b52777bd8be325e5c0ceb8727eb6743a9d63080a439",
+              "src/models/wiring.py": "b6d4381fe313f1343987cbcafc509b8f54d43ab12922bcb5d54ca06a750858aa",
+              "src/training/__init__.py": "c9992966495aee9958246dfd25f1d6692b61bb26a4804c27c588e108cf84b6d1",
+              "src/training/baselines.py": "6f3e29d7e4d0966319697b3a6b5a478e0c03b1efcff40fd783a6bc0cfa2296f7",
+              "src/training/checkpointing.py": "9cbf107ee540effb4961dc1f660bb86dbbee08f82dff50e00c551932068b7aba",
+              "src/training/data.py": "3c4248808207c38926081ac4c01bd6bde55010bdef00316cd3dfe9195d560158",
+              "src/training/distributed.py": "7dcd22de96124f5e423bdbea8cc3a8ed210d0de8c0fd90d8fa4aa80248e98c6b",
+              "src/training/fineweb_tokenizer.py": "7dac28fbd921b65ed91853b56442fbfe4d35ed46ac70d6cf138ad422b2dd07c9",
+              "src/training/gradient_interference.py": "44613fb78ee4926b47f67df9c9a1f8abf22e01ea8f26bcf65258d1e607c31ea2",
+              "src/training/gradient_probe.py": "15371e485fb3c18c7ffb9495875ecb60a13345c34230016ba22c42f2365ff81c",
+              "src/training/modeling.py": "6ba1672862b90ad2924b064d215d2f925550db153dc9f834da979228b0fa5048",
+              "src/training/monitoring.py": "e32ac302bd3364e2a769b6824518a240b607cc9870518f17f3e88b83307023df",
+              "src/training/optimizer_state.py": "ba01a8c87ba64bc58ce88a76e42f72dd774775b9e7170a683379e476b7029cdd",
+              "src/training/packed_corpus.py": "238e83ec334ee56ae964ad3c555ef86e783905573637bbb372bcb2355757965c",
+              "src/training/panelgrad.py": "f23dd3ec031fbbd6219b89827ac93f7ae7899ed82f05d914f8d4113e2bc756ab",
+              "src/training/portfolio_catchup.py": "b5f24aff8163e66cce22aa768ae435cb0cbaaedfbc7943b4e2704f21ba750b8d",
+              "src/training/probabilistic_controller.py": "ef266191fdec1f69170b7c6151d07ed462e31ac057f8d8e737c11254a60bc4e3",
+              "src/training/run.py": "b5534c175bf96e857a8bc2316338b19e545e22bf60b1118a3e8bd3c303ea3b00",
+              "src/training/schedules.py": "dde7be2a550fb1809e9532b732514acc2583b04eb160e13a7a231ea64653a5c7",
+              "src/training/steps.py": "9ce858f8a3214601316b3050d45b68a7f0211aa39b5b32fcb2c73eef794f23e1",
+              "src/training/tinystories.py": "7413ca22e719ee59b20bdb935b084050daad093ef9036574eb2eb731d98c57a9",
+              "src/training/tinystories_instruct.py": "b7418a8d55c2662c79f4a31c3e02c4c002f24c167a9be50542e2c67679e16be4",
+              "src/training/tinystories_preparation.py": "0e3960e3fcb8bb22772933a4c4f41d9bf1eff04a3868ee36e9c30528b232024a",
+              "src/training/warmup.py": "90d5efc57944db9bd2bf11f430d03dd62e605a83f04ef05a5612a8247ecfdd8d",
+              "src/utils/__init__.py": "29d28af6cfe9fff76c572dc6362cb5c74e13affc464c057ea8efc5ea54703634",
+              "src/utils/artifact_io.py": "477a8669c48e1be19166a708ed3ab58fe6dc21f550f5d6144ee6ef3bc9b896b7",
+              "src/utils/config.py": "49186b5bb214a1e010e4c2cb68f679440d490d6fb650efeb67548f4201f05105",
+              "src/utils/heartbeats.py": "6d10b71b812942898ad3f10d8fa0403ba2ea12d2e11b0fecd9518f6b084c5006",
+              "src/utils/metrics.py": "a268810898cb2144a83745c4158f972110c14d1659d30257376460b8b24ec5cd",
+              "src/utils/model_size.py": "6642b1875e3e9591f1addc02bcc3535f0b96edfa7b1df08327c3f8694c8c593e",
+              "src/utils/monitoring.py": "d973413540e586ce1f6c2de504d56eebfa7dca366ded2f44395c039ac2911c3b",
+              "src/utils/reproducibility.py": "b54771768da5a9ba7d093d73828e71bdfa943c2fbad55fd3f1613b1be094ecc1",
+              "train.py": "930504810f0c6a4e7ea6d12e2660ab6e672edddd69818aaf864459e35ff7bfbd"
+            },
+            "tracked_code_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "working_tree_dirty": false
+          },
+          "source_records": [
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/run_summary.json",
+              "sha256": "40e3d89fbb9b303cdd992e93fb497c4a5e52e1a24a7ef6f2047ca086f99fae01"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/terminal_validation_results.json",
+              "sha256": "8e3e9e8862b2e7e35cb05492c4995c6b481f1aea1fd538d58133ea543eb3be7a"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/checkpoints/latest.pt",
+              "sha256": "bfbbd111d4d6eafa234d0985fe29c01a16043a2d30ba5cae48c5ef8e6355c3f2"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/optimizer_ownership_trace.jsonl",
+              "sha256": "3891e9ed5308e75e815c48f81aab0c5a61f4b6cd9aca2d7447bfd760e8bffde0"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/metrics.csv",
+              "sha256": "0e6774df45b7c8576961379ba0bc0aeb05b00e16617d92508d734d4364650ddd"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/resource_attempts.json",
+              "sha256": "4b469a95e328290b944ee4f8a7e79dfb65ca505d7f8665f078ff8777f7d1cd13"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/config.json",
+              "sha256": "3d7eb97093c9f6175ae4cc600bcb539481ebf2f3edd655d7e5fd85f6e6a7488a"
+            }
+          ],
+          "legacy_counter_disclosure": null,
+          "applied_schedule_watermark": null
+        },
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_batches": 5,
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "c86a902db8fbff953552e112c1086b2a9ef203c55ad6494bb39f8867b3b3dd01",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_skipped_batches": 0,
+          "evaluation_target_tokens": 36195,
+          "granularity": "g750",
+          "loss": 1.9638450317215501,
+          "non_embedding_parameters": 213568,
+          "perplexity": 7.126676749430207,
+          "tokens_seen": 36195,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g750",
+          "series": "S2-cosine",
+          "endpoint_id": "afe369ab30c111de21bd509b047661d75ae8de6b0e45ab7507a0d510b7fbde44",
+          "run_id": "tinystories-optimizer-ownership-v1-S2-s42",
+          "arm_id": "S2",
+          "campaign_id": "tinystories-optimizer-ownership-v1",
+          "seed": 42,
+          "grid_id": "linear",
+          "ffn_dimension": 192,
+          "active_trainable_parameters": 475712,
+          "width_fraction": 0.75,
+          "schedule": "cosine",
+          "exponent_policy": "cosine",
+          "gamma": null,
+          "optimizer_state_scope": "per_granularity",
+          "peak_lr": 0.008,
+          "warmup_updates": 64,
+          "horizon": 348528,
+          "assigned_updates": 348528,
+          "actual_updates": 348528,
+          "assigned_tokens": 2855141376,
+          "actual_tokens": 2855141376,
+          "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/config.json",
+          "config_sha256": "3d7eb97093c9f6175ae4cc600bcb539481ebf2f3edd655d7e5fd85f6e6a7488a",
+          "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/checkpoints/latest.pt",
+          "checkpoint_sha256": "bfbbd111d4d6eafa234d0985fe29c01a16043a2d30ba5cae48c5ef8e6355c3f2",
+          "evaluation_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/terminal_validation_results.json",
+          "evaluation_sha256": "8e3e9e8862b2e7e35cb05492c4995c6b481f1aea1fd538d58133ea543eb3be7a",
+          "metric_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/metrics.csv",
+          "metric_sha256": "0e6774df45b7c8576961379ba0bc0aeb05b00e16617d92508d734d4364650ddd",
+          "adapter": "native",
+          "historical_reference": true,
+          "source_identity": {
+            "code_revision": "84772bcaa87a4dac446cd5a6a0f23b5f52aa32bd",
+            "constructor": "ModifiedLlamaForCausalLM",
+            "cross_model_tensor_equality_required": false,
+            "dependency_versions": {
+              "PyYAML": "6.0.3",
+              "datasets": "4.8.5",
+              "matplotlib": "3.10.9",
+              "numpy": "2.4.3",
+              "pandas": "3.0.2",
+              "torch": "2.11.0+cu128",
+              "transformers": "5.8.0"
+            },
+            "derived_seed": 9177830445524338247,
+            "initializer_range": 0.02,
+            "method": "fresh_normal_constructor",
+            "seed": 42,
+            "seed_stream": "model_initialization",
+            "source_files_sha256": {
+              "scripts/analyze_tinystories_optimizer_ownership.py": "424e15b8766ad63c3ae281f0f1c1471ca7de88e36e2b49204c1a77fe289eb1f8",
+              "src/__init__.py": "981a0840b0aeb0a81b4453143e2333e6026d57b945ad8e01b3740c70472fd36c",
+              "src/evaluation/__init__.py": "d7000d1a9a855a5a0968dd8aab9f64d3650735a658691bbd2633b602229ee4c2",
+              "src/evaluation/consistency.py": "c5f2becef2abfb651fbcbc07d0c654ec86d6e85128dc58365de071d787f599a2",
+              "src/evaluation/downstream.py": "ff99ed8cb2a93f7aaa25df269bf4db6d36821aa5828a82f13e501815abddc526",
+              "src/evaluation/final_holdout.py": "f9579689c69cc578f99ec9c60f20d8800205a3fb350a1d17d888e6c59e23eebd",
+              "src/evaluation/optimizer_ownership.py": "5576fd74ff297d06ff6575a62bf253b5ee5556370985c1654cd411c30308ff02",
+              "src/evaluation/reporting.py": "8d45ad64404d4e8751d7ffe344c6414f8e0ba4bad6adeed415fc393bfc5048ef",
+              "src/evaluation/reporting_impl.py": "dafebf4046e13dc4c62cb96fe68d33057ea564683e2281a3d3704fa800ed7b7e",
+              "src/evaluation/reporting_io.py": "e776332fa5b519509c393ab8b0e52faec03d6e815cba0a83caaa1212ead3ea99",
+              "src/evaluation/reporting_styles.py": "704e52af0cad6389466c41678cf924c29a0932cad4f766efcbda25b8e5e02182",
+              "src/evaluation/speculative.py": "3f9f67cdacceb52e0bd190d5101837d05039d4d5dd8a500a9ac4911da02529f8",
+              "src/evaluation/validation.py": "452ae96a62699b99c9818c112a2c7573bb69cac30ea93abc1ba5c9ba695b301c",
+              "src/models/__init__.py": "178ac182a914f43b326471c1543334b2445625ba93537ba946bc13f89892e0fc",
+              "src/models/adaptive_sampler.py": "1b300fb3b4fd9b5e98fd0bce58b634bf5fcfcd87107e292234a9efb425486429",
+              "src/models/correction.py": "9325dbe7f1455df56dfe48b3d82d01f0222b7805c358b693fc047b8b0b9ecc8a",
+              "src/models/ffn.py": "e568ae79bb8cb14cd325d12bf099695265b8240a4370afbd9d2f81dd7cfa00ad",
+              "src/models/granularity.py": "88b31e0c6f60e03f49ac2b52777bd8be325e5c0ceb8727eb6743a9d63080a439",
+              "src/models/wiring.py": "b6d4381fe313f1343987cbcafc509b8f54d43ab12922bcb5d54ca06a750858aa",
+              "src/training/__init__.py": "c9992966495aee9958246dfd25f1d6692b61bb26a4804c27c588e108cf84b6d1",
+              "src/training/baselines.py": "6f3e29d7e4d0966319697b3a6b5a478e0c03b1efcff40fd783a6bc0cfa2296f7",
+              "src/training/checkpointing.py": "9cbf107ee540effb4961dc1f660bb86dbbee08f82dff50e00c551932068b7aba",
+              "src/training/data.py": "3c4248808207c38926081ac4c01bd6bde55010bdef00316cd3dfe9195d560158",
+              "src/training/distributed.py": "7dcd22de96124f5e423bdbea8cc3a8ed210d0de8c0fd90d8fa4aa80248e98c6b",
+              "src/training/fineweb_tokenizer.py": "7dac28fbd921b65ed91853b56442fbfe4d35ed46ac70d6cf138ad422b2dd07c9",
+              "src/training/gradient_interference.py": "44613fb78ee4926b47f67df9c9a1f8abf22e01ea8f26bcf65258d1e607c31ea2",
+              "src/training/gradient_probe.py": "15371e485fb3c18c7ffb9495875ecb60a13345c34230016ba22c42f2365ff81c",
+              "src/training/modeling.py": "6ba1672862b90ad2924b064d215d2f925550db153dc9f834da979228b0fa5048",
+              "src/training/monitoring.py": "e32ac302bd3364e2a769b6824518a240b607cc9870518f17f3e88b83307023df",
+              "src/training/optimizer_state.py": "ba01a8c87ba64bc58ce88a76e42f72dd774775b9e7170a683379e476b7029cdd",
+              "src/training/packed_corpus.py": "238e83ec334ee56ae964ad3c555ef86e783905573637bbb372bcb2355757965c",
+              "src/training/panelgrad.py": "f23dd3ec031fbbd6219b89827ac93f7ae7899ed82f05d914f8d4113e2bc756ab",
+              "src/training/portfolio_catchup.py": "b5f24aff8163e66cce22aa768ae435cb0cbaaedfbc7943b4e2704f21ba750b8d",
+              "src/training/probabilistic_controller.py": "ef266191fdec1f69170b7c6151d07ed462e31ac057f8d8e737c11254a60bc4e3",
+              "src/training/run.py": "b5534c175bf96e857a8bc2316338b19e545e22bf60b1118a3e8bd3c303ea3b00",
+              "src/training/schedules.py": "dde7be2a550fb1809e9532b732514acc2583b04eb160e13a7a231ea64653a5c7",
+              "src/training/steps.py": "9ce858f8a3214601316b3050d45b68a7f0211aa39b5b32fcb2c73eef794f23e1",
+              "src/training/tinystories.py": "7413ca22e719ee59b20bdb935b084050daad093ef9036574eb2eb731d98c57a9",
+              "src/training/tinystories_instruct.py": "b7418a8d55c2662c79f4a31c3e02c4c002f24c167a9be50542e2c67679e16be4",
+              "src/training/tinystories_preparation.py": "0e3960e3fcb8bb22772933a4c4f41d9bf1eff04a3868ee36e9c30528b232024a",
+              "src/training/warmup.py": "90d5efc57944db9bd2bf11f430d03dd62e605a83f04ef05a5612a8247ecfdd8d",
+              "src/utils/__init__.py": "29d28af6cfe9fff76c572dc6362cb5c74e13affc464c057ea8efc5ea54703634",
+              "src/utils/artifact_io.py": "477a8669c48e1be19166a708ed3ab58fe6dc21f550f5d6144ee6ef3bc9b896b7",
+              "src/utils/config.py": "49186b5bb214a1e010e4c2cb68f679440d490d6fb650efeb67548f4201f05105",
+              "src/utils/heartbeats.py": "6d10b71b812942898ad3f10d8fa0403ba2ea12d2e11b0fecd9518f6b084c5006",
+              "src/utils/metrics.py": "a268810898cb2144a83745c4158f972110c14d1659d30257376460b8b24ec5cd",
+              "src/utils/model_size.py": "6642b1875e3e9591f1addc02bcc3535f0b96edfa7b1df08327c3f8694c8c593e",
+              "src/utils/monitoring.py": "d973413540e586ce1f6c2de504d56eebfa7dca366ded2f44395c039ac2911c3b",
+              "src/utils/reproducibility.py": "b54771768da5a9ba7d093d73828e71bdfa943c2fbad55fd3f1613b1be094ecc1",
+              "train.py": "930504810f0c6a4e7ea6d12e2660ab6e672edddd69818aaf864459e35ff7bfbd"
+            },
+            "tracked_code_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "working_tree_dirty": false
+          },
+          "source_records": [
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/run_summary.json",
+              "sha256": "40e3d89fbb9b303cdd992e93fb497c4a5e52e1a24a7ef6f2047ca086f99fae01"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/terminal_validation_results.json",
+              "sha256": "8e3e9e8862b2e7e35cb05492c4995c6b481f1aea1fd538d58133ea543eb3be7a"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/checkpoints/latest.pt",
+              "sha256": "bfbbd111d4d6eafa234d0985fe29c01a16043a2d30ba5cae48c5ef8e6355c3f2"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/optimizer_ownership_trace.jsonl",
+              "sha256": "3891e9ed5308e75e815c48f81aab0c5a61f4b6cd9aca2d7447bfd760e8bffde0"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/metrics.csv",
+              "sha256": "0e6774df45b7c8576961379ba0bc0aeb05b00e16617d92508d734d4364650ddd"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/resource_attempts.json",
+              "sha256": "4b469a95e328290b944ee4f8a7e79dfb65ca505d7f8665f078ff8777f7d1cd13"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/config.json",
+              "sha256": "3d7eb97093c9f6175ae4cc600bcb539481ebf2f3edd655d7e5fd85f6e6a7488a"
+            }
+          ],
+          "legacy_counter_disclosure": null,
+          "applied_schedule_watermark": null
+        },
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_batches": 5,
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "c86a902db8fbff953552e112c1086b2a9ef203c55ad6494bb39f8867b3b3dd01",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_skipped_batches": 0,
+          "evaluation_target_tokens": 36195,
+          "granularity": "g1000",
+          "loss": 1.951732455638417,
+          "non_embedding_parameters": 262720,
+          "perplexity": 7.040875024073262,
+          "tokens_seen": 36195,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g1000",
+          "series": "S2-cosine",
+          "endpoint_id": "1b2b0bedee01b35a4b2a24b5f7d91d814b3ef6fe5b5cedc508f4d61d2bc86874",
+          "run_id": "tinystories-optimizer-ownership-v1-S2-s42",
+          "arm_id": "S2",
+          "campaign_id": "tinystories-optimizer-ownership-v1",
+          "seed": 42,
+          "grid_id": "linear",
+          "ffn_dimension": 256,
+          "active_trainable_parameters": 524864,
+          "width_fraction": 1.0,
+          "schedule": "cosine",
+          "exponent_policy": "cosine",
+          "gamma": null,
+          "optimizer_state_scope": "per_granularity",
+          "peak_lr": 0.008,
+          "warmup_updates": 64,
+          "horizon": 348528,
+          "assigned_updates": 348528,
+          "actual_updates": 348528,
+          "assigned_tokens": 2855141376,
+          "actual_tokens": 2855141376,
+          "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/config.json",
+          "config_sha256": "3d7eb97093c9f6175ae4cc600bcb539481ebf2f3edd655d7e5fd85f6e6a7488a",
+          "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/checkpoints/latest.pt",
+          "checkpoint_sha256": "bfbbd111d4d6eafa234d0985fe29c01a16043a2d30ba5cae48c5ef8e6355c3f2",
+          "evaluation_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/terminal_validation_results.json",
+          "evaluation_sha256": "8e3e9e8862b2e7e35cb05492c4995c6b481f1aea1fd538d58133ea543eb3be7a",
+          "metric_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/metrics.csv",
+          "metric_sha256": "0e6774df45b7c8576961379ba0bc0aeb05b00e16617d92508d734d4364650ddd",
+          "adapter": "native",
+          "historical_reference": true,
+          "source_identity": {
+            "code_revision": "84772bcaa87a4dac446cd5a6a0f23b5f52aa32bd",
+            "constructor": "ModifiedLlamaForCausalLM",
+            "cross_model_tensor_equality_required": false,
+            "dependency_versions": {
+              "PyYAML": "6.0.3",
+              "datasets": "4.8.5",
+              "matplotlib": "3.10.9",
+              "numpy": "2.4.3",
+              "pandas": "3.0.2",
+              "torch": "2.11.0+cu128",
+              "transformers": "5.8.0"
+            },
+            "derived_seed": 9177830445524338247,
+            "initializer_range": 0.02,
+            "method": "fresh_normal_constructor",
+            "seed": 42,
+            "seed_stream": "model_initialization",
+            "source_files_sha256": {
+              "scripts/analyze_tinystories_optimizer_ownership.py": "424e15b8766ad63c3ae281f0f1c1471ca7de88e36e2b49204c1a77fe289eb1f8",
+              "src/__init__.py": "981a0840b0aeb0a81b4453143e2333e6026d57b945ad8e01b3740c70472fd36c",
+              "src/evaluation/__init__.py": "d7000d1a9a855a5a0968dd8aab9f64d3650735a658691bbd2633b602229ee4c2",
+              "src/evaluation/consistency.py": "c5f2becef2abfb651fbcbc07d0c654ec86d6e85128dc58365de071d787f599a2",
+              "src/evaluation/downstream.py": "ff99ed8cb2a93f7aaa25df269bf4db6d36821aa5828a82f13e501815abddc526",
+              "src/evaluation/final_holdout.py": "f9579689c69cc578f99ec9c60f20d8800205a3fb350a1d17d888e6c59e23eebd",
+              "src/evaluation/optimizer_ownership.py": "5576fd74ff297d06ff6575a62bf253b5ee5556370985c1654cd411c30308ff02",
+              "src/evaluation/reporting.py": "8d45ad64404d4e8751d7ffe344c6414f8e0ba4bad6adeed415fc393bfc5048ef",
+              "src/evaluation/reporting_impl.py": "dafebf4046e13dc4c62cb96fe68d33057ea564683e2281a3d3704fa800ed7b7e",
+              "src/evaluation/reporting_io.py": "e776332fa5b519509c393ab8b0e52faec03d6e815cba0a83caaa1212ead3ea99",
+              "src/evaluation/reporting_styles.py": "704e52af0cad6389466c41678cf924c29a0932cad4f766efcbda25b8e5e02182",
+              "src/evaluation/speculative.py": "3f9f67cdacceb52e0bd190d5101837d05039d4d5dd8a500a9ac4911da02529f8",
+              "src/evaluation/validation.py": "452ae96a62699b99c9818c112a2c7573bb69cac30ea93abc1ba5c9ba695b301c",
+              "src/models/__init__.py": "178ac182a914f43b326471c1543334b2445625ba93537ba946bc13f89892e0fc",
+              "src/models/adaptive_sampler.py": "1b300fb3b4fd9b5e98fd0bce58b634bf5fcfcd87107e292234a9efb425486429",
+              "src/models/correction.py": "9325dbe7f1455df56dfe48b3d82d01f0222b7805c358b693fc047b8b0b9ecc8a",
+              "src/models/ffn.py": "e568ae79bb8cb14cd325d12bf099695265b8240a4370afbd9d2f81dd7cfa00ad",
+              "src/models/granularity.py": "88b31e0c6f60e03f49ac2b52777bd8be325e5c0ceb8727eb6743a9d63080a439",
+              "src/models/wiring.py": "b6d4381fe313f1343987cbcafc509b8f54d43ab12922bcb5d54ca06a750858aa",
+              "src/training/__init__.py": "c9992966495aee9958246dfd25f1d6692b61bb26a4804c27c588e108cf84b6d1",
+              "src/training/baselines.py": "6f3e29d7e4d0966319697b3a6b5a478e0c03b1efcff40fd783a6bc0cfa2296f7",
+              "src/training/checkpointing.py": "9cbf107ee540effb4961dc1f660bb86dbbee08f82dff50e00c551932068b7aba",
+              "src/training/data.py": "3c4248808207c38926081ac4c01bd6bde55010bdef00316cd3dfe9195d560158",
+              "src/training/distributed.py": "7dcd22de96124f5e423bdbea8cc3a8ed210d0de8c0fd90d8fa4aa80248e98c6b",
+              "src/training/fineweb_tokenizer.py": "7dac28fbd921b65ed91853b56442fbfe4d35ed46ac70d6cf138ad422b2dd07c9",
+              "src/training/gradient_interference.py": "44613fb78ee4926b47f67df9c9a1f8abf22e01ea8f26bcf65258d1e607c31ea2",
+              "src/training/gradient_probe.py": "15371e485fb3c18c7ffb9495875ecb60a13345c34230016ba22c42f2365ff81c",
+              "src/training/modeling.py": "6ba1672862b90ad2924b064d215d2f925550db153dc9f834da979228b0fa5048",
+              "src/training/monitoring.py": "e32ac302bd3364e2a769b6824518a240b607cc9870518f17f3e88b83307023df",
+              "src/training/optimizer_state.py": "ba01a8c87ba64bc58ce88a76e42f72dd774775b9e7170a683379e476b7029cdd",
+              "src/training/packed_corpus.py": "238e83ec334ee56ae964ad3c555ef86e783905573637bbb372bcb2355757965c",
+              "src/training/panelgrad.py": "f23dd3ec031fbbd6219b89827ac93f7ae7899ed82f05d914f8d4113e2bc756ab",
+              "src/training/portfolio_catchup.py": "b5f24aff8163e66cce22aa768ae435cb0cbaaedfbc7943b4e2704f21ba750b8d",
+              "src/training/probabilistic_controller.py": "ef266191fdec1f69170b7c6151d07ed462e31ac057f8d8e737c11254a60bc4e3",
+              "src/training/run.py": "b5534c175bf96e857a8bc2316338b19e545e22bf60b1118a3e8bd3c303ea3b00",
+              "src/training/schedules.py": "dde7be2a550fb1809e9532b732514acc2583b04eb160e13a7a231ea64653a5c7",
+              "src/training/steps.py": "9ce858f8a3214601316b3050d45b68a7f0211aa39b5b32fcb2c73eef794f23e1",
+              "src/training/tinystories.py": "7413ca22e719ee59b20bdb935b084050daad093ef9036574eb2eb731d98c57a9",
+              "src/training/tinystories_instruct.py": "b7418a8d55c2662c79f4a31c3e02c4c002f24c167a9be50542e2c67679e16be4",
+              "src/training/tinystories_preparation.py": "0e3960e3fcb8bb22772933a4c4f41d9bf1eff04a3868ee36e9c30528b232024a",
+              "src/training/warmup.py": "90d5efc57944db9bd2bf11f430d03dd62e605a83f04ef05a5612a8247ecfdd8d",
+              "src/utils/__init__.py": "29d28af6cfe9fff76c572dc6362cb5c74e13affc464c057ea8efc5ea54703634",
+              "src/utils/artifact_io.py": "477a8669c48e1be19166a708ed3ab58fe6dc21f550f5d6144ee6ef3bc9b896b7",
+              "src/utils/config.py": "49186b5bb214a1e010e4c2cb68f679440d490d6fb650efeb67548f4201f05105",
+              "src/utils/heartbeats.py": "6d10b71b812942898ad3f10d8fa0403ba2ea12d2e11b0fecd9518f6b084c5006",
+              "src/utils/metrics.py": "a268810898cb2144a83745c4158f972110c14d1659d30257376460b8b24ec5cd",
+              "src/utils/model_size.py": "6642b1875e3e9591f1addc02bcc3535f0b96edfa7b1df08327c3f8694c8c593e",
+              "src/utils/monitoring.py": "d973413540e586ce1f6c2de504d56eebfa7dca366ded2f44395c039ac2911c3b",
+              "src/utils/reproducibility.py": "b54771768da5a9ba7d093d73828e71bdfa943c2fbad55fd3f1613b1be094ecc1",
+              "train.py": "930504810f0c6a4e7ea6d12e2660ab6e672edddd69818aaf864459e35ff7bfbd"
+            },
+            "tracked_code_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "working_tree_dirty": false
+          },
+          "source_records": [
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/run_summary.json",
+              "sha256": "40e3d89fbb9b303cdd992e93fb497c4a5e52e1a24a7ef6f2047ca086f99fae01"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/terminal_validation_results.json",
+              "sha256": "8e3e9e8862b2e7e35cb05492c4995c6b481f1aea1fd538d58133ea543eb3be7a"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/checkpoints/latest.pt",
+              "sha256": "bfbbd111d4d6eafa234d0985fe29c01a16043a2d30ba5cae48c5ef8e6355c3f2"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/optimizer_ownership_trace.jsonl",
+              "sha256": "3891e9ed5308e75e815c48f81aab0c5a61f4b6cd9aca2d7447bfd760e8bffde0"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/metrics.csv",
+              "sha256": "0e6774df45b7c8576961379ba0bc0aeb05b00e16617d92508d734d4364650ddd"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/resource_attempts.json",
+              "sha256": "4b469a95e328290b944ee4f8a7e79dfb65ca505d7f8665f078ff8777f7d1cd13"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/config.json",
+              "sha256": "3d7eb97093c9f6175ae4cc600bcb539481ebf2f3edd655d7e5fd85f6e6a7488a"
+            }
+          ],
+          "legacy_counter_disclosure": null,
+          "applied_schedule_watermark": null
+        }
+      ],
+      "validation_points": 21784,
+      "applied_lr_points": 2791,
+      "notes": {
+        "missing_validation": false,
+        "missing_applied_lr": false,
+        "sources": [
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/metrics.csv",
+            "sha256": "0e6774df45b7c8576961379ba0bc0aeb05b00e16617d92508d734d4364650ddd"
+          },
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/optimizer_ownership_trace.jsonl",
+            "sha256": "3891e9ed5308e75e815c48f81aab0c5a61f4b6cd9aca2d7447bfd760e8bffde0"
+          }
+        ],
+        "applied_plot_sampling": "Recorded first 65, every 128th global commit and last commit per width; all records validated"
+      }
+    },
+    {
+      "run_id": "S1-linear-lr0004",
+      "adapter": "legacy_peak_lr_v1",
+      "endpoints": [
+        {
+          "width": "g250",
+          "loss": 2.0629659514678154,
+          "perplexity": 7.8692751201182265,
+          "non_embedding_parameters": 115264,
+          "evaluation_role": "ordinary_validation",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "evaluation_target_tokens": 36195,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "series": "S1-cosine",
+          "endpoint_id": "262b6e2a28f03fac36e4d964344ad128da9b9a8d3410a759835e902aec656c31",
+          "run_id": "S1-linear-lr0004",
+          "arm_id": "S1-linear-lr0004",
+          "campaign_id": "tinystories-s1-peak-lr-v1",
+          "seed": 42,
+          "grid_id": "linear",
+          "ffn_dimension": 64,
+          "active_trainable_parameters": 377408,
+          "width_fraction": 0.25,
+          "schedule": "cosine",
+          "exponent_policy": "cosine",
+          "gamma": null,
+          "optimizer_state_scope": "shared",
+          "peak_lr": 0.004,
+          "warmup_updates": 64,
+          "horizon": 348528,
+          "assigned_updates": 348528,
+          "actual_updates": 348528,
+          "assigned_tokens": 2855141376,
+          "actual_tokens": 2855141376,
+          "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/config.json",
+          "config_sha256": "f15871ca6b6b0c4743595276adcdebfa43c55a570bafccc8ff00904977ddd32a",
+          "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/checkpoints/latest.pt",
+          "checkpoint_sha256": "21e08f18362b9cbddf1b21ead0c9fc31a618e57025b8585bf3d7cce42504efd2",
+          "evaluation_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/scaling_results.csv",
+          "evaluation_sha256": "a3881f7328a5b6404839b4c59bfcb8e0e63f50c53828318b79a4cd261e3d2e88",
+          "metric_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/metrics.csv",
+          "metric_sha256": "63a6d19666fca4d2a2b4d873d065655259bc34e8fec880e0707c2d521d63f0f9",
+          "adapter": "legacy_peak_lr_v1",
+          "historical_reference": true,
+          "source_identity": {
+            "root_seed": 42,
+            "seed_stream_version": 1,
+            "data_split_version": 1,
+            "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+            "comparison_control_signature": "6fa95894f174e9a5f1a4cee8df357b67ccf35a6c3656281103b78f5d5fbb90ce",
+            "batch_size_per_process": 64,
+            "gradient_accumulation_steps": 1,
+            "expected_tokens_per_microstep": 8192,
+            "expected_tokens_per_step": 8192,
+            "validation_interval_tokens": 0,
+            "tokenizer_manifest_hash": "93e6bc7a94df82ca043519a71d5178bb645846ecd553f2302244b72c954e3819",
+            "world_size": 1,
+            "rank_topology": [
+              0
+            ],
+            "deterministic_runtime_settings": {
+              "mode": "strict",
+              "cublas_workspace_config": ":4096:8",
+              "deterministic_algorithms": true,
+              "cudnn_benchmark": false,
+              "cudnn_deterministic": true,
+              "cudnn_allow_tf32": false,
+              "cuda_matmul_allow_tf32": false
+            },
+            "adaptive_sampler_seed_provenance": "adaptive_sampling"
+          },
+          "source_records": [
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/config.json",
+              "sha256": "f15871ca6b6b0c4743595276adcdebfa43c55a570bafccc8ff00904977ddd32a"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/run_summary.json",
+              "sha256": "6c605c05e6f7ce4f183dc3d7a73bb689d4cfbd2ba8fbb58bc6a556259129fb56"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/checkpoints/latest.pt",
+              "sha256": "21e08f18362b9cbddf1b21ead0c9fc31a618e57025b8585bf3d7cce42504efd2"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/scaling_results.csv",
+              "sha256": "a3881f7328a5b6404839b4c59bfcb8e0e63f50c53828318b79a4cd261e3d2e88"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/metrics.csv",
+              "sha256": "63a6d19666fca4d2a2b4d873d065655259bc34e8fec880e0707c2d521d63f0f9"
+            }
+          ],
+          "legacy_counter_disclosure": "Dormant ownership counters are not exposure evidence",
+          "applied_schedule_watermark": null
+        },
+        {
+          "width": "g500",
+          "loss": 1.9915420143227829,
+          "perplexity": 7.326823122090094,
+          "non_embedding_parameters": 164416,
+          "evaluation_role": "ordinary_validation",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "evaluation_target_tokens": 36195,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "series": "S1-cosine",
+          "endpoint_id": "74730353a5e605772add605a2bd919fcbd0a478160174e82ee6a5eac557226a2",
+          "run_id": "S1-linear-lr0004",
+          "arm_id": "S1-linear-lr0004",
+          "campaign_id": "tinystories-s1-peak-lr-v1",
+          "seed": 42,
+          "grid_id": "linear",
+          "ffn_dimension": 128,
+          "active_trainable_parameters": 426560,
+          "width_fraction": 0.5,
+          "schedule": "cosine",
+          "exponent_policy": "cosine",
+          "gamma": null,
+          "optimizer_state_scope": "shared",
+          "peak_lr": 0.004,
+          "warmup_updates": 64,
+          "horizon": 348528,
+          "assigned_updates": 348528,
+          "actual_updates": 348528,
+          "assigned_tokens": 2855141376,
+          "actual_tokens": 2855141376,
+          "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/config.json",
+          "config_sha256": "f15871ca6b6b0c4743595276adcdebfa43c55a570bafccc8ff00904977ddd32a",
+          "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/checkpoints/latest.pt",
+          "checkpoint_sha256": "21e08f18362b9cbddf1b21ead0c9fc31a618e57025b8585bf3d7cce42504efd2",
+          "evaluation_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/scaling_results.csv",
+          "evaluation_sha256": "a3881f7328a5b6404839b4c59bfcb8e0e63f50c53828318b79a4cd261e3d2e88",
+          "metric_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/metrics.csv",
+          "metric_sha256": "63a6d19666fca4d2a2b4d873d065655259bc34e8fec880e0707c2d521d63f0f9",
+          "adapter": "legacy_peak_lr_v1",
+          "historical_reference": true,
+          "source_identity": {
+            "root_seed": 42,
+            "seed_stream_version": 1,
+            "data_split_version": 1,
+            "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+            "comparison_control_signature": "6fa95894f174e9a5f1a4cee8df357b67ccf35a6c3656281103b78f5d5fbb90ce",
+            "batch_size_per_process": 64,
+            "gradient_accumulation_steps": 1,
+            "expected_tokens_per_microstep": 8192,
+            "expected_tokens_per_step": 8192,
+            "validation_interval_tokens": 0,
+            "tokenizer_manifest_hash": "93e6bc7a94df82ca043519a71d5178bb645846ecd553f2302244b72c954e3819",
+            "world_size": 1,
+            "rank_topology": [
+              0
+            ],
+            "deterministic_runtime_settings": {
+              "mode": "strict",
+              "cublas_workspace_config": ":4096:8",
+              "deterministic_algorithms": true,
+              "cudnn_benchmark": false,
+              "cudnn_deterministic": true,
+              "cudnn_allow_tf32": false,
+              "cuda_matmul_allow_tf32": false
+            },
+            "adaptive_sampler_seed_provenance": "adaptive_sampling"
+          },
+          "source_records": [
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/config.json",
+              "sha256": "f15871ca6b6b0c4743595276adcdebfa43c55a570bafccc8ff00904977ddd32a"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/run_summary.json",
+              "sha256": "6c605c05e6f7ce4f183dc3d7a73bb689d4cfbd2ba8fbb58bc6a556259129fb56"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/checkpoints/latest.pt",
+              "sha256": "21e08f18362b9cbddf1b21ead0c9fc31a618e57025b8585bf3d7cce42504efd2"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/scaling_results.csv",
+              "sha256": "a3881f7328a5b6404839b4c59bfcb8e0e63f50c53828318b79a4cd261e3d2e88"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/metrics.csv",
+              "sha256": "63a6d19666fca4d2a2b4d873d065655259bc34e8fec880e0707c2d521d63f0f9"
+            }
+          ],
+          "legacy_counter_disclosure": "Dormant ownership counters are not exposure evidence",
+          "applied_schedule_watermark": null
+        },
+        {
+          "width": "g750",
+          "loss": 1.9621099831765159,
+          "perplexity": 7.1143223401544,
+          "non_embedding_parameters": 213568,
+          "evaluation_role": "ordinary_validation",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "evaluation_target_tokens": 36195,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "series": "S1-cosine",
+          "endpoint_id": "b6f0863c438a285736a68203fe4488eb74827adcc9146d9ea69a853031666da6",
+          "run_id": "S1-linear-lr0004",
+          "arm_id": "S1-linear-lr0004",
+          "campaign_id": "tinystories-s1-peak-lr-v1",
+          "seed": 42,
+          "grid_id": "linear",
+          "ffn_dimension": 192,
+          "active_trainable_parameters": 475712,
+          "width_fraction": 0.75,
+          "schedule": "cosine",
+          "exponent_policy": "cosine",
+          "gamma": null,
+          "optimizer_state_scope": "shared",
+          "peak_lr": 0.004,
+          "warmup_updates": 64,
+          "horizon": 348528,
+          "assigned_updates": 348528,
+          "actual_updates": 348528,
+          "assigned_tokens": 2855141376,
+          "actual_tokens": 2855141376,
+          "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/config.json",
+          "config_sha256": "f15871ca6b6b0c4743595276adcdebfa43c55a570bafccc8ff00904977ddd32a",
+          "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/checkpoints/latest.pt",
+          "checkpoint_sha256": "21e08f18362b9cbddf1b21ead0c9fc31a618e57025b8585bf3d7cce42504efd2",
+          "evaluation_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/scaling_results.csv",
+          "evaluation_sha256": "a3881f7328a5b6404839b4c59bfcb8e0e63f50c53828318b79a4cd261e3d2e88",
+          "metric_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/metrics.csv",
+          "metric_sha256": "63a6d19666fca4d2a2b4d873d065655259bc34e8fec880e0707c2d521d63f0f9",
+          "adapter": "legacy_peak_lr_v1",
+          "historical_reference": true,
+          "source_identity": {
+            "root_seed": 42,
+            "seed_stream_version": 1,
+            "data_split_version": 1,
+            "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+            "comparison_control_signature": "6fa95894f174e9a5f1a4cee8df357b67ccf35a6c3656281103b78f5d5fbb90ce",
+            "batch_size_per_process": 64,
+            "gradient_accumulation_steps": 1,
+            "expected_tokens_per_microstep": 8192,
+            "expected_tokens_per_step": 8192,
+            "validation_interval_tokens": 0,
+            "tokenizer_manifest_hash": "93e6bc7a94df82ca043519a71d5178bb645846ecd553f2302244b72c954e3819",
+            "world_size": 1,
+            "rank_topology": [
+              0
+            ],
+            "deterministic_runtime_settings": {
+              "mode": "strict",
+              "cublas_workspace_config": ":4096:8",
+              "deterministic_algorithms": true,
+              "cudnn_benchmark": false,
+              "cudnn_deterministic": true,
+              "cudnn_allow_tf32": false,
+              "cuda_matmul_allow_tf32": false
+            },
+            "adaptive_sampler_seed_provenance": "adaptive_sampling"
+          },
+          "source_records": [
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/config.json",
+              "sha256": "f15871ca6b6b0c4743595276adcdebfa43c55a570bafccc8ff00904977ddd32a"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/run_summary.json",
+              "sha256": "6c605c05e6f7ce4f183dc3d7a73bb689d4cfbd2ba8fbb58bc6a556259129fb56"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/checkpoints/latest.pt",
+              "sha256": "21e08f18362b9cbddf1b21ead0c9fc31a618e57025b8585bf3d7cce42504efd2"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/scaling_results.csv",
+              "sha256": "a3881f7328a5b6404839b4c59bfcb8e0e63f50c53828318b79a4cd261e3d2e88"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/metrics.csv",
+              "sha256": "63a6d19666fca4d2a2b4d873d065655259bc34e8fec880e0707c2d521d63f0f9"
+            }
+          ],
+          "legacy_counter_disclosure": "Dormant ownership counters are not exposure evidence",
+          "applied_schedule_watermark": null
+        },
+        {
+          "width": "g1000",
+          "loss": 1.9510180444048162,
+          "perplexity": 7.035846740206788,
+          "non_embedding_parameters": 262720,
+          "evaluation_role": "ordinary_validation",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "evaluation_target_tokens": 36195,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "series": "S1-cosine",
+          "endpoint_id": "ee1f6c597be58761cdc227ead6eb99b9da6e9ce081e050886008384199a3286f",
+          "run_id": "S1-linear-lr0004",
+          "arm_id": "S1-linear-lr0004",
+          "campaign_id": "tinystories-s1-peak-lr-v1",
+          "seed": 42,
+          "grid_id": "linear",
+          "ffn_dimension": 256,
+          "active_trainable_parameters": 524864,
+          "width_fraction": 1.0,
+          "schedule": "cosine",
+          "exponent_policy": "cosine",
+          "gamma": null,
+          "optimizer_state_scope": "shared",
+          "peak_lr": 0.004,
+          "warmup_updates": 64,
+          "horizon": 348528,
+          "assigned_updates": 348528,
+          "actual_updates": 348528,
+          "assigned_tokens": 2855141376,
+          "actual_tokens": 2855141376,
+          "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/config.json",
+          "config_sha256": "f15871ca6b6b0c4743595276adcdebfa43c55a570bafccc8ff00904977ddd32a",
+          "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/checkpoints/latest.pt",
+          "checkpoint_sha256": "21e08f18362b9cbddf1b21ead0c9fc31a618e57025b8585bf3d7cce42504efd2",
+          "evaluation_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/scaling_results.csv",
+          "evaluation_sha256": "a3881f7328a5b6404839b4c59bfcb8e0e63f50c53828318b79a4cd261e3d2e88",
+          "metric_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/metrics.csv",
+          "metric_sha256": "63a6d19666fca4d2a2b4d873d065655259bc34e8fec880e0707c2d521d63f0f9",
+          "adapter": "legacy_peak_lr_v1",
+          "historical_reference": true,
+          "source_identity": {
+            "root_seed": 42,
+            "seed_stream_version": 1,
+            "data_split_version": 1,
+            "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+            "comparison_control_signature": "6fa95894f174e9a5f1a4cee8df357b67ccf35a6c3656281103b78f5d5fbb90ce",
+            "batch_size_per_process": 64,
+            "gradient_accumulation_steps": 1,
+            "expected_tokens_per_microstep": 8192,
+            "expected_tokens_per_step": 8192,
+            "validation_interval_tokens": 0,
+            "tokenizer_manifest_hash": "93e6bc7a94df82ca043519a71d5178bb645846ecd553f2302244b72c954e3819",
+            "world_size": 1,
+            "rank_topology": [
+              0
+            ],
+            "deterministic_runtime_settings": {
+              "mode": "strict",
+              "cublas_workspace_config": ":4096:8",
+              "deterministic_algorithms": true,
+              "cudnn_benchmark": false,
+              "cudnn_deterministic": true,
+              "cudnn_allow_tf32": false,
+              "cuda_matmul_allow_tf32": false
+            },
+            "adaptive_sampler_seed_provenance": "adaptive_sampling"
+          },
+          "source_records": [
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/config.json",
+              "sha256": "f15871ca6b6b0c4743595276adcdebfa43c55a570bafccc8ff00904977ddd32a"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/run_summary.json",
+              "sha256": "6c605c05e6f7ce4f183dc3d7a73bb689d4cfbd2ba8fbb58bc6a556259129fb56"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/checkpoints/latest.pt",
+              "sha256": "21e08f18362b9cbddf1b21ead0c9fc31a618e57025b8585bf3d7cce42504efd2"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/scaling_results.csv",
+              "sha256": "a3881f7328a5b6404839b4c59bfcb8e0e63f50c53828318b79a4cd261e3d2e88"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/metrics.csv",
+              "sha256": "63a6d19666fca4d2a2b4d873d065655259bc34e8fec880e0707c2d521d63f0f9"
+            }
+          ],
+          "legacy_counter_disclosure": "Dormant ownership counters are not exposure evidence",
+          "applied_schedule_watermark": null
+        }
+      ],
+      "validation_points": 21784,
+      "applied_lr_points": 2791,
+      "notes": {
+        "missing_validation": false,
+        "missing_applied_lr": false,
+        "sources": [
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/metrics.csv",
+            "sha256": "63a6d19666fca4d2a2b4d873d065655259bc34e8fec880e0707c2d521d63f0f9"
+          }
+        ],
+        "applied_plot_sampling": "Recorded first 65, every 128th global commit and last commit per width; all records validated"
+      }
+    },
+    {
+      "run_id": "S2-linear-lr0004",
+      "adapter": "legacy_peak_lr_v1",
+      "endpoints": [
+        {
+          "width": "g250",
+          "loss": 2.069990271016171,
+          "perplexity": 7.92474601774858,
+          "non_embedding_parameters": 115264,
+          "evaluation_role": "ordinary_validation",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "evaluation_target_tokens": 36195,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "series": "S2-cosine",
+          "endpoint_id": "8174c4fb38aa32dfc7ab93ec59931e8f9c126f5ca400ded768992b3748783eb5",
+          "run_id": "S2-linear-lr0004",
+          "arm_id": "S2-linear-lr0004",
+          "campaign_id": "tinystories-s2-warmup-peak-lr-v1",
+          "seed": 42,
+          "grid_id": "linear",
+          "ffn_dimension": 64,
+          "active_trainable_parameters": 377408,
+          "width_fraction": 0.25,
+          "schedule": "cosine",
+          "exponent_policy": "cosine",
+          "gamma": null,
+          "optimizer_state_scope": "per_granularity",
+          "peak_lr": 0.004,
+          "warmup_updates": 64,
+          "horizon": 348528,
+          "assigned_updates": 348528,
+          "actual_updates": 348528,
+          "assigned_tokens": 2855141376,
+          "actual_tokens": 2855141376,
+          "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/config.json",
+          "config_sha256": "4d045660a93ad7ea200ce548381f6496622955b485b37c40528086039d6f3cf3",
+          "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/checkpoints/latest.pt",
+          "checkpoint_sha256": "6182449b54c909d01fc9aa28a8e814c1be305eef69998f5edd243750b6cf57c4",
+          "evaluation_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/scaling_results.csv",
+          "evaluation_sha256": "383eb7077842393984bc862e1d354458f6e56f8ebef3eb0c8b9d9fc5f846dc8e",
+          "metric_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/metrics.csv",
+          "metric_sha256": "3eb28fea1bd1b9b41c363a7bad1fb28f53790d2098981903c41d230173f278c9",
+          "adapter": "legacy_peak_lr_v1",
+          "historical_reference": true,
+          "source_identity": {
+            "root_seed": 42,
+            "seed_stream_version": 1,
+            "data_split_version": 1,
+            "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+            "comparison_control_signature": "6fa95894f174e9a5f1a4cee8df357b67ccf35a6c3656281103b78f5d5fbb90ce",
+            "batch_size_per_process": 64,
+            "gradient_accumulation_steps": 1,
+            "expected_tokens_per_microstep": 8192,
+            "expected_tokens_per_step": 8192,
+            "validation_interval_tokens": 0,
+            "tokenizer_manifest_hash": "93e6bc7a94df82ca043519a71d5178bb645846ecd553f2302244b72c954e3819",
+            "world_size": 1,
+            "rank_topology": [
+              0
+            ],
+            "deterministic_runtime_settings": {
+              "mode": "strict",
+              "cublas_workspace_config": ":4096:8",
+              "deterministic_algorithms": true,
+              "cudnn_benchmark": false,
+              "cudnn_deterministic": true,
+              "cudnn_allow_tf32": false,
+              "cuda_matmul_allow_tf32": false
+            },
+            "adaptive_sampler_seed_provenance": "adaptive_sampling"
+          },
+          "source_records": [
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/config.json",
+              "sha256": "4d045660a93ad7ea200ce548381f6496622955b485b37c40528086039d6f3cf3"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/run_summary.json",
+              "sha256": "3250dbd7bd3d32b5a852910cfbe0fdce26e4e7747dcc1ec38b759d6eda6705ff"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/checkpoints/latest.pt",
+              "sha256": "6182449b54c909d01fc9aa28a8e814c1be305eef69998f5edd243750b6cf57c4"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/scaling_results.csv",
+              "sha256": "383eb7077842393984bc862e1d354458f6e56f8ebef3eb0c8b9d9fc5f846dc8e"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/metrics.csv",
+              "sha256": "3eb28fea1bd1b9b41c363a7bad1fb28f53790d2098981903c41d230173f278c9"
+            }
+          ],
+          "legacy_counter_disclosure": "Dormant ownership counters are not exposure evidence",
+          "applied_schedule_watermark": null
+        },
+        {
+          "width": "g500",
+          "loss": 1.9982314051243297,
+          "perplexity": 7.375999401585418,
+          "non_embedding_parameters": 164416,
+          "evaluation_role": "ordinary_validation",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "evaluation_target_tokens": 36195,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "series": "S2-cosine",
+          "endpoint_id": "abed52e93050ed72f2f0f4ded97aa113681c05af5c7689f44aa25c1d03f14f72",
+          "run_id": "S2-linear-lr0004",
+          "arm_id": "S2-linear-lr0004",
+          "campaign_id": "tinystories-s2-warmup-peak-lr-v1",
+          "seed": 42,
+          "grid_id": "linear",
+          "ffn_dimension": 128,
+          "active_trainable_parameters": 426560,
+          "width_fraction": 0.5,
+          "schedule": "cosine",
+          "exponent_policy": "cosine",
+          "gamma": null,
+          "optimizer_state_scope": "per_granularity",
+          "peak_lr": 0.004,
+          "warmup_updates": 64,
+          "horizon": 348528,
+          "assigned_updates": 348528,
+          "actual_updates": 348528,
+          "assigned_tokens": 2855141376,
+          "actual_tokens": 2855141376,
+          "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/config.json",
+          "config_sha256": "4d045660a93ad7ea200ce548381f6496622955b485b37c40528086039d6f3cf3",
+          "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/checkpoints/latest.pt",
+          "checkpoint_sha256": "6182449b54c909d01fc9aa28a8e814c1be305eef69998f5edd243750b6cf57c4",
+          "evaluation_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/scaling_results.csv",
+          "evaluation_sha256": "383eb7077842393984bc862e1d354458f6e56f8ebef3eb0c8b9d9fc5f846dc8e",
+          "metric_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/metrics.csv",
+          "metric_sha256": "3eb28fea1bd1b9b41c363a7bad1fb28f53790d2098981903c41d230173f278c9",
+          "adapter": "legacy_peak_lr_v1",
+          "historical_reference": true,
+          "source_identity": {
+            "root_seed": 42,
+            "seed_stream_version": 1,
+            "data_split_version": 1,
+            "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+            "comparison_control_signature": "6fa95894f174e9a5f1a4cee8df357b67ccf35a6c3656281103b78f5d5fbb90ce",
+            "batch_size_per_process": 64,
+            "gradient_accumulation_steps": 1,
+            "expected_tokens_per_microstep": 8192,
+            "expected_tokens_per_step": 8192,
+            "validation_interval_tokens": 0,
+            "tokenizer_manifest_hash": "93e6bc7a94df82ca043519a71d5178bb645846ecd553f2302244b72c954e3819",
+            "world_size": 1,
+            "rank_topology": [
+              0
+            ],
+            "deterministic_runtime_settings": {
+              "mode": "strict",
+              "cublas_workspace_config": ":4096:8",
+              "deterministic_algorithms": true,
+              "cudnn_benchmark": false,
+              "cudnn_deterministic": true,
+              "cudnn_allow_tf32": false,
+              "cuda_matmul_allow_tf32": false
+            },
+            "adaptive_sampler_seed_provenance": "adaptive_sampling"
+          },
+          "source_records": [
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/config.json",
+              "sha256": "4d045660a93ad7ea200ce548381f6496622955b485b37c40528086039d6f3cf3"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/run_summary.json",
+              "sha256": "3250dbd7bd3d32b5a852910cfbe0fdce26e4e7747dcc1ec38b759d6eda6705ff"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/checkpoints/latest.pt",
+              "sha256": "6182449b54c909d01fc9aa28a8e814c1be305eef69998f5edd243750b6cf57c4"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/scaling_results.csv",
+              "sha256": "383eb7077842393984bc862e1d354458f6e56f8ebef3eb0c8b9d9fc5f846dc8e"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/metrics.csv",
+              "sha256": "3eb28fea1bd1b9b41c363a7bad1fb28f53790d2098981903c41d230173f278c9"
+            }
+          ],
+          "legacy_counter_disclosure": "Dormant ownership counters are not exposure evidence",
+          "applied_schedule_watermark": null
+        },
+        {
+          "width": "g750",
+          "loss": 1.9673431693461902,
+          "perplexity": 7.151650500848861,
+          "non_embedding_parameters": 213568,
+          "evaluation_role": "ordinary_validation",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "evaluation_target_tokens": 36195,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "series": "S2-cosine",
+          "endpoint_id": "67151703c3170cefaf7432d5561ae2692388cfc9ca072fda9bfe51e73fbe4787",
+          "run_id": "S2-linear-lr0004",
+          "arm_id": "S2-linear-lr0004",
+          "campaign_id": "tinystories-s2-warmup-peak-lr-v1",
+          "seed": 42,
+          "grid_id": "linear",
+          "ffn_dimension": 192,
+          "active_trainable_parameters": 475712,
+          "width_fraction": 0.75,
+          "schedule": "cosine",
+          "exponent_policy": "cosine",
+          "gamma": null,
+          "optimizer_state_scope": "per_granularity",
+          "peak_lr": 0.004,
+          "warmup_updates": 64,
+          "horizon": 348528,
+          "assigned_updates": 348528,
+          "actual_updates": 348528,
+          "assigned_tokens": 2855141376,
+          "actual_tokens": 2855141376,
+          "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/config.json",
+          "config_sha256": "4d045660a93ad7ea200ce548381f6496622955b485b37c40528086039d6f3cf3",
+          "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/checkpoints/latest.pt",
+          "checkpoint_sha256": "6182449b54c909d01fc9aa28a8e814c1be305eef69998f5edd243750b6cf57c4",
+          "evaluation_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/scaling_results.csv",
+          "evaluation_sha256": "383eb7077842393984bc862e1d354458f6e56f8ebef3eb0c8b9d9fc5f846dc8e",
+          "metric_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/metrics.csv",
+          "metric_sha256": "3eb28fea1bd1b9b41c363a7bad1fb28f53790d2098981903c41d230173f278c9",
+          "adapter": "legacy_peak_lr_v1",
+          "historical_reference": true,
+          "source_identity": {
+            "root_seed": 42,
+            "seed_stream_version": 1,
+            "data_split_version": 1,
+            "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+            "comparison_control_signature": "6fa95894f174e9a5f1a4cee8df357b67ccf35a6c3656281103b78f5d5fbb90ce",
+            "batch_size_per_process": 64,
+            "gradient_accumulation_steps": 1,
+            "expected_tokens_per_microstep": 8192,
+            "expected_tokens_per_step": 8192,
+            "validation_interval_tokens": 0,
+            "tokenizer_manifest_hash": "93e6bc7a94df82ca043519a71d5178bb645846ecd553f2302244b72c954e3819",
+            "world_size": 1,
+            "rank_topology": [
+              0
+            ],
+            "deterministic_runtime_settings": {
+              "mode": "strict",
+              "cublas_workspace_config": ":4096:8",
+              "deterministic_algorithms": true,
+              "cudnn_benchmark": false,
+              "cudnn_deterministic": true,
+              "cudnn_allow_tf32": false,
+              "cuda_matmul_allow_tf32": false
+            },
+            "adaptive_sampler_seed_provenance": "adaptive_sampling"
+          },
+          "source_records": [
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/config.json",
+              "sha256": "4d045660a93ad7ea200ce548381f6496622955b485b37c40528086039d6f3cf3"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/run_summary.json",
+              "sha256": "3250dbd7bd3d32b5a852910cfbe0fdce26e4e7747dcc1ec38b759d6eda6705ff"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/checkpoints/latest.pt",
+              "sha256": "6182449b54c909d01fc9aa28a8e814c1be305eef69998f5edd243750b6cf57c4"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/scaling_results.csv",
+              "sha256": "383eb7077842393984bc862e1d354458f6e56f8ebef3eb0c8b9d9fc5f846dc8e"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/metrics.csv",
+              "sha256": "3eb28fea1bd1b9b41c363a7bad1fb28f53790d2098981903c41d230173f278c9"
+            }
+          ],
+          "legacy_counter_disclosure": "Dormant ownership counters are not exposure evidence",
+          "applied_schedule_watermark": null
+        },
+        {
+          "width": "g1000",
+          "loss": 1.9558676071334304,
+          "perplexity": 7.070050389659959,
+          "non_embedding_parameters": 262720,
+          "evaluation_role": "ordinary_validation",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "evaluation_target_tokens": 36195,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "series": "S2-cosine",
+          "endpoint_id": "0c2a19e8eb3997a0387466cae18cf5a59606ca95ec906db11b960b3136d0889f",
+          "run_id": "S2-linear-lr0004",
+          "arm_id": "S2-linear-lr0004",
+          "campaign_id": "tinystories-s2-warmup-peak-lr-v1",
+          "seed": 42,
+          "grid_id": "linear",
+          "ffn_dimension": 256,
+          "active_trainable_parameters": 524864,
+          "width_fraction": 1.0,
+          "schedule": "cosine",
+          "exponent_policy": "cosine",
+          "gamma": null,
+          "optimizer_state_scope": "per_granularity",
+          "peak_lr": 0.004,
+          "warmup_updates": 64,
+          "horizon": 348528,
+          "assigned_updates": 348528,
+          "actual_updates": 348528,
+          "assigned_tokens": 2855141376,
+          "actual_tokens": 2855141376,
+          "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/config.json",
+          "config_sha256": "4d045660a93ad7ea200ce548381f6496622955b485b37c40528086039d6f3cf3",
+          "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/checkpoints/latest.pt",
+          "checkpoint_sha256": "6182449b54c909d01fc9aa28a8e814c1be305eef69998f5edd243750b6cf57c4",
+          "evaluation_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/scaling_results.csv",
+          "evaluation_sha256": "383eb7077842393984bc862e1d354458f6e56f8ebef3eb0c8b9d9fc5f846dc8e",
+          "metric_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/metrics.csv",
+          "metric_sha256": "3eb28fea1bd1b9b41c363a7bad1fb28f53790d2098981903c41d230173f278c9",
+          "adapter": "legacy_peak_lr_v1",
+          "historical_reference": true,
+          "source_identity": {
+            "root_seed": 42,
+            "seed_stream_version": 1,
+            "data_split_version": 1,
+            "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+            "comparison_control_signature": "6fa95894f174e9a5f1a4cee8df357b67ccf35a6c3656281103b78f5d5fbb90ce",
+            "batch_size_per_process": 64,
+            "gradient_accumulation_steps": 1,
+            "expected_tokens_per_microstep": 8192,
+            "expected_tokens_per_step": 8192,
+            "validation_interval_tokens": 0,
+            "tokenizer_manifest_hash": "93e6bc7a94df82ca043519a71d5178bb645846ecd553f2302244b72c954e3819",
+            "world_size": 1,
+            "rank_topology": [
+              0
+            ],
+            "deterministic_runtime_settings": {
+              "mode": "strict",
+              "cublas_workspace_config": ":4096:8",
+              "deterministic_algorithms": true,
+              "cudnn_benchmark": false,
+              "cudnn_deterministic": true,
+              "cudnn_allow_tf32": false,
+              "cuda_matmul_allow_tf32": false
+            },
+            "adaptive_sampler_seed_provenance": "adaptive_sampling"
+          },
+          "source_records": [
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/config.json",
+              "sha256": "4d045660a93ad7ea200ce548381f6496622955b485b37c40528086039d6f3cf3"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/run_summary.json",
+              "sha256": "3250dbd7bd3d32b5a852910cfbe0fdce26e4e7747dcc1ec38b759d6eda6705ff"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/checkpoints/latest.pt",
+              "sha256": "6182449b54c909d01fc9aa28a8e814c1be305eef69998f5edd243750b6cf57c4"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/scaling_results.csv",
+              "sha256": "383eb7077842393984bc862e1d354458f6e56f8ebef3eb0c8b9d9fc5f846dc8e"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/metrics.csv",
+              "sha256": "3eb28fea1bd1b9b41c363a7bad1fb28f53790d2098981903c41d230173f278c9"
+            }
+          ],
+          "legacy_counter_disclosure": "Dormant ownership counters are not exposure evidence",
+          "applied_schedule_watermark": null
+        }
+      ],
+      "validation_points": 21784,
+      "applied_lr_points": 2791,
+      "notes": {
+        "missing_validation": false,
+        "missing_applied_lr": false,
+        "sources": [
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/metrics.csv",
+            "sha256": "3eb28fea1bd1b9b41c363a7bad1fb28f53790d2098981903c41d230173f278c9"
+          }
+        ],
+        "applied_plot_sampling": "Recorded first 65, every 128th global commit and last commit per width; all records validated"
+      }
+    },
+    {
+      "run_id": "tinystories-optimizer-ownership-v1-ST-g250-s42",
+      "adapter": "native",
+      "endpoints": [
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_batches": 5,
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "c86a902db8fbff953552e112c1086b2a9ef203c55ad6494bb39f8867b3b3dd01",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_skipped_batches": 0,
+          "evaluation_target_tokens": 36195,
+          "granularity": "g250",
+          "loss": 2.062977141246461,
+          "non_embedding_parameters": 115264,
+          "perplexity": 7.8693631760575835,
+          "tokens_seen": 36195,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g250",
+          "series": "standalone-cosine",
+          "endpoint_id": "cd0b8a9c5133c94c8891ffb68e9a418a60e3fea911b7ab0519ad59da87fda2fa",
+          "run_id": "tinystories-optimizer-ownership-v1-ST-g250-s42",
+          "arm_id": "ST-g250",
+          "campaign_id": "tinystories-optimizer-ownership-v1",
+          "seed": 42,
+          "grid_id": "linear",
+          "ffn_dimension": 64,
+          "active_trainable_parameters": 377408,
+          "width_fraction": 0.25,
+          "schedule": "cosine",
+          "exponent_policy": "cosine",
+          "gamma": null,
+          "optimizer_state_scope": "shared",
+          "peak_lr": 0.008,
+          "warmup_updates": 64,
+          "horizon": 87132,
+          "assigned_updates": 87132,
+          "actual_updates": 87132,
+          "assigned_tokens": 713785344,
+          "actual_tokens": 713785344,
+          "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/config.json",
+          "config_sha256": "015922e7a6496d7ebfdaff07b3bf31968fcc5fdf7920b22491b056e93787ea58",
+          "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/checkpoints/latest.pt",
+          "checkpoint_sha256": "1648954fe9541787ec10ea2e12560012b8c1e9fcbec50ceeb3f6109ded833472",
+          "evaluation_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/terminal_validation_results.json",
+          "evaluation_sha256": "51e911ef1cda6b34ded84d5c5ca2670e7007e9258bd73c704e1e43ed857f738f",
+          "metric_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/metrics.csv",
+          "metric_sha256": "b3442f1c6ca87a7601eb0f172ce00f2fc1fddd657dca141e23fa62a96d486057",
+          "adapter": "native",
+          "historical_reference": true,
+          "source_identity": {
+            "code_revision": "84772bcaa87a4dac446cd5a6a0f23b5f52aa32bd",
+            "constructor": "LlamaForCausalLM",
+            "cross_model_tensor_equality_required": false,
+            "dependency_versions": {
+              "PyYAML": "6.0.3",
+              "datasets": "4.8.5",
+              "matplotlib": "3.10.9",
+              "numpy": "2.4.3",
+              "pandas": "3.0.2",
+              "torch": "2.11.0+cu128",
+              "transformers": "5.8.0"
+            },
+            "derived_seed": 9177830445524338247,
+            "initializer_range": 0.02,
+            "method": "fresh_normal_constructor",
+            "seed": 42,
+            "seed_stream": "model_initialization",
+            "source_files_sha256": {
+              "scripts/analyze_tinystories_optimizer_ownership.py": "424e15b8766ad63c3ae281f0f1c1471ca7de88e36e2b49204c1a77fe289eb1f8",
+              "src/__init__.py": "981a0840b0aeb0a81b4453143e2333e6026d57b945ad8e01b3740c70472fd36c",
+              "src/evaluation/__init__.py": "d7000d1a9a855a5a0968dd8aab9f64d3650735a658691bbd2633b602229ee4c2",
+              "src/evaluation/consistency.py": "c5f2becef2abfb651fbcbc07d0c654ec86d6e85128dc58365de071d787f599a2",
+              "src/evaluation/downstream.py": "ff99ed8cb2a93f7aaa25df269bf4db6d36821aa5828a82f13e501815abddc526",
+              "src/evaluation/final_holdout.py": "f9579689c69cc578f99ec9c60f20d8800205a3fb350a1d17d888e6c59e23eebd",
+              "src/evaluation/optimizer_ownership.py": "5576fd74ff297d06ff6575a62bf253b5ee5556370985c1654cd411c30308ff02",
+              "src/evaluation/reporting.py": "8d45ad64404d4e8751d7ffe344c6414f8e0ba4bad6adeed415fc393bfc5048ef",
+              "src/evaluation/reporting_impl.py": "dafebf4046e13dc4c62cb96fe68d33057ea564683e2281a3d3704fa800ed7b7e",
+              "src/evaluation/reporting_io.py": "e776332fa5b519509c393ab8b0e52faec03d6e815cba0a83caaa1212ead3ea99",
+              "src/evaluation/reporting_styles.py": "704e52af0cad6389466c41678cf924c29a0932cad4f766efcbda25b8e5e02182",
+              "src/evaluation/speculative.py": "3f9f67cdacceb52e0bd190d5101837d05039d4d5dd8a500a9ac4911da02529f8",
+              "src/evaluation/validation.py": "452ae96a62699b99c9818c112a2c7573bb69cac30ea93abc1ba5c9ba695b301c",
+              "src/models/__init__.py": "178ac182a914f43b326471c1543334b2445625ba93537ba946bc13f89892e0fc",
+              "src/models/adaptive_sampler.py": "1b300fb3b4fd9b5e98fd0bce58b634bf5fcfcd87107e292234a9efb425486429",
+              "src/models/correction.py": "9325dbe7f1455df56dfe48b3d82d01f0222b7805c358b693fc047b8b0b9ecc8a",
+              "src/models/ffn.py": "e568ae79bb8cb14cd325d12bf099695265b8240a4370afbd9d2f81dd7cfa00ad",
+              "src/models/granularity.py": "88b31e0c6f60e03f49ac2b52777bd8be325e5c0ceb8727eb6743a9d63080a439",
+              "src/models/wiring.py": "b6d4381fe313f1343987cbcafc509b8f54d43ab12922bcb5d54ca06a750858aa",
+              "src/training/__init__.py": "c9992966495aee9958246dfd25f1d6692b61bb26a4804c27c588e108cf84b6d1",
+              "src/training/baselines.py": "6f3e29d7e4d0966319697b3a6b5a478e0c03b1efcff40fd783a6bc0cfa2296f7",
+              "src/training/checkpointing.py": "9cbf107ee540effb4961dc1f660bb86dbbee08f82dff50e00c551932068b7aba",
+              "src/training/data.py": "3c4248808207c38926081ac4c01bd6bde55010bdef00316cd3dfe9195d560158",
+              "src/training/distributed.py": "7dcd22de96124f5e423bdbea8cc3a8ed210d0de8c0fd90d8fa4aa80248e98c6b",
+              "src/training/fineweb_tokenizer.py": "7dac28fbd921b65ed91853b56442fbfe4d35ed46ac70d6cf138ad422b2dd07c9",
+              "src/training/gradient_interference.py": "44613fb78ee4926b47f67df9c9a1f8abf22e01ea8f26bcf65258d1e607c31ea2",
+              "src/training/gradient_probe.py": "15371e485fb3c18c7ffb9495875ecb60a13345c34230016ba22c42f2365ff81c",
+              "src/training/modeling.py": "6ba1672862b90ad2924b064d215d2f925550db153dc9f834da979228b0fa5048",
+              "src/training/monitoring.py": "e32ac302bd3364e2a769b6824518a240b607cc9870518f17f3e88b83307023df",
+              "src/training/optimizer_state.py": "ba01a8c87ba64bc58ce88a76e42f72dd774775b9e7170a683379e476b7029cdd",
+              "src/training/packed_corpus.py": "238e83ec334ee56ae964ad3c555ef86e783905573637bbb372bcb2355757965c",
+              "src/training/panelgrad.py": "f23dd3ec031fbbd6219b89827ac93f7ae7899ed82f05d914f8d4113e2bc756ab",
+              "src/training/portfolio_catchup.py": "b5f24aff8163e66cce22aa768ae435cb0cbaaedfbc7943b4e2704f21ba750b8d",
+              "src/training/probabilistic_controller.py": "ef266191fdec1f69170b7c6151d07ed462e31ac057f8d8e737c11254a60bc4e3",
+              "src/training/run.py": "b5534c175bf96e857a8bc2316338b19e545e22bf60b1118a3e8bd3c303ea3b00",
+              "src/training/schedules.py": "dde7be2a550fb1809e9532b732514acc2583b04eb160e13a7a231ea64653a5c7",
+              "src/training/steps.py": "9ce858f8a3214601316b3050d45b68a7f0211aa39b5b32fcb2c73eef794f23e1",
+              "src/training/tinystories.py": "7413ca22e719ee59b20bdb935b084050daad093ef9036574eb2eb731d98c57a9",
+              "src/training/tinystories_instruct.py": "b7418a8d55c2662c79f4a31c3e02c4c002f24c167a9be50542e2c67679e16be4",
+              "src/training/tinystories_preparation.py": "0e3960e3fcb8bb22772933a4c4f41d9bf1eff04a3868ee36e9c30528b232024a",
+              "src/training/warmup.py": "90d5efc57944db9bd2bf11f430d03dd62e605a83f04ef05a5612a8247ecfdd8d",
+              "src/utils/__init__.py": "29d28af6cfe9fff76c572dc6362cb5c74e13affc464c057ea8efc5ea54703634",
+              "src/utils/artifact_io.py": "477a8669c48e1be19166a708ed3ab58fe6dc21f550f5d6144ee6ef3bc9b896b7",
+              "src/utils/config.py": "49186b5bb214a1e010e4c2cb68f679440d490d6fb650efeb67548f4201f05105",
+              "src/utils/heartbeats.py": "6d10b71b812942898ad3f10d8fa0403ba2ea12d2e11b0fecd9518f6b084c5006",
+              "src/utils/metrics.py": "a268810898cb2144a83745c4158f972110c14d1659d30257376460b8b24ec5cd",
+              "src/utils/model_size.py": "6642b1875e3e9591f1addc02bcc3535f0b96edfa7b1df08327c3f8694c8c593e",
+              "src/utils/monitoring.py": "d973413540e586ce1f6c2de504d56eebfa7dca366ded2f44395c039ac2911c3b",
+              "src/utils/reproducibility.py": "b54771768da5a9ba7d093d73828e71bdfa943c2fbad55fd3f1613b1be094ecc1",
+              "train.py": "930504810f0c6a4e7ea6d12e2660ab6e672edddd69818aaf864459e35ff7bfbd"
+            },
+            "tracked_code_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "working_tree_dirty": false
+          },
+          "source_records": [
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/run_summary.json",
+              "sha256": "0ff09c6cb3cae707d51a4118f68708dfabc43d456ef23f2ae107089ad5b75ae7"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/terminal_validation_results.json",
+              "sha256": "51e911ef1cda6b34ded84d5c5ca2670e7007e9258bd73c704e1e43ed857f738f"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/checkpoints/latest.pt",
+              "sha256": "1648954fe9541787ec10ea2e12560012b8c1e9fcbec50ceeb3f6109ded833472"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/optimizer_ownership_trace.jsonl",
+              "sha256": "d76555131e8932a4b60d70d01f32ba9213e215a4e6b023aca6a867fb93446fcf"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/metrics.csv",
+              "sha256": "b3442f1c6ca87a7601eb0f172ce00f2fc1fddd657dca141e23fa62a96d486057"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/resource_attempts.json",
+              "sha256": "7c6198d7ccdccab45e71ca7b2b89be2962ea41327c98f5d5cf1e0498de73292e"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/config.json",
+              "sha256": "015922e7a6496d7ebfdaff07b3bf31968fcc5fdf7920b22491b056e93787ea58"
+            }
+          ],
+          "legacy_counter_disclosure": null,
+          "applied_schedule_watermark": null
+        }
+      ],
+      "validation_points": 1362,
+      "applied_lr_points": 0,
+      "notes": {
+        "missing_validation": false,
+        "missing_applied_lr": false,
+        "sources": [
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/metrics.csv",
+            "sha256": "b3442f1c6ca87a7601eb0f172ce00f2fc1fddd657dca141e23fa62a96d486057"
+          }
+        ],
+        "applied_plot_sampling": "Recorded first 65, every 128th global commit and last commit per width; all records validated"
+      }
+    },
+    {
+      "run_id": "tinystories-optimizer-ownership-v1-ST-g500-s42",
+      "adapter": "native",
+      "endpoints": [
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_batches": 5,
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "c86a902db8fbff953552e112c1086b2a9ef203c55ad6494bb39f8867b3b3dd01",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_skipped_batches": 0,
+          "evaluation_target_tokens": 36195,
+          "granularity": "g500",
+          "loss": 1.9919419690182334,
+          "non_embedding_parameters": 164416,
+          "perplexity": 7.329754105491725,
+          "tokens_seen": 36195,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g500",
+          "series": "standalone-cosine",
+          "endpoint_id": "7e90617789672b59de1b6be58ed94df2b67a1bb23e184a41bffb110bd38b54e2",
+          "run_id": "tinystories-optimizer-ownership-v1-ST-g500-s42",
+          "arm_id": "ST-g500",
+          "campaign_id": "tinystories-optimizer-ownership-v1",
+          "seed": 42,
+          "grid_id": "linear",
+          "ffn_dimension": 128,
+          "active_trainable_parameters": 426560,
+          "width_fraction": 0.5,
+          "schedule": "cosine",
+          "exponent_policy": "cosine",
+          "gamma": null,
+          "optimizer_state_scope": "shared",
+          "peak_lr": 0.008,
+          "warmup_updates": 64,
+          "horizon": 87132,
+          "assigned_updates": 87132,
+          "actual_updates": 87132,
+          "assigned_tokens": 713785344,
+          "actual_tokens": 713785344,
+          "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/config.json",
+          "config_sha256": "b0ceddabf8bbb6cc7ff69a9cf042dd34a9330fee538d6d26b6024b46368ce5fd",
+          "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/checkpoints/latest.pt",
+          "checkpoint_sha256": "e8a29be655e74e9d354307f8d90d77bfc465f58e9c6154a63eefdaf8908ce283",
+          "evaluation_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/terminal_validation_results.json",
+          "evaluation_sha256": "ea1665ff9dd63e9654e7a3bf7748b3ec42359ae374a7782c0b446d42d7c0c5e2",
+          "metric_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/metrics.csv",
+          "metric_sha256": "847ca9dce769fe8e1c2c77e14dfa3d9c1116d1c1689d1c52dca1d4a68cd7e795",
+          "adapter": "native",
+          "historical_reference": true,
+          "source_identity": {
+            "code_revision": "84772bcaa87a4dac446cd5a6a0f23b5f52aa32bd",
+            "constructor": "LlamaForCausalLM",
+            "cross_model_tensor_equality_required": false,
+            "dependency_versions": {
+              "PyYAML": "6.0.3",
+              "datasets": "4.8.5",
+              "matplotlib": "3.10.9",
+              "numpy": "2.4.3",
+              "pandas": "3.0.2",
+              "torch": "2.11.0+cu128",
+              "transformers": "5.8.0"
+            },
+            "derived_seed": 9177830445524338247,
+            "initializer_range": 0.02,
+            "method": "fresh_normal_constructor",
+            "seed": 42,
+            "seed_stream": "model_initialization",
+            "source_files_sha256": {
+              "scripts/analyze_tinystories_optimizer_ownership.py": "424e15b8766ad63c3ae281f0f1c1471ca7de88e36e2b49204c1a77fe289eb1f8",
+              "src/__init__.py": "981a0840b0aeb0a81b4453143e2333e6026d57b945ad8e01b3740c70472fd36c",
+              "src/evaluation/__init__.py": "d7000d1a9a855a5a0968dd8aab9f64d3650735a658691bbd2633b602229ee4c2",
+              "src/evaluation/consistency.py": "c5f2becef2abfb651fbcbc07d0c654ec86d6e85128dc58365de071d787f599a2",
+              "src/evaluation/downstream.py": "ff99ed8cb2a93f7aaa25df269bf4db6d36821aa5828a82f13e501815abddc526",
+              "src/evaluation/final_holdout.py": "f9579689c69cc578f99ec9c60f20d8800205a3fb350a1d17d888e6c59e23eebd",
+              "src/evaluation/optimizer_ownership.py": "5576fd74ff297d06ff6575a62bf253b5ee5556370985c1654cd411c30308ff02",
+              "src/evaluation/reporting.py": "8d45ad64404d4e8751d7ffe344c6414f8e0ba4bad6adeed415fc393bfc5048ef",
+              "src/evaluation/reporting_impl.py": "dafebf4046e13dc4c62cb96fe68d33057ea564683e2281a3d3704fa800ed7b7e",
+              "src/evaluation/reporting_io.py": "e776332fa5b519509c393ab8b0e52faec03d6e815cba0a83caaa1212ead3ea99",
+              "src/evaluation/reporting_styles.py": "704e52af0cad6389466c41678cf924c29a0932cad4f766efcbda25b8e5e02182",
+              "src/evaluation/speculative.py": "3f9f67cdacceb52e0bd190d5101837d05039d4d5dd8a500a9ac4911da02529f8",
+              "src/evaluation/validation.py": "452ae96a62699b99c9818c112a2c7573bb69cac30ea93abc1ba5c9ba695b301c",
+              "src/models/__init__.py": "178ac182a914f43b326471c1543334b2445625ba93537ba946bc13f89892e0fc",
+              "src/models/adaptive_sampler.py": "1b300fb3b4fd9b5e98fd0bce58b634bf5fcfcd87107e292234a9efb425486429",
+              "src/models/correction.py": "9325dbe7f1455df56dfe48b3d82d01f0222b7805c358b693fc047b8b0b9ecc8a",
+              "src/models/ffn.py": "e568ae79bb8cb14cd325d12bf099695265b8240a4370afbd9d2f81dd7cfa00ad",
+              "src/models/granularity.py": "88b31e0c6f60e03f49ac2b52777bd8be325e5c0ceb8727eb6743a9d63080a439",
+              "src/models/wiring.py": "b6d4381fe313f1343987cbcafc509b8f54d43ab12922bcb5d54ca06a750858aa",
+              "src/training/__init__.py": "c9992966495aee9958246dfd25f1d6692b61bb26a4804c27c588e108cf84b6d1",
+              "src/training/baselines.py": "6f3e29d7e4d0966319697b3a6b5a478e0c03b1efcff40fd783a6bc0cfa2296f7",
+              "src/training/checkpointing.py": "9cbf107ee540effb4961dc1f660bb86dbbee08f82dff50e00c551932068b7aba",
+              "src/training/data.py": "3c4248808207c38926081ac4c01bd6bde55010bdef00316cd3dfe9195d560158",
+              "src/training/distributed.py": "7dcd22de96124f5e423bdbea8cc3a8ed210d0de8c0fd90d8fa4aa80248e98c6b",
+              "src/training/fineweb_tokenizer.py": "7dac28fbd921b65ed91853b56442fbfe4d35ed46ac70d6cf138ad422b2dd07c9",
+              "src/training/gradient_interference.py": "44613fb78ee4926b47f67df9c9a1f8abf22e01ea8f26bcf65258d1e607c31ea2",
+              "src/training/gradient_probe.py": "15371e485fb3c18c7ffb9495875ecb60a13345c34230016ba22c42f2365ff81c",
+              "src/training/modeling.py": "6ba1672862b90ad2924b064d215d2f925550db153dc9f834da979228b0fa5048",
+              "src/training/monitoring.py": "e32ac302bd3364e2a769b6824518a240b607cc9870518f17f3e88b83307023df",
+              "src/training/optimizer_state.py": "ba01a8c87ba64bc58ce88a76e42f72dd774775b9e7170a683379e476b7029cdd",
+              "src/training/packed_corpus.py": "238e83ec334ee56ae964ad3c555ef86e783905573637bbb372bcb2355757965c",
+              "src/training/panelgrad.py": "f23dd3ec031fbbd6219b89827ac93f7ae7899ed82f05d914f8d4113e2bc756ab",
+              "src/training/portfolio_catchup.py": "b5f24aff8163e66cce22aa768ae435cb0cbaaedfbc7943b4e2704f21ba750b8d",
+              "src/training/probabilistic_controller.py": "ef266191fdec1f69170b7c6151d07ed462e31ac057f8d8e737c11254a60bc4e3",
+              "src/training/run.py": "b5534c175bf96e857a8bc2316338b19e545e22bf60b1118a3e8bd3c303ea3b00",
+              "src/training/schedules.py": "dde7be2a550fb1809e9532b732514acc2583b04eb160e13a7a231ea64653a5c7",
+              "src/training/steps.py": "9ce858f8a3214601316b3050d45b68a7f0211aa39b5b32fcb2c73eef794f23e1",
+              "src/training/tinystories.py": "7413ca22e719ee59b20bdb935b084050daad093ef9036574eb2eb731d98c57a9",
+              "src/training/tinystories_instruct.py": "b7418a8d55c2662c79f4a31c3e02c4c002f24c167a9be50542e2c67679e16be4",
+              "src/training/tinystories_preparation.py": "0e3960e3fcb8bb22772933a4c4f41d9bf1eff04a3868ee36e9c30528b232024a",
+              "src/training/warmup.py": "90d5efc57944db9bd2bf11f430d03dd62e605a83f04ef05a5612a8247ecfdd8d",
+              "src/utils/__init__.py": "29d28af6cfe9fff76c572dc6362cb5c74e13affc464c057ea8efc5ea54703634",
+              "src/utils/artifact_io.py": "477a8669c48e1be19166a708ed3ab58fe6dc21f550f5d6144ee6ef3bc9b896b7",
+              "src/utils/config.py": "49186b5bb214a1e010e4c2cb68f679440d490d6fb650efeb67548f4201f05105",
+              "src/utils/heartbeats.py": "6d10b71b812942898ad3f10d8fa0403ba2ea12d2e11b0fecd9518f6b084c5006",
+              "src/utils/metrics.py": "a268810898cb2144a83745c4158f972110c14d1659d30257376460b8b24ec5cd",
+              "src/utils/model_size.py": "6642b1875e3e9591f1addc02bcc3535f0b96edfa7b1df08327c3f8694c8c593e",
+              "src/utils/monitoring.py": "d973413540e586ce1f6c2de504d56eebfa7dca366ded2f44395c039ac2911c3b",
+              "src/utils/reproducibility.py": "b54771768da5a9ba7d093d73828e71bdfa943c2fbad55fd3f1613b1be094ecc1",
+              "train.py": "930504810f0c6a4e7ea6d12e2660ab6e672edddd69818aaf864459e35ff7bfbd"
+            },
+            "tracked_code_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "working_tree_dirty": false
+          },
+          "source_records": [
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/run_summary.json",
+              "sha256": "65654bc8d48ddd979670e17eaa4e3f1135b059bea47b4df03e0ce5bfe77fb013"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/terminal_validation_results.json",
+              "sha256": "ea1665ff9dd63e9654e7a3bf7748b3ec42359ae374a7782c0b446d42d7c0c5e2"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/checkpoints/latest.pt",
+              "sha256": "e8a29be655e74e9d354307f8d90d77bfc465f58e9c6154a63eefdaf8908ce283"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/optimizer_ownership_trace.jsonl",
+              "sha256": "7cc832b1039b549d731691fe3bad46fdbe177c1f6e3271c64f81611e103f0427"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/metrics.csv",
+              "sha256": "847ca9dce769fe8e1c2c77e14dfa3d9c1116d1c1689d1c52dca1d4a68cd7e795"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/resource_attempts.json",
+              "sha256": "8c0f75b03ccc8cb562299f0704025fec16e4fae73b0683be0159218978e1db6c"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/config.json",
+              "sha256": "b0ceddabf8bbb6cc7ff69a9cf042dd34a9330fee538d6d26b6024b46368ce5fd"
+            }
+          ],
+          "legacy_counter_disclosure": null,
+          "applied_schedule_watermark": null
+        }
+      ],
+      "validation_points": 1362,
+      "applied_lr_points": 0,
+      "notes": {
+        "missing_validation": false,
+        "missing_applied_lr": false,
+        "sources": [
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/metrics.csv",
+            "sha256": "847ca9dce769fe8e1c2c77e14dfa3d9c1116d1c1689d1c52dca1d4a68cd7e795"
+          }
+        ],
+        "applied_plot_sampling": "Recorded first 65, every 128th global commit and last commit per width; all records validated"
+      }
+    },
+    {
+      "run_id": "tinystories-optimizer-ownership-v1-ST-g750-s42",
+      "adapter": "native",
+      "endpoints": [
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_batches": 5,
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "c86a902db8fbff953552e112c1086b2a9ef203c55ad6494bb39f8867b3b3dd01",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_skipped_batches": 0,
+          "evaluation_target_tokens": 36195,
+          "granularity": "g750",
+          "loss": 1.9433632578766138,
+          "non_embedding_parameters": 213568,
+          "perplexity": 6.9821944457784655,
+          "tokens_seen": 36195,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g750",
+          "series": "standalone-cosine",
+          "endpoint_id": "1b101cc29009164df41f944d6a10e4a5b47a0e2745f259ccee1490b0623eae55",
+          "run_id": "tinystories-optimizer-ownership-v1-ST-g750-s42",
+          "arm_id": "ST-g750",
+          "campaign_id": "tinystories-optimizer-ownership-v1",
+          "seed": 42,
+          "grid_id": "linear",
+          "ffn_dimension": 192,
+          "active_trainable_parameters": 475712,
+          "width_fraction": 0.75,
+          "schedule": "cosine",
+          "exponent_policy": "cosine",
+          "gamma": null,
+          "optimizer_state_scope": "shared",
+          "peak_lr": 0.008,
+          "warmup_updates": 64,
+          "horizon": 87132,
+          "assigned_updates": 87132,
+          "actual_updates": 87132,
+          "assigned_tokens": 713785344,
+          "actual_tokens": 713785344,
+          "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/config.json",
+          "config_sha256": "8f315505ab2da0c6868ed3bd3d7e83e9576a7bd9f9e4972fa08e7c0e25e449d2",
+          "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/checkpoints/latest.pt",
+          "checkpoint_sha256": "b601611dd30488ad6209a8de12b007c97daf2d7dda7a15cf0c3f142c46e3f77b",
+          "evaluation_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/terminal_validation_results.json",
+          "evaluation_sha256": "f91573257c8dd8277fbee8263c4640358d4d3dc4b9435452de102572e0ce8fc1",
+          "metric_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/metrics.csv",
+          "metric_sha256": "8c85241cdd34fb1dd4e2ff85fa67cf4317e0383ed1312d562af1d35b1f40a67a",
+          "adapter": "native",
+          "historical_reference": true,
+          "source_identity": {
+            "code_revision": "84772bcaa87a4dac446cd5a6a0f23b5f52aa32bd",
+            "constructor": "LlamaForCausalLM",
+            "cross_model_tensor_equality_required": false,
+            "dependency_versions": {
+              "PyYAML": "6.0.3",
+              "datasets": "4.8.5",
+              "matplotlib": "3.10.9",
+              "numpy": "2.4.3",
+              "pandas": "3.0.2",
+              "torch": "2.11.0+cu128",
+              "transformers": "5.8.0"
+            },
+            "derived_seed": 9177830445524338247,
+            "initializer_range": 0.02,
+            "method": "fresh_normal_constructor",
+            "seed": 42,
+            "seed_stream": "model_initialization",
+            "source_files_sha256": {
+              "scripts/analyze_tinystories_optimizer_ownership.py": "424e15b8766ad63c3ae281f0f1c1471ca7de88e36e2b49204c1a77fe289eb1f8",
+              "src/__init__.py": "981a0840b0aeb0a81b4453143e2333e6026d57b945ad8e01b3740c70472fd36c",
+              "src/evaluation/__init__.py": "d7000d1a9a855a5a0968dd8aab9f64d3650735a658691bbd2633b602229ee4c2",
+              "src/evaluation/consistency.py": "c5f2becef2abfb651fbcbc07d0c654ec86d6e85128dc58365de071d787f599a2",
+              "src/evaluation/downstream.py": "ff99ed8cb2a93f7aaa25df269bf4db6d36821aa5828a82f13e501815abddc526",
+              "src/evaluation/final_holdout.py": "f9579689c69cc578f99ec9c60f20d8800205a3fb350a1d17d888e6c59e23eebd",
+              "src/evaluation/optimizer_ownership.py": "5576fd74ff297d06ff6575a62bf253b5ee5556370985c1654cd411c30308ff02",
+              "src/evaluation/reporting.py": "8d45ad64404d4e8751d7ffe344c6414f8e0ba4bad6adeed415fc393bfc5048ef",
+              "src/evaluation/reporting_impl.py": "dafebf4046e13dc4c62cb96fe68d33057ea564683e2281a3d3704fa800ed7b7e",
+              "src/evaluation/reporting_io.py": "e776332fa5b519509c393ab8b0e52faec03d6e815cba0a83caaa1212ead3ea99",
+              "src/evaluation/reporting_styles.py": "704e52af0cad6389466c41678cf924c29a0932cad4f766efcbda25b8e5e02182",
+              "src/evaluation/speculative.py": "3f9f67cdacceb52e0bd190d5101837d05039d4d5dd8a500a9ac4911da02529f8",
+              "src/evaluation/validation.py": "452ae96a62699b99c9818c112a2c7573bb69cac30ea93abc1ba5c9ba695b301c",
+              "src/models/__init__.py": "178ac182a914f43b326471c1543334b2445625ba93537ba946bc13f89892e0fc",
+              "src/models/adaptive_sampler.py": "1b300fb3b4fd9b5e98fd0bce58b634bf5fcfcd87107e292234a9efb425486429",
+              "src/models/correction.py": "9325dbe7f1455df56dfe48b3d82d01f0222b7805c358b693fc047b8b0b9ecc8a",
+              "src/models/ffn.py": "e568ae79bb8cb14cd325d12bf099695265b8240a4370afbd9d2f81dd7cfa00ad",
+              "src/models/granularity.py": "88b31e0c6f60e03f49ac2b52777bd8be325e5c0ceb8727eb6743a9d63080a439",
+              "src/models/wiring.py": "b6d4381fe313f1343987cbcafc509b8f54d43ab12922bcb5d54ca06a750858aa",
+              "src/training/__init__.py": "c9992966495aee9958246dfd25f1d6692b61bb26a4804c27c588e108cf84b6d1",
+              "src/training/baselines.py": "6f3e29d7e4d0966319697b3a6b5a478e0c03b1efcff40fd783a6bc0cfa2296f7",
+              "src/training/checkpointing.py": "9cbf107ee540effb4961dc1f660bb86dbbee08f82dff50e00c551932068b7aba",
+              "src/training/data.py": "3c4248808207c38926081ac4c01bd6bde55010bdef00316cd3dfe9195d560158",
+              "src/training/distributed.py": "7dcd22de96124f5e423bdbea8cc3a8ed210d0de8c0fd90d8fa4aa80248e98c6b",
+              "src/training/fineweb_tokenizer.py": "7dac28fbd921b65ed91853b56442fbfe4d35ed46ac70d6cf138ad422b2dd07c9",
+              "src/training/gradient_interference.py": "44613fb78ee4926b47f67df9c9a1f8abf22e01ea8f26bcf65258d1e607c31ea2",
+              "src/training/gradient_probe.py": "15371e485fb3c18c7ffb9495875ecb60a13345c34230016ba22c42f2365ff81c",
+              "src/training/modeling.py": "6ba1672862b90ad2924b064d215d2f925550db153dc9f834da979228b0fa5048",
+              "src/training/monitoring.py": "e32ac302bd3364e2a769b6824518a240b607cc9870518f17f3e88b83307023df",
+              "src/training/optimizer_state.py": "ba01a8c87ba64bc58ce88a76e42f72dd774775b9e7170a683379e476b7029cdd",
+              "src/training/packed_corpus.py": "238e83ec334ee56ae964ad3c555ef86e783905573637bbb372bcb2355757965c",
+              "src/training/panelgrad.py": "f23dd3ec031fbbd6219b89827ac93f7ae7899ed82f05d914f8d4113e2bc756ab",
+              "src/training/portfolio_catchup.py": "b5f24aff8163e66cce22aa768ae435cb0cbaaedfbc7943b4e2704f21ba750b8d",
+              "src/training/probabilistic_controller.py": "ef266191fdec1f69170b7c6151d07ed462e31ac057f8d8e737c11254a60bc4e3",
+              "src/training/run.py": "b5534c175bf96e857a8bc2316338b19e545e22bf60b1118a3e8bd3c303ea3b00",
+              "src/training/schedules.py": "dde7be2a550fb1809e9532b732514acc2583b04eb160e13a7a231ea64653a5c7",
+              "src/training/steps.py": "9ce858f8a3214601316b3050d45b68a7f0211aa39b5b32fcb2c73eef794f23e1",
+              "src/training/tinystories.py": "7413ca22e719ee59b20bdb935b084050daad093ef9036574eb2eb731d98c57a9",
+              "src/training/tinystories_instruct.py": "b7418a8d55c2662c79f4a31c3e02c4c002f24c167a9be50542e2c67679e16be4",
+              "src/training/tinystories_preparation.py": "0e3960e3fcb8bb22772933a4c4f41d9bf1eff04a3868ee36e9c30528b232024a",
+              "src/training/warmup.py": "90d5efc57944db9bd2bf11f430d03dd62e605a83f04ef05a5612a8247ecfdd8d",
+              "src/utils/__init__.py": "29d28af6cfe9fff76c572dc6362cb5c74e13affc464c057ea8efc5ea54703634",
+              "src/utils/artifact_io.py": "477a8669c48e1be19166a708ed3ab58fe6dc21f550f5d6144ee6ef3bc9b896b7",
+              "src/utils/config.py": "49186b5bb214a1e010e4c2cb68f679440d490d6fb650efeb67548f4201f05105",
+              "src/utils/heartbeats.py": "6d10b71b812942898ad3f10d8fa0403ba2ea12d2e11b0fecd9518f6b084c5006",
+              "src/utils/metrics.py": "a268810898cb2144a83745c4158f972110c14d1659d30257376460b8b24ec5cd",
+              "src/utils/model_size.py": "6642b1875e3e9591f1addc02bcc3535f0b96edfa7b1df08327c3f8694c8c593e",
+              "src/utils/monitoring.py": "d973413540e586ce1f6c2de504d56eebfa7dca366ded2f44395c039ac2911c3b",
+              "src/utils/reproducibility.py": "b54771768da5a9ba7d093d73828e71bdfa943c2fbad55fd3f1613b1be094ecc1",
+              "train.py": "930504810f0c6a4e7ea6d12e2660ab6e672edddd69818aaf864459e35ff7bfbd"
+            },
+            "tracked_code_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "working_tree_dirty": false
+          },
+          "source_records": [
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/run_summary.json",
+              "sha256": "c8d1cba9230692eb2edd540f943afc05f86d3ce82744008b1a8dbc29aaf677bb"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/terminal_validation_results.json",
+              "sha256": "f91573257c8dd8277fbee8263c4640358d4d3dc4b9435452de102572e0ce8fc1"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/checkpoints/latest.pt",
+              "sha256": "b601611dd30488ad6209a8de12b007c97daf2d7dda7a15cf0c3f142c46e3f77b"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/optimizer_ownership_trace.jsonl",
+              "sha256": "841bbdf1dcfc663e369689d1a3c3d53e3e4c8451657245cc48817520ab6ed1de"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/metrics.csv",
+              "sha256": "8c85241cdd34fb1dd4e2ff85fa67cf4317e0383ed1312d562af1d35b1f40a67a"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/resource_attempts.json",
+              "sha256": "f7f6b1b829b184efa85f57f88987283b4ac0c23383122b820d37d4c9b4dc20c5"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/config.json",
+              "sha256": "8f315505ab2da0c6868ed3bd3d7e83e9576a7bd9f9e4972fa08e7c0e25e449d2"
+            }
+          ],
+          "legacy_counter_disclosure": null,
+          "applied_schedule_watermark": null
+        }
+      ],
+      "validation_points": 1362,
+      "applied_lr_points": 0,
+      "notes": {
+        "missing_validation": false,
+        "missing_applied_lr": false,
+        "sources": [
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/metrics.csv",
+            "sha256": "8c85241cdd34fb1dd4e2ff85fa67cf4317e0383ed1312d562af1d35b1f40a67a"
+          }
+        ],
+        "applied_plot_sampling": "Recorded first 65, every 128th global commit and last commit per width; all records validated"
+      }
+    },
+    {
+      "run_id": "tinystories-optimizer-ownership-v1-ST-g1000-s42",
+      "adapter": "native",
+      "endpoints": [
+        {
+          "count_convention": "active parameters excluding input embeddings and LM head",
+          "evaluation_batches": 5,
+          "evaluation_examples": 285,
+          "evaluation_protocol_hash": "c86a902db8fbff953552e112c1086b2a9ef203c55ad6494bb39f8867b3b3dd01",
+          "evaluation_role": "ordinary_validation",
+          "evaluation_skipped_batches": 0,
+          "evaluation_target_tokens": 36195,
+          "granularity": "g1000",
+          "loss": 1.9090565852951584,
+          "non_embedding_parameters": 262720,
+          "perplexity": 6.746720839541034,
+          "tokens_seen": 36195,
+          "validation_loss_aggregation": "target_token_weighted_causal_shift_float64",
+          "validation_manifest_hash": "0c1beea552f54941e397d2442de736b1586e0292f6b1271b62d27ad782627856",
+          "width": "g1000",
+          "series": "standalone-cosine",
+          "endpoint_id": "f6c17cdc1e342ddecca10050d2583907c243b4a855df08ab56f194f7283282c8",
+          "run_id": "tinystories-optimizer-ownership-v1-ST-g1000-s42",
+          "arm_id": "ST-g1000",
+          "campaign_id": "tinystories-optimizer-ownership-v1",
+          "seed": 42,
+          "grid_id": "linear",
+          "ffn_dimension": 256,
+          "active_trainable_parameters": 524864,
+          "width_fraction": 1.0,
+          "schedule": "cosine",
+          "exponent_policy": "cosine",
+          "gamma": null,
+          "optimizer_state_scope": "shared",
+          "peak_lr": 0.008,
+          "warmup_updates": 64,
+          "horizon": 87132,
+          "assigned_updates": 87132,
+          "actual_updates": 87132,
+          "assigned_tokens": 713785344,
+          "actual_tokens": 713785344,
+          "config_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/config.json",
+          "config_sha256": "58925b02b331f9aaf7ab566dd52060390ed11f4c949dc4c43666080e786064e6",
+          "checkpoint_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/checkpoints/latest.pt",
+          "checkpoint_sha256": "e3a5d109485c075c8535c878ad9a750910a995d0f648636b09a505ddb3b267ad",
+          "evaluation_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/terminal_validation_results.json",
+          "evaluation_sha256": "a2fd73e504c012411e05199bbeea7747adde1df93a05fc3f62798c5a764241ea",
+          "metric_path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/metrics.csv",
+          "metric_sha256": "6800c561b2f63119fea6fc0084be7b913ea9f260380b116aa55f5fa20f0d606c",
+          "adapter": "native",
+          "historical_reference": true,
+          "source_identity": {
+            "code_revision": "84772bcaa87a4dac446cd5a6a0f23b5f52aa32bd",
+            "constructor": "LlamaForCausalLM",
+            "cross_model_tensor_equality_required": false,
+            "dependency_versions": {
+              "PyYAML": "6.0.3",
+              "datasets": "4.8.5",
+              "matplotlib": "3.10.9",
+              "numpy": "2.4.3",
+              "pandas": "3.0.2",
+              "torch": "2.11.0+cu128",
+              "transformers": "5.8.0"
+            },
+            "derived_seed": 9177830445524338247,
+            "initializer_range": 0.02,
+            "method": "fresh_normal_constructor",
+            "seed": 42,
+            "seed_stream": "model_initialization",
+            "source_files_sha256": {
+              "scripts/analyze_tinystories_optimizer_ownership.py": "424e15b8766ad63c3ae281f0f1c1471ca7de88e36e2b49204c1a77fe289eb1f8",
+              "src/__init__.py": "981a0840b0aeb0a81b4453143e2333e6026d57b945ad8e01b3740c70472fd36c",
+              "src/evaluation/__init__.py": "d7000d1a9a855a5a0968dd8aab9f64d3650735a658691bbd2633b602229ee4c2",
+              "src/evaluation/consistency.py": "c5f2becef2abfb651fbcbc07d0c654ec86d6e85128dc58365de071d787f599a2",
+              "src/evaluation/downstream.py": "ff99ed8cb2a93f7aaa25df269bf4db6d36821aa5828a82f13e501815abddc526",
+              "src/evaluation/final_holdout.py": "f9579689c69cc578f99ec9c60f20d8800205a3fb350a1d17d888e6c59e23eebd",
+              "src/evaluation/optimizer_ownership.py": "5576fd74ff297d06ff6575a62bf253b5ee5556370985c1654cd411c30308ff02",
+              "src/evaluation/reporting.py": "8d45ad64404d4e8751d7ffe344c6414f8e0ba4bad6adeed415fc393bfc5048ef",
+              "src/evaluation/reporting_impl.py": "dafebf4046e13dc4c62cb96fe68d33057ea564683e2281a3d3704fa800ed7b7e",
+              "src/evaluation/reporting_io.py": "e776332fa5b519509c393ab8b0e52faec03d6e815cba0a83caaa1212ead3ea99",
+              "src/evaluation/reporting_styles.py": "704e52af0cad6389466c41678cf924c29a0932cad4f766efcbda25b8e5e02182",
+              "src/evaluation/speculative.py": "3f9f67cdacceb52e0bd190d5101837d05039d4d5dd8a500a9ac4911da02529f8",
+              "src/evaluation/validation.py": "452ae96a62699b99c9818c112a2c7573bb69cac30ea93abc1ba5c9ba695b301c",
+              "src/models/__init__.py": "178ac182a914f43b326471c1543334b2445625ba93537ba946bc13f89892e0fc",
+              "src/models/adaptive_sampler.py": "1b300fb3b4fd9b5e98fd0bce58b634bf5fcfcd87107e292234a9efb425486429",
+              "src/models/correction.py": "9325dbe7f1455df56dfe48b3d82d01f0222b7805c358b693fc047b8b0b9ecc8a",
+              "src/models/ffn.py": "e568ae79bb8cb14cd325d12bf099695265b8240a4370afbd9d2f81dd7cfa00ad",
+              "src/models/granularity.py": "88b31e0c6f60e03f49ac2b52777bd8be325e5c0ceb8727eb6743a9d63080a439",
+              "src/models/wiring.py": "b6d4381fe313f1343987cbcafc509b8f54d43ab12922bcb5d54ca06a750858aa",
+              "src/training/__init__.py": "c9992966495aee9958246dfd25f1d6692b61bb26a4804c27c588e108cf84b6d1",
+              "src/training/baselines.py": "6f3e29d7e4d0966319697b3a6b5a478e0c03b1efcff40fd783a6bc0cfa2296f7",
+              "src/training/checkpointing.py": "9cbf107ee540effb4961dc1f660bb86dbbee08f82dff50e00c551932068b7aba",
+              "src/training/data.py": "3c4248808207c38926081ac4c01bd6bde55010bdef00316cd3dfe9195d560158",
+              "src/training/distributed.py": "7dcd22de96124f5e423bdbea8cc3a8ed210d0de8c0fd90d8fa4aa80248e98c6b",
+              "src/training/fineweb_tokenizer.py": "7dac28fbd921b65ed91853b56442fbfe4d35ed46ac70d6cf138ad422b2dd07c9",
+              "src/training/gradient_interference.py": "44613fb78ee4926b47f67df9c9a1f8abf22e01ea8f26bcf65258d1e607c31ea2",
+              "src/training/gradient_probe.py": "15371e485fb3c18c7ffb9495875ecb60a13345c34230016ba22c42f2365ff81c",
+              "src/training/modeling.py": "6ba1672862b90ad2924b064d215d2f925550db153dc9f834da979228b0fa5048",
+              "src/training/monitoring.py": "e32ac302bd3364e2a769b6824518a240b607cc9870518f17f3e88b83307023df",
+              "src/training/optimizer_state.py": "ba01a8c87ba64bc58ce88a76e42f72dd774775b9e7170a683379e476b7029cdd",
+              "src/training/packed_corpus.py": "238e83ec334ee56ae964ad3c555ef86e783905573637bbb372bcb2355757965c",
+              "src/training/panelgrad.py": "f23dd3ec031fbbd6219b89827ac93f7ae7899ed82f05d914f8d4113e2bc756ab",
+              "src/training/portfolio_catchup.py": "b5f24aff8163e66cce22aa768ae435cb0cbaaedfbc7943b4e2704f21ba750b8d",
+              "src/training/probabilistic_controller.py": "ef266191fdec1f69170b7c6151d07ed462e31ac057f8d8e737c11254a60bc4e3",
+              "src/training/run.py": "b5534c175bf96e857a8bc2316338b19e545e22bf60b1118a3e8bd3c303ea3b00",
+              "src/training/schedules.py": "dde7be2a550fb1809e9532b732514acc2583b04eb160e13a7a231ea64653a5c7",
+              "src/training/steps.py": "9ce858f8a3214601316b3050d45b68a7f0211aa39b5b32fcb2c73eef794f23e1",
+              "src/training/tinystories.py": "7413ca22e719ee59b20bdb935b084050daad093ef9036574eb2eb731d98c57a9",
+              "src/training/tinystories_instruct.py": "b7418a8d55c2662c79f4a31c3e02c4c002f24c167a9be50542e2c67679e16be4",
+              "src/training/tinystories_preparation.py": "0e3960e3fcb8bb22772933a4c4f41d9bf1eff04a3868ee36e9c30528b232024a",
+              "src/training/warmup.py": "90d5efc57944db9bd2bf11f430d03dd62e605a83f04ef05a5612a8247ecfdd8d",
+              "src/utils/__init__.py": "29d28af6cfe9fff76c572dc6362cb5c74e13affc464c057ea8efc5ea54703634",
+              "src/utils/artifact_io.py": "477a8669c48e1be19166a708ed3ab58fe6dc21f550f5d6144ee6ef3bc9b896b7",
+              "src/utils/config.py": "49186b5bb214a1e010e4c2cb68f679440d490d6fb650efeb67548f4201f05105",
+              "src/utils/heartbeats.py": "6d10b71b812942898ad3f10d8fa0403ba2ea12d2e11b0fecd9518f6b084c5006",
+              "src/utils/metrics.py": "a268810898cb2144a83745c4158f972110c14d1659d30257376460b8b24ec5cd",
+              "src/utils/model_size.py": "6642b1875e3e9591f1addc02bcc3535f0b96edfa7b1df08327c3f8694c8c593e",
+              "src/utils/monitoring.py": "d973413540e586ce1f6c2de504d56eebfa7dca366ded2f44395c039ac2911c3b",
+              "src/utils/reproducibility.py": "b54771768da5a9ba7d093d73828e71bdfa943c2fbad55fd3f1613b1be094ecc1",
+              "train.py": "930504810f0c6a4e7ea6d12e2660ab6e672edddd69818aaf864459e35ff7bfbd"
+            },
+            "tracked_code_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "working_tree_dirty": false
+          },
+          "source_records": [
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/run_summary.json",
+              "sha256": "ccbaa8a07686008caf3f8f0d0f515becaebf6fe9fca26b6f36b3664f8040a8da"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/terminal_validation_results.json",
+              "sha256": "a2fd73e504c012411e05199bbeea7747adde1df93a05fc3f62798c5a764241ea"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/checkpoints/latest.pt",
+              "sha256": "e3a5d109485c075c8535c878ad9a750910a995d0f648636b09a505ddb3b267ad"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/optimizer_ownership_trace.jsonl",
+              "sha256": "e46c58784e6a6e63aa207445ff05a1380f355324b8577334fe60276dcae1d683"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/metrics.csv",
+              "sha256": "6800c561b2f63119fea6fc0084be7b913ea9f260380b116aa55f5fa20f0d606c"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/resource_attempts.json",
+              "sha256": "2b7e8a9c973b1be2047d20ef4632cf235b0f561b123b914ab48ed8f5a2371cbd"
+            },
+            {
+              "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/config.json",
+              "sha256": "58925b02b331f9aaf7ab566dd52060390ed11f4c949dc4c43666080e786064e6"
+            }
+          ],
+          "legacy_counter_disclosure": null,
+          "applied_schedule_watermark": null
+        }
+      ],
+      "validation_points": 1362,
+      "applied_lr_points": 0,
+      "notes": {
+        "missing_validation": false,
+        "missing_applied_lr": false,
+        "sources": [
+          {
+            "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/metrics.csv",
+            "sha256": "6800c561b2f63119fea6fc0084be7b913ea9f260380b116aa55f5fa20f0d606c"
+          }
+        ],
+        "applied_plot_sampling": "Recorded first 65, every 128th global commit and last commit per width; all records validated"
+      }
+    }
+  ],
+  "sources": [
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/campaign/campaign_manifest.json",
+      "sha256": "28b33f33a313914976e22fef6fddc8e7cad58007cfca15e983f118b42c950f54"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/config.json",
+      "sha256": "64c3f6c4309b114776a93a58f9b794be7d77e7902ccdcef53eb004802ef799e3"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/campaign/campaign_manifest.json",
+      "sha256": "28b33f33a313914976e22fef6fddc8e7cad58007cfca15e983f118b42c950f54"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/config.json",
+      "sha256": "3d7eb97093c9f6175ae4cc600bcb539481ebf2f3edd655d7e5fd85f6e6a7488a"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/campaign/campaign_manifest.json",
+      "sha256": "28b33f33a313914976e22fef6fddc8e7cad58007cfca15e983f118b42c950f54"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/config.json",
+      "sha256": "f15871ca6b6b0c4743595276adcdebfa43c55a570bafccc8ff00904977ddd32a"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/config.json",
+      "sha256": "4d045660a93ad7ea200ce548381f6496622955b485b37c40528086039d6f3cf3"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/config.json",
+      "sha256": "015922e7a6496d7ebfdaff07b3bf31968fcc5fdf7920b22491b056e93787ea58"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/config.json",
+      "sha256": "b0ceddabf8bbb6cc7ff69a9cf042dd34a9330fee538d6d26b6024b46368ce5fd"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/config.json",
+      "sha256": "8f315505ab2da0c6868ed3bd3d7e83e9576a7bd9f9e4972fa08e7c0e25e449d2"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/config.json",
+      "sha256": "58925b02b331f9aaf7ab566dd52060390ed11f4c949dc4c43666080e786064e6"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/run_summary.json",
+      "sha256": "65aa60d85e26c921b78f026cdcb3e97723f684d8b53804d054a451c9292b682c"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/terminal_validation_results.json",
+      "sha256": "a95fbfb213cb93c89938612bdcad2906750494bb0bb25b709ca56d75c06f8b93"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/checkpoints/latest.pt",
+      "sha256": "0dd076aff6e98f578469d6d09318b2fca9a18834fdd7cf79d7e2818826c20de5"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/optimizer_ownership_trace.jsonl",
+      "sha256": "50cf2f90be00bbc165289debc832c04274480ed025e33254fbdf1376508d23d9"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/metrics.csv",
+      "sha256": "91414f8dd65e434da3e4e88d6c904069e82d96878950a6263cdaebbe3bfd8d6c"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/resource_attempts.json",
+      "sha256": "da5ce888183822aad2f01d5853eb7bbcd1b948f11b58886c46c2f1a180688074"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S1/config.json",
+      "sha256": "64c3f6c4309b114776a93a58f9b794be7d77e7902ccdcef53eb004802ef799e3"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/run_summary.json",
+      "sha256": "40e3d89fbb9b303cdd992e93fb497c4a5e52e1a24a7ef6f2047ca086f99fae01"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/terminal_validation_results.json",
+      "sha256": "8e3e9e8862b2e7e35cb05492c4995c6b481f1aea1fd538d58133ea543eb3be7a"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/checkpoints/latest.pt",
+      "sha256": "bfbbd111d4d6eafa234d0985fe29c01a16043a2d30ba5cae48c5ef8e6355c3f2"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/optimizer_ownership_trace.jsonl",
+      "sha256": "3891e9ed5308e75e815c48f81aab0c5a61f4b6cd9aca2d7447bfd760e8bffde0"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/metrics.csv",
+      "sha256": "0e6774df45b7c8576961379ba0bc0aeb05b00e16617d92508d734d4364650ddd"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/resource_attempts.json",
+      "sha256": "4b469a95e328290b944ee4f8a7e79dfb65ca505d7f8665f078ff8777f7d1cd13"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/S2/config.json",
+      "sha256": "3d7eb97093c9f6175ae4cc600bcb539481ebf2f3edd655d7e5fd85f6e6a7488a"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/config.json",
+      "sha256": "f15871ca6b6b0c4743595276adcdebfa43c55a570bafccc8ff00904977ddd32a"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/run_summary.json",
+      "sha256": "6c605c05e6f7ce4f183dc3d7a73bb689d4cfbd2ba8fbb58bc6a556259129fb56"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/checkpoints/latest.pt",
+      "sha256": "21e08f18362b9cbddf1b21ead0c9fc31a618e57025b8585bf3d7cce42504efd2"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/scaling_results.csv",
+      "sha256": "a3881f7328a5b6404839b4c59bfcb8e0e63f50c53828318b79a4cd261e3d2e88"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s1-peak-lr-v1/runs/S1-linear-lr0004/metrics.csv",
+      "sha256": "63a6d19666fca4d2a2b4d873d065655259bc34e8fec880e0707c2d521d63f0f9"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/config.json",
+      "sha256": "4d045660a93ad7ea200ce548381f6496622955b485b37c40528086039d6f3cf3"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/run_summary.json",
+      "sha256": "3250dbd7bd3d32b5a852910cfbe0fdce26e4e7747dcc1ec38b759d6eda6705ff"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/checkpoints/latest.pt",
+      "sha256": "6182449b54c909d01fc9aa28a8e814c1be305eef69998f5edd243750b6cf57c4"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/scaling_results.csv",
+      "sha256": "383eb7077842393984bc862e1d354458f6e56f8ebef3eb0c8b9d9fc5f846dc8e"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-s2-warmup-peak-lr-v1/runs/S2-linear-lr0004/metrics.csv",
+      "sha256": "3eb28fea1bd1b9b41c363a7bad1fb28f53790d2098981903c41d230173f278c9"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/run_summary.json",
+      "sha256": "0ff09c6cb3cae707d51a4118f68708dfabc43d456ef23f2ae107089ad5b75ae7"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/terminal_validation_results.json",
+      "sha256": "51e911ef1cda6b34ded84d5c5ca2670e7007e9258bd73c704e1e43ed857f738f"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/checkpoints/latest.pt",
+      "sha256": "1648954fe9541787ec10ea2e12560012b8c1e9fcbec50ceeb3f6109ded833472"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/optimizer_ownership_trace.jsonl",
+      "sha256": "d76555131e8932a4b60d70d01f32ba9213e215a4e6b023aca6a867fb93446fcf"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/metrics.csv",
+      "sha256": "b3442f1c6ca87a7601eb0f172ce00f2fc1fddd657dca141e23fa62a96d486057"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/resource_attempts.json",
+      "sha256": "7c6198d7ccdccab45e71ca7b2b89be2962ea41327c98f5d5cf1e0498de73292e"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g250/config.json",
+      "sha256": "015922e7a6496d7ebfdaff07b3bf31968fcc5fdf7920b22491b056e93787ea58"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/run_summary.json",
+      "sha256": "65654bc8d48ddd979670e17eaa4e3f1135b059bea47b4df03e0ce5bfe77fb013"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/terminal_validation_results.json",
+      "sha256": "ea1665ff9dd63e9654e7a3bf7748b3ec42359ae374a7782c0b446d42d7c0c5e2"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/checkpoints/latest.pt",
+      "sha256": "e8a29be655e74e9d354307f8d90d77bfc465f58e9c6154a63eefdaf8908ce283"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/optimizer_ownership_trace.jsonl",
+      "sha256": "7cc832b1039b549d731691fe3bad46fdbe177c1f6e3271c64f81611e103f0427"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/metrics.csv",
+      "sha256": "847ca9dce769fe8e1c2c77e14dfa3d9c1116d1c1689d1c52dca1d4a68cd7e795"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/resource_attempts.json",
+      "sha256": "8c0f75b03ccc8cb562299f0704025fec16e4fae73b0683be0159218978e1db6c"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g500/config.json",
+      "sha256": "b0ceddabf8bbb6cc7ff69a9cf042dd34a9330fee538d6d26b6024b46368ce5fd"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/run_summary.json",
+      "sha256": "c8d1cba9230692eb2edd540f943afc05f86d3ce82744008b1a8dbc29aaf677bb"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/terminal_validation_results.json",
+      "sha256": "f91573257c8dd8277fbee8263c4640358d4d3dc4b9435452de102572e0ce8fc1"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/checkpoints/latest.pt",
+      "sha256": "b601611dd30488ad6209a8de12b007c97daf2d7dda7a15cf0c3f142c46e3f77b"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/optimizer_ownership_trace.jsonl",
+      "sha256": "841bbdf1dcfc663e369689d1a3c3d53e3e4c8451657245cc48817520ab6ed1de"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/metrics.csv",
+      "sha256": "8c85241cdd34fb1dd4e2ff85fa67cf4317e0383ed1312d562af1d35b1f40a67a"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/resource_attempts.json",
+      "sha256": "f7f6b1b829b184efa85f57f88987283b4ac0c23383122b820d37d4c9b4dc20c5"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g750/config.json",
+      "sha256": "8f315505ab2da0c6868ed3bd3d7e83e9576a7bd9f9e4972fa08e7c0e25e449d2"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/run_summary.json",
+      "sha256": "ccbaa8a07686008caf3f8f0d0f515becaebf6fe9fca26b6f36b3664f8040a8da"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/terminal_validation_results.json",
+      "sha256": "a2fd73e504c012411e05199bbeea7747adde1df93a05fc3f62798c5a764241ea"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/checkpoints/latest.pt",
+      "sha256": "e3a5d109485c075c8535c878ad9a750910a995d0f648636b09a505ddb3b267ad"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/optimizer_ownership_trace.jsonl",
+      "sha256": "e46c58784e6a6e63aa207445ff05a1380f355324b8577334fe60276dcae1d683"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/metrics.csv",
+      "sha256": "6800c561b2f63119fea6fc0084be7b913ea9f260380b116aa55f5fa20f0d606c"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/resource_attempts.json",
+      "sha256": "2b7e8a9c973b1be2047d20ef4632cf235b0f561b123b914ab48ed8f5a2371cbd"
+    },
+    {
+      "path": "/nfs-stor/ivo.navarrete/results/elasticnn/optimizer-ownership-v1/runs/ST-g1000/config.json",
+      "sha256": "58925b02b331f9aaf7ab566dd52060390ed11f4c949dc4c43666080e786064e6"
+    }
+  ],
+  "elapsed_seconds": 141.41173887252808
+}

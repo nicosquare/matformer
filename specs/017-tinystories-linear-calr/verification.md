@@ -380,3 +380,86 @@ Current source SHA-256: `0f8005347b1da937d561411e06bbe060fa77da47a92004ec9174cc5
 With the durable production authorization and both passing gates, `verify_plan(ROOT, gpu=True)` returns **Production requires phase-5 reporting fixture acceptance**. T032–T041 have not been implemented/executed; `reporting_fixture_status` is pending. No production queue/worker invocation or training run has been submitted. This is a prerequisite dependency, not missing user authorization. Reporting implementation changes require a new tested snapshot and matching readiness before production admission; no passing gate may be relabeled. Four production terminals, exact campaign totals, ordinary endpoints and final comparison acceptance remain unproven.
 
 T029/T030 are checked complete in tasks.md; T031 remains unchecked. The optional `/speckit.git.commit` after-implementation hook was not executed. Final `git diff --check` passed.
+
+### Phase 4 pending-task recheck — 2026-10-02
+
+The request to finalize pending Phase 4 tasks leaves only T031 outstanding. Read-only inspection confirms the existing durable production authorization, passing saved CPU/GPU records and `reporting_fixture_status: pending`. T032–T041 remain unchecked and `tests/test_linear_calr_reporting.py` is absent. Production authorization does not need to be requested again.
+
+Re-ran the frozen launcher's `verify_plan(ROOT, gpu=True)` with the specified interpreter, `OMP_NUM_THREADS=1` and `PYTHONDONTWRITEBYTECODE=1`, both with the default scheduler configuration and with the previously documented `SLURM_CONF`. Both checks rejected admission with `GPU readiness awaits matching successful worker and Slurm accounting`; live scheduler proof was not re-established in this session. This does not invalidate the retained T030 execution evidence, but it is an additional current admission limitation. The independent reporting prerequisite also remains unsatisfied; no gate was relabeled and no queue/worker or production submission was invoked.
+
+T031 remains pending until reporting implementation/fixture acceptance T032–T041, matching refreshed source-bound readiness and successful live scheduler reconciliation permit production. No production completion or terminal budget is claimed.
+
+## Phase 5 reporting implementation — 2026-10-02
+
+Scope: T032–T040 reporting fixtures, native and saved-schema-specific legacy admission, schema-6 tables/plots/findings and CLI. T041 is validated by the refreshed snapshot CPU gate below; T031/T042 remain dependent on real production terminals.
+
+Implemented 36 unique provenance-bearing endpoints, 48 directed required pairs, four signed interactions and 16 separately labeled supplemental .004 pairs. Primary/supplemental terminal, measured ordinary-progress and applied-LR plots use the seven declared labels. Standalone progress is a scatter point at 87132, without a horizontal trajectory. Technical table/config names retain CaLR. New checkpoints undergo the real model-shape/whole-bundle read-only validator in addition to native terminal admission. Legacy adapters use their maintained full-budget step/token/scheduler state and actual terminal ordinary metrics, explicitly excluding dormant ownership counters as exposure proof.
+
+Executed test-first reporting fixtures: initial missing APIs **32 failed** (expected red); implemented initial suite **32 passed**; expanded provenance/atomic publication/findings/readiness/new-bundle suite **51 passed, 2 existing warnings in 34.41s**. Logs: `evidence/phase5-reporting-red.txt`, `evidence/phase5-reporting-focused.txt`. Command: `OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest tests/test_linear_calr_reporting.py -q -rs --tb=short`. Synthetic terminal metadata does not imply production training.
+
+Broader command: `OMP_NUM_THREADS=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest tests/test_linear_calr_reporting.py tests/test_linear_calr_queue.py tests/test_optimizer_ownership_reporting.py tests/test_s1_warmup_reporting.py -q -rs --tb=short`: **219 passed, 2 existing warnings in 241.63s**, log `evidence/phase5-reporting-regressions.txt`. This run preceded the additional 19 reporting tests and final source-binding/projection edits; the refreshed complete CPU gate will exercise the final source.
+
+Read-only real-reference audit executed `validate_linear_calr_references`, `linear_calr_measured_trajectories` and `_linear_calr_endpoint_rows` against `/nfs-stor/ivo.navarrete/results/elasticnn`. All eight runs and 20 endpoints passed; each elastic reference has 21784 recorded ordinary-validation points and complete committed scalar applied-LR evidence. Each standalone has 1362 recorded ordinary-validation points; plots intentionally use only its terminal point. Logs/source hashes/projections: `evidence/phase5-real-reference-audit.txt` and `.json`. No historical artifact was modified. LR plot exports retain measured first 65, every 128th global commit and last commit per width; admission scans all committed records and discloses this sampling.
+
+The earlier live accounting limitation was sandbox network access. An escalated read-only `sacct -X --noheader --parsable2 --jobs=290529 --format=JobIDRaw,JobName%100,State,ElapsedRaw,ExitCode` using the documented `SLURM_CONF` confirmed `290529|calr-diagnostic-a1-4c37158d|COMPLETED|130|0:0`. No further production permission is needed: the recorded T029–T031 authorization persists, and the current request includes remaining Phase 4 execution. Source changes require a fresh snapshot/CPU/GPU binding rather than reusing old gates.
+
+### Refreshed source preparation
+
+Preserved the previous readiness-only root at `/nfs-stor/ivo.navarrete/results/elasticnn/tinystories-linear-s1-s2-calr-v1-readiness-before-reporting-20261002`, after checking that no production run artifacts or live campaign jobs existed and diagnostic attempts were reconciled. Created the canonical fresh source snapshot with SHA-256 `55e46d097ea2533f17839071afd8ec036e70302e9d9c1427f50778d4a2b9abc9`; config-set SHA-256 `464519068f036ea7f1ccde3a5e34ecd0e72bb4f774a8dc8bef3b41927cb944bb`. Prior diagnostics/failures and authorizations remain in the retained roots; none were erased or promoted to the new binding. Continued diagnostic/production authorizations retain the original verbatim instruction plus the current Phase 5/remaining Phase 4 request and prior-record hashes.
+
+The first automatic permission review for the external refresh timed out without performing the action. The permitted single retry succeeded. This was not an unsafe-action rejection or missing user authorization. The new CPU gate runs the complete final source, including the final read-only action-RNG validation added to new-terminal admission.
+
+### Retained qualified-JUnit detector issue
+
+The first refreshed CPU suite completed **1105 passed, 66 skipped, 2 warnings in 386.53s**; all 51 reporting tests passed. Its detector expected unqualified `test_linear_calr_reporting`, while actual JUnit uses `tests.test_linear_calr_reporting`, so `reporting_fixture_status` remained pending and no production was admitted. Evidence: `evidence/phase5-cpu-reporting-name-pending.json` and `.txt`. Corrected detection to match the module component and tested both qualified/unqualified names against pass/failure/skip/absent cases: **8 passed, 47 deselected**, two existing warnings, 6.24s. Preserved the entire source/gate/authorization root at `tinystories-linear-s1-s2-calr-v1-reporting-junit-name-pending-20261002`, without relabeling its gate. Final refreshed source SHA-256: `d76fcd353df5be3342cf04d8766eae1fe9aa3a80095a4e1784944d6385701f94`; a new complete CPU gate is required for these bytes.
+
+### T041 complete: final CPU/readiness/reporting fixture proof
+
+Final frozen `preflight_tinystories_linear_calr.py cpu --campaign-root ROOT` completed **1109 passed, 66 skipped, 2 warnings in 381.38s**, exit 0. All **55** reporting JUnit cases passed without skips; the sealed CPU gate records `status: passed` and `reporting_fixture_status: passed`. CUDA-only skips remain excluded from readiness and must pass the separately authorized GPU diagnostic. Full command/artifact/source/config bindings: `evidence/phase5-final-cpu-gate.json`; exact pytest log: `evidence/phase5-final-cpu-tests.txt`. Final source SHA-256 `d76fcd353df5be3342cf04d8766eae1fe9aa3a80095a4e1784944d6385701f94`, config-set SHA-256 `d01dece2a3148506d840224359d7a5fef183650ed028d0b9eda06a93e9028a0e`.
+
+T032–T041 are complete. T031 production and T042 real report remain unchecked until full-budget terminal and comparison publication evidence exists. Fresh frozen `prepare` uses this gate and preserves exactly four definitions; diagnostic/production admission uses the already recorded, source-bound authorizations.
+
+### Refreshed T030 GPU readiness and production admission
+
+Frozen `submit-gpu --campaign-root ROOT` submitted job **290632**, `calr-diagnostic-a1-0e50de2a`. All four real-corpus d64/l4/h4, batch-64/context-128 BF16 probes passed on **NVIDIA A100-SXM4-40GB**, with all-width actual updates and own continuation. CUDA suite: **151 passed, zero skips**, plus four passing real-shape probes. Repeating `submit-gpu` after completion reconciled the existing intent without duplication: Slurm **COMPLETED, exit 0:0, 137 allocation seconds**. Worker, scheduler, CPU/GPU gates, source/config and both durable authorizations agree. Evidence: `evidence/phase5-final-gpu-gate.json`, `evidence/phase5-final-gpu-tests.txt` and the root's `diagnostics/submissions.json`.
+
+Started the frozen persistent production `queue --campaign-root ROOT` with the documented `SLURM_CONF`, `OMP_NUM_THREADS=1`, and `PYTHONDONTWRITEBYTECODE=1`; coordinator log is `ROOT/logs/production-coordinator.log`. CPU reporting acceptance is now passed, satisfying T031's reporting prerequisite. Submission is not completion: T031 and T042 remain pending until all four exact budgets, own durable checkpoints, ordinary endpoints, attempts and measured report are reconciled.
+
+Production first wave: **290635 S1-linear-poly**, **290636 S1-linear-CaLR**, both fresh attempt 1. Each worker passed CUDA/BF16 admission and began committing updates. The existing persistent queue will admit S2 arms under the same live limits as slots become available. A one-shot report coordinator waits for the existing queue's four successful terminal reconciliations and exact campaign totals, then invokes the frozen `report --campaign-root ROOT`; its command/outcome/log hashes are retained at `ROOT/logs/report-after-production.json`. It does not submit training jobs. Training/report completion are still pending at this point.
+
+### User-requested submission of all four jobs and monitoring stop
+
+User instruction: “Please submit the remaining jobs to queue and stop monitoring, I will let you know when all runs finish”. Stopped only the login production and automatic-report coordinators; both exec sessions returned exit 143. No Slurm worker or trainer was cancelled. Submitted the remaining fresh S2 arms with the same frozen worker entry points, locks, durable intents, own-state checks, source/CPU/reporting/GPU bindings and sbatch partition/QoS/GPU/exclusion/no-requeue settings. The live association-manager proof reports QoS max-running **2**, max-submitted **4**, with `associations,limits,nosteps,qos` enforcement, so the scheduler safely holds the extra jobs pending rather than permitting additional running jobs. Durable request/limits/job records: `ROOT/launchers/user-requested-all-submitted.json` and `ROOT/launchers/submissions.json`.
+
+All four production jobs: **290635 S1-linear-poly**, **290636 S1-linear-CaLR**, **290641 S2-linear-poly**, **290642 S2-linear-CaLR**. Continuous monitoring and automatic report dispatch are stopped at the user's request. T031 and T042 remain unchecked because production terminal completion and real report publication have not yet been established. Resume terminal reconciliation and reporting when the user reports that the runs have finished; existing authorizations remain valid.
+
+## Phase 5 finalization — 2026-10-02
+
+T031 is complete. All four production jobs have matching successful Slurm (`COMPLETED`, `0:0`), worker, CUDA BF16, source/config/gate and resource-attempt evidence. Native terminal checks and the corrected saved-runtime whole-bundle validator validate model/optimizer/RNG/sampler/action/data/schedule evidence read-only. Every arm has exactly 348528 updates and 2855141376 training tokens; totals are 1394112 and 11420565504. Each run has one successful production attempt, no incomplete/unobserved attempt and zero failed production-process seconds. The earlier failed diagnostic's 18 allocation seconds remain recorded separately. See [production terminal proof](evidence/phase5-production-terminals.json) for terminal hashes and source bindings.
+
+| Arm | Job | Allocation seconds | Process seconds | Ordinary validation seconds | Peak allocated bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| S1-linear-poly | 290635 | 12042 | 12019.52 | 880.35 | 453779968 |
+| S1-linear-CaLR | 290636 | 12078 | 12048.31 | 883.56 | 453779968 |
+| S2-linear-poly | 290641 | 13096 | 13073.86 | 888.48 | 466390528 |
+| S2-linear-CaLR | 290642 | 13001 | 12977.91 | 884.05 | 466390528 |
+
+Validation/update time overlaps total process time; allocation time also overlaps it. These columns must not be summed.
+
+Reporting fixes stage a live packed sampler using a deep copy of the saved runtime config, preserving its admitted checkpoint signature; completed own-state reconciliation uses that strict native validator. Known jobs are queried by exact ID and still checked for their expected name/identity. The initial reporting attempt failed when name/time-filtered Slurm lookup omitted S2; direct ID accounting confirmed successful execution. No training rerun or historical write occurred.
+
+The immutable production snapshot remains unchanged (`d76fcd353df5be3342cf04d8766eae1fe9aa3a80095a4e1784944d6385701f94`; config set `d01dece2a3148506d840224359d7a5fef183650ed028d0b9eda06a93e9028a0e`). Reporting runs from the separate `ROOT/reports/reporting-source-final-20261002` snapshot; its file hashes and aggregate hash are in the terminal proof and final report. Its tests do not replace production GPU readiness. Earlier report attempt source remains at `ROOT/reports/reporting-source-20261002`.
+
+Executed reporting/historical regressions: `OMP_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python -m pytest -q tests/test_linear_calr_reporting.py tests/test_linear_calr_queue.py tests/test_optimizer_ownership_reporting.py tests/test_s1_warmup_reporting.py`: **243 passed, 2 existing warnings in 259.14s**. Added completed-runtime/report-dispatch cases: **2 passed, 82 deselected**, 6.03s. After the scheduler lookup correction, complete queue suite: **85 passed, 2 existing warnings in 8.75s**. Logs are `evidence/phase5-final-reporting-regressions.txt`, `phase5-final-dispatch-tests.txt`, and `phase5-final-queue-tests.txt`.
+
+The bounded finalization driver calls `verify_plan(ROOT, gpu=True)`, `scheduler_history` and `execution_evidence` for each durable intent, reconciles submissions/status, and then calls `scripts/run_tinystories_linear_calr.py::report(ROOT, REPORT_SOURCE)`. Report dispatch runs:
+
+```bash
+OMP_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 /home/ivo.navarrete/.conda/envs/elasticnn/bin/python "$ROOT/reports/reporting-source-final-20261002/scripts/analyze_tinystories_optimizer_ownership.py" report-linear-calr --campaign-manifest "$ROOT/campaign/campaign_manifest.json" --run-root "$ROOT/runs" --reference-root /nfs-stor/ivo.navarrete/results/elasticnn --output-dir "$ROOT/reports/comparison"
+```
+
+Continuous queue monitoring remains stopped; this invocation performs only bounded reconciliation/reporting.
+
+### T042 complete: real publication
+
+The launcher report returned0 and atomically published `ROOT/reports/comparison`; all four independent states are complete. Eight historical references and20 endpoints were revalidated read-only. The review copy in `evidence/phase5-final-comparison` has36 endpoints,48 required pairs,4 interactions,16 supplemental pairs and16 PNG/PDF artifacts. Independent CSV checks recomputed exp(loss), every pair difference/ratio/gap and every interaction; all output SHA-256 values match `plot_sources.json`. The final reporting source manifest and code hash are retained alongside the artifacts. See experiment-report.md for measured all-width findings. T042 is checked complete; Phase6 remains pending.

@@ -1,0 +1,7 @@
+{
+  "src/evaluation/optimizer_ownership.py": "feb278bb86a3bf438c5f20761f8349836bdd0d5f69e8715f88baf30bdec24e10",
+  "scripts/analyze_tinystories_optimizer_ownership.py": "4de0290e357658278a1bb717d1b83bbdb39dfc2bc2c83e8455786b2faf47bebe",
+  "scripts/preflight_tinystories_linear_calr.py": "d0667681193b50a56a94416bc591cb5c114ace793df6a35b8eab4cf3f87c5533",
+  "tests/test_linear_calr_reporting.py": "4c2a3c52ccdc6271bf7199354d4ad41a0f82aac7bc6f21a02cee0ec385373568",
+  "configs/controlled_exps/tinystories_instruct_linear_calr.yaml": "9425b2736f8e12ec0c2c0028f96f3a9d39d79c044248e5f319b58e6913374b72"
+}

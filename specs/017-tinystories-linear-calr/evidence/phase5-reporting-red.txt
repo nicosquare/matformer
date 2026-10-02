@@ -1,0 +1,205 @@
+FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF                                         [100%]
+=================================== FAILURES ===================================
+_______________ test_readonly_eight_references_twenty_endpoints ________________
+tests/test_linear_calr_reporting.py:86: in test_readonly_eight_references_twenty_endpoints
+    refs=campaign.validate_linear_calr_references(reference_fixture)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'validate_linear_calr_references'. Did you mean: 'inspect_linear_calr_references'?
+________________ test_native_reference_rejects_damage[missing] _________________
+tests/test_linear_calr_reporting.py:107: in test_native_reference_rejects_damage
+    with pytest.raises((ConfigError,OSError)):campaign.validate_linear_calr_references(reference_fixture)
+                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'validate_linear_calr_references'. Did you mean: 'inspect_linear_calr_references'?
+______________ test_native_reference_rejects_damage[intermediate] ______________
+tests/test_linear_calr_reporting.py:107: in test_native_reference_rejects_damage
+    with pytest.raises((ConfigError,OSError)):campaign.validate_linear_calr_references(reference_fixture)
+                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'validate_linear_calr_references'. Did you mean: 'inspect_linear_calr_references'?
+__________________ test_native_reference_rejects_damage[hash] __________________
+tests/test_linear_calr_reporting.py:107: in test_native_reference_rejects_damage
+    with pytest.raises((ConfigError,OSError)):campaign.validate_linear_calr_references(reference_fixture)
+                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'validate_linear_calr_references'. Did you mean: 'inspect_linear_calr_references'?
+__________________ test_native_reference_rejects_damage[role] __________________
+tests/test_linear_calr_reporting.py:107: in test_native_reference_rejects_damage
+    with pytest.raises((ConfigError,OSError)):campaign.validate_linear_calr_references(reference_fixture)
+                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'validate_linear_calr_references'. Did you mean: 'inspect_linear_calr_references'?
+_________________ test_native_reference_rejects_damage[budget] _________________
+tests/test_linear_calr_reporting.py:107: in test_native_reference_rejects_damage
+    with pytest.raises((ConfigError,OSError)):campaign.validate_linear_calr_references(reference_fixture)
+                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'validate_linear_calr_references'. Did you mean: 'inspect_linear_calr_references'?
+________________ test_native_reference_rejects_damage[manifest] ________________
+tests/test_linear_calr_reporting.py:107: in test_native_reference_rejects_damage
+    with pytest.raises((ConfigError,OSError)):campaign.validate_linear_calr_references(reference_fixture)
+                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'validate_linear_calr_references'. Did you mean: 'inspect_linear_calr_references'?
+__________________ test_native_reference_rejects_damage[exp] ___________________
+tests/test_linear_calr_reporting.py:107: in test_native_reference_rejects_damage
+    with pytest.raises((ConfigError,OSError)):campaign.validate_linear_calr_references(reference_fixture)
+                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'validate_linear_calr_references'. Did you mean: 'inspect_linear_calr_references'?
+_________________ test_native_reference_rejects_damage[count] __________________
+tests/test_linear_calr_reporting.py:107: in test_native_reference_rejects_damage
+    with pytest.raises((ConfigError,OSError)):campaign.validate_linear_calr_references(reference_fixture)
+                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'validate_linear_calr_references'. Did you mean: 'inspect_linear_calr_references'?
+________________ test_native_reference_rejects_damage[identity] ________________
+tests/test_linear_calr_reporting.py:107: in test_native_reference_rejects_damage
+    with pytest.raises((ConfigError,OSError)):campaign.validate_linear_calr_references(reference_fixture)
+                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'validate_linear_calr_references'. Did you mean: 'inspect_linear_calr_references'?
+_______________ test_legacy_reference_rejects_damage[checkpoint] _______________
+tests/test_linear_calr_reporting.py:126: in test_legacy_reference_rejects_damage
+    with pytest.raises((ConfigError,OSError)):campaign.validate_linear_calr_references(reference_fixture)
+                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'validate_linear_calr_references'. Did you mean: 'inspect_linear_calr_references'?
+__________________ test_legacy_reference_rejects_damage[step] __________________
+tests/test_linear_calr_reporting.py:126: in test_legacy_reference_rejects_damage
+    with pytest.raises((ConfigError,OSError)):campaign.validate_linear_calr_references(reference_fixture)
+                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'validate_linear_calr_references'. Did you mean: 'inspect_linear_calr_references'?
+_________________ test_legacy_reference_rejects_damage[tokens] _________________
+tests/test_linear_calr_reporting.py:126: in test_legacy_reference_rejects_damage
+    with pytest.raises((ConfigError,OSError)):campaign.validate_linear_calr_references(reference_fixture)
+                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'validate_linear_calr_references'. Did you mean: 'inspect_linear_calr_references'?
+__________________ test_legacy_reference_rejects_damage[kind] __________________
+tests/test_linear_calr_reporting.py:126: in test_legacy_reference_rejects_damage
+    with pytest.raises((ConfigError,OSError)):campaign.validate_linear_calr_references(reference_fixture)
+                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'validate_linear_calr_references'. Did you mean: 'inspect_linear_calr_references'?
+________________ test_legacy_reference_rejects_damage[identity] ________________
+tests/test_linear_calr_reporting.py:126: in test_legacy_reference_rejects_damage
+    with pytest.raises((ConfigError,OSError)):campaign.validate_linear_calr_references(reference_fixture)
+                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'validate_linear_calr_references'. Did you mean: 'inspect_linear_calr_references'?
+________________ test_legacy_reference_rejects_damage[manifest] ________________
+tests/test_linear_calr_reporting.py:126: in test_legacy_reference_rejects_damage
+    with pytest.raises((ConfigError,OSError)):campaign.validate_linear_calr_references(reference_fixture)
+                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'validate_linear_calr_references'. Did you mean: 'inspect_linear_calr_references'?
+_______________ test_legacy_reference_rejects_damage[scheduler] ________________
+tests/test_linear_calr_reporting.py:126: in test_legacy_reference_rejects_damage
+    with pytest.raises((ConfigError,OSError)):campaign.validate_linear_calr_references(reference_fixture)
+                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'validate_linear_calr_references'. Did you mean: 'inspect_linear_calr_references'?
+________________ test_legacy_reference_rejects_damage[endpoint] ________________
+tests/test_linear_calr_reporting.py:126: in test_legacy_reference_rejects_damage
+    with pytest.raises((ConfigError,OSError)):campaign.validate_linear_calr_references(reference_fixture)
+                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'validate_linear_calr_references'. Did you mean: 'inspect_linear_calr_references'?
+________________ test_legacy_reference_rejects_damage[metrics] _________________
+tests/test_linear_calr_reporting.py:126: in test_legacy_reference_rejects_damage
+    with pytest.raises((ConfigError,OSError)):campaign.validate_linear_calr_references(reference_fixture)
+                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'validate_linear_calr_references'. Did you mean: 'inspect_linear_calr_references'?
+________________ test_legacy_reference_rejects_damage[control] _________________
+tests/test_linear_calr_reporting.py:126: in test_legacy_reference_rejects_damage
+    with pytest.raises((ConfigError,OSError)):campaign.validate_linear_calr_references(reference_fixture)
+                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'validate_linear_calr_references'. Did you mean: 'inspect_linear_calr_references'?
+_________________________ test_pairs_and_interactions __________________________
+tests/test_linear_calr_reporting.py:144: in test_pairs_and_interactions
+    pairs,interactions,supplemental=campaign.linear_calr_comparisons(rows)
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'linear_calr_comparisons'
+_______________ test_comparisons_reject_invalid_rows[duplicate] ________________
+tests/test_linear_calr_reporting.py:162: in test_comparisons_reject_invalid_rows
+    with pytest.raises(ConfigError):campaign.linear_calr_comparisons(rows)
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'linear_calr_comparisons'
+________________ test_comparisons_reject_invalid_rows[missing] _________________
+tests/test_linear_calr_reporting.py:162: in test_comparisons_reject_invalid_rows
+    with pytest.raises(ConfigError):campaign.linear_calr_comparisons(rows)
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'linear_calr_comparisons'
+_______________ test_comparisons_reject_invalid_rows[nonfinite] ________________
+tests/test_linear_calr_reporting.py:162: in test_comparisons_reject_invalid_rows
+    with pytest.raises(ConfigError):campaign.linear_calr_comparisons(rows)
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'linear_calr_comparisons'
+________________ test_seven_series_endpoint_figures[loss-0.008] ________________
+tests/test_linear_calr_reporting.py:169: in test_seven_series_endpoint_figures
+    fig=campaign.linear_calr_endpoint_figure(rows,metric=metric,cosine_peak=peak)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'linear_calr_endpoint_figure'. Did you mean: 'matformer_endpoint_figure'?
+------------------------------ Captured log call -------------------------------
+WARNING  matplotlib:__init__.py:541 /home/ivo.navarrete/.config/matplotlib is not a writable directory
+WARNING  matplotlib:__init__.py:554 Matplotlib created a temporary cache directory at /tmp/matplotlib-45y0njbb because there was an issue with the default path (/home/ivo.navarrete/.config/matplotlib); it is highly recommended to set the MPLCONFIGDIR environment variable to a writable directory, in particular to speed up the import of Matplotlib and to better support multiprocessing.
+________________ test_seven_series_endpoint_figures[loss-0.004] ________________
+tests/test_linear_calr_reporting.py:169: in test_seven_series_endpoint_figures
+    fig=campaign.linear_calr_endpoint_figure(rows,metric=metric,cosine_peak=peak)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'linear_calr_endpoint_figure'. Did you mean: 'matformer_endpoint_figure'?
+_____________ test_seven_series_endpoint_figures[perplexity-0.008] _____________
+tests/test_linear_calr_reporting.py:169: in test_seven_series_endpoint_figures
+    fig=campaign.linear_calr_endpoint_figure(rows,metric=metric,cosine_peak=peak)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'linear_calr_endpoint_figure'. Did you mean: 'matformer_endpoint_figure'?
+_____________ test_seven_series_endpoint_figures[perplexity-0.004] _____________
+tests/test_linear_calr_reporting.py:169: in test_seven_series_endpoint_figures
+    fig=campaign.linear_calr_endpoint_figure(rows,metric=metric,cosine_peak=peak)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'linear_calr_endpoint_figure'. Did you mean: 'matformer_endpoint_figure'?
+____________________ test_measured_progress_and_missing_lr _____________________
+tests/test_linear_calr_reporting.py:183: in test_measured_progress_and_missing_lr
+    progress,lr,notes=campaign.linear_calr_measured_trajectories(run)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: module 'src.evaluation.optimizer_ownership' has no attribute 'linear_calr_measured_trajectories'
+________________ test_complete_atomic_publication_and_manifest _________________
+tests/test_linear_calr_reporting.py:199: in test_complete_atomic_publication_and_manifest
+    monkeypatch.setattr(campaign,'collect_linear_calr_report',lambda **k:dict(endpoints=rows,runs=terminals,sources=sources,
+E   AttributeError: <module 'src.evaluation.optimizer_ownership' from '/home/ivo.navarrete/ElasticNN/matformer/src/evaluation/optimizer_ownership.py'> has no attribute 'collect_linear_calr_report'
+_________________ test_incomplete_preserves_valid_new_evidence _________________
+tests/test_linear_calr_reporting.py:219: in test_incomplete_preserves_valid_new_evidence
+    monkeypatch.setattr(campaign,'collect_linear_calr_report',lambda **k:dict(endpoints=new,runs=[],sources=[],
+E   AttributeError: <module 'src.evaluation.optimizer_ownership' from '/home/ivo.navarrete/ElasticNN/matformer/src/evaluation/optimizer_ownership.py'> has no attribute 'collect_linear_calr_report'
+_____________________ test_cli_incomplete_returns_nonzero ______________________
+tests/test_linear_calr_reporting.py:229: in test_cli_incomplete_returns_nonzero
+    monkeypatch.setattr(cli,'report_linear_calr',lambda **k:dict(status='incomplete',reasons=['missing reference']))
+E   AttributeError: <module 'scripts.analyze_tinystories_optimizer_ownership' from '/home/ivo.navarrete/ElasticNN/matformer/scripts/analyze_tinystories_optimizer_ownership.py'> has no attribute 'report_linear_calr'
+=============================== warnings summary ===============================
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_linear_calr_reporting.py::test_readonly_eight_references_twenty_endpoints
+FAILED tests/test_linear_calr_reporting.py::test_native_reference_rejects_damage[missing]
+FAILED tests/test_linear_calr_reporting.py::test_native_reference_rejects_damage[intermediate]
+FAILED tests/test_linear_calr_reporting.py::test_native_reference_rejects_damage[hash]
+FAILED tests/test_linear_calr_reporting.py::test_native_reference_rejects_damage[role]
+FAILED tests/test_linear_calr_reporting.py::test_native_reference_rejects_damage[budget]
+FAILED tests/test_linear_calr_reporting.py::test_native_reference_rejects_damage[manifest]
+FAILED tests/test_linear_calr_reporting.py::test_native_reference_rejects_damage[exp]
+FAILED tests/test_linear_calr_reporting.py::test_native_reference_rejects_damage[count]
+FAILED tests/test_linear_calr_reporting.py::test_native_reference_rejects_damage[identity]
+FAILED tests/test_linear_calr_reporting.py::test_legacy_reference_rejects_damage[checkpoint]
+FAILED tests/test_linear_calr_reporting.py::test_legacy_reference_rejects_damage[step]
+FAILED tests/test_linear_calr_reporting.py::test_legacy_reference_rejects_damage[tokens]
+FAILED tests/test_linear_calr_reporting.py::test_legacy_reference_rejects_damage[kind]
+FAILED tests/test_linear_calr_reporting.py::test_legacy_reference_rejects_damage[identity]
+FAILED tests/test_linear_calr_reporting.py::test_legacy_reference_rejects_damage[manifest]
+FAILED tests/test_linear_calr_reporting.py::test_legacy_reference_rejects_damage[scheduler]
+FAILED tests/test_linear_calr_reporting.py::test_legacy_reference_rejects_damage[endpoint]
+FAILED tests/test_linear_calr_reporting.py::test_legacy_reference_rejects_damage[metrics]
+FAILED tests/test_linear_calr_reporting.py::test_legacy_reference_rejects_damage[control]
+FAILED tests/test_linear_calr_reporting.py::test_pairs_and_interactions - Att...
+FAILED tests/test_linear_calr_reporting.py::test_comparisons_reject_invalid_rows[duplicate]
+FAILED tests/test_linear_calr_reporting.py::test_comparisons_reject_invalid_rows[missing]
+FAILED tests/test_linear_calr_reporting.py::test_comparisons_reject_invalid_rows[nonfinite]
+FAILED tests/test_linear_calr_reporting.py::test_seven_series_endpoint_figures[loss-0.008]
+FAILED tests/test_linear_calr_reporting.py::test_seven_series_endpoint_figures[loss-0.004]
+FAILED tests/test_linear_calr_reporting.py::test_seven_series_endpoint_figures[perplexity-0.008]
+FAILED tests/test_linear_calr_reporting.py::test_seven_series_endpoint_figures[perplexity-0.004]
+FAILED tests/test_linear_calr_reporting.py::test_measured_progress_and_missing_lr
+FAILED tests/test_linear_calr_reporting.py::test_complete_atomic_publication_and_manifest
+FAILED tests/test_linear_calr_reporting.py::test_incomplete_preserves_valid_new_evidence
+FAILED tests/test_linear_calr_reporting.py::test_cli_incomplete_returns_nonzero
+32 failed, 2 warnings in 21.93s
+sys:1: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
